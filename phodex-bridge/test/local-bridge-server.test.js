@@ -79,6 +79,41 @@ test("buildTransportCandidates appends explicit tailnet endpoint after LAN candi
   }
 });
 
+test("buildTransportCandidates includes Tailscale utun addresses as tailnet candidates", () => {
+  const originalNetworkInterfaces = os.networkInterfaces;
+
+  os.networkInterfaces = () => ({
+    en0: [
+      { address: "192.168.1.11", family: "IPv4", internal: false },
+    ],
+    utun4: [
+      { address: "100.82.80.46", family: "IPv4", internal: false },
+    ],
+  });
+
+  try {
+    const candidates = buildTransportCandidates({
+      bridgeId: "bridge-3",
+      localPort: 8765,
+    });
+
+    assert.deepEqual(candidates, [
+      {
+        kind: "local_ipv4",
+        url: "ws://192.168.1.11:8765/bridge/bridge-3",
+        label: "192.168.1.11",
+      },
+      {
+        kind: "tailnet_ipv4",
+        url: "ws://100.82.80.46:8765/bridge/bridge-3",
+        label: "100.82.80.46",
+      },
+    ]);
+  } finally {
+    os.networkInterfaces = originalNetworkInterfaces;
+  }
+});
+
 test("startLocalBridgeServer rejects clients while bridge upstream is unavailable", async () => {
   const server = startLocalBridgeServer({
     bridgeId: "bridge-unavailable",

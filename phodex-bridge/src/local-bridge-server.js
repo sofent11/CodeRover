@@ -200,6 +200,10 @@ function buildTransportCandidates({
     addCandidate("local_ipv4", `ws://${address}:${localPort}${routePath}`, address);
   }
 
+  for (const address of listReachableTailnetIPv4Addresses()) {
+    addCandidate("tailnet_ipv4", `ws://${address}:${localPort}${routePath}`, address);
+  }
+
   const normalizedTailnetUrl = normalizeNonEmptyString(tailnetUrl);
   if (normalizedTailnetUrl) {
     addCandidate("tailnet", buildCandidateUrl(normalizedTailnetUrl, routePath), "Tailnet");
@@ -209,6 +213,14 @@ function buildTransportCandidates({
 }
 
 function listReachableLocalIPv4Addresses() {
+  return listReachableIPv4Addresses(isReachableLocalIPv4);
+}
+
+function listReachableTailnetIPv4Addresses() {
+  return listReachableIPv4Addresses(isReachableTailnetIPv4);
+}
+
+function listReachableIPv4Addresses(addressFilter) {
   const interfaces = os.networkInterfaces();
   const addresses = [];
 
@@ -221,7 +233,7 @@ function listReachableLocalIPv4Addresses() {
       if (!detail || detail.internal || detail.family !== "IPv4") {
         continue;
       }
-      if (!isReachableLocalIPv4(detail.address, interfaceName)) {
+      if (!addressFilter(detail.address, interfaceName)) {
         continue;
       }
       addresses.push(detail.address);
@@ -259,6 +271,20 @@ function isReachableLocalIPv4(address, interfaceName) {
   return true;
 }
 
+function isReachableTailnetIPv4(address, interfaceName) {
+  if (!isTailnetCarrierIPv4(address)) {
+    return false;
+  }
+
+  const normalizedInterfaceName = normalizeNonEmptyString(interfaceName).toLowerCase();
+  if (!normalizedInterfaceName) {
+    return false;
+  }
+
+  return normalizedInterfaceName.startsWith("utun")
+    || normalizedInterfaceName.includes("tailscale");
+}
+
 function isPrivateIPv4(address) {
   if (typeof address !== "string") {
     return false;
@@ -278,6 +304,19 @@ function isPrivateIPv4(address) {
   }
 
   return octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31;
+}
+
+function isTailnetCarrierIPv4(address) {
+  if (typeof address !== "string") {
+    return false;
+  }
+
+  const octets = address.split(".").map((value) => Number.parseInt(value, 10));
+  if (octets.length !== 4 || octets.some((value) => Number.isNaN(value) || value < 0 || value > 255)) {
+    return false;
+  }
+
+  return octets[0] === 100 && octets[1] >= 64 && octets[1] <= 127;
 }
 
 function buildCandidateUrl(baseUrl, routePath) {

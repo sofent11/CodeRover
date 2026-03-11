@@ -374,7 +374,7 @@ private extension CodexTransportCandidate {
         switch kind {
         case "local_ipv4":
             return 0
-        case "tailnet":
+        case "tailnet_ipv4", "tailnet":
             return 1
         case "local_hostname":
             return 2
