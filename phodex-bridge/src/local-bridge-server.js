@@ -10,6 +10,7 @@ const { WebSocketServer, WebSocket } = require("ws");
 
 const CLOSE_CODE_INVALID_ROUTE = 4000;
 const CLOSE_CODE_IPHONE_REPLACED = 4003;
+const CLOSE_CODE_UPSTREAM_RESTARTING = 4004;
 const HEARTBEAT_INTERVAL_MS = 30_000;
 
 function startLocalBridgeServer({
@@ -17,6 +18,7 @@ function startLocalBridgeServer({
   host = "0.0.0.0",
   port = 8765,
   logPrefix = "[remodex]",
+  canAcceptConnection = () => true,
   onMessage,
   onError,
 } = {}) {
@@ -58,6 +60,12 @@ function startLocalBridgeServer({
   server.on("upgrade", (req, socket, head) => {
     if (req.url !== routePath) {
       socket.write("HTTP/1.1 404 Not Found\r\n\r\n");
+      socket.destroy();
+      return;
+    }
+
+    if (!canAcceptConnection()) {
+      socket.write("HTTP/1.1 503 Service Unavailable\r\n\r\n");
       socket.destroy();
       return;
     }
@@ -125,6 +133,25 @@ function startLocalBridgeServer({
     host,
     port,
     routePath,
+    resolvedPort() {
+      return server.address()?.port || port;
+    },
+    disconnectCurrentClient(
+      code = CLOSE_CODE_UPSTREAM_RESTARTING,
+      reason = "Bridge upstream restarting"
+    ) {
+      if (!currentClient) {
+        return;
+      }
+
+      const clientToClose = currentClient;
+      currentClient = null;
+      try {
+        clientToClose.close(code, reason);
+      } catch {
+        // Best-effort cleanup only.
+      }
+    },
     stop() {
       if (currentClient) {
         try {

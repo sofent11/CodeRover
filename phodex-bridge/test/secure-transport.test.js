@@ -247,7 +247,7 @@ test("secure transport round-trips encrypted payloads after a trusted reconnect 
   ]);
 });
 
-test("qr bootstrap rejects pairing a different iPhone after one phone is trusted", () => {
+test("qr bootstrap replaces the previously trusted iPhone when a fresh QR is scanned", () => {
   const macIdentity = createOkpKeyPair("ed25519");
   const firstPhoneIdentity = createOkpKeyPair("ed25519");
   const firstPhoneEphemeral = createOkpKeyPair("x25519");
@@ -297,8 +297,58 @@ test("qr bootstrap rejects pairing a different iPhone after one phone is trusted
     }
   );
 
-  assert.equal(controlMessages[0]?.kind, "secureError");
-  assert.equal(controlMessages[0]?.code, "phone_replacement_required");
+  const serverHello = controlMessages.find((message) => message.kind === "serverHello");
+  assert.ok(serverHello, "expected serverHello for replacement bootstrap");
+
+  secureTransport.handleIncomingWireMessage(
+    JSON.stringify({
+      kind: "clientAuth",
+      sessionId: "session-3",
+      phoneDeviceId: "phone-3b",
+      keyEpoch: serverHello.keyEpoch,
+      phoneSignature: sign(
+        null,
+        Buffer.concat([
+          buildTranscriptBytes({
+            sessionId: "session-3",
+            protocolVersion: 1,
+            handshakeMode: HANDSHAKE_MODE_QR_BOOTSTRAP,
+            keyEpoch: serverHello.keyEpoch,
+            macDeviceId: "mac-3",
+            phoneDeviceId: "phone-3b",
+            macIdentityPublicKey: macIdentity.publicKey,
+            phoneIdentityPublicKey: secondPhoneIdentity.publicKey,
+            macEphemeralPublicKey: serverHello.macEphemeralPublicKey,
+            phoneEphemeralPublicKey: secondPhoneEphemeral.publicKey,
+            clientNonce: Buffer.alloc(32, 9),
+            serverNonce: Buffer.from(serverHello.serverNonce, "base64"),
+            expiresAtForTranscript: serverHello.expiresAtForTranscript,
+          }),
+          encodeLengthPrefixedUTF8("client-auth"),
+        ]),
+        createPrivateKey({
+          key: {
+            crv: "Ed25519",
+            d: base64ToBase64Url(secondPhoneIdentity.privateKey),
+            kty: "OKP",
+            x: base64ToBase64Url(secondPhoneIdentity.publicKey),
+          },
+          format: "jwk",
+        })
+      ).toString("base64"),
+    }),
+    {
+      sendControlMessage(message) {
+        controlMessages.push(message);
+      },
+      onApplicationMessage() {
+        throw new Error("replacement bootstrap should not forward app traffic");
+      },
+    }
+  );
+
+  const secureReady = controlMessages.find((message) => message.kind === "secureReady");
+  assert.ok(secureReady, "expected secureReady after replacement bootstrap");
 });
 
 test("qr bootstrap starts a fresh replay window instead of leaking buffered messages", () => {

@@ -8,6 +8,8 @@ import Foundation
 import Network
 
 extension CodexService {
+    var requestTimeoutNanoseconds: UInt64 { 20_000_000_000 }
+
     // Sends an RPC request and waits for the matching response by request id.
     func sendRequest(method: String, params: JSONValue?) async throws -> RPCMessage {
         if let requestTransportOverride {
@@ -30,11 +32,29 @@ extension CodexService {
 
         return try await withCheckedThrowingContinuation { continuation in
             pendingRequests[requestKey] = continuation
+            pendingRequestTimeoutTasks[requestKey] = Task { @MainActor [weak self] in
+                guard let self else { return }
+                try? await Task.sleep(nanoseconds: requestTimeoutNanoseconds)
+                guard !Task.isCancelled else { return }
+
+                guard let pendingContinuation = pendingRequests.removeValue(forKey: requestKey) else {
+                    pendingRequestTimeoutTasks.removeValue(forKey: requestKey)
+                    return
+                }
+
+                pendingRequestTimeoutTasks.removeValue(forKey: requestKey)
+                pendingContinuation.resume(
+                    throwing: CodexServiceError.invalidInput(
+                        "The Mac bridge did not respond in time. Reconnect and try again."
+                    )
+                )
+            }
 
             Task {
                 do {
                     try await sendMessage(request)
                 } catch {
+                    pendingRequestTimeoutTasks.removeValue(forKey: requestKey)?.cancel()
                     // Avoid double-resume if the request was already completed
                     // (for example by a disconnect race that fails all pending requests).
                     if let pendingContinuation = pendingRequests.removeValue(forKey: requestKey) {
@@ -229,9 +249,14 @@ extension CodexService {
     }
 
     func failAllPendingRequests(with error: Error) {
+        let timeoutTasks = pendingRequestTimeoutTasks
+        pendingRequestTimeoutTasks.removeAll()
         let continuations = pendingRequests
         pendingRequests.removeAll()
 
+        for timeoutTask in timeoutTasks.values {
+            timeoutTask.cancel()
+        }
         for continuation in continuations.values {
             continuation.resume(throwing: error)
         }

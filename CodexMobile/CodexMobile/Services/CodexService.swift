@@ -144,6 +144,7 @@ final class CodexService {
     var webSocketConnection: NWConnection?
     let webSocketQueue = DispatchQueue(label: "CodexMobile.WebSocket", qos: .userInitiated)
     var pendingRequests: [String: CheckedContinuation<RPCMessage, Error>] = [:]
+    var pendingRequestTimeoutTasks: [String: Task<Void, Never>] = [:]
     // Test hook: intercepts outbound RPC requests without requiring a live socket.
     @ObservationIgnored var requestTransportOverride: ((String, JSONValue?) async throws -> RPCMessage)?
     var streamingAssistantMessageByTurnID: [String: String] = [:]

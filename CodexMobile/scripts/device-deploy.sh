@@ -79,7 +79,12 @@ with open(json_path, "r", encoding="utf-8") as fh:
 devices = payload.get("result", {}).get("devices", [])
 connected = []
 for device in devices:
-    if device.get("connectionProperties", {}).get("state") != "connected":
+    connection = device.get("connectionProperties", {})
+    pairing_state = connection.get("pairingState")
+    tunnel_state = connection.get("tunnelState")
+    if pairing_state != "paired":
+        continue
+    if tunnel_state not in (None, "", "connected"):
         continue
     identifier = device.get("identifier")
     name = device.get("deviceProperties", {}).get("name") or device.get("hardwareProperties", {}).get("marketingName")

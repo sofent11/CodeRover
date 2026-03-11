@@ -18,7 +18,11 @@ const KEYCHAIN_ACCOUNT = "default";
 function loadOrCreateBridgeDeviceState() {
   const existingState = readBridgeDeviceState();
   if (existingState) {
-    return existingState;
+    const stableState = stripMigrationMarker(existingState);
+    if (existingState.didMigrate) {
+      writeBridgeDeviceState(stableState);
+    }
+    return stableState;
   }
 
   const nextState = createBridgeDeviceState();
@@ -173,12 +177,14 @@ function writeKeychainStateString(value) {
 }
 
 function normalizeBridgeDeviceState(rawState) {
-  const bridgeId = normalizeNonEmptyString(rawState?.bridgeId) || randomUUID();
-  const macDeviceId = normalizeNonEmptyString(rawState?.macDeviceId);
+  const rawBridgeId = normalizeNonEmptyString(rawState?.bridgeId);
+  const rawMacDeviceId = normalizeNonEmptyString(rawState?.macDeviceId);
+  const bridgeId = isCanonicalUUID(rawBridgeId) ? rawBridgeId : randomUUID();
+  const macDeviceId = isCanonicalUUID(rawMacDeviceId) ? rawMacDeviceId : randomUUID();
   const macIdentityPublicKey = normalizeNonEmptyString(rawState?.macIdentityPublicKey);
   const macIdentityPrivateKey = normalizeNonEmptyString(rawState?.macIdentityPrivateKey);
 
-  if (!macDeviceId || !macIdentityPublicKey || !macIdentityPrivateKey) {
+  if (!macIdentityPublicKey || !macIdentityPrivateKey) {
     throw new Error("Bridge device state is incomplete");
   }
 
@@ -187,12 +193,18 @@ function normalizeBridgeDeviceState(rawState) {
     for (const [deviceId, publicKey] of Object.entries(rawState.trustedPhones)) {
       const normalizedDeviceId = normalizeNonEmptyString(deviceId);
       const normalizedPublicKey = normalizeNonEmptyString(publicKey);
-      if (!normalizedDeviceId || !normalizedPublicKey) {
+      if (!isCanonicalUUID(normalizedDeviceId) || !normalizedPublicKey) {
         continue;
       }
       trustedPhones[normalizedDeviceId] = normalizedPublicKey;
     }
   }
+
+  const didMigrate = (
+    bridgeId !== rawBridgeId
+    || macDeviceId !== rawMacDeviceId
+    || Object.keys(trustedPhones).length !== Object.keys(rawState?.trustedPhones || {}).length
+  );
 
   return {
     version: 1,
@@ -201,6 +213,7 @@ function normalizeBridgeDeviceState(rawState) {
     macIdentityPublicKey,
     macIdentityPrivateKey,
     trustedPhones,
+    didMigrate,
   };
 }
 
@@ -217,6 +230,20 @@ function looksLikeHexEncodedUTF8(value) {
   }
 
   return /^[0-9a-f]+$/i.test(value);
+}
+
+function isCanonicalUUID(value) {
+  return typeof value === "string"
+    && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value.trim());
+}
+
+function stripMigrationMarker(state) {
+  if (!state || typeof state !== "object") {
+    return state;
+  }
+
+  const { didMigrate, ...stableState } = state;
+  return stableState;
 }
 
 function base64UrlToBase64(value) {

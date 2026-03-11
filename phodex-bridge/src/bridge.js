@@ -20,6 +20,8 @@ const {
 } = require("./local-bridge-server");
 const { createBridgeSecureTransport } = require("./secure-transport");
 
+const PAIRING_QR_REPRINT_INTERVAL_MS = 4 * 60 * 1000;
+
 function startBridge() {
   const config = readBridgeConfig();
   const deviceState = loadOrCreateBridgeDeviceState();
@@ -35,6 +37,10 @@ function startBridge() {
   let isShuttingDown = false;
   let codexHandshakeState = config.codexEndpoint ? "warm" : "cold";
   const forwardedInitializeRequestIds = new Set();
+  let codex = null;
+  let codexRestartTimer = null;
+  let codexRestartAttempt = 0;
+  let pairingQRRefreshTimer = null;
   let secureTransport = null;
   const localServer = startLocalBridgeServer({
     bridgeId,
@@ -70,50 +76,31 @@ function startBridge() {
     transportCandidates,
   });
 
-  const codex = createCodexTransport({
-    endpoint: config.codexEndpoint,
-    env: process.env,
-    logPrefix: "[remodex]",
-  });
-
-  codex.onError((error) => {
-    if (config.codexEndpoint) {
-      console.error(`[remodex] Failed to connect to Codex endpoint: ${config.codexEndpoint}`);
-    } else {
-      console.error("[remodex] Failed to start `codex app-server`.");
-      console.error(`[remodex] Launch command: ${codex.describe()}`);
-      console.error("[remodex] Make sure the Codex CLI is installed and that the launcher works on this OS.");
+  printFreshPairingQR();
+  pairingQRRefreshTimer = setInterval(() => {
+    if (isShuttingDown) {
+      return;
     }
-    console.error(error.message);
-    process.exit(1);
-  });
+    printFreshPairingQR();
+  }, PAIRING_QR_REPRINT_INTERVAL_MS);
+  launchCodexTransport();
 
-  printQR(secureTransport.createPairingPayload());
-
-  codex.onMessage((message) => {
-    trackCodexHandshakeState(message);
-    desktopRefresher.handleOutbound(message);
-    rememberThreadFromMessage("codex", message);
-    secureTransport.queueOutboundApplicationMessage(message);
-  });
-
-  codex.onClose(() => {
-    isShuttingDown = true;
-    desktopRefresher.handleTransportReset();
-    localServer.stop();
-  });
-
-  process.on("SIGINT", () => shutdown(codex, () => {
+  process.on("SIGINT", () => shutdownBridge(() => {
     isShuttingDown = true;
     localServer.stop();
   }));
-  process.on("SIGTERM", () => shutdown(codex, () => {
+  process.on("SIGTERM", () => shutdownBridge(() => {
     isShuttingDown = true;
     localServer.stop();
   }));
 
   // Routes decrypted app payloads through the same bridge handlers as before.
   function handleApplicationMessage(rawMessage) {
+    if (!codex) {
+      localServer.disconnectCurrentClient();
+      return;
+    }
+
     if (handleBridgeManagedHandshakeMessage(rawMessage)) {
       return;
     }
@@ -213,14 +200,110 @@ function startBridge() {
       codexHandshakeState = "warm";
     }
   }
-}
 
-function shutdown(codex, beforeExit = () => {}) {
-  beforeExit();
+  function launchCodexTransport() {
+    resetCodexHandshakeState();
 
-  codex.shutdown();
+    const transport = createCodexTransport({
+      endpoint: config.codexEndpoint,
+      env: process.env,
+      logPrefix: "[remodex]",
+    });
+    codex = transport;
 
-  setTimeout(() => process.exit(0), 100);
+    transport.onError((error) => {
+      if (codex !== transport) {
+        return;
+      }
+      handleCodexTransportFailure(error);
+    });
+
+    transport.onMessage((message) => {
+      if (codex !== transport) {
+        return;
+      }
+
+      codexRestartAttempt = 0;
+      trackCodexHandshakeState(message);
+      desktopRefresher.handleOutbound(message);
+      rememberThreadFromMessage("codex", message);
+      secureTransport.queueOutboundApplicationMessage(message);
+    });
+
+    transport.onClose(() => {
+      if (codex !== transport) {
+        return;
+      }
+
+      if (isShuttingDown) {
+        desktopRefresher.handleTransportReset();
+        localServer.stop();
+        return;
+      }
+
+      handleCodexTransportFailure(
+        new Error("Codex app-server transport closed unexpectedly.")
+      );
+    });
+  }
+
+  function handleCodexTransportFailure(error) {
+    if (isShuttingDown) {
+      return;
+    }
+
+    const message = error?.message || "Unknown Codex transport failure";
+    console.error(`[remodex] ${message}`);
+    desktopRefresher.handleTransportReset();
+    localServer.disconnectCurrentClient();
+    resetCodexHandshakeState();
+    printFreshPairingQR();
+
+    if (codex) {
+      const failedTransport = codex;
+      codex = null;
+      failedTransport.shutdown();
+    }
+
+    scheduleCodexRestart();
+  }
+
+  function scheduleCodexRestart() {
+    if (codexRestartTimer || isShuttingDown) {
+      return;
+    }
+
+    const delayMs = Math.min(4_000, 500 * (2 ** Math.min(codexRestartAttempt, 3)));
+    codexRestartAttempt += 1;
+    console.log(`[remodex] Restarting Codex transport in ${delayMs}ms...`);
+    codexRestartTimer = setTimeout(() => {
+      codexRestartTimer = null;
+      launchCodexTransport();
+    }, delayMs);
+  }
+
+  function resetCodexHandshakeState() {
+    codexHandshakeState = config.codexEndpoint ? "warm" : "cold";
+    forwardedInitializeRequestIds.clear();
+  }
+
+  function printFreshPairingQR() {
+    printQR(secureTransport.createPairingPayload());
+  }
+
+  function shutdownBridge(beforeExit = () => {}) {
+    beforeExit();
+    if (codexRestartTimer) {
+      clearTimeout(codexRestartTimer);
+      codexRestartTimer = null;
+    }
+    if (pairingQRRefreshTimer) {
+      clearInterval(pairingQRRefreshTimer);
+      pairingQRRefreshTimer = null;
+    }
+    codex?.shutdown();
+    setTimeout(() => process.exit(0), 100);
+  }
 }
 
 function extractThreadId(rawMessage) {

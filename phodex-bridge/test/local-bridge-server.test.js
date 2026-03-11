@@ -7,7 +7,11 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const os = require("os");
-const { buildTransportCandidates } = require("../src/local-bridge-server");
+const { WebSocket } = require("ws");
+const {
+  buildTransportCandidates,
+  startLocalBridgeServer,
+} = require("../src/local-bridge-server");
 
 test("buildTransportCandidates excludes hostname, utun, and link-local addresses", () => {
   const originalNetworkInterfaces = os.networkInterfaces;
@@ -73,4 +77,42 @@ test("buildTransportCandidates appends explicit tailnet endpoint after LAN candi
   } finally {
     os.networkInterfaces = originalNetworkInterfaces;
   }
+});
+
+test("startLocalBridgeServer rejects clients while bridge upstream is unavailable", async () => {
+  const server = startLocalBridgeServer({
+    bridgeId: "bridge-unavailable",
+    host: "127.0.0.1",
+    port: 0,
+    canAcceptConnection: () => false,
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 25));
+
+  const response = await new Promise((resolve, reject) => {
+    const client = new WebSocket(
+      `ws://127.0.0.1:${server.resolvedPort()}/bridge/bridge-unavailable`
+    );
+
+    client.once("unexpected-response", (_request, incomingMessage) => {
+      resolve({
+        statusCode: incomingMessage.statusCode,
+      });
+      client.terminate();
+    });
+
+    client.once("open", () => {
+      reject(new Error("connection should have been rejected"));
+      client.terminate();
+    });
+
+    client.once("error", () => {
+      // The ws client reports an error after the 503 upgrade rejection; the
+      // unexpected-response handler above captures the actual status code.
+    });
+  });
+
+  server.stop();
+
+  assert.equal(response.statusCode, 503);
 });
