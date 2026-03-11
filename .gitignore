@@ -12,6 +12,7 @@ node_modules/
 
 # Xcode build
 DerivedData/
+/.derived/
 build/
 *.ipa
 
