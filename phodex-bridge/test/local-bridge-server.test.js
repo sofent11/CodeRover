@@ -151,3 +151,52 @@ test("startLocalBridgeServer rejects clients while bridge upstream is unavailabl
 
   assert.equal(response.statusCode, 503);
 });
+
+test("startLocalBridgeServer keeps multiple clients connected at the same time", async () => {
+  const received = [];
+  const server = startLocalBridgeServer({
+    bridgeId: "bridge-multi",
+    host: "127.0.0.1",
+    port: 0,
+    onMessage(message, transport) {
+      received.push({
+        transportId: transport.transportId,
+        message,
+      });
+    },
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 25));
+
+  const firstClient = new WebSocket(
+    `ws://127.0.0.1:${server.resolvedPort()}/bridge/bridge-multi`
+  );
+  const secondClient = new WebSocket(
+    `ws://127.0.0.1:${server.resolvedPort()}/bridge/bridge-multi`
+  );
+
+  await Promise.all([
+    new Promise((resolve, reject) => {
+      firstClient.once("open", resolve);
+      firstClient.once("error", reject);
+    }),
+    new Promise((resolve, reject) => {
+      secondClient.once("open", resolve);
+      secondClient.once("error", reject);
+    }),
+  ]);
+
+  firstClient.send("first");
+  secondClient.send("second");
+
+  await new Promise((resolve) => setTimeout(resolve, 25));
+
+  assert.equal(firstClient.readyState, WebSocket.OPEN);
+  assert.equal(secondClient.readyState, WebSocket.OPEN);
+  assert.equal(received.length, 2);
+  assert.notEqual(received[0].transportId, received[1].transportId);
+
+  firstClient.terminate();
+  secondClient.terminate();
+  server.stop();
+});

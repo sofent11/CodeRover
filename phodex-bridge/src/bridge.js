@@ -47,6 +47,9 @@ function startBridge() {
     host: config.localHost,
     port: config.localPort,
     logPrefix: "[remodex]",
+    onClientClose({ transportId }) {
+      secureTransport?.handleTransportClosed(transportId);
+    },
     onError(error) {
       console.error(`[remodex] Failed to start local bridge server on ${config.localHost}:${config.localPort}.`);
       console.error(error.message);
@@ -97,7 +100,7 @@ function startBridge() {
   // Routes decrypted app payloads through the same bridge handlers as before.
   function handleApplicationMessage(rawMessage) {
     if (!codex) {
-      localServer.disconnectCurrentClient();
+      localServer.disconnectAllClients();
       return;
     }
 
@@ -255,7 +258,7 @@ function startBridge() {
     const message = error?.message || "Unknown Codex transport failure";
     console.error(`[remodex] ${message}`);
     desktopRefresher.handleTransportReset();
-    localServer.disconnectCurrentClient();
+    localServer.disconnectAllClients();
     resetCodexHandshakeState();
     printFreshPairingQR();
 

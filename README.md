@@ -192,7 +192,7 @@ Privacy notes:
 
 - The underlying transport can still see connection metadata and the plaintext secure control messages used to set up the encrypted session, including bridge IDs, device IDs, public keys, nonces, and handshake result codes.
 - The transport does not see decrypted application payloads after the secure handshake succeeds.
-- The iPhone currently trusts a single paired phone identity per Mac bridge state. Pairing a different iPhone requires resetting pairing on the Mac first.
+- The bridge can trust multiple paired phone identities per Mac bridge state. Pairing a new iPhone adds it to the trusted set, and reconnecting the same iPhone only replaces that phone's older live connection.
 - On-device message history is also encrypted at rest on iPhone using a Keychain-backed AES key.
 
 ## Git Integration

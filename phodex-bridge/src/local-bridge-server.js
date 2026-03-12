@@ -20,6 +20,7 @@ function startLocalBridgeServer({
   logPrefix = "[remodex]",
   canAcceptConnection = () => true,
   onMessage,
+  onClientClose,
   onError,
 } = {}) {
   const routePath = `/bridge/${bridgeId}`;
@@ -34,26 +35,25 @@ function startLocalBridgeServer({
     res.end(JSON.stringify({ ok: false, error: "not_found" }));
   });
   const wss = new WebSocketServer({ noServer: true });
-  let currentClient = null;
+  let nextClientId = 1;
+  const clients = new Map();
   const heartbeat = setInterval(() => {
-    if (!currentClient) {
-      return;
-    }
-
-    if (currentClient._bridgeAlive === false) {
-      try {
-        currentClient.terminate();
-      } catch {
-        // Best-effort cleanup only.
+    for (const ws of clients.values()) {
+      if (ws._bridgeAlive === false) {
+        try {
+          ws.terminate();
+        } catch {
+          // Best-effort cleanup only.
+        }
+        continue;
       }
-      return;
-    }
 
-    currentClient._bridgeAlive = false;
-    try {
-      currentClient.ping();
-    } catch {
-      // Best-effort only.
+      ws._bridgeAlive = false;
+      try {
+        ws.ping();
+      } catch {
+        // Best-effort only.
+      }
     }
   }, HEARTBEAT_INTERVAL_MS);
 
@@ -76,20 +76,12 @@ function startLocalBridgeServer({
   });
 
   wss.on("connection", (ws) => {
-    if (currentClient && currentClient !== ws) {
-      if (
-        currentClient.readyState === WebSocket.OPEN
-        || currentClient.readyState === WebSocket.CONNECTING
-      ) {
-        currentClient.close(
-          CLOSE_CODE_IPHONE_REPLACED,
-          "Replaced by newer iPhone connection"
-        );
-      }
-    }
-    currentClient = ws;
+    const transportId = `transport-${nextClientId}`;
+    nextClientId += 1;
+    ws._bridgeTransportId = transportId;
     ws._bridgeAlive = true;
-    console.log(`${logPrefix} local client connected (${routePath})`);
+    clients.set(transportId, ws);
+    console.log(`${logPrefix} local client connected (${routePath}, ${transportId})`);
 
     ws.on("pong", () => {
       ws._bridgeAlive = true;
@@ -98,6 +90,7 @@ function startLocalBridgeServer({
     ws.on("message", (data) => {
       const message = typeof data === "string" ? data : data.toString("utf8");
       onMessage?.(message, {
+        transportId,
         sendControlMessage(controlMessage) {
           if (ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify(controlMessage));
@@ -108,14 +101,23 @@ function startLocalBridgeServer({
             ws.send(wireMessage);
           }
         },
+        closeTransport(
+          code = CLOSE_CODE_IPHONE_REPLACED,
+          reason = "Replaced by newer iPhone connection"
+        ) {
+          try {
+            ws.close(code, reason);
+          } catch {
+            // Best-effort cleanup only.
+          }
+        },
       });
     });
 
     ws.on("close", () => {
-      if (currentClient === ws) {
-        currentClient = null;
-      }
-      console.log(`${logPrefix} local client disconnected`);
+      clients.delete(transportId);
+      onClientClose?.({ transportId });
+      console.log(`${logPrefix} local client disconnected (${transportId})`);
     });
 
     ws.on("error", (error) => {
@@ -136,29 +138,40 @@ function startLocalBridgeServer({
     resolvedPort() {
       return server.address()?.port || port;
     },
-    disconnectCurrentClient(
+    disconnectClient(
+      transportId,
       code = CLOSE_CODE_UPSTREAM_RESTARTING,
       reason = "Bridge upstream restarting"
     ) {
-      if (!currentClient) {
+      const clientToClose = clients.get(transportId);
+      if (!clientToClose) {
         return;
       }
 
-      const clientToClose = currentClient;
-      currentClient = null;
+      clients.delete(transportId);
       try {
         clientToClose.close(code, reason);
       } catch {
         // Best-effort cleanup only.
       }
     },
+    disconnectAllClients(
+      code = CLOSE_CODE_UPSTREAM_RESTARTING,
+      reason = "Bridge upstream restarting"
+    ) {
+      for (const transportId of [...clients.keys()]) {
+        this.disconnectClient(transportId, code, reason);
+      }
+    },
+    disconnectCurrentClient(
+      code = CLOSE_CODE_UPSTREAM_RESTARTING,
+      reason = "Bridge upstream restarting"
+    ) {
+      this.disconnectAllClients(code, reason);
+    },
     stop() {
-      if (currentClient) {
-        try {
-          currentClient.close(CLOSE_CODE_INVALID_ROUTE, "Bridge shutting down");
-        } catch {
-          // Best-effort shutdown only.
-        }
+      for (const transportId of [...clients.keys()]) {
+        this.disconnectClient(transportId, CLOSE_CODE_INVALID_ROUTE, "Bridge shutting down");
       }
       for (const client of wss.clients) {
         try {

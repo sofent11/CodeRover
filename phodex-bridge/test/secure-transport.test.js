@@ -93,6 +93,7 @@ test("secure transport round-trips encrypted payloads after a trusted reconnect 
       clientNonce: clientNonce.toString("base64"),
     }),
     {
+      transportId: "transport-1",
       sendControlMessage(message) {
         controlMessages.push(message);
       },
@@ -150,6 +151,7 @@ test("secure transport round-trips encrypted payloads after a trusted reconnect 
       phoneSignature: phoneSignature.toString("base64"),
     }),
     {
+      transportId: "transport-1",
       sendControlMessage(message) {
         controlMessages.push(message);
       },
@@ -198,6 +200,7 @@ test("secure transport round-trips encrypted payloads after a trusted reconnect 
       lastAppliedBridgeOutboundSeq: 0,
     }),
     {
+      transportId: "transport-1",
       sendControlMessage(message) {
         controlMessages.push(message);
       },
@@ -233,6 +236,7 @@ test("secure transport round-trips encrypted payloads after a trusted reconnect 
   secureTransport.handleIncomingWireMessage(
     JSON.stringify(inboundEnvelope),
     {
+      transportId: "transport-1",
       sendControlMessage(message) {
         controlMessages.push(message);
       },
@@ -247,7 +251,85 @@ test("secure transport round-trips encrypted payloads after a trusted reconnect 
   ]);
 });
 
-test("qr bootstrap replaces the previously trusted iPhone when a fresh QR is scanned", () => {
+test("secure transport broadcasts outbound messages to multiple resumed phones", () => {
+  const macIdentity = createOkpKeyPair("ed25519");
+  const firstPhoneIdentity = createOkpKeyPair("ed25519");
+  const firstPhoneEphemeral = createOkpKeyPair("x25519");
+  const secondPhoneIdentity = createOkpKeyPair("ed25519");
+  const secondPhoneEphemeral = createOkpKeyPair("x25519");
+  const firstWireMessages = [];
+  const secondWireMessages = [];
+  const secureTransport = createBridgeSecureTransport({
+    sessionId: "session-multi",
+    deviceState: {
+      macDeviceId: "mac-multi",
+      macIdentityPrivateKey: macIdentity.privateKey,
+      macIdentityPublicKey: macIdentity.publicKey,
+      trustedPhones: {},
+    },
+  });
+
+  const firstHandshake = finishHandshake({
+    secureTransport,
+    transportId: "transport-a",
+    sessionId: "session-multi",
+    macDeviceId: "mac-multi",
+    phoneDeviceId: "phone-a",
+    macIdentity,
+    phoneIdentity: firstPhoneIdentity,
+    phoneEphemeral: firstPhoneEphemeral,
+    handshakeMode: HANDSHAKE_MODE_QR_BOOTSTRAP,
+    lastAppliedBridgeOutboundSeq: 0,
+    wireMessages: firstWireMessages,
+  });
+  const secondHandshake = finishHandshake({
+    secureTransport,
+    transportId: "transport-b",
+    sessionId: "session-multi",
+    macDeviceId: "mac-multi",
+    phoneDeviceId: "phone-b",
+    macIdentity,
+    phoneIdentity: secondPhoneIdentity,
+    phoneEphemeral: secondPhoneEphemeral,
+    handshakeMode: HANDSHAKE_MODE_QR_BOOTSTRAP,
+    lastAppliedBridgeOutboundSeq: 0,
+    wireMessages: secondWireMessages,
+  });
+
+  secureTransport.queueOutboundApplicationMessage(
+    JSON.stringify({ id: "broadcast-1", result: { ok: true } })
+  );
+
+  assert.equal(firstWireMessages.length, 1);
+  assert.equal(secondWireMessages.length, 1);
+
+  const firstKeys = deriveSessionKeys({
+    sessionId: "session-multi",
+    macDeviceId: "mac-multi",
+    phoneDeviceId: "phone-a",
+    phoneEphemeral: firstPhoneEphemeral,
+    serverHello: firstHandshake.serverHello,
+    transcriptBytes: firstHandshake.transcriptBytes,
+  });
+  const secondKeys = deriveSessionKeys({
+    sessionId: "session-multi",
+    macDeviceId: "mac-multi",
+    phoneDeviceId: "phone-b",
+    phoneEphemeral: secondPhoneEphemeral,
+    serverHello: secondHandshake.serverHello,
+    transcriptBytes: secondHandshake.transcriptBytes,
+  });
+
+  const firstPayload = decryptEnvelope(JSON.parse(firstWireMessages[0]), firstKeys.macToPhoneKey);
+  const secondPayload = decryptEnvelope(JSON.parse(secondWireMessages[0]), secondKeys.macToPhoneKey);
+
+  assert.equal(firstPayload.bridgeOutboundSeq, 1);
+  assert.equal(secondPayload.bridgeOutboundSeq, 1);
+  assert.equal(firstPayload.payloadText, JSON.stringify({ id: "broadcast-1", result: { ok: true } }));
+  assert.equal(secondPayload.payloadText, JSON.stringify({ id: "broadcast-1", result: { ok: true } }));
+});
+
+test("qr bootstrap keeps previously paired phones trusted when a second phone scans", () => {
   const macIdentity = createOkpKeyPair("ed25519");
   const firstPhoneIdentity = createOkpKeyPair("ed25519");
   const firstPhoneEphemeral = createOkpKeyPair("x25519");
@@ -265,6 +347,7 @@ test("qr bootstrap replaces the previously trusted iPhone when a fresh QR is sca
 
   finishHandshake({
     secureTransport,
+    transportId: "transport-3a",
     sessionId: "session-3",
     macDeviceId: "mac-3",
     phoneDeviceId: "phone-3a",
@@ -288,6 +371,7 @@ test("qr bootstrap replaces the previously trusted iPhone when a fresh QR is sca
       clientNonce: Buffer.alloc(32, 9).toString("base64"),
     }),
     {
+      transportId: "transport-3b",
       sendControlMessage(message) {
         controlMessages.push(message);
       },
@@ -338,6 +422,7 @@ test("qr bootstrap replaces the previously trusted iPhone when a fresh QR is sca
       ).toString("base64"),
     }),
     {
+      transportId: "transport-3b",
       sendControlMessage(message) {
         controlMessages.push(message);
       },
@@ -348,7 +433,32 @@ test("qr bootstrap replaces the previously trusted iPhone when a fresh QR is sca
   );
 
   const secureReady = controlMessages.find((message) => message.kind === "secureReady");
-  assert.ok(secureReady, "expected secureReady after replacement bootstrap");
+  assert.ok(secureReady, "expected secureReady after second phone bootstrap");
+
+  const reconnectMessages = [];
+  secureTransport.handleIncomingWireMessage(
+    JSON.stringify({
+      kind: "clientHello",
+      protocolVersion: 1,
+      sessionId: "session-3",
+      handshakeMode: HANDSHAKE_MODE_TRUSTED_RECONNECT,
+      phoneDeviceId: "phone-3a",
+      phoneIdentityPublicKey: firstPhoneIdentity.publicKey,
+      phoneEphemeralPublicKey: createOkpKeyPair("x25519").publicKey,
+      clientNonce: Buffer.alloc(32, 5).toString("base64"),
+    }),
+    {
+      transportId: "transport-3c",
+      sendControlMessage(message) {
+        reconnectMessages.push(message);
+      },
+      onApplicationMessage() {
+        throw new Error("trusted reconnect should not forward app traffic during handshake");
+      },
+    }
+  );
+
+  assert.equal(reconnectMessages[0]?.kind, "serverHello");
 });
 
 test("qr bootstrap starts a fresh replay window instead of leaking buffered messages", () => {
@@ -369,6 +479,7 @@ test("qr bootstrap starts a fresh replay window instead of leaking buffered mess
 
   finishHandshake({
     secureTransport,
+    transportId: "transport-4",
     sessionId: "session-4",
     macDeviceId: "mac-4",
     phoneDeviceId: "phone-4",
@@ -390,6 +501,7 @@ test("qr bootstrap starts a fresh replay window instead of leaking buffered mess
 
   finishHandshake({
     secureTransport,
+    transportId: "transport-4",
     sessionId: "session-4",
     macDeviceId: "mac-4",
     phoneDeviceId: "phone-4",
@@ -406,6 +518,7 @@ test("qr bootstrap starts a fresh replay window instead of leaking buffered mess
 
 function finishHandshake({
   secureTransport,
+  transportId = "transport-unknown",
   sessionId,
   macDeviceId,
   phoneDeviceId,
@@ -432,6 +545,7 @@ function finishHandshake({
       clientNonce: clientNonce.toString("base64"),
     }),
     {
+      transportId,
       sendControlMessage(message) {
         controlMessages.push(message);
       },
@@ -489,6 +603,7 @@ function finishHandshake({
       phoneSignature: phoneSignature.toString("base64"),
     }),
     {
+      transportId,
       sendControlMessage(message) {
         controlMessages.push(message);
       },
@@ -512,6 +627,7 @@ function finishHandshake({
       lastAppliedBridgeOutboundSeq,
     }),
     {
+      transportId,
       sendControlMessage(message) {
         controlMessages.push(message);
       },
@@ -525,6 +641,46 @@ function finishHandshake({
   );
 
   return { applicationMessages, controlMessages, serverHello, transcriptBytes };
+}
+
+function deriveSessionKeys({
+  sessionId,
+  macDeviceId,
+  phoneDeviceId,
+  phoneEphemeral,
+  serverHello,
+  transcriptBytes,
+}) {
+  const sharedSecret = diffieHellman({
+    privateKey: createPrivateKey({
+      key: {
+        crv: "X25519",
+        d: base64ToBase64Url(phoneEphemeral.privateKey),
+        kty: "OKP",
+        x: base64ToBase64Url(phoneEphemeral.publicKey),
+      },
+      format: "jwk",
+    }),
+    publicKey: createPublicKey({
+      key: {
+        crv: "X25519",
+        kty: "OKP",
+        x: base64ToBase64Url(serverHello.macEphemeralPublicKey),
+      },
+      format: "jwk",
+    }),
+  });
+  const salt = createHash("sha256").update(transcriptBytes).digest();
+  const infoPrefix = `remodex-e2ee-v1|${sessionId}|${macDeviceId}|${phoneDeviceId}|${serverHello.keyEpoch}`;
+
+  return {
+    phoneToMacKey: Buffer.from(
+      hkdfSync("sha256", sharedSecret, salt, Buffer.from(`${infoPrefix}|phoneToMac`, "utf8"), 32)
+    ),
+    macToPhoneKey: Buffer.from(
+      hkdfSync("sha256", sharedSecret, salt, Buffer.from(`${infoPrefix}|macToPhone`, "utf8"), 32)
+    ),
+  };
 }
 
 function createOkpKeyPair(type) {

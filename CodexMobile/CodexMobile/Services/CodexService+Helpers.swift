@@ -6,6 +6,11 @@
 
 import Foundation
 
+private func normalizedNonEmptyString(_ value: String?) -> String? {
+    let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    return trimmed.isEmpty ? nil : trimmed
+}
+
 extension CodexService {
     func resolveThreadID(_ preferredThreadID: String?) async throws -> String {
         if let preferredThreadID, !preferredThreadID.isEmpty {
@@ -79,9 +84,7 @@ extension CodexService {
     }
 
     func setActiveSavedBridgePairing(macDeviceId: String) -> Bool {
-        let normalizedMacDeviceId = macDeviceId
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .nilIfEmpty
+        let normalizedMacDeviceId = normalizedNonEmptyString(macDeviceId)
         guard let normalizedMacDeviceId,
               savedBridgePairings.contains(where: { $0.macDeviceId == normalizedMacDeviceId }) else {
             return false
@@ -94,9 +97,7 @@ extension CodexService {
     }
 
     func removeSavedBridgePairing(macDeviceId: String) {
-        let normalizedMacDeviceId = macDeviceId
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .nilIfEmpty
+        let normalizedMacDeviceId = normalizedNonEmptyString(macDeviceId)
         guard let normalizedMacDeviceId else {
             return
         }
@@ -113,13 +114,13 @@ extension CodexService {
 
     func displayTitle(for pairing: CodexBridgePairingRecord) -> String {
         if let label = pairing.transportCandidates
-            .compactMap({ $0.label?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty })
+            .compactMap({ normalizedNonEmptyString($0.label) })
             .first {
             return label
         }
 
         if let host = pairing.transportCandidates
-            .compactMap({ URL(string: $0.url)?.host?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty })
+            .compactMap({ normalizedNonEmptyString(URL(string: $0.url)?.host) })
             .first {
             return host
         }
@@ -285,15 +286,15 @@ extension CodexService {
 
 extension CodexService {
     static func loadLegacySavedBridgePairingFromSecureStore() -> CodexBridgePairingRecord? {
-        let pairedBridgeId = SecureStore.readString(for: CodexSecureKeys.pairingBridgeId)
-            ?.trimmingCharacters(in: .whitespacesAndNewlines)
-            .nilIfEmpty
-        let pairedMacDeviceId = SecureStore.readString(for: CodexSecureKeys.pairingMacDeviceId)
-            ?.trimmingCharacters(in: .whitespacesAndNewlines)
-            .nilIfEmpty
-        let pairedMacIdentityPublicKey = SecureStore.readString(for: CodexSecureKeys.pairingMacIdentityPublicKey)
-            ?.trimmingCharacters(in: .whitespacesAndNewlines)
-            .nilIfEmpty
+        let pairedBridgeId = normalizedNonEmptyString(
+            SecureStore.readString(for: CodexSecureKeys.pairingBridgeId)
+        )
+        let pairedMacDeviceId = normalizedNonEmptyString(
+            SecureStore.readString(for: CodexSecureKeys.pairingMacDeviceId)
+        )
+        let pairedMacIdentityPublicKey = normalizedNonEmptyString(
+            SecureStore.readString(for: CodexSecureKeys.pairingMacIdentityPublicKey)
+        )
         let transportCandidates = normalizeTransportCandidates(
             SecureStore.readCodable(
                 [CodexTransportCandidate].self,
@@ -307,12 +308,12 @@ extension CodexService {
             return nil
         }
 
-        let preferredTransportURL = SecureStore.readString(for: CodexSecureKeys.pairingPreferredTransportURL)
-            ?.trimmingCharacters(in: .whitespacesAndNewlines)
-            .nilIfEmpty
-        let lastSuccessfulTransportURL = SecureStore.readString(for: CodexSecureKeys.pairingLastSuccessfulTransportURL)
-            ?.trimmingCharacters(in: .whitespacesAndNewlines)
-            .nilIfEmpty
+        let preferredTransportURL = normalizedNonEmptyString(
+            SecureStore.readString(for: CodexSecureKeys.pairingPreferredTransportURL)
+        )
+        let lastSuccessfulTransportURL = normalizedNonEmptyString(
+            SecureStore.readString(for: CodexSecureKeys.pairingLastSuccessfulTransportURL)
+        )
         let secureProtocolVersion = Int(
             SecureStore.readString(for: CodexSecureKeys.secureProtocolVersion) ?? ""
         ) ?? codexSecureProtocolVersion
@@ -338,11 +339,9 @@ extension CodexService {
     ) -> [CodexBridgePairingRecord] {
         var normalizedByMacDeviceId: [String: CodexBridgePairingRecord] = [:]
         for pairing in pairings {
-            let bridgeId = pairing.bridgeId.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
-            let macDeviceId = pairing.macDeviceId.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
-            let macIdentityPublicKey = pairing.macIdentityPublicKey
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-                .nilIfEmpty
+            let bridgeId = normalizedNonEmptyString(pairing.bridgeId)
+            let macDeviceId = normalizedNonEmptyString(pairing.macDeviceId)
+            let macIdentityPublicKey = normalizedNonEmptyString(pairing.macIdentityPublicKey)
             let transportCandidates = normalizeTransportCandidates(pairing.transportCandidates)
             guard let bridgeId,
                   let macDeviceId,
@@ -356,12 +355,8 @@ extension CodexService {
                 macDeviceId: macDeviceId,
                 macIdentityPublicKey: macIdentityPublicKey,
                 transportCandidates: transportCandidates,
-                preferredTransportURL: pairing.preferredTransportURL?
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                    .nilIfEmpty,
-                lastSuccessfulTransportURL: pairing.lastSuccessfulTransportURL?
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                    .nilIfEmpty,
+                preferredTransportURL: normalizedNonEmptyString(pairing.preferredTransportURL),
+                lastSuccessfulTransportURL: normalizedNonEmptyString(pairing.lastSuccessfulTransportURL),
                 secureProtocolVersion: pairing.secureProtocolVersion,
                 lastAppliedBridgeOutboundSeq: max(0, pairing.lastAppliedBridgeOutboundSeq),
                 lastPairedAt: pairing.lastPairedAt
@@ -381,12 +376,11 @@ extension CodexService {
         _ candidates: [CodexTransportCandidate]
     ) -> [CodexTransportCandidate] {
         candidates.compactMap { candidate in
-            let kind = candidate.kind.trimmingCharacters(in: .whitespacesAndNewlines)
-            let url = candidate.url.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !kind.isEmpty, !url.isEmpty else {
+            guard let kind = normalizedNonEmptyString(candidate.kind),
+                  let url = normalizedNonEmptyString(candidate.url) else {
                 return nil
             }
-            let label = candidate.label?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+            let label = normalizedNonEmptyString(candidate.label)
             return CodexTransportCandidate(kind: kind, url: url, label: label)
         }
     }
