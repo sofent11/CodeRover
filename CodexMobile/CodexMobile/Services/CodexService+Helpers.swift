@@ -52,18 +52,185 @@ extension CodexService {
             return
         }
         lastSuccessfulTransportURL = normalized
-        SecureStore.writeString(normalized, for: CodexSecureKeys.pairingLastSuccessfulTransportURL)
+        guard activeSavedBridgePairing != nil else {
+            SecureStore.writeString(normalized, for: CodexSecureKeys.pairingLastSuccessfulTransportURL)
+            return
+        }
+        updateActiveSavedBridgePairing { pairing in
+            pairing.lastSuccessfulTransportURL = normalized
+        }
     }
 
     func setPreferredTransportURL(_ url: String?) {
         let trimmed = url?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let normalized = trimmed.isEmpty ? nil : trimmed
         preferredTransportURL = normalized
-        if let normalized {
-            SecureStore.writeString(normalized, for: CodexSecureKeys.pairingPreferredTransportURL)
+        guard activeSavedBridgePairing != nil else {
+            if let normalized {
+                SecureStore.writeString(normalized, for: CodexSecureKeys.pairingPreferredTransportURL)
+            } else {
+                SecureStore.deleteValue(for: CodexSecureKeys.pairingPreferredTransportURL)
+            }
+            return
+        }
+        updateActiveSavedBridgePairing { pairing in
+            pairing.preferredTransportURL = normalized
+        }
+    }
+
+    func setActiveSavedBridgePairing(macDeviceId: String) -> Bool {
+        let normalizedMacDeviceId = macDeviceId
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .nilIfEmpty
+        guard let normalizedMacDeviceId,
+              savedBridgePairings.contains(where: { $0.macDeviceId == normalizedMacDeviceId }) else {
+            return false
+        }
+
+        activePairingMacDeviceId = normalizedMacDeviceId
+        applyResolvedActiveSavedBridgePairing()
+        persistSavedBridgePairings()
+        return true
+    }
+
+    func removeSavedBridgePairing(macDeviceId: String) {
+        let normalizedMacDeviceId = macDeviceId
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .nilIfEmpty
+        guard let normalizedMacDeviceId else {
+            return
+        }
+
+        savedBridgePairings.removeAll { $0.macDeviceId == normalizedMacDeviceId }
+        trustedMacRegistry.records.removeValue(forKey: normalizedMacDeviceId)
+        SecureStore.writeCodable(trustedMacRegistry, for: CodexSecureKeys.trustedMacRegistry)
+        if activePairingMacDeviceId == normalizedMacDeviceId {
+            activePairingMacDeviceId = nil
+        }
+        applyResolvedActiveSavedBridgePairing()
+        persistSavedBridgePairings()
+    }
+
+    func displayTitle(for pairing: CodexBridgePairingRecord) -> String {
+        if let label = pairing.transportCandidates
+            .compactMap({ $0.label?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty })
+            .first {
+            return label
+        }
+
+        if let host = pairing.transportCandidates
+            .compactMap({ URL(string: $0.url)?.host?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty })
+            .first {
+            return host
+        }
+
+        let suffix = pairing.macDeviceId.suffix(6)
+        return "Mac \(suffix)"
+    }
+
+    func updateActiveSavedBridgePairing(_ update: (inout CodexBridgePairingRecord) -> Void) {
+        guard let activePairingMacDeviceId,
+              let pairingIndex = savedBridgePairings.firstIndex(where: { $0.macDeviceId == activePairingMacDeviceId }) else {
+            syncLegacySavedBridgePairingMirror()
+            return
+        }
+
+        update(&savedBridgePairings[pairingIndex])
+        setActiveSavedBridgePairingState(from: savedBridgePairings[pairingIndex])
+        persistSavedBridgePairings()
+    }
+
+    func applyResolvedActiveSavedBridgePairing() {
+        guard !savedBridgePairings.isEmpty else {
+            activePairingMacDeviceId = nil
+            setActiveSavedBridgePairingState(from: nil)
+            updateSecureConnectionStateForSelectedPairing()
+            return
+        }
+
+        let resolvedPairing = activeSavedBridgePairing
+            ?? savedBridgePairings.max(by: { lhs, rhs in
+                lhs.lastPairedAt < rhs.lastPairedAt
+            })
+        activePairingMacDeviceId = resolvedPairing?.macDeviceId
+        setActiveSavedBridgePairingState(from: resolvedPairing)
+        updateSecureConnectionStateForSelectedPairing()
+    }
+
+    func setActiveSavedBridgePairingState(from pairing: CodexBridgePairingRecord?) {
+        pairedBridgeId = pairing?.bridgeId
+        pairedTransportCandidates = pairing?.transportCandidates ?? []
+        preferredTransportURL = pairing?.preferredTransportURL
+        lastSuccessfulTransportURL = pairing?.lastSuccessfulTransportURL
+        pairedMacDeviceId = pairing?.macDeviceId
+        pairedMacIdentityPublicKey = pairing?.macIdentityPublicKey
+        secureProtocolVersion = pairing?.secureProtocolVersion ?? codexSecureProtocolVersion
+        lastAppliedBridgeOutboundSeq = pairing?.lastAppliedBridgeOutboundSeq ?? 0
+    }
+
+    func updateSecureConnectionStateForSelectedPairing() {
+        if let pairedMacDeviceId,
+           let trustedMac = trustedMacRegistry.records[pairedMacDeviceId] {
+            secureConnectionState = .trustedMac
+            secureMacFingerprint = codexSecureFingerprint(for: trustedMac.macIdentityPublicKey)
+            return
+        }
+
+        secureConnectionState = .notPaired
+        secureMacFingerprint = nil
+    }
+
+    func persistSavedBridgePairings() {
+        if savedBridgePairings.isEmpty {
+            SecureStore.deleteValue(for: CodexSecureKeys.pairingRecords)
+            SecureStore.deleteValue(for: CodexSecureKeys.pairingActiveMacDeviceId)
+        } else {
+            SecureStore.writeCodable(savedBridgePairings, for: CodexSecureKeys.pairingRecords)
+            if let activePairingMacDeviceId {
+                SecureStore.writeString(activePairingMacDeviceId, for: CodexSecureKeys.pairingActiveMacDeviceId)
+            } else {
+                SecureStore.deleteValue(for: CodexSecureKeys.pairingActiveMacDeviceId)
+            }
+        }
+
+        syncLegacySavedBridgePairingMirror()
+    }
+
+    func syncLegacySavedBridgePairingMirror() {
+        guard let activePairing = activeSavedBridgePairing else {
+            SecureStore.deleteValue(for: CodexSecureKeys.pairingBridgeId)
+            SecureStore.deleteValue(for: CodexSecureKeys.pairingTransportCandidates)
+            SecureStore.deleteValue(for: CodexSecureKeys.pairingPreferredTransportURL)
+            SecureStore.deleteValue(for: CodexSecureKeys.pairingLastSuccessfulTransportURL)
+            SecureStore.deleteValue(for: CodexSecureKeys.pairingMacDeviceId)
+            SecureStore.deleteValue(for: CodexSecureKeys.pairingMacIdentityPublicKey)
+            SecureStore.deleteValue(for: CodexSecureKeys.secureProtocolVersion)
+            SecureStore.deleteValue(for: CodexSecureKeys.secureLastAppliedBridgeOutboundSeq)
+            return
+        }
+
+        SecureStore.writeString(activePairing.bridgeId, for: CodexSecureKeys.pairingBridgeId)
+        SecureStore.writeCodable(activePairing.transportCandidates, for: CodexSecureKeys.pairingTransportCandidates)
+        if let preferredTransportURL = activePairing.preferredTransportURL {
+            SecureStore.writeString(preferredTransportURL, for: CodexSecureKeys.pairingPreferredTransportURL)
         } else {
             SecureStore.deleteValue(for: CodexSecureKeys.pairingPreferredTransportURL)
         }
+        if let lastSuccessfulTransportURL = activePairing.lastSuccessfulTransportURL {
+            SecureStore.writeString(lastSuccessfulTransportURL, for: CodexSecureKeys.pairingLastSuccessfulTransportURL)
+        } else {
+            SecureStore.deleteValue(for: CodexSecureKeys.pairingLastSuccessfulTransportURL)
+        }
+        SecureStore.writeString(activePairing.macDeviceId, for: CodexSecureKeys.pairingMacDeviceId)
+        SecureStore.writeString(activePairing.macIdentityPublicKey, for: CodexSecureKeys.pairingMacIdentityPublicKey)
+        SecureStore.writeString(
+            String(activePairing.secureProtocolVersion),
+            for: CodexSecureKeys.secureProtocolVersion
+        )
+        SecureStore.writeString(
+            String(activePairing.lastAppliedBridgeOutboundSeq),
+            for: CodexSecureKeys.secureLastAppliedBridgeOutboundSeq
+        )
     }
 
     func displayTitle(for candidate: CodexTransportCandidate) -> String {
@@ -114,4 +281,113 @@ extension CodexService {
         return fallbackId
     }
 
+}
+
+extension CodexService {
+    static func loadLegacySavedBridgePairingFromSecureStore() -> CodexBridgePairingRecord? {
+        let pairedBridgeId = SecureStore.readString(for: CodexSecureKeys.pairingBridgeId)
+            ?.trimmingCharacters(in: .whitespacesAndNewlines)
+            .nilIfEmpty
+        let pairedMacDeviceId = SecureStore.readString(for: CodexSecureKeys.pairingMacDeviceId)
+            ?.trimmingCharacters(in: .whitespacesAndNewlines)
+            .nilIfEmpty
+        let pairedMacIdentityPublicKey = SecureStore.readString(for: CodexSecureKeys.pairingMacIdentityPublicKey)
+            ?.trimmingCharacters(in: .whitespacesAndNewlines)
+            .nilIfEmpty
+        let transportCandidates = normalizeTransportCandidates(
+            SecureStore.readCodable(
+                [CodexTransportCandidate].self,
+                for: CodexSecureKeys.pairingTransportCandidates
+            ) ?? []
+        )
+        guard let pairedBridgeId,
+              let pairedMacDeviceId,
+              let pairedMacIdentityPublicKey,
+              !transportCandidates.isEmpty else {
+            return nil
+        }
+
+        let preferredTransportURL = SecureStore.readString(for: CodexSecureKeys.pairingPreferredTransportURL)
+            ?.trimmingCharacters(in: .whitespacesAndNewlines)
+            .nilIfEmpty
+        let lastSuccessfulTransportURL = SecureStore.readString(for: CodexSecureKeys.pairingLastSuccessfulTransportURL)
+            ?.trimmingCharacters(in: .whitespacesAndNewlines)
+            .nilIfEmpty
+        let secureProtocolVersion = Int(
+            SecureStore.readString(for: CodexSecureKeys.secureProtocolVersion) ?? ""
+        ) ?? codexSecureProtocolVersion
+        let lastAppliedBridgeOutboundSeq = Int(
+            SecureStore.readString(for: CodexSecureKeys.secureLastAppliedBridgeOutboundSeq) ?? ""
+        ) ?? 0
+
+        return CodexBridgePairingRecord(
+            bridgeId: pairedBridgeId,
+            macDeviceId: pairedMacDeviceId,
+            macIdentityPublicKey: pairedMacIdentityPublicKey,
+            transportCandidates: transportCandidates,
+            preferredTransportURL: preferredTransportURL,
+            lastSuccessfulTransportURL: lastSuccessfulTransportURL,
+            secureProtocolVersion: secureProtocolVersion,
+            lastAppliedBridgeOutboundSeq: lastAppliedBridgeOutboundSeq,
+            lastPairedAt: .now
+        )
+    }
+
+    static func normalizedSavedBridgePairings(
+        _ pairings: [CodexBridgePairingRecord]
+    ) -> [CodexBridgePairingRecord] {
+        var normalizedByMacDeviceId: [String: CodexBridgePairingRecord] = [:]
+        for pairing in pairings {
+            let bridgeId = pairing.bridgeId.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+            let macDeviceId = pairing.macDeviceId.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+            let macIdentityPublicKey = pairing.macIdentityPublicKey
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .nilIfEmpty
+            let transportCandidates = normalizeTransportCandidates(pairing.transportCandidates)
+            guard let bridgeId,
+                  let macDeviceId,
+                  let macIdentityPublicKey,
+                  !transportCandidates.isEmpty else {
+                continue
+            }
+
+            let normalized = CodexBridgePairingRecord(
+                bridgeId: bridgeId,
+                macDeviceId: macDeviceId,
+                macIdentityPublicKey: macIdentityPublicKey,
+                transportCandidates: transportCandidates,
+                preferredTransportURL: pairing.preferredTransportURL?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .nilIfEmpty,
+                lastSuccessfulTransportURL: pairing.lastSuccessfulTransportURL?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .nilIfEmpty,
+                secureProtocolVersion: pairing.secureProtocolVersion,
+                lastAppliedBridgeOutboundSeq: max(0, pairing.lastAppliedBridgeOutboundSeq),
+                lastPairedAt: pairing.lastPairedAt
+            )
+            let existing = normalizedByMacDeviceId[macDeviceId]
+            if existing == nil || normalized.lastPairedAt >= existing!.lastPairedAt {
+                normalizedByMacDeviceId[macDeviceId] = normalized
+            }
+        }
+
+        return normalizedByMacDeviceId.values.sorted { lhs, rhs in
+            lhs.lastPairedAt > rhs.lastPairedAt
+        }
+    }
+
+    static func normalizeTransportCandidates(
+        _ candidates: [CodexTransportCandidate]
+    ) -> [CodexTransportCandidate] {
+        candidates.compactMap { candidate in
+            let kind = candidate.kind.trimmingCharacters(in: .whitespacesAndNewlines)
+            let url = candidate.url.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !kind.isEmpty, !url.isEmpty else {
+                return nil
+            }
+            let label = candidate.label?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+            return CodexTransportCandidate(kind: kind, url: url, label: label)
+        }
+    }
 }

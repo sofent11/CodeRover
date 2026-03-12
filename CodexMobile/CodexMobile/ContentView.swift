@@ -201,7 +201,7 @@ struct ContentView: View {
                 .adaptiveNavigationBar()
                 .navigationDestination(for: String.self) { destination in
                     if destination == "settings" {
-                        SettingsView()
+                        SettingsView(viewModel: viewModel)
                             .adaptiveNavigationBar()
                             .onAppear {
                                 isShowingSettingsScreen = true

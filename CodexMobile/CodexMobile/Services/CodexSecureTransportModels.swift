@@ -37,6 +37,20 @@ struct CodexPairingQRPayload: Codable, Sendable {
     let expiresAt: Int64
 }
 
+struct CodexBridgePairingRecord: Codable, Hashable, Identifiable, Sendable {
+    var bridgeId: String
+    var macDeviceId: String
+    var macIdentityPublicKey: String
+    var transportCandidates: [CodexTransportCandidate]
+    var preferredTransportURL: String?
+    var lastSuccessfulTransportURL: String?
+    var secureProtocolVersion: Int
+    var lastAppliedBridgeOutboundSeq: Int
+    var lastPairedAt: Date
+
+    var id: String { macDeviceId }
+}
+
 struct CodexTransportCandidate: Codable, Hashable, Sendable {
     let kind: String
     let url: String

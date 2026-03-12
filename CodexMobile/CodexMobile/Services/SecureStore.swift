@@ -8,6 +8,8 @@ import Foundation
 import Security
 
 enum CodexSecureKeys {
+    static let pairingRecords = "codex.pairing.records"
+    static let pairingActiveMacDeviceId = "codex.pairing.activeMacDeviceId"
     static let pairingBridgeId = "codex.pairing.bridgeId"
     static let pairingTransportCandidates = "codex.pairing.transportCandidates"
     static let pairingPreferredTransportURL = "codex.pairing.preferredTransportURL"

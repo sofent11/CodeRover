@@ -10,6 +10,8 @@ struct SettingsView: View {
     @Environment(CodexService.self) private var codex
     @Environment(\.dismiss) private var dismiss
 
+    let viewModel: ContentViewModel
+
     @AppStorage("codex.appFontStyle") private var appFontStyleRawValue = AppFont.defaultStoredStyleRawValue
     @State private var isPerformingConnectionAction = false
 
@@ -106,6 +108,18 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
+            if !pairedMacs.isEmpty {
+                Text("Paired Macs: \(pairedMacs.count)")
+                    .font(AppFont.caption())
+                    .foregroundStyle(.secondary)
+
+                VStack(alignment: .leading, spacing: 12) {
+                    ForEach(pairedMacs) { pairing in
+                        pairedMacRow(pairing)
+                    }
+                }
+            }
+
             if availableTransportCandidates.count > 1 {
                 HStack {
                     Text("Transport")
@@ -158,14 +172,6 @@ struct SettingsView: View {
                 SettingsButton("Disconnect", role: .destructive) {
                     HapticFeedback.shared.triggerImpactFeedback()
                     disconnectBridge()
-                }
-                .disabled(isPerformingConnectionAction)
-            }
-
-            if codex.hasSavedBridgePairing {
-                SettingsButton("Unpair", role: .destructive) {
-                    HapticFeedback.shared.triggerImpactFeedback()
-                    unpairBridge()
                 }
                 .disabled(isPerformingConnectionAction)
             }
@@ -232,6 +238,49 @@ struct SettingsView: View {
         return availableTransportCandidates.first { $0.url == preferredTransportURL }
     }
 
+    private var pairedMacs: [CodexBridgePairingRecord] {
+        codex.orderedSavedBridgePairings
+    }
+
+    @ViewBuilder
+    private func pairedMacRow(_ pairing: CodexBridgePairingRecord) -> some View {
+        let isActivePairing = pairing.macDeviceId == codex.activeSavedBridgePairing?.macDeviceId
+        let isConnectedPairing = isActivePairing && codex.isConnected
+
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(codex.displayTitle(for: pairing))
+                    .font(AppFont.subheadline(weight: .semibold))
+                    .foregroundStyle(.primary)
+
+                Spacer()
+
+                Text(isConnectedPairing ? "Connected" : (isActivePairing ? "Selected" : "Saved"))
+                    .font(AppFont.caption(weight: .semibold))
+                    .foregroundStyle(isConnectedPairing ? .green : .secondary)
+            }
+
+            Text("\(pairing.transportCandidates.count) saved transport\(pairing.transportCandidates.count == 1 ? "" : "s")")
+                .font(AppFont.caption())
+                .foregroundStyle(.secondary)
+
+            if !isActivePairing {
+                SettingsButton(codex.isConnected ? "Switch to This Mac" : "Use This Mac") {
+                    HapticFeedback.shared.triggerImpactFeedback()
+                    switchBridgePairing(to: pairing.macDeviceId)
+                }
+                .disabled(isPerformingConnectionAction)
+            }
+
+            SettingsButton(isActivePairing ? "Remove This Mac" : "Remove", role: .destructive) {
+                HapticFeedback.shared.triggerImpactFeedback()
+                removeBridgePairing(pairing.macDeviceId)
+            }
+            .disabled(isPerformingConnectionAction)
+        }
+        .padding(.vertical, 2)
+    }
+
     // MARK: - Actions
 
     private func disconnectBridge() {
@@ -247,16 +296,25 @@ struct SettingsView: View {
         }
     }
 
-    private func unpairBridge() {
+    private func removeBridgePairing(_ macDeviceId: String) {
         Task { @MainActor in
             guard !isPerformingConnectionAction else {
                 return
             }
             isPerformingConnectionAction = true
             defer { isPerformingConnectionAction = false }
-            codex.shouldReturnHomeAfterDisconnect = true
-            await codex.unpair()
-            dismiss()
+            await viewModel.removeSavedBridgePairing(macDeviceId: macDeviceId, codex: codex)
+        }
+    }
+
+    private func switchBridgePairing(to macDeviceId: String) {
+        Task { @MainActor in
+            guard !isPerformingConnectionAction else {
+                return
+            }
+            isPerformingConnectionAction = true
+            defer { isPerformingConnectionAction = false }
+            await viewModel.switchSavedBridgePairing(macDeviceId: macDeviceId, codex: codex)
         }
     }
 
@@ -514,7 +572,7 @@ private struct SettingsAboutCard: View {
 
 #Preview {
     NavigationStack {
-        SettingsView()
+        SettingsView(viewModel: ContentViewModel())
             .environment(CodexService())
     }
 }

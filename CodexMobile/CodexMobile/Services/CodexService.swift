@@ -135,6 +135,8 @@ final class CodexService {
     var shouldReturnHomeAfterDisconnect = false
 
     // Pairing persistence
+    var savedBridgePairings: [CodexBridgePairingRecord] = []
+    var activePairingMacDeviceId: String?
     var pairedBridgeId: String?
     var pairedTransportCandidates: [CodexTransportCandidate] = []
     var preferredTransportURL: String?
@@ -261,40 +263,58 @@ final class CodexService {
             self.selectedAccessMode = .onRequest
         }
 
-        // Restore paired bridge metadata from Keychain.
-        self.pairedBridgeId = SecureStore.readString(for: CodexSecureKeys.pairingBridgeId)
-        self.pairedTransportCandidates = SecureStore.readCodable(
-            [CodexTransportCandidate].self,
-            for: CodexSecureKeys.pairingTransportCandidates
+        // Restore saved Mac pairings. Legacy single-pairing keys are migrated into the
+        // new multi-pairing store the first time a newer client launches.
+        let storedPairings = SecureStore.readCodable(
+            [CodexBridgePairingRecord].self,
+            for: CodexSecureKeys.pairingRecords
         ) ?? []
-        self.preferredTransportURL = SecureStore.readString(
-            for: CodexSecureKeys.pairingPreferredTransportURL
-        )
-        self.lastSuccessfulTransportURL = SecureStore.readString(
-            for: CodexSecureKeys.pairingLastSuccessfulTransportURL
-        )
-        self.pairedMacDeviceId = SecureStore.readString(for: CodexSecureKeys.pairingMacDeviceId)
-        self.pairedMacIdentityPublicKey = SecureStore.readString(for: CodexSecureKeys.pairingMacIdentityPublicKey)
-        if let rawProtocolVersion = SecureStore.readString(for: CodexSecureKeys.secureProtocolVersion),
-           let parsedProtocolVersion = Int(rawProtocolVersion) {
-            self.secureProtocolVersion = parsedProtocolVersion
+        let normalizedStoredPairings = Self.normalizedSavedBridgePairings(storedPairings)
+        let storedActivePairingMacDeviceId = SecureStore.readString(
+            for: CodexSecureKeys.pairingActiveMacDeviceId
+        )?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+        var shouldPersistNormalizedPairings = normalizedStoredPairings.count != storedPairings.count
+
+        if normalizedStoredPairings.isEmpty,
+           let legacyPairing = Self.loadLegacySavedBridgePairingFromSecureStore() {
+            self.savedBridgePairings = [legacyPairing]
+            self.activePairingMacDeviceId = legacyPairing.macDeviceId
+            shouldPersistNormalizedPairings = true
         } else {
-            self.secureProtocolVersion = codexSecureProtocolVersion
+            self.savedBridgePairings = normalizedStoredPairings
+            self.activePairingMacDeviceId = storedActivePairingMacDeviceId
         }
-        if let rawLastAppliedSeq = SecureStore.readString(for: CodexSecureKeys.secureLastAppliedBridgeOutboundSeq),
-           let parsedLastAppliedSeq = Int(rawLastAppliedSeq) {
-            self.lastAppliedBridgeOutboundSeq = parsedLastAppliedSeq
-        }
-        if let pairedMacDeviceId,
-           let trustedMac = trustedMacRegistry.records[pairedMacDeviceId] {
-            self.secureConnectionState = .trustedMac
-            self.secureMacFingerprint = codexSecureFingerprint(for: trustedMac.macIdentityPublicKey)
+
+        applyResolvedActiveSavedBridgePairing()
+
+        if shouldPersistNormalizedPairings || activePairingMacDeviceId != storedActivePairingMacDeviceId {
+            persistSavedBridgePairings()
         }
     }
 
     // Remembers whether we can offer reconnect without forcing a fresh QR scan.
     var hasSavedBridgePairing: Bool {
         normalizedBridgeId != nil && !normalizedTransportCandidates.isEmpty
+    }
+
+    var activeSavedBridgePairing: CodexBridgePairingRecord? {
+        guard let activePairingMacDeviceId else {
+            return savedBridgePairings.first
+        }
+        return savedBridgePairings.first { $0.macDeviceId == activePairingMacDeviceId }
+            ?? savedBridgePairings.first
+    }
+
+    var orderedSavedBridgePairings: [CodexBridgePairingRecord] {
+        savedBridgePairings.sorted { lhs, rhs in
+            if lhs.macDeviceId == activePairingMacDeviceId {
+                return true
+            }
+            if rhs.macDeviceId == activePairingMacDeviceId {
+                return false
+            }
+            return lhs.lastPairedAt > rhs.lastPairedAt
+        }
     }
 
     // Normalizes the persisted bridge id before reuse in reconnect flows.
@@ -305,15 +325,7 @@ final class CodexService {
     }
 
     var normalizedTransportCandidates: [CodexTransportCandidate] {
-        pairedTransportCandidates.compactMap { candidate in
-            let kind = candidate.kind.trimmingCharacters(in: .whitespacesAndNewlines)
-            let url = candidate.url.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !kind.isEmpty, !url.isEmpty else {
-                return nil
-            }
-            let label = candidate.label?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
-            return CodexTransportCandidate(kind: kind, url: url, label: label)
-        }
+        Self.normalizeTransportCandidates(pairedTransportCandidates)
     }
 
     var orderedTransportCandidateURLs: [String] {

@@ -601,6 +601,103 @@ final class CodexServiceIncomingRunIndicatorTests: XCTestCase {
         }
     }
 
+    func testInitMigratesLegacyPairingIntoMultiPairingStore() {
+        let bridgeId = "bridge-\(UUID().uuidString)"
+        let macDeviceId = "mac-\(UUID().uuidString)"
+        let macIdentityPublicKey = Data("mac-public-key".utf8).base64EncodedString()
+
+        SecureStore.writeString(bridgeId, for: CodexSecureKeys.pairingBridgeId)
+        SecureStore.writeCodable(
+            [CodexTransportCandidate(kind: "local_ipv4", url: "ws://192.168.0.10:8765/bridge/test", label: "Home")],
+            for: CodexSecureKeys.pairingTransportCandidates
+        )
+        SecureStore.writeString(macDeviceId, for: CodexSecureKeys.pairingMacDeviceId)
+        SecureStore.writeString(macIdentityPublicKey, for: CodexSecureKeys.pairingMacIdentityPublicKey)
+        defer {
+            SecureStore.deleteValue(for: CodexSecureKeys.pairingRecords)
+            SecureStore.deleteValue(for: CodexSecureKeys.pairingActiveMacDeviceId)
+            SecureStore.deleteValue(for: CodexSecureKeys.pairingBridgeId)
+            SecureStore.deleteValue(for: CodexSecureKeys.pairingTransportCandidates)
+            SecureStore.deleteValue(for: CodexSecureKeys.pairingMacDeviceId)
+            SecureStore.deleteValue(for: CodexSecureKeys.pairingMacIdentityPublicKey)
+        }
+
+        let service = makeService()
+
+        XCTAssertEqual(service.savedBridgePairings.count, 1)
+        XCTAssertEqual(service.activeSavedBridgePairing?.macDeviceId, macDeviceId)
+        XCTAssertEqual(service.pairedBridgeId, bridgeId)
+        XCTAssertEqual(
+            SecureStore.readCodable([CodexBridgePairingRecord].self, for: CodexSecureKeys.pairingRecords)?.count,
+            1
+        )
+        XCTAssertEqual(
+            SecureStore.readString(for: CodexSecureKeys.pairingActiveMacDeviceId),
+            macDeviceId
+        )
+    }
+
+    func testRememberBridgePairingStoresMultipleMacsAndAllowsSwitchingActiveMac() {
+        let service = makeService()
+        let homePayload = makePairingPayload(macDeviceId: "mac-home", bridgeSuffix: "home", host: "192.168.0.10")
+        let workPayload = makePairingPayload(macDeviceId: "mac-work", bridgeSuffix: "work", host: "192.168.0.20")
+        defer {
+            SecureStore.deleteValue(for: CodexSecureKeys.pairingRecords)
+            SecureStore.deleteValue(for: CodexSecureKeys.pairingActiveMacDeviceId)
+            SecureStore.deleteValue(for: CodexSecureKeys.pairingBridgeId)
+            SecureStore.deleteValue(for: CodexSecureKeys.pairingTransportCandidates)
+            SecureStore.deleteValue(for: CodexSecureKeys.pairingPreferredTransportURL)
+            SecureStore.deleteValue(for: CodexSecureKeys.pairingLastSuccessfulTransportURL)
+            SecureStore.deleteValue(for: CodexSecureKeys.pairingMacDeviceId)
+            SecureStore.deleteValue(for: CodexSecureKeys.pairingMacIdentityPublicKey)
+            SecureStore.deleteValue(for: CodexSecureKeys.secureProtocolVersion)
+            SecureStore.deleteValue(for: CodexSecureKeys.secureLastAppliedBridgeOutboundSeq)
+            SecureStore.deleteValue(for: CodexSecureKeys.trustedMacRegistry)
+        }
+
+        service.rememberBridgePairing(homePayload)
+        service.rememberBridgePairing(workPayload)
+
+        XCTAssertEqual(service.savedBridgePairings.count, 2)
+        XCTAssertEqual(service.activeSavedBridgePairing?.macDeviceId, workPayload.macDeviceId)
+        XCTAssertTrue(service.setActiveSavedBridgePairing(macDeviceId: homePayload.macDeviceId))
+        XCTAssertEqual(service.activeSavedBridgePairing?.macDeviceId, homePayload.macDeviceId)
+        XCTAssertEqual(service.pairedBridgeId, homePayload.bridgeId)
+        XCTAssertEqual(
+            SecureStore.readString(for: CodexSecureKeys.pairingActiveMacDeviceId),
+            homePayload.macDeviceId
+        )
+    }
+
+    func testRemovingActivePairingFallsBackToAnotherSavedMac() {
+        let service = makeService()
+        let homePayload = makePairingPayload(macDeviceId: "mac-home", bridgeSuffix: "home", host: "192.168.0.10")
+        let workPayload = makePairingPayload(macDeviceId: "mac-work", bridgeSuffix: "work", host: "192.168.0.20")
+        defer {
+            SecureStore.deleteValue(for: CodexSecureKeys.pairingRecords)
+            SecureStore.deleteValue(for: CodexSecureKeys.pairingActiveMacDeviceId)
+            SecureStore.deleteValue(for: CodexSecureKeys.pairingBridgeId)
+            SecureStore.deleteValue(for: CodexSecureKeys.pairingTransportCandidates)
+            SecureStore.deleteValue(for: CodexSecureKeys.pairingPreferredTransportURL)
+            SecureStore.deleteValue(for: CodexSecureKeys.pairingLastSuccessfulTransportURL)
+            SecureStore.deleteValue(for: CodexSecureKeys.pairingMacDeviceId)
+            SecureStore.deleteValue(for: CodexSecureKeys.pairingMacIdentityPublicKey)
+            SecureStore.deleteValue(for: CodexSecureKeys.secureProtocolVersion)
+            SecureStore.deleteValue(for: CodexSecureKeys.secureLastAppliedBridgeOutboundSeq)
+            SecureStore.deleteValue(for: CodexSecureKeys.trustedMacRegistry)
+        }
+
+        service.rememberBridgePairing(homePayload)
+        service.rememberBridgePairing(workPayload)
+
+        service.removeSavedBridgePairing(macDeviceId: workPayload.macDeviceId)
+
+        XCTAssertEqual(service.savedBridgePairings.count, 1)
+        XCTAssertEqual(service.activeSavedBridgePairing?.macDeviceId, homePayload.macDeviceId)
+        XCTAssertEqual(service.pairedBridgeId, homePayload.bridgeId)
+        XCTAssertTrue(service.hasSavedBridgePairing)
+    }
+
     func testRecoverableTimeoutMapsToFriendlyFailureMessage() {
         let service = makeService()
 
@@ -827,6 +924,27 @@ final class CodexServiceIncomingRunIndicatorTests: XCTestCase {
         }
 
         body()
+    }
+
+    private func makePairingPayload(
+        macDeviceId: String,
+        bridgeSuffix: String,
+        host: String
+    ) -> CodexPairingQRPayload {
+        CodexPairingQRPayload(
+            v: codexPairingQRVersion,
+            bridgeId: "bridge-\(bridgeSuffix)",
+            macDeviceId: macDeviceId,
+            macIdentityPublicKey: Data("mac-public-key-\(bridgeSuffix)".utf8).base64EncodedString(),
+            transportCandidates: [
+                CodexTransportCandidate(
+                    kind: "local_ipv4",
+                    url: "ws://\(host):8765/bridge/\(bridgeSuffix)",
+                    label: host
+                )
+            ],
+            expiresAt: Int64(Date().addingTimeInterval(300).timeIntervalSince1970 * 1000)
+        )
     }
 
     private func flushAsyncSideEffects() async {

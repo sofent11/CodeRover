@@ -249,22 +249,22 @@ extension CodexService {
         // trust even if the bridge forgot the phone across resets or earlier persistence bugs.
         trustedMacRegistry.records.removeValue(forKey: payload.macDeviceId)
         SecureStore.writeCodable(trustedMacRegistry, for: CodexSecureKeys.trustedMacRegistry)
-        SecureStore.writeString(payload.bridgeId, for: CodexSecureKeys.pairingBridgeId)
-        SecureStore.writeCodable(payload.transportCandidates, for: CodexSecureKeys.pairingTransportCandidates)
-        SecureStore.deleteValue(for: CodexSecureKeys.pairingPreferredTransportURL)
-        SecureStore.deleteValue(for: CodexSecureKeys.pairingLastSuccessfulTransportURL)
-        SecureStore.writeString(payload.macDeviceId, for: CodexSecureKeys.pairingMacDeviceId)
-        SecureStore.writeString(payload.macIdentityPublicKey, for: CodexSecureKeys.pairingMacIdentityPublicKey)
-        SecureStore.writeString(String(codexSecureProtocolVersion), for: CodexSecureKeys.secureProtocolVersion)
-        SecureStore.writeString("0", for: CodexSecureKeys.secureLastAppliedBridgeOutboundSeq)
-        pairedBridgeId = payload.bridgeId
-        pairedTransportCandidates = payload.transportCandidates
-        preferredTransportURL = nil
-        lastSuccessfulTransportURL = nil
-        pairedMacDeviceId = payload.macDeviceId
-        pairedMacIdentityPublicKey = payload.macIdentityPublicKey
-        secureProtocolVersion = codexSecureProtocolVersion
-        lastAppliedBridgeOutboundSeq = 0
+        let pairingRecord = CodexBridgePairingRecord(
+            bridgeId: payload.bridgeId,
+            macDeviceId: payload.macDeviceId,
+            macIdentityPublicKey: payload.macIdentityPublicKey,
+            transportCandidates: CodexService.normalizeTransportCandidates(payload.transportCandidates),
+            preferredTransportURL: nil,
+            lastSuccessfulTransportURL: nil,
+            secureProtocolVersion: codexSecureProtocolVersion,
+            lastAppliedBridgeOutboundSeq: 0,
+            lastPairedAt: .now
+        )
+        savedBridgePairings.removeAll { $0.macDeviceId == pairingRecord.macDeviceId }
+        savedBridgePairings.append(pairingRecord)
+        activePairingMacDeviceId = pairingRecord.macDeviceId
+        applyResolvedActiveSavedBridgePairing()
+        persistSavedBridgePairings()
         secureConnectionState = .handshaking
         secureMacFingerprint = codexSecureFingerprint(for: payload.macIdentityPublicKey)
     }
@@ -283,17 +283,7 @@ extension CodexService {
             }
         }
 
-        if let pairedMacDeviceId,
-           let trustedMac = trustedMacRegistry.records[pairedMacDeviceId] {
-            secureConnectionState = .trustedMac
-            secureMacFingerprint = codexSecureFingerprint(for: trustedMac.macIdentityPublicKey)
-        } else if normalizedBridgeId != nil {
-            secureConnectionState = .notPaired
-            secureMacFingerprint = nil
-        } else {
-            secureConnectionState = .notPaired
-            secureMacFingerprint = nil
-        }
+        updateSecureConnectionStateForSelectedPairing()
     }
 }
 
@@ -433,10 +423,9 @@ private extension CodexService {
                     return
                 }
                 lastAppliedBridgeOutboundSeq = bridgeOutboundSeq
-                SecureStore.writeString(
-                    String(bridgeOutboundSeq),
-                    for: CodexSecureKeys.secureLastAppliedBridgeOutboundSeq
-                )
+                updateActiveSavedBridgePairing { pairing in
+                    pairing.lastAppliedBridgeOutboundSeq = bridgeOutboundSeq
+                }
             }
 
             lastRawMessage = payload.payloadText

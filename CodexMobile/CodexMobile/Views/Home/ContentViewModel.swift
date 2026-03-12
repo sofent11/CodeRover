@@ -112,6 +112,58 @@ final class ContentViewModel {
         await stopForegroundAutoReconnect(codex: codex, clearLastErrorMessage: false)
     }
 
+    func switchSavedBridgePairing(
+        macDeviceId: String,
+        codex: CodexService
+    ) async {
+        let wasConnected = codex.isConnected
+        await stopAutoReconnectForSettings(codex: codex)
+        guard codex.setActiveSavedBridgePairing(macDeviceId: macDeviceId) else {
+            return
+        }
+
+        guard wasConnected else {
+            codex.lastErrorMessage = nil
+            return
+        }
+
+        do {
+            try await connectUsingSavedPairing(codex: codex, performAutoRetry: true)
+        } catch {
+            if codex.lastErrorMessage?.isEmpty ?? true {
+                codex.lastErrorMessage = codex.userFacingConnectFailureMessage(error)
+            }
+        }
+    }
+
+    func removeSavedBridgePairing(
+        macDeviceId: String,
+        codex: CodexService
+    ) async {
+        let wasConnected = codex.isConnected
+        let wasActivePairing = codex.activeSavedBridgePairing?.macDeviceId == macDeviceId
+        await stopAutoReconnectForSettings(codex: codex)
+
+        if wasConnected && wasActivePairing {
+            await codex.disconnect()
+        }
+
+        codex.removeSavedBridgePairing(macDeviceId: macDeviceId)
+        codex.lastErrorMessage = nil
+
+        guard wasConnected && codex.hasSavedBridgePairing else {
+            return
+        }
+
+        do {
+            try await connectUsingSavedPairing(codex: codex, performAutoRetry: true)
+        } catch {
+            if codex.lastErrorMessage?.isEmpty ?? true {
+                codex.lastErrorMessage = codex.userFacingConnectFailureMessage(error)
+            }
+        }
+    }
+
     // Attempts one automatic connection on app launch using the saved bridge pairing.
     func attemptAutoConnectOnLaunchIfNeeded(codex: CodexService) async {
         guard !hasAttemptedInitialAutoConnect else {
