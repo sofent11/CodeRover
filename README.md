@@ -9,13 +9,15 @@
 
 Control [Codex](https://openai.com/index/codex/) from your iPhone. Remodex is a local-first open-source bridge + iOS app that keeps the Codex runtime on your Mac and lets your phone connect through a paired encrypted channel over your LAN or tailnet.
 
+It's fork from https://github.com/Emanuele-web04/remodex ,thanks to their original greate work
+
 > **I am very early in this project. Expect bugs.**
 >
 > I am not actively accepting contributions yet. If you still want to help, read [CONTRIBUTING.md](CONTRIBUTING.md) first.
 
 ## Get the App
 
-Install the Remodex app from [TestFlight](https://testflight.apple.com/join/PKZhBUVM) before you run `remodex up`.
+Build you self.
 
 Once the app is installed, onboarding inside Remodex walks you through pairing and scanning the QR from inside the app.
 
