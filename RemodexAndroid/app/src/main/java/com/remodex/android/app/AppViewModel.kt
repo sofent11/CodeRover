@@ -34,9 +34,21 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun selectPairing(macDeviceId: String) = repository.selectPairing(macDeviceId)
 
+    fun setPreferredTransport(macDeviceId: String, url: String) = repository.setPreferredTransport(macDeviceId, url)
+
     fun selectThread(threadId: String) = repository.selectThread(threadId)
 
     fun createThread(preferredProjectPath: String? = null) = repository.createThread(preferredProjectPath)
+
+    fun deleteThread(threadId: String) = repository.deleteThread(threadId)
+
+    fun archiveThread(threadId: String) = repository.archiveThread(threadId)
+
+    fun unarchiveThread(threadId: String) = repository.unarchiveThread(threadId)
+
+    fun renameThread(threadId: String, name: String) = repository.renameThread(threadId, name)
+
+    fun removeQueuedDraft(threadId: String, draftId: String) = repository.removeQueuedDraft(threadId, draftId)
 
     fun sendMessage(text: String, usePlanMode: Boolean = false) = repository.sendMessage(text, usePlanMode)
 
@@ -46,4 +58,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun respondToStructuredUserInput(requestId: JsonElement, answersByQuestionId: Map<String, String>) =
         repository.respondToStructuredUserInput(requestId, answersByQuestionId)
+
+    suspend fun fuzzyFileSearch(query: String, threadId: String) = repository.fuzzyFileSearch(query, threadId)
+
+    suspend fun listSkills() = repository.listSkills()
+
+    suspend fun gitStatus(cwd: String) = repository.gitStatus(cwd)
+
+    suspend fun gitCommit(cwd: String, message: String) = repository.gitCommit(cwd, message)
+
+    suspend fun performGitAction(cwd: String, action: com.remodex.android.data.model.TurnGitActionKind) = repository.performGitAction(cwd, action)
 }

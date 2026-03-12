@@ -52,6 +52,8 @@ import androidx.compose.material.icons.outlined.Menu
 import androidx.compose.material.icons.outlined.PowerSettingsNew
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -121,12 +123,18 @@ import com.remodex.android.data.model.ModelOption
 import com.remodex.android.data.model.PlanStepStatus
 import com.remodex.android.data.model.ThreadSyncState
 import com.remodex.android.ui.components.PairingScannerView
+import com.remodex.android.ui.screens.OnboardingScreen
+import com.remodex.android.ui.screens.SidebarScreen
+import com.remodex.android.ui.screens.SettingsScreen
+
 import com.remodex.android.ui.theme.Border
 import com.remodex.android.ui.theme.CommandAccent
 import com.remodex.android.ui.theme.Danger
 import com.remodex.android.ui.theme.PlanAccent
 import com.remodex.android.ui.theme.monoFamily
 import kotlinx.coroutines.launch
+import androidx.compose.animation.core.*
+import androidx.compose.ui.graphics.graphicsLayer
 
 @Composable
 fun RemodexApp(
@@ -209,14 +217,18 @@ private fun MainShell(
                 modifier = Modifier.width(330.dp),
                 drawerContainerColor = MaterialTheme.colorScheme.surface,
             ) {
-                SidebarContent(
+                SidebarScreen(
                     state = state,
-                    onCreateThread = {
+                    onCreateThread = { project ->
                         showSettings = false
                         showPairingEntry = false
-                        viewModel.createThread()
+                        viewModel.createThread(project)
                         scope.launch { drawerState.close() }
                     },
+                    onDeleteThread = viewModel::deleteThread,
+                    onArchiveThread = viewModel::archiveThread,
+                    onUnarchiveThread = viewModel::unarchiveThread,
+                    onRenameThread = viewModel::renameThread,
                     onSelectThread = { threadId ->
                         showSettings = false
                         showPairingEntry = false
@@ -324,11 +336,12 @@ private fun MainShell(
                             onApprove = { viewModel.approvePendingRequest(true) },
                             onDeny = { viewModel.approvePendingRequest(false) },
                             onSubmitStructuredInput = viewModel::respondToStructuredUserInput,
+                            viewModel = viewModel,
                         )
 
-                    MainShellContent.EMPTY -> HomeEmptyState(
+                    MainShellContent.EMPTY -> com.remodex.android.ui.screens.HomeEmptyScreen(
                         state = state,
-                        onReconnect = viewModel::connectActivePairing,
+                        onToggleConnection = { if (state.isConnected) viewModel.disconnect() else viewModel.connectActivePairing() },
                         onOpenPairing = {
                             showSettings = false
                             pairingEntryBaselinePhase = state.connectionPhase.name
@@ -338,91 +351,6 @@ private fun MainShell(
                 }
             }
         }
-        }
-    }
-}
-
-@Composable
-private fun OnboardingScreen(onContinue: () -> Unit) {
-    val scrollState = rememberScrollState()
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background),
-    ) {
-        Image(
-            painter = painterResource(R.drawable.onboarding_hero),
-            contentDescription = null,
-            contentScale = ContentScale.Crop,
-            modifier = Modifier
-                .fillMaxWidth()
-                .weight(0.45f),
-        )
-
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .weight(0.55f)
-                .padding(horizontal = 24.dp, vertical = 20.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(14.dp),
-        ) {
-            Surface(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f, fill = false),
-                shape = RoundedCornerShape(28.dp),
-                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
-                border = androidx.compose.foundation.BorderStroke(1.dp, Border),
-            ) {
-                Column(
-                    modifier = Modifier
-                        .verticalScroll(scrollState)
-                        .padding(horizontal = 20.dp, vertical = 20.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    Image(
-                        painter = painterResource(R.drawable.app_logo),
-                        contentDescription = null,
-                        modifier = Modifier
-                            .size(56.dp)
-                            .clip(RoundedCornerShape(14.dp)),
-                    )
-                    Spacer(Modifier.height(10.dp))
-                    Text("Remodex", style = MaterialTheme.typography.titleLarge)
-                    Spacer(Modifier.height(6.dp))
-                    Text(
-                        "Control Codex from your Android phone.",
-                        style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        textAlign = TextAlign.Center,
-                    )
-                    Spacer(Modifier.height(14.dp))
-                    StatusTag(
-                        text = "Local-first · End-to-end encrypted",
-                        containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.10f),
-                        contentColor = MaterialTheme.colorScheme.primary,
-                    )
-                    Spacer(Modifier.height(20.dp))
-                    OnboardingStep(number = "1", title = "Install the package", command = "npm install -g remodex")
-                    OnboardingStep(number = "2", title = "Start the bridge", command = "remodex up")
-                    OnboardingStep(
-                        number = "3",
-                        title = "Import the pairing QR payload",
-                        subtitle = "Scan or paste the latest local bridge pairing payload.",
-                    )
-                }
-            }
-            Button(
-                onClick = onContinue,
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(18.dp),
-            ) {
-                Text("Continue to Pairing")
-            }
-            TextButton(onClick = onContinue) {
-                Text("Skip Intro")
-            }
         }
     }
 }
@@ -574,379 +502,28 @@ private fun PairingEntryScreen(
     }
 }
 
-@Composable
-private fun SidebarContent(
-    state: AppState,
-    onCreateThread: () -> Unit,
-    onSelectThread: (String) -> Unit,
-    onOpenSettings: () -> Unit,
-) {
-    var query by rememberSaveable { mutableStateOf("") }
-    val filteredThreads = remember(state.threads, query) {
-        state.threads.filter { thread ->
-            query.isBlank() || thread.displayTitle.contains(query, ignoreCase = true) || thread.projectDisplayName.contains(query, ignoreCase = true)
-        }
-    }
-    val groupedThreads = remember(filteredThreads) { filteredThreads.groupBy { it.projectDisplayName } }
 
-    Column(
-        modifier = Modifier
-            .fillMaxHeight()
-            .padding(top = 12.dp),
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp)
-                .clip(RoundedCornerShape(18.dp))
-                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f))
-                .padding(horizontal = 14.dp, vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Image(
-                painter = painterResource(R.drawable.app_logo),
-                contentDescription = null,
-                modifier = Modifier
-                    .size(26.dp)
-                    .clip(RoundedCornerShape(8.dp)),
-            )
-            Spacer(Modifier.width(10.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text("Remodex", style = MaterialTheme.typography.titleMedium)
-                Text(
-                    text = if (state.isConnected) "Paired to your Mac" else "Local bridge offline",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            Box(
-                modifier = Modifier
-                    .size(8.dp)
-                    .background(
-                        if (state.isConnected) CommandAccent else MaterialTheme.colorScheme.outline,
-                        CircleShape,
-                    ),
-            )
-        }
 
-        Spacer(Modifier.height(10.dp))
 
-        OutlinedTextField(
-            value = query,
-            onValueChange = { query = it },
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp),
-            singleLine = true,
-            label = { Text("Search conversations") },
-            shape = RoundedCornerShape(14.dp),
-        )
-
-        Spacer(Modifier.height(8.dp))
-
-        FilledTonalButton(
-            onClick = onCreateThread,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp),
-            shape = RoundedCornerShape(16.dp),
-        ) {
-            Icon(Icons.Outlined.Add, contentDescription = null)
-            Spacer(Modifier.width(8.dp))
-            Text("New Chat")
-        }
-
-        Spacer(Modifier.height(12.dp))
-
-        LazyColumn(
-            modifier = Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            if (groupedThreads.isEmpty()) {
-                item("empty-search") {
-                    GlassCard(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp),
-                        cornerRadius = 18.dp,
-                    ) {
-                        Text(
-                            text = if (query.isBlank()) "No conversations yet." else "No conversations match \"$query\".",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
-            }
-            groupedThreads.forEach { (projectName, threads) ->
-                item(key = projectName) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            text = projectName.uppercase(),
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.weight(1f),
-                        )
-                        Surface(
-                            shape = RoundedCornerShape(999.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant,
-                        ) {
-                            Text(
-                                text = threads.size.toString(),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
-                            )
-                        }
-                    }
-                    Spacer(Modifier.height(6.dp))
-                }
-                items(threads, key = { it.id }) { thread ->
-                    val isSelected = state.selectedThreadId == thread.id
-                    val preview = thread.preview?.trim()?.replace('\n', ' ')?.takeIf(String::isNotEmpty)
-                    val cardColor by animateColorAsState(
-                        targetValue = if (isSelected) {
-                            MaterialTheme.colorScheme.surface
-                        } else {
-                            Color.Transparent
-                        },
-                        label = "threadCardColor",
-                    )
-                    val indicatorColor by animateColorAsState(
-                        targetValue = if (isSelected) {
-                            MaterialTheme.colorScheme.primary
-                        } else {
-                            Color.Transparent
-                        },
-                        label = "threadIndicatorColor",
-                    )
-                    val indicatorHeight by animateDpAsState(
-                        targetValue = if (isSelected) 44.dp else 28.dp,
-                        label = "threadIndicatorHeight",
-                    )
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp)
-                            .clip(RoundedCornerShape(14.dp))
-                            .background(cardColor)
-                            .border(
-                                width = if (isSelected) 1.dp else 0.dp,
-                                color = if (isSelected) Border else Color.Transparent,
-                                shape = RoundedCornerShape(14.dp),
-                            )
-                            .animateContentSize()
-                            .clickable { onSelectThread(thread.id) }
-                            .padding(horizontal = 14.dp, vertical = 12.dp),
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.Top,
-                            horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .padding(top = 4.dp)
-                                    .width(3.dp)
-                                    .height(indicatorHeight)
-                                    .clip(RoundedCornerShape(999.dp))
-                                    .background(indicatorColor),
-                            )
-                            Column(modifier = Modifier.weight(1f)) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text(
-                                        text = thread.displayTitle,
-                                        style = MaterialTheme.typography.bodyLarge.copy(
-                                            fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium,
-                                        ),
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                        modifier = Modifier.weight(1f),
-                                    )
-                                    Spacer(Modifier.width(8.dp))
-                                    relativeTimeLabel(thread.updatedAt ?: thread.createdAt)?.let { label ->
-                                        Text(
-                                            text = label,
-                                            style = MaterialTheme.typography.labelMedium,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            maxLines = 1,
-                                        )
-                                    }
-                                }
-                                Spacer(Modifier.height(4.dp))
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                ) {
-                                    Surface(
-                                        shape = RoundedCornerShape(999.dp),
-                                        color = if (isSelected) {
-                                            MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
-                                        } else {
-                                            MaterialTheme.colorScheme.surfaceVariant
-                                        },
-                                    ) {
-                                        Text(
-                                            text = thread.projectDisplayName,
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = if (isSelected) {
-                                                MaterialTheme.colorScheme.primary
-                                            } else {
-                                                MaterialTheme.colorScheme.onSurfaceVariant
-                                            },
-                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                                        )
-                                    }
-                                    if (thread.syncState != ThreadSyncState.LIVE) {
-                                        Surface(
-                                            shape = RoundedCornerShape(999.dp),
-                                            color = MaterialTheme.colorScheme.tertiary.copy(alpha = 0.12f),
-                                        ) {
-                                            Text(
-                                                text = "Archived",
-                                                style = MaterialTheme.typography.labelSmall,
-                                                color = MaterialTheme.colorScheme.tertiary,
-                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                                            )
-                                        }
-                                    }
-                                }
-                                preview?.let {
-                                    Spacer(Modifier.height(6.dp))
-                                    AnimatedContent(
-                                        targetState = isSelected,
-                                        transitionSpec = { fadeIn() togetherWith fadeOut() },
-                                        label = "threadPreviewLines",
-                                    ) { selected ->
-                                        Text(
-                                            text = it,
-                                            style = MaterialTheme.typography.labelMedium,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            maxLines = if (selected) 2 else 1,
-                                            overflow = TextOverflow.Ellipsis,
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        FilledTonalButton(
-            onClick = onOpenSettings,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            shape = RoundedCornerShape(18.dp),
-        ) {
-            Icon(Icons.Outlined.Settings, contentDescription = null)
-            Spacer(Modifier.width(8.dp))
-            Text("Settings")
-        }
-    }
-}
 
 @Composable
-private fun HomeEmptyState(
-    state: AppState,
-    onReconnect: () -> Unit,
-    onOpenPairing: () -> Unit,
-) {
-    Column(
+private fun PulsingDot(color: Color) {
+    val infiniteTransition = rememberInfiniteTransition(label = "pulsing")
+    val alpha by infiniteTransition.animateFloat(
+        initialValue = 0.4f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(800, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "alpha"
+    )
+    Box(
         modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = 24.dp),
-        verticalArrangement = Arrangement.Center,
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        Surface(
-            shape = RoundedCornerShape(30.dp),
-            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
-            border = androidx.compose.foundation.BorderStroke(1.dp, Border),
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Column(
-                modifier = Modifier.padding(horizontal = 24.dp, vertical = 28.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-                Image(
-                    painter = painterResource(R.drawable.app_logo),
-                    contentDescription = null,
-                    modifier = Modifier
-                        .size(88.dp)
-                        .clip(RoundedCornerShape(22.dp)),
-                )
-                Spacer(Modifier.height(18.dp))
-                Text(
-                    text = "Pick up where you left off",
-                    style = MaterialTheme.typography.titleLarge,
-                    textAlign = TextAlign.Center,
-                )
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    text = "Reconnect to your paired Mac to load local chats, active turns and bridge status.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    textAlign = TextAlign.Center,
-                )
-                Spacer(Modifier.height(18.dp))
-                StatusLine(state = state)
-                Spacer(Modifier.height(12.dp))
-                state.secureMacFingerprint?.let { fingerprint ->
-                    Text(
-                        text = "Trusted Mac: $fingerprint",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        textAlign = TextAlign.Center,
-                    )
-                }
-                Spacer(Modifier.height(18.dp))
-                Button(
-                    onClick = onReconnect,
-                    enabled = state.connectionPhase != ConnectionPhase.CONNECTING,
-                    shape = RoundedCornerShape(18.dp),
-                    modifier = Modifier.fillMaxWidth(0.78f),
-                ) {
-                    Text(
-                        when (state.connectionPhase) {
-                            ConnectionPhase.CONNECTING -> "Reconnecting..."
-                            ConnectionPhase.LOADING_CHATS -> "Loading chats..."
-                            ConnectionPhase.SYNCING -> "Syncing..."
-                            ConnectionPhase.CONNECTED -> "Connected"
-                            ConnectionPhase.OFFLINE -> "Reconnect"
-                        },
-                    )
-                }
-                Spacer(Modifier.height(10.dp))
-                OutlinedButton(
-                    onClick = onOpenPairing,
-                    shape = RoundedCornerShape(18.dp),
-                    modifier = Modifier.fillMaxWidth(0.78f),
-                ) {
-                    Icon(Icons.Outlined.QrCodeScanner, contentDescription = null)
-                    Spacer(Modifier.width(8.dp))
-                    Text("Scan or Import Pairing")
-                }
-                state.lastErrorMessage?.let { error ->
-                    Spacer(Modifier.height(16.dp))
-                    Text(
-                        text = error,
-                        style = MaterialTheme.typography.labelLarge,
-                        color = Danger,
-                        textAlign = TextAlign.Center,
-                    )
-                }
-            }
-        }
-    }
+            .size(8.dp)
+            .graphicsLayer(alpha = alpha)
+            .background(color, CircleShape)
+    )
 }
 
 @Composable
@@ -963,6 +540,7 @@ private fun TurnScreen(
     onApprove: () -> Unit,
     onDeny: () -> Unit,
     onSubmitStructuredInput: (kotlinx.serialization.json.JsonElement, Map<String, String>) -> Unit,
+    viewModel: AppViewModel,
 ) {
     val thread = state.selectedThread ?: return
     val messages = remember(state.messagesByThread, thread.id) {
@@ -1029,7 +607,7 @@ private fun TurnScreen(
                 state = listState,
                 modifier = Modifier.fillMaxSize(),
                 verticalArrangement = Arrangement.spacedBy(16.dp),
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 140.dp),
             ) {
                 if (messages.isEmpty()) {
                     item {
@@ -1079,7 +657,7 @@ private fun TurnScreen(
             )
         }
 
-        ComposerCard(
+        com.remodex.android.ui.components.ComposerCard(
             state = state,
             input = input,
             onInputChanged = onInputChanged,
@@ -1090,780 +668,8 @@ private fun TurnScreen(
             onSelectModel = onSelectModel,
             onSelectReasoning = onSelectReasoning,
             onSelectAccessMode = onSelectAccessMode,
+            viewModel = viewModel,
         )
-    }
-}
-
-@Composable
-private fun SettingsScreen(
-    state: AppState,
-    viewModel: AppViewModel,
-) {
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
-    ) {
-        item {
-            Surface(
-                shape = RoundedCornerShape(28.dp),
-                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
-                border = androidx.compose.foundation.BorderStroke(1.dp, Border),
-            ) {
-                Column(
-                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 20.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    Text(
-                        text = "Device Settings",
-                        style = MaterialTheme.typography.titleLarge,
-                    )
-                    Text(
-                        text = "Keep the Android client visually aligned with iOS while staying local-first: the bridge, threads and runtime all stay on your Mac.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Row(
-                        modifier = Modifier.horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        SettingsInfoPill(
-                            label = "Connection",
-                            value = statusLabel(state.connectionPhase),
-                            accent = if (state.isConnected) CommandAccent else MaterialTheme.colorScheme.outline,
-                        )
-                        SettingsInfoPill(
-                            label = "Security",
-                            value = state.secureConnectionState.statusLabel,
-                            accent = if (state.secureConnectionState == com.remodex.android.data.model.SecureConnectionState.ENCRYPTED) {
-                                CommandAccent
-                            } else {
-                                MaterialTheme.colorScheme.tertiary
-                            },
-                        )
-                        SettingsInfoPill(
-                            label = "Chats",
-                            value = state.threads.size.toString(),
-                            accent = MaterialTheme.colorScheme.primary,
-                        )
-                    }
-                }
-            }
-        }
-
-        item {
-            SettingsCard(title = "Appearance") {
-                SettingLabel("Font")
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    AppFontStyle.entries.forEach { style ->
-                        FilterChip(
-                            selected = state.fontStyle == style,
-                            onClick = { viewModel.setFontStyle(style) },
-                            label = { Text(if (style == AppFontStyle.SYSTEM) "System" else "Geist") },
-                        )
-                    }
-                }
-            }
-        }
-
-        item {
-            SettingsCard(title = "Runtime defaults") {
-                SettingLabel("Access")
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    AccessMode.entries.forEach { mode ->
-                        FilterChip(
-                            selected = state.accessMode == mode,
-                            onClick = { viewModel.setAccessMode(mode) },
-                            label = { Text(mode.displayName) },
-                        )
-                    }
-                }
-                Spacer(Modifier.height(14.dp))
-                if (state.availableModels.isNotEmpty()) {
-                    SettingLabel("Model")
-                    Row(
-                        modifier = Modifier.horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        state.availableModels.forEach { model ->
-                            AssistChip(
-                                onClick = { viewModel.setSelectedModelId(model.id) },
-                                label = { Text(model.title) },
-                                trailingIcon = if (state.selectedModelId == model.id) {
-                                    { Icon(Icons.Outlined.Check, contentDescription = null, modifier = Modifier.size(16.dp)) }
-                                } else {
-                                    null
-                                },
-                            )
-                        }
-                    }
-                }
-            }
-        }
-
-        item {
-            SettingsCard(title = "Connection") {
-                Row(
-                    modifier = Modifier.horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    SettingsInfoPill(
-                        label = "Bridge",
-                        value = statusLabel(state.connectionPhase),
-                        accent = if (state.isConnected) CommandAccent else MaterialTheme.colorScheme.outline,
-                    )
-                    SettingsInfoPill(
-                        label = "Security",
-                        value = state.secureConnectionState.statusLabel,
-                        accent = if (state.secureConnectionState == com.remodex.android.data.model.SecureConnectionState.ENCRYPTED) {
-                            CommandAccent
-                        } else {
-                            MaterialTheme.colorScheme.tertiary
-                        },
-                    )
-                }
-                state.secureMacFingerprint?.let { fingerprint ->
-                    Spacer(Modifier.height(12.dp))
-                    Text(
-                        text = "Trusted Mac: $fingerprint",
-                        style = MaterialTheme.typography.bodyMedium.copy(fontFamily = monoFamily),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                Spacer(Modifier.height(14.dp))
-                state.pairings.forEach { pairing ->
-                    val isActive = pairing.macDeviceId == state.activePairingMacDeviceId
-                    Surface(
-                        shape = RoundedCornerShape(20.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.42f),
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 14.dp),
-                            verticalArrangement = Arrangement.spacedBy(10.dp),
-                        ) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            ) {
-                                Text(
-                                    text = pairing.transportCandidates.firstOrNull()?.label ?: pairing.macDeviceId,
-                                    fontWeight = FontWeight.SemiBold,
-                                    modifier = Modifier.weight(1f),
-                                )
-                                if (isActive) {
-                                    StatusTag(
-                                        text = "Active",
-                                        containerColor = CommandAccent.copy(alpha = 0.12f),
-                                        contentColor = CommandAccent,
-                                    )
-                                }
-                            }
-                            Text(
-                                text = "${pairing.transportCandidates.size} saved transport(s)",
-                                style = MaterialTheme.typography.labelLarge,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                if (!isActive) {
-                                    OutlinedButton(onClick = { viewModel.selectPairing(pairing.macDeviceId) }) {
-                                        Text("Use This Mac")
-                                    }
-                                }
-                                TextButton(onClick = { viewModel.removePairing(pairing.macDeviceId) }) {
-                                    Text("Remove", color = Danger)
-                                }
-                            }
-                        }
-                    }
-                    Spacer(Modifier.height(10.dp))
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = viewModel::connectActivePairing) {
-                        Icon(Icons.Outlined.Refresh, contentDescription = null)
-                        Spacer(Modifier.width(8.dp))
-                        Text("Reconnect")
-                    }
-                    OutlinedButton(onClick = viewModel::disconnect) {
-                        Icon(Icons.Outlined.PowerSettingsNew, contentDescription = null)
-                        Spacer(Modifier.width(8.dp))
-                        Text("Disconnect")
-                    }
-                }
-            }
-        }
-
-        item {
-            SettingsCard(title = "Pair Another Mac") {
-                Text(
-                    text = "Import another local bridge pairing payload to switch between Macs without leaving Android.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(Modifier.height(14.dp))
-                OutlinedTextField(
-                    value = state.importText,
-                    onValueChange = viewModel::updateImportText,
-                    modifier = Modifier.fillMaxWidth(),
-                    minLines = 5,
-                    label = { Text("Paste pairing payload") },
-                    shape = RoundedCornerShape(18.dp),
-                )
-                Spacer(Modifier.height(12.dp))
-                Button(
-                    onClick = { viewModel.importPairingPayload(state.importText) },
-                    shape = RoundedCornerShape(16.dp),
-                ) {
-                    Text("Import Pairing")
-                }
-            }
-        }
-
-        item {
-            SettingsCard(title = "About") {
-                Text(
-                    text = "Android 首版保持 Remodex 的 local-first 架构：所有线程、git 和 Codex runtime 仍然运行在你的 Mac 上。",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(Modifier.height(12.dp))
-                Row(
-                    modifier = Modifier.horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    SettingsInfoPill(
-                        label = "Runtime",
-                        value = "Mac-hosted",
-                        accent = MaterialTheme.colorScheme.primary,
-                    )
-                    SettingsInfoPill(
-                        label = "Bridge",
-                        value = "Local",
-                        accent = CommandAccent,
-                    )
-                    SettingsInfoPill(
-                        label = "Transport",
-                        value = "QR pairing",
-                        accent = MaterialTheme.colorScheme.tertiary,
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun SettingsInfoPill(
-    label: String,
-    value: String,
-    accent: Color,
-) {
-    Surface(
-        shape = RoundedCornerShape(999.dp),
-        color = accent.copy(alpha = 0.12f),
-    ) {
-        Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)) {
-            Text(
-                text = label.uppercase(),
-                style = MaterialTheme.typography.labelSmall,
-                color = accent,
-            )
-            Spacer(Modifier.height(2.dp))
-            Text(
-                text = value,
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurface,
-            )
-        }
-    }
-}
-
-@Composable
-private fun SettingsCard(
-    title: String,
-    content: @Composable () -> Unit,
-) {
-    Column {
-        Text(
-            text = title.uppercase(),
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(horizontal = 4.dp),
-        )
-        Spacer(Modifier.height(8.dp))
-        Surface(
-            shape = RoundedCornerShape(24.dp),
-            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
-            border = androidx.compose.foundation.BorderStroke(1.dp, Border),
-        ) {
-            Column(
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 16.dp),
-                verticalArrangement = Arrangement.spacedBy(2.dp),
-            ) {
-                content()
-            }
-        }
-    }
-}
-
-@Composable
-private fun SettingLabel(text: String) {
-    Text(
-        text = text.uppercase(),
-        style = MaterialTheme.typography.labelMedium,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-    )
-    Spacer(Modifier.height(8.dp))
-}
-
-@Composable
-private fun ComposerCard(
-    state: AppState,
-    input: String,
-    onInputChanged: (String) -> Unit,
-    isRunning: Boolean,
-    onSend: (Boolean) -> Unit,
-    onStop: () -> Unit,
-    onReconnect: () -> Unit,
-    onSelectModel: (String?) -> Unit,
-    onSelectReasoning: (String?) -> Unit,
-    onSelectAccessMode: (AccessMode) -> Unit,
-) {
-    var isPlanModeArmed by rememberSaveable(state.selectedThreadId) { mutableStateOf(false) }
-    var plusMenuExpanded by remember { mutableStateOf(false) }
-    var modelMenuExpanded by remember { mutableStateOf(false) }
-    var reasoningMenuExpanded by remember { mutableStateOf(false) }
-    var accessMenuExpanded by remember { mutableStateOf(false) }
-    val selectedModel = remember(state.availableModels, state.selectedModelId) {
-        resolveSelectedModelOption(state)
-    }
-    val orderedModels = remember(state.availableModels) { orderedComposerModels(state.availableModels) }
-    val reasoningOptions = remember(selectedModel) {
-        selectedModel?.supportedReasoningEfforts
-            ?.map(::composerReasoningTitle)
-            .orEmpty()
-    }
-    val selectedModelTitle = remember(selectedModel) {
-        selectedModel?.let(::composerModelTitle) ?: "Model"
-    }
-    val selectedReasoningTitle = remember(selectedModel, state.selectedReasoningEffort) {
-        selectedModel?.let {
-            state.selectedReasoningEffort
-                ?.takeIf { effort -> it.supportedReasoningEfforts.contains(effort) }
-                ?.let(::composerReasoningTitle)
-                ?: it.defaultReasoningEffort?.let(::composerReasoningTitle)
-                ?: it.supportedReasoningEfforts.firstOrNull()?.let(::composerReasoningTitle)
-        } ?: "Reasoning"
-    }
-    val sendEnabled = input.isNotBlank() && state.isConnected && !isRunning
-
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        AnimatedVisibility(visible = !state.isConnected) {
-            GlassCard(
-                modifier = Modifier.fillMaxWidth(),
-                cornerRadius = 22.dp,
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(
-                        verticalArrangement = Arrangement.spacedBy(2.dp),
-                    ) {
-                        Text("Disconnected", style = MaterialTheme.typography.labelLarge)
-                        Text(
-                            text = composerConnectionMessage(state),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    if (state.activePairing != null) {
-                        TextButton(onClick = onReconnect) {
-                            Text(
-                                text = if (state.connectionPhase == ConnectionPhase.CONNECTING) {
-                                    "Reconnecting..."
-                                } else {
-                                    "Reconnect"
-                                },
-                            )
-                        }
-                    }
-                }
-            }
-        }
-
-        GlassCard(
-            modifier = Modifier.fillMaxWidth(),
-            cornerRadius = 28.dp,
-        ) {
-            Column(
-                modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(0.dp),
-            ) {
-                AnimatedVisibility(visible = isPlanModeArmed) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 12.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        StatusTag(
-                            text = "Plan mode",
-                            containerColor = PlanAccent.copy(alpha = 0.14f),
-                            contentColor = PlanAccent,
-                        )
-                        Text(
-                            text = "Codex will respond with a structured plan before execution.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
-
-                Surface(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 12.dp)
-                        .padding(top = if (isPlanModeArmed) 0.dp else 12.dp, bottom = 8.dp),
-                    shape = RoundedCornerShape(24.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.34f),
-                ) {
-                    OutlinedTextField(
-                        value = input,
-                        onValueChange = onInputChanged,
-                        modifier = Modifier.fillMaxWidth(),
-                        placeholder = { Text("Ask for follow-up changes") },
-                        shape = RoundedCornerShape(24.dp),
-                        keyboardOptions = KeyboardOptions(
-                            imeAction = ImeAction.Send,
-                            capitalization = KeyboardCapitalization.Sentences,
-                        ),
-                        keyboardActions = KeyboardActions(onSend = { if (sendEnabled) onSend(isPlanModeArmed) }),
-                        minLines = 3,
-                        maxLines = 8,
-                    )
-                }
-
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 14.dp, vertical = 10.dp),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Box {
-                        IconButton(
-                            onClick = { plusMenuExpanded = true },
-                            enabled = !isRunning,
-                            modifier = Modifier.size(28.dp),
-                        ) {
-                            Icon(Icons.Outlined.Add, contentDescription = "Composer options")
-                        }
-                        DropdownMenu(
-                            expanded = plusMenuExpanded,
-                            onDismissRequest = { plusMenuExpanded = false },
-                        ) {
-                            DropdownMenuItem(
-                                text = { Text(if (isPlanModeArmed) "Disable Plan Mode" else "Enable Plan Mode") },
-                                leadingIcon = {
-                                    if (isPlanModeArmed) {
-                                        Icon(Icons.Outlined.Check, contentDescription = null)
-                                    }
-                                },
-                                onClick = {
-                                    isPlanModeArmed = !isPlanModeArmed
-                                    plusMenuExpanded = false
-                                },
-                            )
-                        }
-                    }
-
-                    Box {
-                        ComposerMetaButton(
-                            title = selectedModelTitle,
-                            enabled = orderedModels.isNotEmpty() && !isRunning,
-                            onClick = { modelMenuExpanded = true },
-                        )
-                        DropdownMenu(
-                            expanded = modelMenuExpanded,
-                            onDismissRequest = { modelMenuExpanded = false },
-                        ) {
-                            if (orderedModels.isEmpty()) {
-                                DropdownMenuItem(
-                                    text = { Text("No models available") },
-                                    onClick = { modelMenuExpanded = false },
-                                )
-                            } else {
-                                orderedModels.forEach { model ->
-                                    DropdownMenuItem(
-                                        text = { Text(composerModelTitle(model)) },
-                                        leadingIcon = if (selectedModel?.id == model.id) {
-                                            { Icon(Icons.Outlined.Check, contentDescription = null) }
-                                        } else {
-                                            null
-                                        },
-                                        onClick = {
-                                            onSelectModel(model.id)
-                                            modelMenuExpanded = false
-                                        },
-                                    )
-                                }
-                            }
-                        }
-                    }
-
-                    Box {
-                        ComposerMetaButton(
-                            title = selectedReasoningTitle,
-                            enabled = reasoningOptions.isNotEmpty() && !isRunning,
-                            onClick = { reasoningMenuExpanded = true },
-                        )
-                        DropdownMenu(
-                            expanded = reasoningMenuExpanded,
-                            onDismissRequest = { reasoningMenuExpanded = false },
-                        ) {
-                            if (selectedModel == null || selectedModel.supportedReasoningEfforts.isEmpty()) {
-                                DropdownMenuItem(
-                                    text = { Text("No reasoning options") },
-                                    onClick = { reasoningMenuExpanded = false },
-                                )
-                            } else {
-                                selectedModel.supportedReasoningEfforts.forEach { effort ->
-                                    DropdownMenuItem(
-                                        text = { Text(composerReasoningTitle(effort)) },
-                                        leadingIcon = if (state.selectedReasoningEffort == effort) {
-                                            { Icon(Icons.Outlined.Check, contentDescription = null) }
-                                        } else {
-                                            null
-                                        },
-                                        onClick = {
-                                            onSelectReasoning(effort)
-                                            reasoningMenuExpanded = false
-                                        },
-                                    )
-                                }
-                            }
-                        }
-                    }
-
-                    if (isPlanModeArmed) {
-                        StatusTag(
-                            text = "Plan",
-                            containerColor = PlanAccent.copy(alpha = 0.12f),
-                            contentColor = PlanAccent,
-                        )
-                    }
-
-                    Spacer(Modifier.weight(1f))
-
-                    if (isRunning) {
-                        IconButton(
-                            onClick = onStop,
-                            modifier = Modifier
-                                .size(34.dp)
-                                .background(MaterialTheme.colorScheme.onSurface, CircleShape),
-                        ) {
-                            Icon(
-                                Icons.Outlined.Close,
-                                contentDescription = "Stop",
-                                tint = MaterialTheme.colorScheme.surface,
-                            )
-                        }
-                    } else {
-                        IconButton(
-                            onClick = { onSend(isPlanModeArmed) },
-                            enabled = sendEnabled,
-                            modifier = Modifier
-                                .size(34.dp)
-                                .background(
-                                    if (sendEnabled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.surfaceVariant,
-                                    CircleShape,
-                                ),
-                        ) {
-                            Icon(
-                                Icons.AutoMirrored.Outlined.Send,
-                                contentDescription = "Send",
-                                tint = if (sendEnabled) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                    }
-                }
-            }
-        }
-
-        Surface(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(999.dp),
-            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f),
-            border = androidx.compose.foundation.BorderStroke(1.dp, Border.copy(alpha = 0.8f)),
-        ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState())
-                    .padding(horizontal = 16.dp, vertical = 10.dp),
-                horizontalArrangement = Arrangement.spacedBy(14.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Box {
-                    ComposerSecondaryChip(
-                        label = "Access",
-                        value = state.accessMode.displayName,
-                        onClick = { accessMenuExpanded = true },
-                    )
-                    DropdownMenu(
-                        expanded = accessMenuExpanded,
-                        onDismissRequest = { accessMenuExpanded = false },
-                    ) {
-                        AccessMode.entries.forEach { mode ->
-                            DropdownMenuItem(
-                                text = { Text(mode.displayName) },
-                                leadingIcon = if (state.accessMode == mode) {
-                                    { Icon(Icons.Outlined.Check, contentDescription = null) }
-                                } else {
-                                    null
-                                },
-                                onClick = {
-                                    onSelectAccessMode(mode)
-                                    accessMenuExpanded = false
-                                },
-                            )
-                        }
-                    }
-                }
-                state.selectedThread?.projectDisplayName?.let { projectName ->
-                    ComposerStaticChip(
-                        label = "Project",
-                        value = projectName,
-                    )
-                }
-                state.selectedThread?.cwd?.takeIf(String::isNotBlank)?.let { cwd ->
-                    ComposerStaticChip(
-                        label = "cwd",
-                        value = cwd,
-                    )
-                }
-                ComposerStaticChip(
-                    label = "Security",
-                    value = state.secureConnectionState.statusLabel,
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun ComposerMetaButton(
-    title: String,
-    enabled: Boolean,
-    onClick: () -> Unit,
-) {
-    TextButton(onClick = onClick, enabled = enabled) {
-        Text(
-            text = title,
-            style = MaterialTheme.typography.labelLarge,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-    }
-}
-
-@Composable
-private fun ComposerSecondaryChip(
-    label: String,
-    value: String,
-    onClick: () -> Unit,
-) {
-    TextButton(onClick = onClick, shape = RoundedCornerShape(999.dp)) {
-        Text(
-            text = "$label: $value",
-            style = MaterialTheme.typography.labelMedium,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-    }
-}
-
-@Composable
-private fun ComposerStaticChip(
-    label: String,
-    value: String,
-) {
-    Surface(
-        shape = RoundedCornerShape(999.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.46f),
-    ) {
-        Text(
-            text = "$label: $value",
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-        )
-    }
-}
-
-private fun resolveSelectedModelOption(state: AppState): ModelOption? {
-    return state.availableModels.firstOrNull {
-        it.id == state.selectedModelId || it.model == state.selectedModelId
-    } ?: state.availableModels.firstOrNull { it.isDefault }
-        ?: state.availableModels.firstOrNull()
-}
-
-private fun orderedComposerModels(models: List<ModelOption>): List<ModelOption> {
-    val preferredOrder = listOf(
-        "gpt-5.1-codex-mini",
-        "gpt-5.2",
-        "gpt-5.1-codex-max",
-        "gpt-5.2-codex",
-        "gpt-5.3-codex",
-    )
-    val ranks = preferredOrder.withIndex().associate { (index, model) -> model to index }
-    return models.sortedWith(
-        compareBy<ModelOption> { ranks[it.model.lowercase()] ?: Int.MAX_VALUE }
-            .thenByDescending { composerModelTitle(it) },
-    )
-}
-
-private fun composerModelTitle(model: ModelOption): String {
-    return when (model.model.lowercase()) {
-        "gpt-5.3-codex" -> "GPT-5.3-Codex"
-        "gpt-5.2-codex" -> "GPT-5.2-Codex"
-        "gpt-5.1-codex-max" -> "GPT-5.1-Codex-Max"
-        "gpt-5.4" -> "GPT-5.4"
-        "gpt-5.2" -> "GPT-5.2"
-        "gpt-5.1-codex-mini" -> "GPT-5.1-Codex-Mini"
-        else -> model.title
-    }
-}
-
-private fun composerReasoningTitle(effort: String): String {
-    return when (effort.trim().lowercase()) {
-        "minimal", "low" -> "Low"
-        "medium" -> "Medium"
-        "high" -> "High"
-        "xhigh", "extra_high", "extra-high", "very_high", "very-high" -> "Extra High"
-        else -> effort.split('_', '-').joinToString(" ") { token ->
-            token.replaceFirstChar { character -> character.titlecase() }
-        }
-    }
-}
-
-private fun composerConnectionMessage(state: AppState): String {
-    return when (state.connectionPhase) {
-        ConnectionPhase.CONNECTING -> "Re-establishing the local bridge session."
-        ConnectionPhase.LOADING_CHATS -> "Connected securely. Loading conversation history."
-        ConnectionPhase.SYNCING -> "Syncing recent thread state from your Mac."
-        ConnectionPhase.CONNECTED -> "Connected to your paired Mac."
-        ConnectionPhase.OFFLINE -> "Reconnect to the paired bridge before sending."
     }
 }
 
@@ -1879,10 +685,10 @@ private fun TurnMessageBubble(
             ConversationBubble(
                 message = message,
                 alignment = Alignment.CenterEnd,
-                background = MaterialTheme.colorScheme.primary,
+                background = MaterialTheme.colorScheme.primary.copy(alpha = 0.95f),
                 contentColor = MaterialTheme.colorScheme.onPrimary,
                 fillFraction = if (grouped) 1f else 0.86f,
-                shape = RoundedCornerShape(24.dp),
+                shape = RoundedCornerShape(22.dp, 22.dp, 4.dp, 22.dp),
             )
         }
 
@@ -1890,11 +696,11 @@ private fun TurnMessageBubble(
             ConversationBubble(
                 message = message,
                 alignment = Alignment.CenterStart,
-                background = MaterialTheme.colorScheme.surface,
+                background = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f),
                 contentColor = MaterialTheme.colorScheme.onSurface,
                 fillFraction = if (grouped) 1f else 0.92f,
                 shape = RoundedCornerShape(20.dp),
-                tonalElevation = 1.dp,
+                tonalElevation = 0.dp,
                 replyPresentation = replyPresentation,
             )
         }
@@ -1946,7 +752,7 @@ private fun ConversationBubble(
                 .fillMaxWidth(fillFraction)
                 .animateContentSize(),
         ) {
-            Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) {
+            Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
                 replyPresentation?.let { presentation ->
                     StatusTag(
                         text = if (presentation == ReplyPresentation.FINAL) "Final" else "Draft",
@@ -1972,14 +778,6 @@ private fun ConversationBubble(
                     Text(
                         text = message.text,
                         style = MaterialTheme.typography.bodyLarge,
-                    )
-                }
-                if (message.isStreaming) {
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        text = "Streaming…",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = contentColor.copy(alpha = 0.6f),
                     )
                 }
             }
@@ -2010,23 +808,20 @@ private fun SystemMessageCard(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .size(8.dp)
-                            .background(accent, CircleShape),
-                    )
+                    if (message.isStreaming) {
+                        PulsingDot(color = accent)
+                    } else {
+                        Box(
+                            modifier = Modifier
+                                .size(8.dp)
+                                .background(accent, CircleShape),
+                        )
+                    }
                     Text(
                         text = systemMessageTitle(message.kind),
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    if (message.isStreaming) {
-                        StatusTag(
-                            text = "LIVE",
-                            containerColor = accent.copy(alpha = 0.14f),
-                            contentColor = accent,
-                        )
-                    }
                 }
                 Spacer(Modifier.height(12.dp))
                 when (message.kind) {
@@ -2041,6 +836,7 @@ private fun SystemMessageCard(
         }
     }
 }
+
 
 @Composable
 private fun TurnSectionCard(
@@ -2693,7 +1489,7 @@ private fun DefaultSystemMessageContent(message: ChatMessage) {
 }
 
 @Composable
-private fun StatusTag(
+internal fun StatusTag(
     text: String,
     containerColor: Color,
     contentColor: Color,
@@ -2750,6 +1546,9 @@ private fun DiffDetailDialog(
     fallbackBody: String,
     onDismiss: () -> Unit,
 ) {
+    var expandedFileIds by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(emptySet<String>()) }
+    val allExpanded = files.isNotEmpty() && files.all { expandedFileIds.contains(it.path) }
+
     Dialog(onDismissRequest = onDismiss) {
         Surface(
             shape = RoundedCornerShape(28.dp),
@@ -2769,6 +1568,13 @@ private fun DiffDetailDialog(
                         style = MaterialTheme.typography.titleMedium,
                         modifier = Modifier.weight(1f),
                     )
+                    if (files.isNotEmpty()) {
+                        TextButton(onClick = {
+                            expandedFileIds = if (allExpanded) emptySet() else files.map { it.path }.toSet()
+                        }) {
+                            Text(if (allExpanded) "Collapse All" else "Expand All")
+                        }
+                    }
                     TextButton(onClick = onDismiss) {
                         Text("Close")
                     }
@@ -2790,7 +1596,17 @@ private fun DiffDetailDialog(
                         verticalArrangement = Arrangement.spacedBy(14.dp),
                     ) {
                         items(files, key = { "${it.actionLabel}:${it.path}" }) { file ->
-                            DiffFileDetailCard(file)
+                            DiffFileDetailCard(
+                                file = file,
+                                isExpanded = expandedFileIds.contains(file.path),
+                                onToggleExpand = {
+                                    expandedFileIds = if (expandedFileIds.contains(file.path)) {
+                                        expandedFileIds - file.path
+                                    } else {
+                                        expandedFileIds + file.path
+                                    }
+                                }
+                            )
                         }
                     }
                 }
@@ -2800,7 +1616,11 @@ private fun DiffDetailDialog(
 }
 
 @Composable
-private fun DiffFileDetailCard(file: DiffFileDetailUi) {
+private fun DiffFileDetailCard(
+    file: DiffFileDetailUi,
+    isExpanded: Boolean,
+    onToggleExpand: () -> Unit,
+) {
     val accent = fileChangeAccentColor(file.actionLabel)
     Surface(
         shape = RoundedCornerShape(20.dp),
@@ -2809,6 +1629,7 @@ private fun DiffFileDetailCard(file: DiffFileDetailUi) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .clickable { onToggleExpand() }
                 .padding(horizontal = 14.dp, vertical = 14.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
@@ -2829,19 +1650,38 @@ private fun DiffFileDetailCard(file: DiffFileDetailUi) {
                 )
             }
             if (file.additions > 0 || file.deletions > 0) {
-                Text(
-                    text = buildString {
-                        if (file.additions > 0) append("+${file.additions}")
-                        if (file.deletions > 0) {
-                            if (isNotEmpty()) append(" ")
-                            append("-${file.deletions}")
-                        }
-                    },
-                    style = MaterialTheme.typography.labelMedium.copy(fontFamily = monoFamily),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = buildString {
+                            if (file.additions > 0) append("+${file.additions}")
+                            if (file.deletions > 0) {
+                                if (isNotEmpty()) append(" ")
+                                append("-${file.deletions}")
+                            }
+                        },
+                        style = MaterialTheme.typography.labelMedium.copy(fontFamily = monoFamily),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Icon(
+                        imageVector = if (isExpanded) androidx.compose.material.icons.Icons.Filled.KeyboardArrowUp else androidx.compose.material.icons.Icons.Filled.KeyboardArrowDown,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            } else {
+                Icon(
+                    imageVector = if (isExpanded) androidx.compose.material.icons.Icons.Filled.KeyboardArrowUp else androidx.compose.material.icons.Icons.Filled.KeyboardArrowDown,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp).align(Alignment.End),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            if (file.hunks.isNotEmpty()) {
+            if (isExpanded && file.hunks.isNotEmpty()) {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     file.hunks.forEach { hunk ->
                         Surface(
@@ -2875,7 +1715,7 @@ private fun DiffFileDetailCard(file: DiffFileDetailUi) {
                         }
                     }
                 }
-            } else if (file.rawBody.isNotBlank()) {
+            } else if (isExpanded && file.rawBody.isNotBlank()) {
                 SelectionContainer {
                     Text(
                         text = file.rawBody,
@@ -3160,24 +2000,61 @@ private fun RichMessageText(
                     }
 
                     is MarkdownSegmentUi.CodeBlock -> {
-                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            segment.language?.takeIf(String::isNotEmpty)?.let { language ->
-                                Text(
-                                    text = language,
-                                    style = MaterialTheme.typography.labelSmall.copy(fontFamily = monoFamily),
-                                    color = textColor.copy(alpha = 0.72f),
-                                )
-                            }
-                            Surface(
-                                shape = RoundedCornerShape(12.dp),
-                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
-                            ) {
-                                Text(
-                                    text = segment.code.trimEnd(),
-                                    style = MaterialTheme.typography.bodyMedium.copy(fontFamily = monoFamily),
-                                    color = textColor,
-                                    modifier = Modifier.padding(12.dp),
-                                )
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.85f))
+                                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = segment.language?.takeIf(String::isNotEmpty) ?: "text",
+                                        style = MaterialTheme.typography.labelSmall.copy(fontFamily = monoFamily),
+                                        color = textColor.copy(alpha = 0.72f),
+                                    )
+                                    val context = androidx.compose.ui.platform.LocalContext.current
+                                    val clipboardManager = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                                    var copied by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+                                    androidx.compose.runtime.LaunchedEffect(copied) {
+                                        if (copied) {
+                                            kotlinx.coroutines.delay(1500)
+                                            copied = false
+                                        }
+                                    }
+                                    androidx.compose.material3.IconButton(
+                                        onClick = {
+                                            clipboardManager.setPrimaryClip(android.content.ClipData.newPlainText("code", segment.code.trimEnd()))
+                                            copied = true
+                                        },
+                                        modifier = Modifier.size(24.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = if (copied) Icons.Outlined.Check else Icons.Outlined.ContentCopy,
+                                            contentDescription = "Copy code",
+                                            modifier = Modifier.size(14.dp),
+                                            tint = if (copied) androidx.compose.ui.graphics.Color.Green else textColor.copy(alpha = 0.72f)
+                                        )
+                                    }
+                                }
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .horizontalScroll(rememberScrollState())
+                                ) {
+                                    Text(
+                                        text = segment.code.trimEnd(),
+                                        style = MaterialTheme.typography.bodyMedium.copy(fontFamily = monoFamily),
+                                        color = textColor,
+                                        modifier = Modifier.padding(12.dp),
+                                    )
+                                }
                             }
                         }
                     }
@@ -3299,32 +2176,7 @@ private fun ApprovalCard(
     }
 }
 
-@Composable
-private fun StatusLine(state: AppState) {
-    Row(
-        modifier = Modifier
-            .clip(RoundedCornerShape(999.dp))
-            .background(MaterialTheme.colorScheme.surface)
-            .border(1.dp, Border, RoundedCornerShape(999.dp))
-            .padding(horizontal = 14.dp, vertical = 7.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Box(
-            modifier = Modifier
-                .size(8.dp)
-                .background(
-                    when (state.connectionPhase) {
-                        ConnectionPhase.CONNECTING, ConnectionPhase.LOADING_CHATS, ConnectionPhase.SYNCING -> PlanAccent
-                        ConnectionPhase.CONNECTED -> CommandAccent
-                        ConnectionPhase.OFFLINE -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
-                    },
-                    CircleShape,
-                ),
-        )
-        Spacer(Modifier.width(8.dp))
-        Text(statusLabel(state.connectionPhase), style = MaterialTheme.typography.labelLarge)
-    }
-}
+
 
 @Composable
 private fun StatusPill(state: AppState) {
@@ -3367,7 +2219,7 @@ private fun StatusPill(state: AppState) {
 }
 
 @Composable
-private fun GlassCard(
+internal fun GlassCard(
     modifier: Modifier = Modifier,
     cornerRadius: androidx.compose.ui.unit.Dp = 20.dp,
     content: @Composable ColumnScope.() -> Unit,
@@ -3396,69 +2248,13 @@ private fun GlassCard(
     }
 }
 
-private fun statusLabel(phase: ConnectionPhase): String {
+internal fun statusLabel(phase: ConnectionPhase): String {
     return when (phase) {
         ConnectionPhase.CONNECTING -> "Connecting"
         ConnectionPhase.LOADING_CHATS -> "Loading chats"
         ConnectionPhase.SYNCING -> "Syncing"
         ConnectionPhase.CONNECTED -> "Connected"
         ConnectionPhase.OFFLINE -> "Offline"
-    }
-}
-
-@Composable
-private fun OnboardingStep(
-    number: String,
-    title: String,
-    command: String? = null,
-    subtitle: String? = null,
-) {
-    Surface(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 6.dp),
-        shape = RoundedCornerShape(18.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.42f),
-    ) {
-        Row(
-            verticalAlignment = Alignment.Top,
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(24.dp)
-                    .background(MaterialTheme.colorScheme.onSurface, CircleShape),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(number, color = MaterialTheme.colorScheme.surface, style = MaterialTheme.typography.labelSmall)
-            }
-            Spacer(Modifier.width(12.dp))
-            Column {
-                Text(title, style = MaterialTheme.typography.bodyLarge)
-                command?.let {
-                    Spacer(Modifier.height(8.dp))
-                    Row(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(MaterialTheme.colorScheme.surface)
-                            .padding(horizontal = 10.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(it, style = MaterialTheme.typography.labelLarge.copy(fontFamily = monoFamily))
-                        Spacer(Modifier.width(8.dp))
-                        Icon(Icons.Outlined.ContentCopy, contentDescription = null, modifier = Modifier.size(14.dp))
-                    }
-                }
-                subtitle?.let {
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        it,
-                        style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-        }
     }
 }
 
@@ -3531,7 +2327,7 @@ private fun commandOutputLineColor(kind: CommandOutputLineKind): Color {
     }
 }
 
-private fun relativeTimeLabel(timestamp: Long?): String? {
+internal fun relativeTimeLabel(timestamp: Long?): String? {
     val value = timestamp ?: return null
     if (value <= 0L) {
         return null
@@ -4540,7 +3336,7 @@ private fun buildRichParagraph(
     val source = paragraph.trim()
     return buildAnnotatedString {
         val tokenRegex = Regex(
-            """(\[[^\]]+]\((?:https?://[^)\s]+|/[^)\s]+)\)|https?://[^\s)]+|`[^`]+`|/[\w.\-@/]+(?:[:#]L?\d+(?::\d+|C\d+)?)?)""",
+            """(\[[^\]]+]\((?:https?://[^)\s]+|/[^)\s]+)\)|https?://[^\s)]+|`[^`]+`|/[\w.\-@/]+(?:[:#]L?\d+(?::\d+|C\d+)?)?|@[A-Za-z0-9_.\-/]+|#[a-z0-9\-]+)""",
         )
         var lastIndex = 0
         tokenRegex.findAll(source).forEach { match ->
@@ -4616,7 +3412,7 @@ private fun buildRichParagraph(
                     pop()
                 }
 
-                token.startsWith("/") -> {
+                token.startsWith("/") || token.startsWith("@") || token.startsWith("#") -> {
                     pushStyle(
                         SpanStyle(
                             fontFamily = monoFamily,

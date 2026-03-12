@@ -11,7 +11,6 @@ import com.remodex.android.data.model.CommandPhase
 import com.remodex.android.data.model.CommandState
 import com.remodex.android.data.model.ConnectionPhase
 import com.remodex.android.data.model.FileChangeEntry
-import com.remodex.android.data.model.FuzzyFileMatch
 import com.remodex.android.data.model.MessageKind
 import com.remodex.android.data.model.MessageRole
 import com.remodex.android.data.model.ModelOption
@@ -19,16 +18,14 @@ import com.remodex.android.data.model.PAIRING_QR_VERSION
 import com.remodex.android.data.model.PairingPayload
 import com.remodex.android.data.model.PairingRecord
 import com.remodex.android.data.model.PhoneIdentityState
-import com.remodex.android.data.model.PlanState
-import com.remodex.android.data.model.PlanStep
-import com.remodex.android.data.model.PlanStepStatus
-import com.remodex.android.data.model.QueuedTurnDraft
 import com.remodex.android.data.model.SECURE_PROTOCOL_VERSION
 import com.remodex.android.data.model.SecureConnectionState
-import com.remodex.android.data.model.SkillMetadata
 import com.remodex.android.data.model.StructuredUserInputOption
 import com.remodex.android.data.model.StructuredUserInputQuestion
 import com.remodex.android.data.model.StructuredUserInputRequest
+import com.remodex.android.data.model.PlanState
+import com.remodex.android.data.model.PlanStep
+import com.remodex.android.data.model.PlanStepStatus
 import com.remodex.android.data.model.ThreadSummary
 import com.remodex.android.data.model.TrustedMacRecord
 import com.remodex.android.data.model.TrustedMacRegistry
@@ -331,18 +328,6 @@ class RemodexRepository(context: Context) {
         }
     }
 
-    fun setPreferredTransport(macDeviceId: String, url: String) {
-        val updatedPairings = state.value.pairings.map { pairing ->
-            if (pairing.macDeviceId == macDeviceId) {
-                pairing.copy(preferredTransportUrl = url)
-            } else {
-                pairing
-            }
-        }
-        store.savePairings(updatedPairings)
-        updateState { copy(pairings = updatedPairings) }
-    }
-
     fun selectThread(threadId: String) {
         updateState { copy(selectedThreadId = threadId, pendingApproval = null) }
         scope.launch {
@@ -373,81 +358,6 @@ class RemodexRepository(context: Context) {
         }
     }
 
-    fun deleteThread(threadId: String) {
-        val current = state.value
-        val updatedThreads = current.threads.filterNot { it.id == threadId }
-        val updatedMessages = current.messagesByThread - threadId
-        val newSelectedId = if (current.selectedThreadId == threadId) null else current.selectedThreadId
-        updateState { copy(threads = updatedThreads, messagesByThread = updatedMessages, selectedThreadId = newSelectedId) }
-        scope.launch {
-            val params = kotlinx.serialization.json.buildJsonObject {
-                put("thread_id", kotlinx.serialization.json.JsonPrimitive(threadId))
-                put("unarchive", kotlinx.serialization.json.JsonPrimitive(false))
-            }
-            requestWithSandboxFallback("thread/archive", params)
-        }
-    }
-
-    fun archiveThread(threadId: String) {
-        val current = state.value
-        val updatedThreads = current.threads.map { 
-            if (it.id == threadId) it.copy(syncState = com.remodex.android.data.model.ThreadSyncState.ARCHIVED_LOCAL) else it 
-        }
-        val newSelectedId = if (current.selectedThreadId == threadId) null else current.selectedThreadId
-        updateState { copy(threads = updatedThreads, selectedThreadId = newSelectedId) }
-        scope.launch {
-            val params = kotlinx.serialization.json.buildJsonObject {
-                put("thread_id", kotlinx.serialization.json.JsonPrimitive(threadId))
-                put("unarchive", kotlinx.serialization.json.JsonPrimitive(false))
-            }
-            requestWithSandboxFallback("thread/archive", params)
-        }
-    }
-
-    fun unarchiveThread(threadId: String) {
-        val current = state.value
-        val updatedThreads = current.threads.map { 
-            if (it.id == threadId) it.copy(syncState = com.remodex.android.data.model.ThreadSyncState.LIVE) else it 
-        }
-        updateState { copy(threads = updatedThreads) }
-        scope.launch {
-            val params = kotlinx.serialization.json.buildJsonObject {
-                put("thread_id", kotlinx.serialization.json.JsonPrimitive(threadId))
-                put("unarchive", kotlinx.serialization.json.JsonPrimitive(true))
-            }
-            requestWithSandboxFallback("thread/archive", params)
-        }
-    }
-
-    fun renameThread(threadId: String, name: String) {
-        val current = state.value
-        val updatedThreads = current.threads.map { 
-            if (it.id == threadId) it.copy(name = name, title = name) else it 
-        }
-        updateState { copy(threads = updatedThreads) }
-        scope.launch {
-            val params = kotlinx.serialization.json.buildJsonObject {
-                put("thread_id", kotlinx.serialization.json.JsonPrimitive(threadId))
-                put("name", kotlinx.serialization.json.JsonPrimitive(name))
-            }
-            requestWithSandboxFallback("thread/name/set", params)
-        }
-    }
-
-    fun removeQueuedDraft(threadId: String, draftId: String) {
-        updateState {
-            val currentQueue = queuedTurnDraftsByThread[threadId].orEmpty()
-            val updatedQueue = currentQueue.filterNot { it.id == draftId }
-            copy(
-                queuedTurnDraftsByThread = if (updatedQueue.isEmpty()) {
-                    queuedTurnDraftsByThread - threadId
-                } else {
-                    queuedTurnDraftsByThread + (threadId to updatedQueue)
-                }
-            )
-        }
-    }
-
     fun sendMessage(text: String, usePlanMode: Boolean = false) {
         scope.launch {
             val trimmed = text.trim()
@@ -468,17 +378,6 @@ class RemodexRepository(context: Context) {
                 createThread()
                 return@launch
             }
-
-            if (state.value.runningThreadIds.contains(threadId)) {
-                updateState {
-                    val currentQueue = queuedTurnDraftsByThread[threadId].orEmpty()
-                    copy(
-                        queuedTurnDraftsByThread = queuedTurnDraftsByThread + (threadId to (currentQueue + QueuedTurnDraft(text = trimmed, usePlanMode = usePlanMode)))
-                    )
-                }
-                return@launch
-            }
-
             appendLocalMessage(
                 ChatMessage(
                     threadId = threadId,
@@ -614,97 +513,6 @@ class RemodexRepository(context: Context) {
             }
         }
     }
-
-    suspend fun fuzzyFileSearch(query: String, threadId: String): List<FuzzyFileMatch> {
-        val thread = state.value.threads.firstOrNull { it.id == threadId }
-        val params = buildJsonObject(
-            "query" to JsonPrimitive(query),
-            "cwd" to thread?.cwd?.let(::JsonPrimitive),
-        )
-        val response = activeClient().sendRequest("fuzzyFileSearch", params)?.jsonObjectOrNull() ?: return emptyList()
-        val files = response["result"]?.jsonObjectOrNull()?.get("files")?.jsonArrayOrNull()
-            ?: response["files"]?.jsonArrayOrNull()
-            ?: return emptyList()
-        return files.mapNotNull { element ->
-            val obj = element.jsonObjectOrNull() ?: return@mapNotNull null
-            val path = obj.string("path") ?: return@mapNotNull null
-            val root = obj.string("root") ?: return@mapNotNull null
-            FuzzyFileMatch(path = path, root = root)
-        }
-    }
-
-    suspend fun listSkills(): List<SkillMetadata> {
-        val response = activeClient().sendRequest("skills/list", JsonObject(emptyMap()))?.jsonObjectOrNull() ?: return emptyList()
-        val skills = response["result"]?.jsonObjectOrNull()?.get("skills")?.jsonArrayOrNull()
-            ?: response["skills"]?.jsonArrayOrNull()
-            ?: return emptyList()
-        return skills.mapNotNull { element ->
-            val obj = element.jsonObjectOrNull() ?: return@mapNotNull null
-            val id = obj.string("id") ?: return@mapNotNull null
-            val name = obj.string("name") ?: return@mapNotNull null
-            val description = obj.string("description")
-            SkillMetadata(id = id, name = name, description = description)
-        }
-    }
-
-    suspend fun gitStatus(cwd: String): com.remodex.android.data.model.GitRepoSyncResult? {
-        val params = buildJsonObject("cwd" to JsonPrimitive(cwd))
-        val response = activeClient().sendRequest("git/status", params)?.jsonObjectOrNull() ?: return null
-        
-        val isDirty = response.bool("isDirty") ?: false
-        val hasUnpushedCommits = response.bool("hasUnpushedCommits") ?: false
-        val hasUnpulledCommits = response.bool("hasUnpulledCommits") ?: false
-        val hasDiverged = response.bool("hasDiverged") ?: false
-        val isDetachedHead = response.bool("isDetachedHead") ?: false
-        val branch = response.string("branch")
-        val upstreamBranch = response.string("upstreamBranch")
-        val unstagedCount = response.int("unstagedCount") ?: 0
-        val stagedCount = response.int("stagedCount") ?: 0
-        val unpushedCount = response.int("unpushedCount") ?: 0
-        val unpulledCount = response.int("unpulledCount") ?: 0
-        val untrackedCount = response.int("untrackedCount") ?: 0
-        val repoRoot = response.string("repoRoot")
-        
-        val result = com.remodex.android.data.model.GitRepoSyncResult(
-            isDirty = isDirty,
-            hasUnpushedCommits = hasUnpushedCommits,
-            hasUnpulledCommits = hasUnpulledCommits,
-            hasDiverged = hasDiverged,
-            isDetachedHead = isDetachedHead,
-            branch = branch,
-            upstreamBranch = upstreamBranch,
-            unstagedCount = unstagedCount,
-            stagedCount = stagedCount,
-            unpushedCount = unpushedCount,
-            unpulledCount = unpulledCount,
-            untrackedCount = untrackedCount,
-            repoRoot = repoRoot
-        )
-        updateState { copy(gitRepoSyncResult = result) }
-        return result
-    }
-
-    suspend fun gitCommit(cwd: String, message: String) {
-        val params = buildJsonObject(
-            "cwd" to JsonPrimitive(cwd),
-            "message" to JsonPrimitive(message)
-        )
-        activeClient().sendRequest("git/commit", params)
-    }
-    
-    suspend fun performGitAction(cwd: String, action: com.remodex.android.data.model.TurnGitActionKind) {
-        val method = when (action) {
-            com.remodex.android.data.model.TurnGitActionKind.SYNC_NOW -> "git/sync"
-            com.remodex.android.data.model.TurnGitActionKind.PUSH -> "git/push"
-            com.remodex.android.data.model.TurnGitActionKind.COMMIT -> "git/commit"
-            com.remodex.android.data.model.TurnGitActionKind.COMMIT_AND_PUSH -> "git/commitAndPush"
-            com.remodex.android.data.model.TurnGitActionKind.CREATE_PR -> "git/createPR"
-            com.remodex.android.data.model.TurnGitActionKind.DISCARD_LOCAL_CHANGES -> "git/discard"
-        }
-        val params = buildJsonObject("cwd" to JsonPrimitive(cwd))
-        activeClient().sendRequest(method, params)
-    }
-
 
     private suspend fun initializeSession() {
         updateState { copy(connectionPhase = ConnectionPhase.SYNCING) }
@@ -1693,7 +1501,6 @@ class RemodexRepository(context: Context) {
                         completed = true,
                     )
                 }
-                checkAndSendNextQueuedDraft(threadId)
             }
 
             "item/agentMessage/delta",
@@ -1894,15 +1701,8 @@ class RemodexRepository(context: Context) {
                         activeTurnIdByThread = activeTurnIdByThread - threadId,
                     )
                 }
-                checkAndSendNextQueuedDraft(threadId)
             }
         }
-    }
-
-    private fun checkAndSendNextQueuedDraft(threadId: String) {
-        val nextDraft = state.value.queuedTurnDraftsByThread[threadId]?.firstOrNull() ?: return
-        removeQueuedDraft(threadId, nextDraft.id)
-        sendMessage(nextDraft.text, nextDraft.usePlanMode)
     }
 
     private fun orderedTransportUrls(pairingRecord: PairingRecord): List<String> {

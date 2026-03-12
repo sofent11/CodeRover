@@ -344,6 +344,21 @@ data class ApprovalRequest(
     val turnId: String?,
 )
 
+@Serializable
+data class FuzzyFileMatch(
+    val path: String,
+    val root: String,
+) {
+    val fileName: String get() = path.substringAfterLast('/')
+}
+
+@Serializable
+data class SkillMetadata(
+    val id: String,
+    val name: String,
+    val description: String?,
+)
+
 data class AppState(
     val onboardingSeen: Boolean = false,
     val fontStyle: AppFontStyle = AppFontStyle.SYSTEM,
@@ -366,6 +381,9 @@ data class AppState(
     val pendingApproval: ApprovalRequest? = null,
     val lastErrorMessage: String? = null,
     val importText: String = "",
+    val gitRepoSyncResult: GitRepoSyncResult? = null,
+    val contextWindowUsage: ContextWindowUsage? = null,
+    val queuedTurnDraftsByThread: Map<String, List<QueuedTurnDraft>> = emptyMap(),
 ) {
     val isConnected: Boolean
         get() = connectionPhase == ConnectionPhase.CONNECTED
@@ -440,3 +458,43 @@ fun responseKey(id: JsonElement): String = when (id) {
     is JsonPrimitive -> id.content
     else -> id.toString()
 }
+
+@Serializable
+data class GitRepoSyncResult(
+    val isDirty: Boolean = false,
+    val hasUnpushedCommits: Boolean = false,
+    val hasUnpulledCommits: Boolean = false,
+    val hasDiverged: Boolean = false,
+    val isDetachedHead: Boolean = false,
+    val branch: String? = null,
+    val upstreamBranch: String? = null,
+    val unstagedCount: Int = 0,
+    val stagedCount: Int = 0,
+    val unpushedCount: Int = 0,
+    val unpulledCount: Int = 0,
+    val untrackedCount: Int = 0,
+    val repoRoot: String? = null
+)
+
+enum class TurnGitActionKind(val title: String) {
+    SYNC_NOW("Update"),
+    COMMIT("Commit"),
+    PUSH("Push"),
+    COMMIT_AND_PUSH("Commit & Push"),
+    CREATE_PR("Create PR"),
+    DISCARD_LOCAL_CHANGES("Discard Local Changes")
+}
+
+@Serializable
+data class ContextWindowUsage(
+    val usedTokens: Int,
+    val totalTokens: Int,
+    val percentage: Float
+)
+
+@Serializable
+data class QueuedTurnDraft(
+    val id: String = java.util.UUID.randomUUID().toString(),
+    val text: String,
+    val usePlanMode: Boolean
+)
