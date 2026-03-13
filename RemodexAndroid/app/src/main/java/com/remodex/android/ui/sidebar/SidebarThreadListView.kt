@@ -53,12 +53,15 @@ import com.remodex.android.ui.shared.relativeTimeLabel
 import com.remodex.android.ui.shared.StatusTag
 import com.remodex.android.ui.theme.Danger
 import com.remodex.android.ui.theme.PlanAccent
+import com.remodex.android.ui.theme.monoFamily
+import com.remodex.android.ui.turn.TurnSessionDiffTotals
 
 @Composable
 fun SidebarThreadListView(
     groups: List<SidebarThreadGroup>,
     selectedThreadId: String?,
     runningThreadIds: Set<String>,
+    diffTotalsByThreadId: Map<String, TurnSessionDiffTotals>,
     collapsedProjectGroupIds: Set<String>,
     onToggleProjectGroupCollapsed: (String) -> Unit,
     onSelectThread: (ThreadSummary) -> Unit,
@@ -122,6 +125,7 @@ fun SidebarThreadListView(
                                     thread = thread,
                                     isSelected = selectedThreadId == thread.id,
                                     isRunning = runningThreadIds.contains(thread.id),
+                                    diffTotals = diffTotalsByThreadId[thread.id],
                                     isMenuExpanded = menuThreadId == thread.id,
                                     onSelect = { onSelectThread(thread) },
                                     onExpandMenu = { menuThreadId = thread.id },
@@ -156,6 +160,7 @@ fun SidebarThreadListView(
                                     thread = thread,
                                     isSelected = selectedThreadId == thread.id,
                                     isRunning = runningThreadIds.contains(thread.id),
+                                    diffTotals = diffTotalsByThreadId[thread.id],
                                     isMenuExpanded = menuThreadId == thread.id,
                                     onSelect = { onSelectThread(thread) },
                                     onExpandMenu = { menuThreadId = thread.id },
@@ -297,6 +302,7 @@ private fun SidebarThreadRowView(
     thread: ThreadSummary,
     isSelected: Boolean,
     isRunning: Boolean,
+    diffTotals: TurnSessionDiffTotals?,
     isMenuExpanded: Boolean,
     onSelect: () -> Unit,
     onExpandMenu: () -> Unit,
@@ -375,13 +381,12 @@ private fun SidebarThreadRowView(
                     }
                 }
 
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     StatusTag(
                         text = thread.providerBadgeTitle,
                         containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.75f),
                         contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    Spacer(Modifier.width(8.dp))
                     if (thread.syncState == ThreadSyncState.ARCHIVED_LOCAL) {
                         Text(
                             text = "Archived",
@@ -394,8 +399,23 @@ private fun SidebarThreadRowView(
                                 )
                                 .padding(horizontal = 6.dp, vertical = 2.dp),
                         )
-                        Spacer(Modifier.width(8.dp))
                     }
+
+                    if (diffTotals != null) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(
+                                text = "+${diffTotals.additions}",
+                                style = MaterialTheme.typography.labelSmall.copy(fontFamily = monoFamily),
+                                color = Color(0xFF4CAF50),
+                            )
+                            Text(
+                                text = "-${diffTotals.deletions}",
+                                style = MaterialTheme.typography.labelSmall.copy(fontFamily = monoFamily),
+                                color = Color(0xFFE53935),
+                            )
+                        }
+                    }
+
                     Text(
                         text = thread.projectDisplayName,
                         style = MaterialTheme.typography.labelSmall,

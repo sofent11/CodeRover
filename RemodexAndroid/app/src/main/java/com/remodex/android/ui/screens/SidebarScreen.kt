@@ -31,6 +31,7 @@ import com.remodex.android.ui.sidebar.SidebarSearchField
 import com.remodex.android.ui.sidebar.SidebarThreadListView
 import com.remodex.android.ui.sidebar.buildSidebarThreadGroups
 import com.remodex.android.ui.theme.Danger
+import com.remodex.android.ui.turn.TurnSessionDiffSummaryCalculator
 
 @Composable
 fun SidebarScreen(
@@ -63,6 +64,12 @@ fun SidebarScreen(
             .sorted()
     }
 
+    val diffTotalsByThreadId = remember(state.messagesByThread) {
+        state.messagesByThread.mapValues { (_, messages) ->
+            TurnSessionDiffSummaryCalculator.totals(messages)
+        }.filterValues { it != null }.mapValues { it.value!! }
+    }
+
     Box(
         modifier = Modifier
             .fillMaxHeight()
@@ -92,6 +99,7 @@ fun SidebarScreen(
                 groups = groups,
                 selectedThreadId = state.selectedThreadId,
                 runningThreadIds = state.runningThreadIds,
+                diffTotalsByThreadId = diffTotalsByThreadId,
                 collapsedProjectGroupIds = state.collapsedProjectGroupIds,
                 onToggleProjectGroupCollapsed = onToggleProjectGroupCollapsed,
                 onSelectThread = { onSelectThread(it.id) },
