@@ -294,21 +294,133 @@ function normalizeGeminiMessage(entry) {
     return null;
   }
 
-  const role = normalizeOptionalString(entry.role || entry.author || entry.sender);
-  const text = normalizeOptionalString(
-    entry.text
-    || entry.content
-    || entry.message
-    || entry.parts?.map?.((part) => part?.text || "").join("\n")
-  );
+  const rawRole = normalizeOptionalString(entry.role || entry.author || entry.sender || entry.type);
+  const role = normalizeGeminiRole(rawRole);
+  const text = normalizeOptionalString(extractGeminiMessageText(entry));
   if (!role || !text) {
     return null;
   }
 
   return {
-    role: role.includes("user") ? "user" : "assistant",
+    role,
     text,
   };
+}
+
+function normalizeGeminiRole(rawRole) {
+  const role = normalizeOptionalString(rawRole)?.toLowerCase();
+  if (!role) {
+    return null;
+  }
+
+  if (role.includes("user")) {
+    return "user";
+  }
+
+  if (
+    role.includes("gemini")
+    || role.includes("assistant")
+    || role.includes("model")
+  ) {
+    return "assistant";
+  }
+
+  return null;
+}
+
+function extractGeminiMessageText(entry) {
+  const directTextCandidates = [
+    entry.text,
+    entry.message,
+    entry.content,
+    entry.resultDisplay,
+  ];
+
+  for (const candidate of directTextCandidates) {
+    if (typeof candidate === "string" && candidate.trim()) {
+      return candidate;
+    }
+  }
+
+  const joinedCandidates = [
+    joinGeminiTextParts(entry.content),
+    joinGeminiTextParts(entry.parts),
+    joinGeminiTextParts(entry.messages),
+    joinGeminiThoughts(entry.thoughts),
+  ];
+
+  for (const candidate of joinedCandidates) {
+    if (candidate) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
+function joinGeminiTextParts(parts) {
+  if (!Array.isArray(parts)) {
+    return null;
+  }
+
+  const flattened = parts
+    .map((part) => extractGeminiPartText(part))
+    .filter(Boolean);
+
+  return flattened.length > 0 ? flattened.join("\n") : null;
+}
+
+function extractGeminiPartText(part) {
+  if (typeof part === "string") {
+    return normalizeOptionalString(part);
+  }
+
+  if (!part || typeof part !== "object") {
+    return null;
+  }
+
+  const directText = normalizeOptionalString(
+    part.text
+    || part.content
+    || part.message
+    || part.resultDisplay
+    || part.description
+  );
+  if (directText) {
+    return directText;
+  }
+
+  const nested = [
+    joinGeminiTextParts(part.parts),
+    joinGeminiTextParts(part.content),
+    joinGeminiTextParts(part.messages),
+    joinGeminiTextParts(part.result),
+    joinGeminiThoughts(part.thoughts),
+  ].find(Boolean);
+
+  return nested || null;
+}
+
+function joinGeminiThoughts(thoughts) {
+  if (!Array.isArray(thoughts)) {
+    return null;
+  }
+
+  const flattened = thoughts
+    .map((thought) => {
+      if (!thought || typeof thought !== "object") {
+        return null;
+      }
+      return normalizeOptionalString(
+        thought.description
+        || thought.text
+        || thought.message
+        || thought.subject
+      );
+    })
+    .filter(Boolean);
+
+  return flattened.length > 0 ? flattened.join("\n") : null;
 }
 
 async function buildGeminiPrompt(inputItems, cwd) {
@@ -485,4 +597,6 @@ function numberOrNull(value) {
 
 module.exports = {
   createGeminiAdapter,
+  extractGeminiMessages,
+  normalizeGeminiMessage,
 };
