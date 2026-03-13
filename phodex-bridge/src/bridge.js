@@ -76,6 +76,7 @@ function startBridge() {
     bridgeId,
     localPort: config.localPort,
     tailnetUrl: config.tailnetUrl,
+    relayUrls: config.relayUrls,
   });
   console.log(`[remodex] Local bridge listening on ws://<this-mac>:${config.localPort}/bridge/${bridgeId}`);
   secureTransport = createBridgeSecureTransport({

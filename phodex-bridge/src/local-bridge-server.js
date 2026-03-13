@@ -191,6 +191,7 @@ function buildTransportCandidates({
   bridgeId,
   localPort,
   tailnetUrl = "",
+  relayUrls = [],
 } = {}) {
   const routePath = `/bridge/${bridgeId}`;
   const candidates = [];
@@ -220,6 +221,11 @@ function buildTransportCandidates({
   const normalizedTailnetUrl = normalizeNonEmptyString(tailnetUrl);
   if (normalizedTailnetUrl) {
     addCandidate("tailnet", buildCandidateUrl(normalizedTailnetUrl, routePath), "Tailnet");
+  }
+
+  for (const relayUrl of normalizeRelayUrls(relayUrls)) {
+    const candidateUrl = buildCandidateUrl(relayUrl, routePath);
+    addCandidate("relay", candidateUrl, describeRelayCandidate(candidateUrl));
   }
 
   return candidates;
@@ -338,6 +344,36 @@ function buildCandidateUrl(baseUrl, routePath) {
     return normalizedBase;
   }
   return `${normalizedBase}${routePath}`;
+}
+
+function normalizeRelayUrls(relayUrls) {
+  if (typeof relayUrls === "string") {
+    return relayUrls
+      .split(/[,\n]/)
+      .map((value) => normalizeNonEmptyString(value))
+      .filter(Boolean);
+  }
+
+  if (!Array.isArray(relayUrls)) {
+    return [];
+  }
+
+  return relayUrls
+    .map((value) => normalizeNonEmptyString(value))
+    .filter(Boolean);
+}
+
+function describeRelayCandidate(url) {
+  try {
+    const parsed = new URL(url);
+    if (parsed.hostname) {
+      return parsed.port ? `${parsed.hostname}:${parsed.port}` : parsed.hostname;
+    }
+  } catch {
+    // Fall back to a generic label when the URL is not fully parseable.
+  }
+
+  return "Relay";
 }
 
 function normalizeNonEmptyString(value) {

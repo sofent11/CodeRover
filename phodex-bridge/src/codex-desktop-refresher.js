@@ -536,6 +536,7 @@ function readBridgeConfig({ env = process.env, platform = process.platform } = {
       8765
     ),
     tailnetUrl: readFirstDefinedEnv(["REMODEX_TAILNET_URL"], "", env),
+    relayUrls: readListEnv(["REMODEX_RELAY_URLS", "REMODEX_RELAY_URL"], env),
     refreshEnabled: explicitRefreshEnabled == null
       ? defaultRefreshEnabled
       : explicitRefreshEnabled,
@@ -548,6 +549,26 @@ function readBridgeConfig({ env = process.env, platform = process.platform } = {
     codexBundleId: readFirstDefinedEnv(["REMODEX_CODEX_BUNDLE_ID"], DEFAULT_BUNDLE_ID, env),
     codexAppPath: DEFAULT_APP_PATH,
   };
+}
+
+function readListEnv(keys, env) {
+  for (const key of keys) {
+    if (!Object.prototype.hasOwnProperty.call(env, key)) {
+      continue;
+    }
+
+    const rawValue = env[key];
+    if (typeof rawValue !== "string") {
+      continue;
+    }
+
+    return rawValue
+      .split(/[,\n]/)
+      .map((value) => value.trim())
+      .filter(Boolean);
+  }
+
+  return [];
 }
 
 function execFilePromise(command, args) {

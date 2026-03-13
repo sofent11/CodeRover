@@ -145,6 +145,8 @@ All optional. Sensible defaults are provided.
 |----------|---------|-------------|
 | `REMODEX_LOCAL_PORT` | `8765` | Stable local bridge port exposed by `remodex up` |
 | `REMODEX_TAILNET_URL` | — | Optional tailnet URL prefix appended with `/bridge/<bridgeId>` for cross-network fallback |
+| `REMODEX_RELAY_URL` | — | Optional explicit relay URL prefix appended with `/bridge/<bridgeId>` and added to the QR transport list |
+| `REMODEX_RELAY_URLS` | — | Optional comma-separated relay URL prefixes when you want multiple explicit relay candidates in the QR |
 | `REMODEX_CODEX_ENDPOINT` | — | Connect to an existing Codex WebSocket instead of spawning a local `codex app-server` |
 | `REMODEX_REFRESH_ENABLED` | `false` | Auto-refresh Codex.app when phone activity is detected (`true` enables it explicitly) |
 | `REMODEX_REFRESH_DEBOUNCE_MS` | `1200` | Debounce window (ms) for coalescing refresh events |
@@ -165,6 +167,12 @@ REMODEX_LOCAL_PORT=9876 remodex up
 # Add a tailnet fallback candidate
 REMODEX_TAILNET_URL=wss://my-mac.tailnet.example remodex up
 
+# Add one explicit relay candidate (for example an frp-exposed public endpoint)
+REMODEX_RELAY_URL=wss://relay.example.com remodex up
+
+# Add multiple relay candidates
+REMODEX_RELAY_URLS=wss://relay-a.example.com,wss://relay-b.example.com/remodex remodex up
+
 ```
 
 ## Pairing and Safety
@@ -173,6 +181,7 @@ REMODEX_TAILNET_URL=wss://my-mac.tailnet.example remodex up
 - The pairing QR now carries a stable bridge ID, encrypted Mac identity metadata, and an ordered list of transport candidates.
 - The iPhone prefers direct local connections and can reuse a previously successful transport.
 - If both devices are on the same tailnet, add `REMODEX_TAILNET_URL` so the QR code also carries a cross-network candidate.
+- If you expose the bridge through `frp` or another relay, add `REMODEX_RELAY_URL` or `REMODEX_RELAY_URLS` so the QR code also carries those explicit public candidates.
 - On the iPhone, the default agent permission mode is `On-Request`. Switching the app to `Full access` auto-approves runtime approval prompts from the agent.
 
 ## Security and Privacy

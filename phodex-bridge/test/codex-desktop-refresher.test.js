@@ -42,6 +42,12 @@ test("readBridgeConfig keeps safe defaults and explicit overrides", () => {
     },
     platform: "darwin",
   });
+  const relayConfig = readBridgeConfig({
+    env: {
+      REMODEX_RELAY_URLS: "wss://relay-a.example.com, wss://relay-b.example.com/remodex",
+    },
+    platform: "darwin",
+  });
 
   assert.equal(macConfig.refreshEnabled, false);
   assert.equal(macEndpointConfig.refreshEnabled, false);
@@ -49,6 +55,10 @@ test("readBridgeConfig keeps safe defaults and explicit overrides", () => {
   assert.equal(linuxCommandConfig.refreshEnabled, false);
   assert.equal(explicitOnConfig.refreshEnabled, true);
   assert.equal(explicitOffConfig.refreshEnabled, false);
+  assert.deepEqual(relayConfig.relayUrls, [
+    "wss://relay-a.example.com",
+    "wss://relay-b.example.com/remodex",
+  ]);
 });
 
 test("thread/start falls back once to the new-thread route when thread id is still unknown", async () => {

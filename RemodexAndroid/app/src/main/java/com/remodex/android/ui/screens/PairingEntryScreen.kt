@@ -243,7 +243,7 @@ fun PairingEntryScreen(
                     style = MaterialTheme.typography.titleMedium,
                 )
                 Text(
-                    text = "This Mac advertised multiple local bridge routes. Pick the one Android should use for this pairing.",
+                    text = "This Mac advertised multiple bridge routes. Pick the local or relay address Android should use for this pairing.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

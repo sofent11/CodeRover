@@ -99,6 +99,12 @@ REMODEX_CODEX_ENDPOINT=ws://localhost:8080 npm start
 # Add a tailnet fallback candidate
 REMODEX_TAILNET_URL=wss://my-mac.tailnet.example npm start
 
+# Add one explicit relay candidate to the QR payload
+REMODEX_RELAY_URL=wss://relay.example.com npm start
+
+# Or advertise multiple relay candidates
+REMODEX_RELAY_URLS=wss://relay-a.example.com,wss://relay-b.example.com/remodex npm start
+
 # Enable auto-refresh of Codex.app on Mac
 REMODEX_REFRESH_ENABLED=true npm start
 ```

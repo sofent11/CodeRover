@@ -79,6 +79,61 @@ test("buildTransportCandidates appends explicit tailnet endpoint after LAN candi
   }
 });
 
+test("buildTransportCandidates appends explicit relay endpoints after LAN and tailnet candidates", () => {
+  const originalNetworkInterfaces = os.networkInterfaces;
+
+  os.networkInterfaces = () => ({
+    en0: [
+      { address: "192.168.1.11", family: "IPv4", internal: false },
+    ],
+    utun4: [
+      { address: "100.82.80.46", family: "IPv4", internal: false },
+    ],
+  });
+
+  try {
+    const candidates = buildTransportCandidates({
+      bridgeId: "bridge-relay",
+      localPort: 8765,
+      tailnetUrl: "wss://my-mac.tailnet.example",
+      relayUrls: [
+        "wss://relay-1.example.com",
+        "wss://relay-2.example.com/remodex",
+      ],
+    });
+
+    assert.deepEqual(candidates, [
+      {
+        kind: "local_ipv4",
+        url: "ws://192.168.1.11:8765/bridge/bridge-relay",
+        label: "192.168.1.11",
+      },
+      {
+        kind: "tailnet_ipv4",
+        url: "ws://100.82.80.46:8765/bridge/bridge-relay",
+        label: "100.82.80.46",
+      },
+      {
+        kind: "tailnet",
+        url: "wss://my-mac.tailnet.example/bridge/bridge-relay",
+        label: "Tailnet",
+      },
+      {
+        kind: "relay",
+        url: "wss://relay-1.example.com/bridge/bridge-relay",
+        label: "relay-1.example.com",
+      },
+      {
+        kind: "relay",
+        url: "wss://relay-2.example.com/remodex/bridge/bridge-relay",
+        label: "relay-2.example.com",
+      },
+    ]);
+  } finally {
+    os.networkInterfaces = originalNetworkInterfaces;
+  }
+});
+
 test("buildTransportCandidates includes Tailscale utun addresses as tailnet candidates", () => {
   const originalNetworkInterfaces = os.networkInterfaces;
 
