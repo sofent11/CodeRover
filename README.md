@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="CodeRoverMobile/CodeRoverMobile/Assets.xcassets/coderover-og.imageset/coderover-og2%20(1).png" alt="CodeRover" />
+  <img src="assets/readme-hero.jpg" alt="CodeRover" />
 </p>
 
 # CodeRover
