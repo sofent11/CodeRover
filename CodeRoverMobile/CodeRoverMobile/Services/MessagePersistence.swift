@@ -62,7 +62,7 @@ struct MessagePersistence {
         let fm = FileManager.default
         let base = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? fm.temporaryDirectory
-        let bundleID = Bundle.main.bundleIdentifier ?? "com.coderovermobile.app"
+        let bundleID = Bundle.main.bundleIdentifier ?? "com.sofent.CodeRover"
         let directory = base.appendingPathComponent(bundleID, isDirectory: true)
         let names = [fileName] + legacyFileNames
         return names.map { directory.appendingPathComponent($0, isDirectory: false) }

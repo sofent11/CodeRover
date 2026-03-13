@@ -114,6 +114,6 @@ enum SecureStore {
     }
 
     private static var serviceName: String {
-        Bundle.main.bundleIdentifier ?? "com.coderovermobile.app"
+        Bundle.main.bundleIdentifier ?? "com.sofent.CodeRover"
     }
 }

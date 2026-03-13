@@ -34,7 +34,7 @@ struct AIChangeSetPersistence {
         let fm = FileManager.default
         let base = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? fm.temporaryDirectory
-        let bundleID = Bundle.main.bundleIdentifier ?? "com.coderovermobile.app"
+        let bundleID = Bundle.main.bundleIdentifier ?? "com.sofent.CodeRover"
         return base
             .appendingPathComponent(bundleID, isDirectory: true)
             .appendingPathComponent(fileName, isDirectory: false)
