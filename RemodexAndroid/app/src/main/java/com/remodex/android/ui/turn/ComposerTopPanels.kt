@@ -13,27 +13,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.remodex.android.data.model.FuzzyFileMatch
-import com.remodex.android.data.model.QueuedTurnDraft
-import com.remodex.android.data.model.SkillMetadata
 import com.remodex.android.ui.shared.StatusTag
 import com.remodex.android.ui.theme.PlanAccent
 
 @Composable
 internal fun ComposerTopPanels(
     turnViewModel: TurnViewModel,
-    queuedDrafts: List<QueuedTurnDraft>,
-    canSteerDrafts: Boolean,
     showsPlanMode: Boolean,
-    onSteerDraft: (String) -> Unit,
-    onFileSelected: (FuzzyFileMatch) -> Unit,
-    onSkillSelected: (SkillMetadata) -> Unit,
-    onRemoveDraft: (String) -> Unit,
 ) {
     AnimatedVisibility(
-        visible = turnViewModel.autocompleteFiles.isNotEmpty() ||
-            turnViewModel.autocompleteSkills.isNotEmpty() ||
-            queuedDrafts.isNotEmpty() ||
+        visible = turnViewModel.composerNoticeMessage != null ||
             (turnViewModel.isPlanModeArmed && showsPlanMode),
     ) {
         Column(
@@ -87,22 +76,6 @@ internal fun ComposerTopPanels(
                     )
                 }
             }
-
-            FileAutocompletePanel(
-                files = turnViewModel.autocompleteFiles,
-                onSelect = onFileSelected,
-            )
-            SkillAutocompletePanel(
-                skills = turnViewModel.autocompleteSkills,
-                onSelect = onSkillSelected,
-            )
-            QueuedDraftsPanel(
-                drafts = queuedDrafts,
-                canSteerDrafts = canSteerDrafts,
-                steeringDraftId = turnViewModel.steeringDraftId,
-                onSteerDraft = onSteerDraft,
-                onRemoveDraft = onRemoveDraft,
-            )
         }
     }
 }

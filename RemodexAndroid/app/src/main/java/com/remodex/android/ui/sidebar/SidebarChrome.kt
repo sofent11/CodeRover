@@ -182,25 +182,6 @@ fun SidebarSearchField(
 }
 
 @Composable
-fun SidebarNewChatButton(
-    enabled: Boolean,
-    onClick: () -> Unit,
-) {
-    FilledTonalButton(
-        onClick = onClick,
-        enabled = enabled,
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 4.dp),
-        shape = RoundedCornerShape(12.dp),
-    ) {
-        Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(18.dp))
-        Spacer(Modifier.width(8.dp))
-        Text("New Chat", style = MaterialTheme.typography.labelLarge)
-    }
-}
-
-@Composable
 fun SidebarFloatingSettingsButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,

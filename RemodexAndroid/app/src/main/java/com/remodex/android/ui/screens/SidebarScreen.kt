@@ -85,11 +85,18 @@ fun SidebarScreen(
                     onSearchActiveChanged(isActive)
                 },
             )
+            var isCreatingThread by remember { mutableStateOf(false) }
             SidebarNewChatButton(
                 enabled = state.isConnected,
+                isCreatingThread = isCreatingThread,
+                statusMessage = null,
                 onClick = {
                     if (projectPaths.isEmpty()) {
+                        isCreatingThread = true
                         onCreateThread(null, state.selectedProviderId)
+                        // Resetting state assuming navigation/drawer close handles visual update,
+                        // or it can be lifted to ViewModel if accurate tracking is needed.
+                        isCreatingThread = false
                     } else {
                         showProjectPicker = true
                     }

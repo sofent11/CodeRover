@@ -31,7 +31,7 @@ internal fun TurnTimelineEmptyState(
         if (isRunning) {
             Text(
                 text = "Working on it...",
-                style = MaterialTheme.typography.titleMedium,
+                style = MaterialTheme.typography.titleLarge,
                 textAlign = TextAlign.Center,
             )
             Text(
@@ -51,7 +51,7 @@ internal fun TurnTimelineEmptyState(
             }
             Text(
                 text = "Hi! How can I help you?",
-                style = MaterialTheme.typography.titleMedium,
+                style = MaterialTheme.typography.titleLarge,
                 textAlign = TextAlign.Center,
                 modifier = Modifier.padding(top = 12.dp),
             )

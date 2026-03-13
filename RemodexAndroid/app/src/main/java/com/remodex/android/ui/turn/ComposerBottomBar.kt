@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -239,7 +240,37 @@ internal fun ComposerPrimaryToolbar(
             }
         }
 
+        if (turnViewModel.isPlanModeArmed && supportsPlanMode) {
+            Box(
+                modifier = Modifier
+                    .padding(start = 4.dp, end = 4.dp)
+                    .width(1.dp)
+                    .height(16.dp)
+                    .background(MaterialTheme.colorScheme.outlineVariant)
+            )
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.padding(vertical = 6.dp, horizontal = 4.dp)
+            ) {
+                Icon(
+                    androidx.compose.ui.res.painterResource(id = android.R.drawable.ic_menu_edit),
+                    contentDescription = null,
+                    tint = PlanAccent,
+                    modifier = Modifier.size(12.dp)
+                )
+                Text(
+                    text = "Plan",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = PlanAccent,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+
         Spacer(Modifier.weight(1f))
+
         state.contextWindowUsage?.let { usage ->
             ContextWindowProgressRing(
                 usage = usage,

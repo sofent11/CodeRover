@@ -63,13 +63,55 @@ internal fun TurnComposerView(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(12.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
+            .padding(horizontal = 12.dp)
+            .padding(top = 6.dp, bottom = 6.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         AnimatedVisibility(visible = !state.isConnected) {
             ComposerDisconnectedBanner(
                 state = state,
                 onReconnect = onReconnect,
+            )
+        }
+
+        if (turnViewModel.autocompleteFiles.isNotEmpty()) {
+            FileAutocompletePanel(
+                files = turnViewModel.autocompleteFiles,
+                onSelect = { file ->
+                    onInputChanged(turnViewModel.addMentionedFile(input, file))
+                },
+            )
+        }
+
+        if (turnViewModel.autocompleteSkills.isNotEmpty()) {
+            SkillAutocompletePanel(
+                skills = turnViewModel.autocompleteSkills,
+                onSelect = { skill ->
+                    onInputChanged(turnViewModel.addMentionedSkill(input, skill))
+                },
+            )
+        }
+
+        if (queuedDrafts.isNotEmpty()) {
+            QueuedDraftsPanel(
+                drafts = queuedDrafts,
+                canSteerDrafts = isRunning && queuePresentation.canSteerDrafts && supportsTurnSteer,
+                steeringDraftId = turnViewModel.steeringDraftId,
+                onSteerDraft = { draftId ->
+                    if (threadIdForQueue != null) {
+                        coroutineScope.launch {
+                            turnViewModel.requestAssistantResponseAnchor()
+                            turnViewModel.performDraftSteer(draftId) {
+                                viewModel.steerQueuedDraft(threadIdForQueue, draftId)
+                            }
+                        }
+                    }
+                },
+                onRemoveDraft = { draftId ->
+                    if (threadIdForQueue != null) {
+                        viewModel.removeQueuedDraft(threadIdForQueue, draftId)
+                    }
+                },
             )
         }
 
@@ -83,30 +125,7 @@ internal fun TurnComposerView(
             ) {
                 ComposerTopPanels(
                     turnViewModel = turnViewModel,
-                    queuedDrafts = queuedDrafts,
-                    canSteerDrafts = isRunning && queuePresentation.canSteerDrafts && supportsTurnSteer,
                     showsPlanMode = supportsPlanMode,
-                    onSteerDraft = { draftId ->
-                        if (threadIdForQueue != null) {
-                            coroutineScope.launch {
-                                turnViewModel.requestAssistantResponseAnchor()
-                                turnViewModel.performDraftSteer(draftId) {
-                                    viewModel.steerQueuedDraft(threadIdForQueue, draftId)
-                                }
-                            }
-                        }
-                    },
-                    onFileSelected = { file ->
-                        onInputChanged(turnViewModel.addMentionedFile(input, file))
-                    },
-                    onSkillSelected = { skill ->
-                        onInputChanged(turnViewModel.addMentionedSkill(input, skill))
-                    },
-                    onRemoveDraft = { draftId ->
-                        if (threadIdForQueue != null) {
-                            viewModel.removeQueuedDraft(threadIdForQueue, draftId)
-                        }
-                    },
                 )
 
                 if (turnViewModel.composerAttachments.isNotEmpty()) {
