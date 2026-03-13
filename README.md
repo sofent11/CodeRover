@@ -1,15 +1,15 @@
 <p align="center">
-  <img src="CodexMobile/CodexMobile/Assets.xcassets/remodex-og.imageset/remodex-og2%20(1).png" alt="Remodex" />
+  <img src="assets/readme-hero.jpg" alt="CodeRover" />
 </p>
 
-# Remodex
+# CodeRover
 
-[![npm version](https://img.shields.io/npm/v/remodex)](https://www.npmjs.com/package/remodex)
+[![npm version](https://img.shields.io/npm/v/coderover)](https://www.npmjs.com/package/coderover)
 [![License: ISC](https://img.shields.io/badge/License-ISC-blue.svg)](LICENSE)
 
-Control [Codex](https://openai.com/index/codex/) from your iPhone. Remodex is a local-first open-source bridge + iOS app that keeps the Codex runtime on your Mac and lets your phone connect through a paired encrypted channel over your LAN or tailnet.
+Control CodeRover from your iPhone. CodeRover is a local-first open-source bridge + iOS app that keeps the CodeRover runtime on your Mac and lets your phone connect through a paired encrypted channel over your LAN or tailnet.
 
-It's fork from https://github.com/Emanuele-web04/remodex ,thanks to their original greate work
+It's fork from https://github.com/Emanuele-web04/coderover ,thanks to their original greate work
 
 > **I am very early in this project. Expect bugs.**
 >
@@ -19,7 +19,7 @@ It's fork from https://github.com/Emanuele-web04/remodex ,thanks to their origin
 
 Build you self.
 
-Once the app is installed, onboarding inside Remodex walks you through pairing and scanning the QR from inside the app.
+Once the app is installed, onboarding inside CodeRover walks you through pairing and scanning the QR from inside the app.
 
 If you scan the pairing QR with a generic camera or QR reader before installing the app, your device may treat the QR payload as plain text and open a web search instead of pairing.
 
@@ -27,21 +27,21 @@ If you scan the pairing QR with a generic camera or QR reader before installing 
 
 ```
 ┌──────────────┐       Paired session   ┌───────────────┐       stdin/stdout       ┌─────────────┐
-│  Remodex iOS │ ◄────────────────────► │ remodex (Mac) │ ◄──────────────────────► │ codex       │
+│  CodeRover iOS │ ◄────────────────────► │ coderover (Mac) │ ◄──────────────────────► │ coderover       │
 │  app         │    local / tailnet     │ bridge        │    JSON-RPC              │ app-server  │
 └──────────────┘                        └───────────────┘                          └─────────────┘
                                                │                                         │
                                                │  AppleScript route bounce                │ JSONL rollout
                                                ▼                                         ▼
                                         ┌─────────────┐                           ┌─────────────┐
-                                        │  Codex.app  │ ◄─── reads from ──────── │  ~/.codex/  │
+                                        │  CodeRover.app  │ ◄─── reads from ──────── │  ~/.coderover/  │
                                         │  (desktop)  │      disk on navigate     │  sessions   │
                                         └─────────────┘                           └─────────────┘
 ```
 
-1. Run `remodex up` on your Mac — a QR code appears in the terminal
-2. Scan it with the Remodex iOS app to pair
-3. Your phone sends instructions to Codex through the bridge and receives responses in real-time
+1. Run `coderover up` on your Mac — a QR code appears in the terminal
+2. Scan it with the CodeRover iOS app to pair
+3. Your phone sends instructions to CodeRover through the bridge and receives responses in real-time
 4. The bridge handles git operations, desktop refresh, and session persistence locally
 
 ## Repository Structure
@@ -49,63 +49,63 @@ If you scan the pairing QR with a generic camera or QR reader before installing 
 This is a monorepo with a local bridge, an iOS app target, and its tests:
 
 ```
-├── phodex-bridge/                # Node.js bridge package used by `remodex`
+├── coderover-bridge/                # Node.js bridge package used by `coderover`
 │   ├── bin/                      # CLI entrypoints
 │   └── src/                      # Bridge runtime, git/workspace handlers, refresh helpers
 │
-├── CodexMobile/                  # Xcode project root
-│   ├── CodexMobile/              # App source target
+├── CodeRoverMobile/                  # Xcode project root
+│   ├── CodeRoverMobile/              # App source target
 │   │   ├── Services/             # Connection, sync, incoming-event, git, and persistence logic
 │   │   ├── Views/                # SwiftUI screens and timeline/sidebar components
 │   │   ├── Models/               # RPC, thread, message, and UI models
 │   │   └── Assets.xcassets/      # App icons and UI assets
-│   ├── CodexMobileTests/         # Unit tests
-│   ├── CodexMobileUITests/       # UI tests
+│   ├── CodeRoverMobileTests/         # Unit tests
+│   ├── CodeRoverMobileUITests/       # UI tests
 │   └── BuildSupport/             # Info.plist and build-time support files
 ```
 
 ## Prerequisites
 
 - **Node.js** v18+
-- **[Codex CLI](https://github.com/openai/codex)** installed and in your PATH
-- **[Codex desktop app](https://openai.com/index/codex/)** (optional — for viewing threads on your Mac)
-- **[Remodex iOS app via TestFlight](https://testflight.apple.com/join/PKZhBUVM)** installed on your iPhone or iPad before scanning the pairing QR
+- **CodeRover CLI** installed and in your PATH
+- **CodeRover desktop app** (optional — for viewing threads on your Mac)
+- **[CodeRover iOS app via TestFlight](https://testflight.apple.com/join/PKZhBUVM)** installed on your iPhone or iPad before scanning the pairing QR
 - **macOS** (for desktop refresh features — the core bridge works on any OS)
 - **Xcode 16+** (only if building the iOS app from source)
 
 ## Install the Bridge
 
 ```sh
-npm install -g remodex
+npm install -g coderover
 ```
 
 To update an existing global install later:
 
 ```sh
-npm install -g remodex@latest
+npm install -g coderover@latest
 ```
 
-If you only want to try Remodex, you can install it from npm and run it without cloning this repository.
+If you only want to try CodeRover, you can install it from npm and run it without cloning this repository.
 
 ## Quick Start
 
 ```sh
-remodex up
+coderover up
 ```
 
-Open the Remodex app, follow the onboarding flow, then scan the QR code from inside the app and start coding.
+Open the CodeRover app, follow the onboarding flow, then scan the QR code from inside the app and start coding.
 
 ## Local Development
 
 ```sh
-cd phodex-bridge
+cd coderover-bridge
 npm install
 npm start
 ```
 
 ## Commands
 
-### `remodex up`
+### `coderover up`
 
 Starts the bridge:
 
@@ -116,23 +116,23 @@ Starts the bridge:
 - Handles git commands from the phone
 - Persists the active thread for later resumption
 
-### `remodex resume`
+### `coderover resume`
 
-Reopens the last active thread in Codex.app on your Mac.
+Reopens the last active thread in CodeRover.app on your Mac.
 
 ```sh
-remodex resume
-# => [remodex] Opened last active thread: abc-123 (phone)
+coderover resume
+# => [coderover] Opened last active thread: abc-123 (phone)
 ```
 
-### `remodex watch [threadId]`
+### `coderover watch [threadId]`
 
 Tails the event log for a thread in real-time.
 
 ```sh
-remodex watch
+coderover watch
 # => [14:32:01] Phone: "Fix the login bug in auth.ts"
-# => [14:32:05] Codex: "I'll look at auth.ts and fix the login..."
+# => [14:32:05] CodeRover: "I'll look at auth.ts and fix the login..."
 # => [14:32:18] Task started
 # => [14:33:42] Task complete
 ```
@@ -143,50 +143,50 @@ All optional. Sensible defaults are provided.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `REMODEX_LOCAL_PORT` | `8765` | Stable local bridge port exposed by `remodex up` |
-| `REMODEX_TAILNET_URL` | — | Optional tailnet URL prefix appended with `/bridge/<bridgeId>` for cross-network fallback |
-| `REMODEX_RELAY_URL` | — | Optional explicit relay URL prefix appended with `/bridge/<bridgeId>` and added to the QR transport list |
-| `REMODEX_RELAY_URLS` | — | Optional comma-separated relay URL prefixes when you want multiple explicit relay candidates in the QR |
-| `REMODEX_CODEX_ENDPOINT` | — | Connect to an existing Codex WebSocket instead of spawning a local `codex app-server` |
-| `REMODEX_REFRESH_ENABLED` | `false` | Auto-refresh Codex.app when phone activity is detected (`true` enables it explicitly) |
-| `REMODEX_REFRESH_DEBOUNCE_MS` | `1200` | Debounce window (ms) for coalescing refresh events |
-| `REMODEX_REFRESH_COMMAND` | — | Custom shell command to run instead of the built-in AppleScript refresh |
-| `REMODEX_CODEX_BUNDLE_ID` | `com.openai.codex` | macOS bundle ID of the Codex app |
-| `CODEX_HOME` | `~/.codex` | Codex data directory (used here for `sessions/` rollout files) |
+| `CODEROVER_LOCAL_PORT` | `8765` | Stable local bridge port exposed by `coderover up` |
+| `CODEROVER_TAILNET_URL` | — | Optional tailnet URL prefix appended with `/bridge/<bridgeId>` for cross-network fallback |
+| `CODEROVER_RELAY_URL` | — | Optional explicit relay URL prefix appended with `/bridge/<bridgeId>` and added to the QR transport list |
+| `CODEROVER_RELAY_URLS` | — | Optional comma-separated relay URL prefixes when you want multiple explicit relay candidates in the QR |
+| `CODEROVER_ENDPOINT` | — | Connect to an existing CodeRover WebSocket instead of spawning a local `codex app-server` |
+| `CODEROVER_REFRESH_ENABLED` | `false` | Auto-refresh CodeRover.app when phone activity is detected (`true` enables it explicitly) |
+| `CODEROVER_REFRESH_DEBOUNCE_MS` | `1200` | Debounce window (ms) for coalescing refresh events |
+| `CODEROVER_REFRESH_COMMAND` | — | Custom shell command to run instead of the built-in AppleScript refresh |
+| `CODEROVER_BUNDLE_ID` | `com.sofent.CodeRover` | macOS bundle ID of the CodeRover app |
+| `CODEROVER_HOME` | `~/.coderover` | CodeRover data directory (used here for `sessions/` rollout files) |
 
 ```sh
 # Enable desktop refresh explicitly
-REMODEX_REFRESH_ENABLED=true remodex up
+CODEROVER_REFRESH_ENABLED=true coderover up
 
-# Connect to an existing Codex instance
-REMODEX_CODEX_ENDPOINT=ws://localhost:8080 remodex up
+# Connect to an existing CodeRover instance
+CODEROVER_ENDPOINT=ws://localhost:8080 coderover up
 
 # Expose a stable local bridge on a custom port
-REMODEX_LOCAL_PORT=9876 remodex up
+CODEROVER_LOCAL_PORT=9876 coderover up
 
 # Add a tailnet fallback candidate
-REMODEX_TAILNET_URL=wss://my-mac.tailnet.example remodex up
+CODEROVER_TAILNET_URL=wss://my-mac.tailnet.example coderover up
 
 # Add one explicit relay candidate (for example an frp-exposed public endpoint)
-REMODEX_RELAY_URL=wss://relay.example.com remodex up
+CODEROVER_RELAY_URL=wss://relay.example.com coderover up
 
 # Add multiple relay candidates
-REMODEX_RELAY_URLS=wss://relay-a.example.com,wss://relay-b.example.com/remodex remodex up
+CODEROVER_RELAY_URLS=wss://relay-a.example.com,wss://relay-b.example.com/coderover coderover up
 
 ```
 
 ## Pairing and Safety
 
-- Remodex is local-first: Codex, git operations, and workspace actions run on your Mac, while the iPhone acts as a paired remote control.
+- CodeRover is local-first: CodeRover, git operations, and workspace actions run on your Mac, while the iPhone acts as a paired remote control.
 - The pairing QR now carries a stable bridge ID, encrypted Mac identity metadata, and an ordered list of transport candidates.
 - The iPhone prefers direct local connections and can reuse a previously successful transport.
-- If both devices are on the same tailnet, add `REMODEX_TAILNET_URL` so the QR code also carries a cross-network candidate.
-- If you expose the bridge through `frp` or another relay, add `REMODEX_RELAY_URL` or `REMODEX_RELAY_URLS` so the QR code also carries those explicit public candidates.
+- If both devices are on the same tailnet, add `CODEROVER_TAILNET_URL` so the QR code also carries a cross-network candidate.
+- If you expose the bridge through `frp` or another relay, add `CODEROVER_RELAY_URL` or `CODEROVER_RELAY_URLS` so the QR code also carries those explicit public candidates.
 - On the iPhone, the default agent permission mode is `On-Request`. Switching the app to `Full access` auto-approves runtime approval prompts from the agent.
 
 ## Security and Privacy
 
-Remodex now uses an authenticated end-to-end encrypted channel between the paired iPhone and the bridge running on your Mac. The underlying LAN or tailnet transport does not get plaintext prompts, tool calls, Codex responses, git output, or workspace RPC payloads once the secure session is established.
+CodeRover now uses an authenticated end-to-end encrypted channel between the paired iPhone and the bridge running on your Mac. The underlying LAN or tailnet transport does not get plaintext prompts, tool calls, CodeRover responses, git output, or workspace RPC payloads once the secure session is established.
 
 The secure channel is built in these steps:
 
@@ -232,32 +232,32 @@ The bridge also handles local workspace-scoped revert operations for the assista
 | `workspace/revertPatchPreview` | Checks whether a reverse patch can be applied cleanly in the local repo |
 | `workspace/revertPatchApply` | Applies the reverse patch locally when the preview succeeds |
 
-## Codex Desktop App Integration
+## CodeRover Desktop App Integration
 
-Remodex works with both the Codex CLI and the Codex desktop app (`Codex.app`). Under the hood, the bridge spawns a `codex app-server` process — the same JSON-RPC interface that powers the desktop app and IDE extensions. Conversations are persisted as JSONL rollout files under `~/.codex/sessions`, so threads started from your phone show up in the desktop app too.
+CodeRover works with both the CodeRover CLI and the CodeRover desktop app (`CodeRover.app`). Under the hood, the bridge spawns a `codex app-server` process — the same JSON-RPC interface that powers the desktop app and IDE extensions. Conversations are persisted as JSONL rollout files under `~/.coderover/sessions`, so threads started from your phone show up in the desktop app too.
 
-**Known limitation**: The Codex desktop app does not live-reload when an external `app-server` process writes new data to disk. Threads created or updated from your phone won't appear in the desktop app until it remounts that route. Remodex keeps desktop refresh off by default for now because the current deep-link bounce is still disruptive. You can still enable it manually if you want the old remount workaround.
+**Known limitation**: The CodeRover desktop app does not live-reload when an external `app-server` process writes new data to disk. Threads created or updated from your phone won't appear in the desktop app until it remounts that route. CodeRover keeps desktop refresh off by default for now because the current deep-link bounce is still disruptive. You can still enable it manually if you want the old remount workaround.
 
 ```sh
 # Enable the old deep-link refresh workaround manually
-REMODEX_REFRESH_ENABLED=true remodex up
+CODEROVER_REFRESH_ENABLED=true coderover up
 ```
 
-This triggers a debounced deep-link bounce (`codex://settings` → `codex://threads/<id>`) that forces the desktop app to remount the current thread without interrupting any running tasks. While a turn is running, Remodex also watches the persisted rollout for that thread and issues occasional throttled refreshes so long responses become visible on Mac without a full app relaunch. If the local desktop path is unavailable, the bridge self-disables desktop refresh for the rest of that run instead of retrying noisily forever.
+This triggers a debounced deep-link bounce (`coderover://settings` → `coderover://threads/<id>`) that forces the desktop app to remount the current thread without interrupting any running tasks. While a turn is running, CodeRover also watches the persisted rollout for that thread and issues occasional throttled refreshes so long responses become visible on Mac without a full app relaunch. If the local desktop path is unavailable, the bridge self-disables desktop refresh for the rest of that run instead of retrying noisily forever.
 
 ## Connection Resilience
 
 - **Stable bridge identity**: The Mac bridge persists one bridge ID across restarts so saved pairings stay reusable
 - **Direct reconnect**: The iPhone keeps a list of transport candidates and retries them in order, preferring the last successful connection
 - **Secure catch-up**: The bridge keeps a bounded local outbound buffer and re-sends missed encrypted messages after a secure reconnect
-- **Codex persistence**: The Codex process stays alive across bridge reconnects
+- **CodeRover persistence**: The CodeRover process stays alive across bridge reconnects
 - **Graceful shutdown**: SIGINT/SIGTERM cleanly close all connections
 
 ## Building the iOS App
 
 ```sh
-cd CodexMobile
-open CodexMobile.xcodeproj
+cd CodeRoverMobile
+open CodeRoverMobile.xcodeproj
 ```
 
 Build and run on a physical device or simulator with Xcode. The app uses SwiftUI and the current project target is iOS 18.6.
@@ -269,22 +269,22 @@ I'm not actively accepting contributions yet. See [CONTRIBUTING.md](CONTRIBUTING
 ## FAQ
 
 **Do I need an OpenAI API key?**
-Not for Remodex itself. You need Codex CLI set up and working independently.
+Not for CodeRover itself. You need CodeRover CLI set up and working independently.
 
 **Does this work on Linux/Windows?**
-The core bridge (local socket + Codex forwarding + git) works on any OS. Desktop refresh (AppleScript) is macOS-only.
+The core bridge (local socket + CodeRover forwarding + git) works on any OS. Desktop refresh (AppleScript) is macOS-only.
 
 **What happens if I close the terminal?**
-The bridge stops. Run `remodex up` again — your phone will reconnect when it detects one of the saved bridge transports again.
+The bridge stops. Run `coderover up` again — your phone will reconnect when it detects one of the saved bridge transports again.
 
-**Can I connect to a remote Codex instance?**
-Yes — set `REMODEX_CODEX_ENDPOINT=ws://host:port` to skip spawning a local `codex app-server`.
+**Can I connect to a remote CodeRover instance?**
+Yes — set `CODEROVER_ENDPOINT=ws://host:port` to skip spawning a local `codex app-server`.
 
-**Why don't my phone threads show up in the Codex desktop app immediately?**
-The desktop app reads session data from disk (`~/.codex/sessions`) but doesn't live-reload when an external process writes new data. Remodex keeps desktop refresh off by default for now because the current workaround bounces the Codex app route and can feel disruptive. If you still want that workaround, enable it explicitly with `REMODEX_REFRESH_ENABLED=true`.
+**Why don't my phone threads show up in the CodeRover desktop app immediately?**
+The desktop app reads session data from disk (`~/.coderover/sessions`) but doesn't live-reload when an external process writes new data. CodeRover keeps desktop refresh off by default for now because the current workaround bounces the CodeRover app route and can feel disruptive. If you still want that workaround, enable it explicitly with `CODEROVER_REFRESH_ENABLED=true`.
 
 **Do I need any hosted transport?**
-No. Remodex now only uses direct local transport to the bridge running on your Mac, plus an optional tailnet URL when you explicitly configure one.
+No. CodeRover now only uses direct local transport to the bridge running on your Mac, plus an optional tailnet URL when you explicitly configure one.
 
 ## License
 

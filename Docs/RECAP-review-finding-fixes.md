@@ -13,11 +13,11 @@ This task fixed the two regressions found in review. The desktop refresher now r
 
 | File | Status | Role |
 |---|---|---|
-| `phodex-bridge/src/codex-desktop-refresher.js` | ✏️ Modified | Keeps pending completion refreshes alive until they actually run |
-| `phodex-bridge/test/codex-desktop-refresher.test.js` | ✏️ Modified | Covers the slow-refresh + queued-completion regression |
-| `CodexMobile/CodexMobile/Views/Sidebar/SidebarThreadGrouping.swift` | ✏️ Modified | Adds a pure helper to resolve full live project membership |
-| `CodexMobile/CodexMobile/Views/SidebarView.swift` | ✏️ Modified | Uses the full project membership when archiving from the sidebar |
-| `CodexMobile/CodexMobileTests/SidebarThreadGroupingTests.swift` | ✏️ Modified | Adds coverage for filtered-project and no-project archive resolution |
+| `coderover-bridge/src/coderover-desktop-refresher.js` | ✏️ Modified | Keeps pending completion refreshes alive until they actually run |
+| `coderover-bridge/test/coderover-desktop-refresher.test.js` | ✏️ Modified | Covers the slow-refresh + queued-completion regression |
+| `CodeRoverMobile/CodeRoverMobile/Views/Sidebar/SidebarThreadGrouping.swift` | ✏️ Modified | Adds a pure helper to resolve full live project membership |
+| `CodeRoverMobile/CodeRoverMobile/Views/SidebarView.swift` | ✏️ Modified | Uses the full project membership when archiving from the sidebar |
+| `CodeRoverMobile/CodeRoverMobileTests/SidebarThreadGroupingTests.swift` | ✏️ Modified | Adds coverage for filtered-project and no-project archive resolution |
 
 ---
 
@@ -30,7 +30,7 @@ The first bug came from the desktop refresh queue tracking two kinds of pending 
 The fix keeps both problems in pure, local logic. The refresher now asks one helper whether any work is still pending, and the sidebar now resolves archive membership from the complete thread list instead of trusting the visible subset.
 
 ### Step-by-step
-1. `CodexDesktopRefresher` now uses `hasPendingRefreshWork()` both before running and after finishing a refresh. This means a queued completion refresh survives the case where its timer fires during another slow refresh.
+1. `CodeRoverDesktopRefresher` now uses `hasPendingRefreshWork()` both before running and after finishing a refresh. This means a queued completion refresh survives the case where its timer fires during another slow refresh.
 2. A new test simulates exactly that slow-refresh timing. It verifies that the completion refresh runs after the first refresh is released.
 3. `SidebarThreadGrouping.liveThreadIDsForProjectGroup(...)` now rebuilds the project membership from the full thread list. It matches on the stable project group id, so filtered groups and the `No Project` bucket still resolve to the correct live chats.
 4. `SidebarView.archivePendingProjectGroup()` now uses those resolved ids and checks the selected thread against the full archived set. This keeps the action aligned with the dialog copy that says the whole project will be archived.
@@ -45,7 +45,7 @@ The sidebar fix intentionally resolves only live threads, so archived chats stay
 ### Happy Path
 ```mermaid
 flowchart TD
-    A["turn/completed arrives"] -->|marks pending completion| B["CodexDesktopRefresher.queueCompletionRefresh"]
+    A["turn/completed arrives"] -->|marks pending completion| B["CodeRoverDesktopRefresher.queueCompletionRefresh"]
     B -->|slow refresh still running| C["runPendingRefresh returns early"]
     C -->|finally checks hasPendingRefreshWork| D["scheduleRefresh('pending follow-up refresh')"]
     D -->|next timer fires| E["runPendingRefresh completion branch"]

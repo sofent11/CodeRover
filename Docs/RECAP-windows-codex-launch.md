@@ -1,4 +1,4 @@
-# Recap: Windows Codex Launch Fix
+# Recap: Windows CodeRover Launch Fix
 > Generated: 2026-03-10  |  Scope: 3 files
 
 ---
@@ -13,16 +13,16 @@ This task fixed a Windows startup bug in the local bridge. The bridge used to sp
 
 | File | Status | Role |
 |---|---|---|
-| `phodex-bridge/src/codex-transport.js` | ✏️ Modified | Added platform-aware spawn planning and safe Windows shutdown |
-| `phodex-bridge/src/bridge.js` | ✏️ Modified | Improved startup error logging to show the actual launch command |
-| `Docs/RECAP-windows-codex-launch.md` | ✅ Created | Recap for the Windows launcher fix |
+| `coderover-bridge/src/codex-transport.js` | ✏️ Modified | Added platform-aware spawn planning and safe Windows shutdown |
+| `coderover-bridge/src/bridge.js` | ✏️ Modified | Improved startup error logging to show the actual launch command |
+| `Docs/RECAP-windows-coderover-launch.md` | ✅ Created | Recap for the Windows launcher fix |
 
 ---
 
 ## Logic Explanation
 
 ### Problem
-Windows users could have Codex installed and working in their terminal, but `remodex up` still failed with `spawn codex ENOENT`. The bridge assumed the same direct child-process launch worked everywhere, which is not true for the Windows `.cmd` launcher path.
+Windows users could have CodeRover installed and working in their terminal, but `coderover up` still failed with `spawn coderover ENOENT`. The bridge assumed the same direct child-process launch worked everywhere, which is not true for the Windows `.cmd` launcher path.
 
 ### Approach
 The fix keeps launch selection in one helper so the bridge chooses exactly one command based on `process.platform`. This is safer than trying several commands in sequence, because retries could create duplicate child processes and make shutdown messy.
@@ -53,16 +53,16 @@ flowchart TD
 ### Error Path
 ```mermaid
 flowchart TD
-    A[child_process.spawn] -->|spawn error| B[bridge.js codex.onError]
+    A[child_process.spawn] -->|spawn error| B[bridge.js coderover.onError]
     B -->|show launch command| C[Terminal logs]
     D[Bridge shutdown] -->|Windows only| E[shutdownCodexProcess]
-    E -->|taskkill /t /f| F[Kill shell + Codex child tree]
+    E -->|taskkill /t /f| F[Kill shell + CodeRover child tree]
 ```
 
 ---
 
 ## High School Explanation
 
-Imagine Remodex is trying to open a game by double-clicking the launcher. On Mac and Linux, it can open the game app directly. On Windows, though, the thing called `codex` is often more like a shortcut file, so trying to open it the same way can fail even when the game is installed.
+Imagine CodeRover is trying to open a game by double-clicking the launcher. On Mac and Linux, it can open the game app directly. On Windows, though, the thing called `coderover` is often more like a shortcut file, so trying to open it the same way can fail even when the game is installed.
 
-The fix teaches Remodex to use the right door for each computer. On Windows it now says, basically, "hey Command Prompt, please start Codex for me," which is the normal way that shortcut works. Then, when Remodex shuts down, it does not just close the front window and leave the game running in the background. It closes the whole stack cleanly.
+The fix teaches CodeRover to use the right door for each computer. On Windows it now says, basically, "hey Command Prompt, please start CodeRover for me," which is the normal way that shortcut works. Then, when CodeRover shuts down, it does not just close the front window and leave the game running in the background. It closes the whole stack cleanly.

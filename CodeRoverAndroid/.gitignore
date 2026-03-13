@@ -1,0 +1,8 @@
+/build
+/.kotlin
+/.gradle
+/local.properties
+/.idea
+/.gradle-dist
+/gradle-wrapper.jar
+**/build

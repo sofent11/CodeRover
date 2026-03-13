@@ -1,17 +1,17 @@
-# Remodex + FRP Relay Guide
+# CodeRover + FRP Relay Guide
 
-This guide shows how to expose the local Remodex bridge through [`frp`](https://github.com/fatedier/frp) when Tailscale is too slow or unstable for interactive use.
+This guide shows how to expose the local CodeRover bridge through [`frp`](https://github.com/fatedier/frp) when Tailscale is too slow or unstable for interactive use.
 
 The goal is:
 
-1. `remodex` still runs locally on your Mac.
+1. `coderover` still runs locally on your Mac.
 2. `frpc` forwards a public TCP port from your VPS back to the local bridge port on your Mac.
-3. Remodex advertises that public relay address in the pairing QR.
+3. CodeRover advertises that public relay address in the pairing QR.
 4. The mobile app can pick the relay candidate during pairing or later in transport settings.
 
 ## Why TCP mode
 
-Remodex exposes a WebSocket endpoint on a path like `/bridge/<bridgeId>`, but the transport itself is still ordinary WebSocket-over-TCP. For `frp`, the safest setup is a plain `tcp` proxy that forwards the whole socket stream unchanged.
+CodeRover exposes a WebSocket endpoint on a path like `/bridge/<bridgeId>`, but the transport itself is still ordinary WebSocket-over-TCP. For `frp`, the safest setup is a plain `tcp` proxy that forwards the whole socket stream unchanged.
 
 Do not use `http`, `https`, or path-rewriting proxies for the bridge unless you are intentionally terminating and re-originating WebSocket traffic and you understand the upgrade requirements.
 
@@ -30,7 +30,7 @@ iPhone / Android app
         |
         | ws://127.0.0.1:8765/bridge/<bridgeId>
         v
-   remodex up / npm start
+   coderover up / npm start
 ```
 
 ## Prerequisites
@@ -38,10 +38,10 @@ iPhone / Android app
 - A VPS with a public IPv4 address
 - A domain name pointing at that VPS, such as `relay.example.com`
 - `frp` installed on both the VPS and your Mac
-- Remodex bridge already working locally with `cd phodex-bridge && npm start`
+- CodeRover bridge already working locally with `cd coderover-bridge && npm start`
 - Port planning:
   - `7000/tcp` for `frps` control channel
-  - `8765/tcp` for the public Remodex relay port
+  - `8765/tcp` for the public CodeRover relay port
   - `7500/tcp` optional, only if you want the `frps` dashboard
 
 ## Version choice
@@ -141,12 +141,12 @@ sudo systemctl status frps
 
 ## Step 2: Mac local setup
 
-### 1. Confirm Remodex local bridge works
+### 1. Confirm CodeRover local bridge works
 
 On your Mac:
 
 ```sh
-cd phodex-bridge
+cd coderover-bridge
 npm install
 npm start
 ```
@@ -167,7 +167,7 @@ auth.token = "replace-with-a-long-random-secret"
 transport.tls.enable = true
 
 [[proxies]]
-name = "remodex-bridge"
+name = "coderover-bridge"
 type = "tcp"
 localIP = "127.0.0.1"
 localPort = 8765
@@ -177,8 +177,8 @@ remotePort = 8765
 Notes:
 
 - `serverAddr` is your VPS domain or IP.
-- `localIP` should stay `127.0.0.1` because the Remodex bridge runs on the same Mac.
-- `type = "tcp"` is the important part for Remodex.
+- `localIP` should stay `127.0.0.1` because the CodeRover bridge runs on the same Mac.
+- `type = "tcp"` is the important part for CodeRover.
 - `remotePort = 8765` means your VPS will expose `relay.example.com:8765` publicly.
 
 ### 3. Start `frpc`
@@ -193,22 +193,22 @@ If this succeeds, keep it alive with `launchd`, `brew services`, or your own sup
 
 ## Step 3: Advertise the relay address in the pairing QR
 
-Once the relay works, start Remodex with an explicit relay candidate:
+Once the relay works, start CodeRover with an explicit relay candidate:
 
 ```sh
-cd /Users/sofent/work/remodex/phodex-bridge
-REMODEX_RELAY_URL=wss://relay.example.com:8765 npm start
+cd /Users/sofent/work/coderover/coderover-bridge
+CODEROVER_RELAY_URL=wss://relay.example.com:8765 npm start
 ```
 
 You can also advertise multiple relay candidates:
 
 ```sh
-REMODEX_RELAY_URLS=wss://relay-a.example.com:8765,wss://relay-b.example.com:8765 npm start
+CODEROVER_RELAY_URLS=wss://relay-a.example.com:8765,wss://relay-b.example.com:8765 npm start
 ```
 
 Behavior:
 
-- Remodex still auto-adds local LAN candidates.
+- CodeRover still auto-adds local LAN candidates.
 - It still auto-adds Tailscale candidates if available.
 - The explicit relay URLs are appended to the QR payload as additional transport candidates.
 - If the QR contains more than one candidate, the mobile app can choose the correct one.
@@ -222,7 +222,7 @@ Assumptions in this sample:
 - VPS domain: `relay.example.com`
 - VPS public relay port: `8765`
 - `frps` control port: `7000`
-- Remodex local bridge port on the Mac: `8765`
+- CodeRover local bridge port on the Mac: `8765`
 - `frp` auth token: `replace-with-a-very-long-random-token`
 
 ### VPS: `/etc/frp/frps.toml`
@@ -280,7 +280,7 @@ auth.token = "replace-with-a-very-long-random-token"
 transport.tls.enable = true
 
 [[proxies]]
-name = "remodex-bridge"
+name = "coderover-bridge"
 type = "tcp"
 localIP = "127.0.0.1"
 localPort = 8765
@@ -293,11 +293,11 @@ remotePort = 8765
 /path/to/frpc -c ~/frp/frpc.toml
 ```
 
-### Mac: start Remodex and advertise the relay URL in QR
+### Mac: start CodeRover and advertise the relay URL in QR
 
 ```sh
-cd /Users/sofent/work/remodex/phodex-bridge
-REMODEX_RELAY_URL=wss://relay.example.com:8765 npm start
+cd /Users/sofent/work/coderover/coderover-bridge
+CODEROVER_RELAY_URL=wss://relay.example.com:8765 npm start
 ```
 
 ### End-to-end quick check
@@ -319,24 +319,24 @@ Both should return `426 Upgrade Required`.
 ### If you want two relay entries in the QR
 
 ```sh
-cd /Users/sofent/work/remodex/phodex-bridge
-REMODEX_RELAY_URLS=wss://relay-a.example.com:8765,wss://relay-b.example.com:8765 npm start
+cd /Users/sofent/work/coderover/coderover-bridge
+CODEROVER_RELAY_URLS=wss://relay-a.example.com:8765,wss://relay-b.example.com:8765 npm start
 ```
 
-### If your local Remodex bridge port is not `8765`
+### If your local CodeRover bridge port is not `8765`
 
-Keep the `frpc` `localPort` and Remodex `REMODEX_LOCAL_PORT` aligned:
+Keep the `frpc` `localPort` and CodeRover `CODEROVER_LOCAL_PORT` aligned:
 
 ```sh
-cd /Users/sofent/work/remodex/phodex-bridge
-REMODEX_LOCAL_PORT=9876 REMODEX_RELAY_URL=wss://relay.example.com:8765 npm start
+cd /Users/sofent/work/coderover/coderover-bridge
+CODEROVER_LOCAL_PORT=9876 CODEROVER_RELAY_URL=wss://relay.example.com:8765 npm start
 ```
 
 Then change Mac `frpc.toml` accordingly:
 
 ```toml
 [[proxies]]
-name = "remodex-bridge"
+name = "coderover-bridge"
 type = "tcp"
 localIP = "127.0.0.1"
 localPort = 9876
@@ -345,8 +345,8 @@ remotePort = 8765
 
 ## Step 4: Pair from the mobile app
 
-1. Open Remodex on the phone.
-2. Scan the QR generated by `npm start` or `remodex up`.
+1. Open CodeRover on the phone.
+2. Scan the QR generated by `npm start` or `coderover up`.
 3. If the QR advertises multiple transports, choose the relay or local address you want.
 4. After pairing, you can switch transport preference from app settings if needed.
 
@@ -360,7 +360,7 @@ On the Mac:
 curl -i http://127.0.0.1:8765/bridge/test
 ```
 
-Expected result: HTTP `426 Upgrade Required`. That confirms the local Remodex HTTP server is up.
+Expected result: HTTP `426 Upgrade Required`. That confirms the local CodeRover HTTP server is up.
 
 ### Verify `frpc` to `frps`
 
@@ -383,7 +383,7 @@ curl -i http://relay.example.com:8765/bridge/test
 
 Expected result: still HTTP `426 Upgrade Required`.
 
-That means the TCP tunnel is passing the Remodex bridge endpoint through unchanged.
+That means the TCP tunnel is passing the CodeRover bridge endpoint through unchanged.
 
 ## Common failure cases
 
@@ -394,14 +394,14 @@ Check:
 - `frpc` is running on the Mac
 - `frps` is running on the VPS
 - `remotePort` is open in both VPS firewall and provider security group
-- `REMODEX_RELAY_URL` exactly matches the public address and port exposed by `frp`
+- `CODEROVER_RELAY_URL` exactly matches the public address and port exposed by `frp`
 - The URL scheme matches the way users connect:
   - use `wss://` if users connect through TLS
   - use `ws://` only for plain-text testing on trusted networks
 
 ### 2. Public relay is reachable with `curl`, but the app still fails
 
-Check whether an upstream reverse proxy or CDN is interfering with WebSocket upgrade or long-lived connections. The simplest setup is direct `frp tcp` forwarding from the public port to the local Remodex port.
+Check whether an upstream reverse proxy or CDN is interfering with WebSocket upgrade or long-lived connections. The simplest setup is direct `frp tcp` forwarding from the public port to the local CodeRover port.
 
 ### 3. Local works, relay does not
 
@@ -411,11 +411,11 @@ This almost always means one of:
 - wrong VPS firewall rules
 - wrong `remotePort`
 - wrong domain DNS
-- `REMODEX_RELAY_URL` points to a URL that `frps` is not actually exposing
+- `CODEROVER_RELAY_URL` points to a URL that `frps` is not actually exposing
 
 ### 4. You used `https` or `http` proxy mode
 
-Switch back to `tcp` first. Remodex is a WebSocket bridge, and `tcp` is the least surprising transport for `frp`.
+Switch back to `tcp` first. CodeRover is a WebSocket bridge, and `tcp` is the least surprising transport for `frp`.
 
 ## Operational recommendations
 
@@ -447,7 +447,7 @@ auth.token = "change-me"
 transport.tls.enable = true
 
 [[proxies]]
-name = "remodex-bridge"
+name = "coderover-bridge"
 type = "tcp"
 localIP = "127.0.0.1"
 localPort = 8765
@@ -457,8 +457,8 @@ remotePort = 8765
 Mac startup command:
 
 ```sh
-cd phodex-bridge
-REMODEX_RELAY_URL=wss://relay.example.com:8765 npm start
+cd coderover-bridge
+CODEROVER_RELAY_URL=wss://relay.example.com:8765 npm start
 ```
 
 ## References

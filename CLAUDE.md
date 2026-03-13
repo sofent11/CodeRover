@@ -41,6 +41,6 @@ This repo is local-first now. Do not reintroduce hosted-service assumptions, rem
 ## Local quick runbook
 
 ```bash
-cd phodex-bridge
+cd coderover-bridge
 npm start
 ```

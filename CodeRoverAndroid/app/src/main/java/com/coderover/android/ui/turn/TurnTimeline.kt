@@ -1,0 +1,246 @@
+package com.coderover.android.ui.turn
+
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.KeyboardArrowDown
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.unit.dp
+import com.coderover.android.data.model.AssistantRevertPresentation
+import com.coderover.android.data.model.ChatMessage
+import com.coderover.android.data.model.CommandPhase
+import com.coderover.android.data.model.MessageRole
+import kotlinx.coroutines.launch
+
+private enum class TurnAutoScrollMode {
+    FOLLOW_BOTTOM,
+    ANCHOR_ASSISTANT_RESPONSE,
+    MANUAL,
+}
+
+@Composable
+internal fun TurnTimeline(
+    modifier: Modifier = Modifier,
+    messages: List<ChatMessage>,
+    renderItems: List<TimelineRenderItem>,
+    hasEarlierMessages: Boolean,
+    onLoadEarlierMessages: () -> Unit,
+    isRunning: Boolean,
+    activeTurnId: String?,
+    assistantRevertPresentationByMessageId: Map<String, AssistantRevertPresentation>,
+    onTapAssistantRevert: (ChatMessage) -> Unit,
+    turnViewModel: TurnViewModel,
+    onSubmitStructuredInput: (kotlinx.serialization.json.JsonElement, Map<String, String>) -> Unit,
+) {
+    val listState = rememberLazyListState()
+    val coroutineScope = rememberCoroutineScope()
+    var autoScrollMode by rememberSaveable(messages.lastOrNull()?.id) {
+        mutableStateOf(TurnAutoScrollMode.FOLLOW_BOTTOM)
+    }
+    val latestRenderAnchor = remember(renderItems) { renderItems.lastOrNull()?.key }
+    val copyBlockTextByMessageId = remember(messages, activeTurnId, isRunning) {
+        buildCopyBlockTextByMessageId(
+            messages = messages,
+            activeTurnId = activeTurnId,
+            isThreadRunning = isRunning,
+        )
+    }
+    val isNearBottom by remember(listState, renderItems.size) {
+        derivedStateOf {
+            if (renderItems.isEmpty()) {
+                true
+            } else {
+                val lastVisibleIndex = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
+                lastVisibleIndex >= renderItems.lastIndex - 1
+            }
+        }
+    }
+
+    LaunchedEffect(isNearBottom) {
+        turnViewModel.isScrolledToBottom = isNearBottom
+        if (isNearBottom && autoScrollMode != TurnAutoScrollMode.ANCHOR_ASSISTANT_RESPONSE) {
+            autoScrollMode = TurnAutoScrollMode.FOLLOW_BOTTOM
+        }
+    }
+
+    LaunchedEffect(listState.isScrollInProgress, isNearBottom) {
+        if (listState.isScrollInProgress && !isNearBottom) {
+            autoScrollMode = TurnAutoScrollMode.MANUAL
+        }
+    }
+
+    LaunchedEffect(turnViewModel.shouldAnchorToAssistantResponse, latestRenderAnchor) {
+        if (!turnViewModel.shouldAnchorToAssistantResponse || renderItems.isEmpty()) {
+            return@LaunchedEffect
+        }
+        val anchorIndex = renderItems.indexOfLast { item ->
+            when (item) {
+                is TimelineRenderItem.Message -> item.message.role != MessageRole.USER
+                is TimelineRenderItem.TurnSection -> item.messages.any { message ->
+                    message.role != MessageRole.USER
+                }
+            }
+        }
+        if (anchorIndex >= 0) {
+            autoScrollMode = TurnAutoScrollMode.ANCHOR_ASSISTANT_RESPONSE
+            listState.animateScrollToItem(anchorIndex)
+            autoScrollMode = TurnAutoScrollMode.MANUAL
+        }
+        turnViewModel.shouldAnchorToAssistantResponse = false
+    }
+
+    LaunchedEffect(latestRenderAnchor, isRunning, autoScrollMode, turnViewModel.isScrolledToBottom) {
+        if (renderItems.isEmpty() || autoScrollMode != TurnAutoScrollMode.FOLLOW_BOTTOM || !turnViewModel.isScrolledToBottom) {
+            return@LaunchedEffect
+        }
+        listState.animateScrollToItem(renderItems.lastIndex)
+    }
+
+    Box(
+        modifier = modifier
+            .fillMaxWidth(),
+    ) {
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize(),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+            contentPadding = PaddingValues(start = 18.dp, end = 18.dp, top = 8.dp, bottom = 148.dp),
+        ) {
+            if (messages.isEmpty()) {
+                item {
+                    TurnTimelineEmptyState(isRunning = isRunning)
+                }
+            }
+            if (hasEarlierMessages) {
+                item(key = "load-earlier") {
+                    TextButton(
+                        onClick = onLoadEarlierMessages,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(
+                            text = "Load earlier messages",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                }
+            }
+            items(renderItems, key = { it.key }) { item ->
+                val message = (item as? TimelineRenderItem.Message)?.message ?: return@items
+                TurnMessageBubble(
+                    message = message,
+                    onSubmitStructuredInput = onSubmitStructuredInput,
+                    copyBlockText = copyBlockTextByMessageId[message.id],
+                    assistantRevertPresentation = assistantRevertPresentationByMessageId[message.id],
+                    onTapAssistantRevert = onTapAssistantRevert,
+                )
+            }
+        }
+
+        if (renderItems.isNotEmpty() && !isNearBottom) {
+            Surface(
+                shape = RoundedCornerShape(999.dp),
+                tonalElevation = 6.dp,
+                shadowElevation = 6.dp,
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .navigationBarsPadding()
+                    .padding(bottom = 78.dp),
+            ) {
+                IconButton(
+                    onClick = {
+                        turnViewModel.shouldAnchorToAssistantResponse = false
+                        autoScrollMode = TurnAutoScrollMode.FOLLOW_BOTTOM
+                        coroutineScope.launch {
+                            listState.animateScrollToItem(renderItems.lastIndex)
+                        }
+                    },
+                ) {
+                    Icon(
+                        Icons.Outlined.KeyboardArrowDown,
+                        contentDescription = "Scroll to latest message",
+                    )
+                }
+            }
+        }
+    }
+}
+
+internal fun buildCopyBlockTextByMessageId(
+    messages: List<ChatMessage>,
+    activeTurnId: String?,
+    isThreadRunning: Boolean,
+): Map<String, String> {
+    if (messages.isEmpty()) {
+        return emptyMap()
+    }
+    val result = mutableMapOf<String, String>()
+    val stoppedTurnIds = messages
+        .filter { it.commandState?.phase == CommandPhase.STOPPED }
+        .mapNotNull { it.turnId?.trim()?.takeIf(String::isNotEmpty) }
+        .toSet()
+    val latestTerminalPhase = messages
+        .lastOrNull { it.commandState != null }
+        ?.commandState
+        ?.phase
+    val latestBlockEnd = messages.indexOfLast { it.role != MessageRole.USER }
+    var index = messages.lastIndex
+    while (index >= 0) {
+        if (messages[index].role == MessageRole.USER) {
+            index -= 1
+            continue
+        }
+        val blockEnd = index
+        var blockStart = index
+        while (blockStart > 0 && messages[blockStart - 1].role != MessageRole.USER) {
+            blockStart -= 1
+        }
+        val blockMessages = messages.subList(blockStart, blockEnd + 1)
+        val blockText = blockMessages
+            .map { it.text.trim() }
+            .filter(String::isNotEmpty)
+            .joinToString(separator = "\n\n")
+        val blockTurnId = blockMessages
+            .asReversed()
+            .firstNotNullOfOrNull { message -> message.turnId?.trim()?.takeIf(String::isNotEmpty) }
+        val shouldShowCopyButton = when {
+            blockText.isBlank() -> false
+            blockTurnId != null && stoppedTurnIds.contains(blockTurnId) -> false
+            blockEnd == latestBlockEnd && latestTerminalPhase == CommandPhase.STOPPED -> false
+            !isThreadRunning -> true
+            blockTurnId != null && activeTurnId != null -> blockTurnId != activeTurnId
+            else -> blockEnd != latestBlockEnd
+        }
+        if (shouldShowCopyButton) {
+            result[messages[blockEnd].id] = blockText
+        }
+        index = blockStart - 1
+    }
+    return result
+}
