@@ -3,9 +3,11 @@ package com.remodex.android.ui.turn
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.DropdownMenu
@@ -25,6 +27,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
+import com.remodex.android.data.model.ContextWindowUsage
 import com.remodex.android.data.model.GitDiffTotals
 import com.remodex.android.data.model.GitRepoSyncResult
 import com.remodex.android.data.model.TurnGitActionKind
@@ -33,11 +36,21 @@ import com.remodex.android.ui.theme.monoFamily
 @Composable
 internal fun TurnTopBarActions(
     gitRepoSyncResult: GitRepoSyncResult?,
+    contextWindowUsage: ContextWindowUsage?,
     enabled: Boolean,
     onShowRepoDiff: () -> Unit,
     onSelectGitAction: (TurnGitActionKind) -> Unit,
+    onCompactContext: () -> Unit,
 ) {
     Row(verticalAlignment = Alignment.CenterVertically) {
+        contextWindowUsage?.let { usage ->
+            ContextWindowProgressRing(
+                usage = usage,
+                onCompact = onCompactContext,
+            )
+            Spacer(Modifier.width(12.dp))
+        }
+
         gitRepoSyncResult?.repoDiffTotals?.let { totals ->
             TurnToolbarDiffPill(
                 totals = totals,

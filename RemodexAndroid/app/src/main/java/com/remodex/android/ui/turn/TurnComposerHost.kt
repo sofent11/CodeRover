@@ -3,6 +3,7 @@ package com.remodex.android.ui.turn
 import android.content.ClipboardManager
 import android.content.Context
 import android.graphics.Bitmap
+import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.Composable
@@ -95,15 +96,23 @@ internal fun TurnComposerHost(
     }
 
     LaunchedEffect(state.selectedThread?.cwd, state.isConnected) {
-        turnViewModel.refreshGitStatus(viewModel, state)
-        val cwd = state.selectedThread?.cwd
-        if (state.isConnected && cwd != null) {
+        if (!state.isConnected) return@LaunchedEffect
+        val cwd = state.selectedThread?.cwd ?: return@LaunchedEffect
+
+        runCatching {
+            turnViewModel.refreshGitStatus(viewModel, state)
             viewModel.gitBranchesWithStatus(cwd)
+        }.onFailure { failure ->
+            Log.w("TurnComposerHost", "Failed to refresh git status for $cwd", failure)
         }
     }
 
     LaunchedEffect(input, state.selectedThreadId) {
-        turnViewModel.refreshAutocomplete(viewModel, input, state.selectedThreadId)
+        runCatching {
+            turnViewModel.refreshAutocomplete(viewModel, input, state.selectedThreadId)
+        }.onFailure { failure ->
+            Log.w("TurnComposerHost", "Failed to refresh autocomplete", failure)
+        }
     }
 
     TurnComposerView(

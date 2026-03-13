@@ -50,6 +50,7 @@ import com.remodex.android.data.model.ChatMessage
 import com.remodex.android.data.network.SecureBridgeClient
 import com.remodex.android.data.network.SecureCrypto
 import com.remodex.android.data.storage.PairingStore
+import com.remodex.android.data.storage.UserPreferencesStore
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicBoolean
@@ -81,6 +82,7 @@ class RemodexRepository(context: Context) {
         explicitNulls = false
     }
     private val store = PairingStore(context)
+    private val prefs = UserPreferencesStore(context)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val clientMutex = Mutex()
     private val orderCounter = AtomicInteger(0)
@@ -122,6 +124,7 @@ class RemodexRepository(context: Context) {
             messagesByThread = store.loadCachedMessagesByThread(),
             selectedModelId = store.loadSelectedModelId(normalizeProviderId(store.loadSelectedProviderId())),
             selectedReasoningEffort = store.loadSelectedReasoningEffort(normalizeProviderId(store.loadSelectedProviderId())),
+            collapsedProjectGroupIds = prefs.getCollapsedProjectGroupIds(),
         ),
     )
     val state: StateFlow<AppState> = _state.asStateFlow()
@@ -141,6 +144,25 @@ class RemodexRepository(context: Context) {
             ),
             secureMacFingerprint = activePairing?.macIdentityPublicKey?.let(SecureCrypto::fingerprint),
         )
+    }
+
+    fun toggleProjectGroupCollapsed(projectId: String) {
+        val current = _state.value.collapsedProjectGroupIds.toMutableSet()
+        if (current.contains(projectId)) {
+            current.remove(projectId)
+        } else {
+            current.add(projectId)
+        }
+        prefs.setCollapsedProjectGroupIds(current)
+        updateState { copy(collapsedProjectGroupIds = current) }
+    }
+
+    fun revertAssistantMessage(messageId: String) {
+        Log.d(TAG, "revertAssistantMessage: $messageId (Not implemented yet)")
+    }
+
+    fun compactThreadContext(threadId: String) {
+        Log.d(TAG, "compactThreadContext: $threadId (Not implemented yet)")
     }
 
     fun completeOnboarding() {
@@ -2604,9 +2626,8 @@ class RemodexRepository(context: Context) {
             copy(
                 contextWindowUsageByThread = contextWindowUsageByThread + (
                     threadId to com.remodex.android.data.model.ContextWindowUsage(
-                        usedTokens = usedTokens,
-                        totalTokens = totalTokens,
-                        percentage = (usedTokens.toFloat() / totalTokens.toFloat()).coerceIn(0f, 1f),
+                        tokensUsed = usedTokens,
+                        tokenLimit = totalTokens,
                     )
                 ),
             )

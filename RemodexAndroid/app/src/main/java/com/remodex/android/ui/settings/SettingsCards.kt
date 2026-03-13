@@ -5,10 +5,12 @@ import android.provider.Settings
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -147,26 +149,24 @@ fun SettingsRuntimeDefaultsCard(
 
         if (state.availableModels.isNotEmpty()) {
             val selectedModel = state.availableModels.find { it.id == state.selectedModelId }
-                ?: state.availableModels.first()
 
             SettingsPickerRow(
                 label = "Model",
                 selectedValue = selectedModel,
-                options = state.availableModels,
-                displayValue = ModelOption::title,
-                onValueSelected = { onModelSelected(it.id) },
+                options = listOf(null) + state.availableModels,
+                displayValue = { it?.title ?: "Auto" },
+                onValueSelected = { onModelSelected(it?.id) },
             )
 
-            if (selectedModel.supportedReasoningEfforts.isNotEmpty()) {
+            val modelForReasoning = selectedModel ?: state.availableModels.firstOrNull()
+            if (modelForReasoning != null && modelForReasoning.supportedReasoningEfforts.isNotEmpty()) {
                 val currentReasoning = state.selectedReasoningEffort
-                    ?: selectedModel.defaultReasoningEffort
-                    ?: selectedModel.supportedReasoningEfforts.first()
 
                 SettingsPickerRow(
                     label = "Reasoning",
                     selectedValue = currentReasoning,
-                    options = selectedModel.supportedReasoningEfforts,
-                    displayValue = { it.replaceFirstChar(Char::uppercase) },
+                    options = listOf(null) + modelForReasoning.supportedReasoningEfforts,
+                    displayValue = { it?.replaceFirstChar(Char::uppercase) ?: "Auto" },
                     onValueSelected = onReasoningSelected,
                 )
             }
@@ -183,6 +183,7 @@ fun SettingsConnectionCard(
     onRemovePairing: (String) -> Unit,
     onPreferredTransportSelected: (String, String) -> Unit,
 ) {
+    val haptic = com.remodex.android.ui.shared.HapticFeedback.rememberHapticFeedback()
     val connectionActionInFlight = when (state.connectionPhase) {
         com.remodex.android.data.model.ConnectionPhase.CONNECTING,
         com.remodex.android.data.model.ConnectionPhase.LOADING_CHATS,
@@ -259,22 +260,35 @@ fun SettingsConnectionCard(
             )
         }
 
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
             Button(
-                onClick = onReconnect,
+                onClick = {
+                    haptic.triggerImpactFeedback()
+                    onReconnect()
+                },
                 enabled = !connectionActionInFlight,
+                modifier = Modifier.weight(1f),
+                contentPadding = PaddingValues(horizontal = 8.dp)
             ) {
-                androidx.compose.material3.Icon(Icons.Outlined.Refresh, contentDescription = null)
-                Spacer(Modifier.width(8.dp))
-                Text("Reconnect")
+                androidx.compose.material3.Icon(Icons.Outlined.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("Reconnect", maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             OutlinedButton(
-                onClick = onDisconnect,
+                onClick = {
+                    haptic.triggerImpactFeedback(com.remodex.android.ui.shared.HapticFeedback.Style.MEDIUM)
+                    onDisconnect()
+                },
                 enabled = !connectionActionInFlight,
+                modifier = Modifier.weight(1f),
+                contentPadding = PaddingValues(horizontal = 8.dp)
             ) {
-                androidx.compose.material3.Icon(Icons.Outlined.PowerSettingsNew, contentDescription = null)
-                Spacer(Modifier.width(8.dp))
-                Text("Disconnect")
+                androidx.compose.material3.Icon(Icons.Outlined.PowerSettingsNew, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("Disconnect", maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
     }

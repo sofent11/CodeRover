@@ -4,9 +4,12 @@ import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -37,6 +40,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.style.TextOverflow
@@ -52,8 +56,12 @@ import com.remodex.android.ui.screens.PairingEntryScreen
 import com.remodex.android.ui.screens.SettingsScreen
 import com.remodex.android.ui.screens.SidebarScreen
 import com.remodex.android.ui.shared.AppBackdrop
+import com.remodex.android.ui.shared.HapticFeedback
+import com.remodex.android.ui.shared.StatusTag
+import com.remodex.android.ui.theme.monoFamily
 import com.remodex.android.ui.turn.DiffDetailDialog
 import com.remodex.android.ui.turn.TurnScreen
+import com.remodex.android.ui.turn.TurnThreadPathSheet
 import com.remodex.android.ui.turn.TurnTopBarActions
 import com.remodex.android.ui.turn.buildRepositoryDiffFiles
 import kotlinx.coroutines.launch
@@ -103,6 +111,7 @@ private fun RemodexAppShell(
     viewModel: AppViewModel,
     contentViewModel: ContentViewModel,
 ) {
+    val haptic = HapticFeedback.rememberHapticFeedback()
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val coroutineScope = rememberCoroutineScope()
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -121,6 +130,7 @@ private fun RemodexAppShell(
     }
     var messageInput by rememberSaveable(state.selectedThreadId) { mutableStateOf("") }
     var repositoryDiffBody by remember(state.selectedThreadId) { mutableStateOf<String?>(null) }
+    var repositoryPathToShowInSheet by remember { mutableStateOf<String?>(null) }
     var isSidebarSearchActive by rememberSaveable { mutableStateOf(false) }
 
     DisposableEffect(
@@ -194,6 +204,7 @@ private fun RemodexAppShell(
                     onUnarchiveThread = viewModel::unarchiveThread,
                     onRenameThread = viewModel::renameThread,
                     onSearchActiveChanged = { isSidebarSearchActive = it },
+                    onToggleProjectGroupCollapsed = viewModel::toggleProjectGroupCollapsed,
                 )
             }
         },
@@ -208,14 +219,41 @@ private fun RemodexAppShell(
                                 text = shellHeader.title,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
+                                style = MaterialTheme.typography.titleMedium,
                             )
-                            Text(
-                                text = shellHeader.subtitle,
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            ) {
+                                if (shellContent == AppShellContent.THREAD && selectedThread != null) {
+                                    StatusTag(
+                                        text = selectedThread.providerBadgeTitle,
+                                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.75f),
+                                        contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                    Text(
+                                        text = selectedThread.normalizedProjectPath ?: "Your paired Mac",
+                                        style = MaterialTheme.typography.labelMedium.copy(fontFamily = monoFamily),
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.clickable {
+                                            haptic.triggerImpactFeedback()
+                                            selectedThread.cwd?.let { cwd ->
+                                                repositoryPathToShowInSheet = cwd
+                                            }
+                                        },
+                                    )
+                                } else {
+                                    Text(
+                                        text = shellHeader.subtitle,
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
+                            }
                         }
                     },
                     navigationIcon = {
@@ -237,6 +275,7 @@ private fun RemodexAppShell(
                         if (shellContent == AppShellContent.THREAD) {
                             TurnTopBarActions(
                                 gitRepoSyncResult = state.gitRepoSyncResult,
+                                contextWindowUsage = state.contextWindowUsage,
                                 enabled = state.isConnected &&
                                     selectedThread?.cwd != null &&
                                     !isSelectedThreadRunning,
@@ -251,6 +290,11 @@ private fun RemodexAppShell(
                                     coroutineScope.launch {
                                         viewModel.performGitAction(cwd, action)
                                         viewModel.gitStatus(cwd)
+                                    }
+                                },
+                                onCompactContext = {
+                                    selectedThread?.id?.let { threadId ->
+                                        viewModel.compactThreadContext(threadId)
                                     }
                                 },
                             )
@@ -340,6 +384,13 @@ private fun RemodexAppShell(
                             },
                         )
                     }
+                }
+
+                repositoryPathToShowInSheet?.let { path ->
+                    TurnThreadPathSheet(
+                        path = path,
+                        onDismiss = { repositoryPathToShowInSheet = null }
+                    )
                 }
 
                 repositoryDiffBody?.let { patch ->

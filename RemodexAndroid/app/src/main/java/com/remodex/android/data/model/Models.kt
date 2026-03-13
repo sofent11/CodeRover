@@ -370,6 +370,7 @@ data class FileChangeEntry(
 @Serializable
 data class CodexImageAttachment(
     val thumbnailBase64JPEG: String,
+    val sourceBase64JPEG: String? = null,
     val payloadDataURL: String? = null,
     val sourceUrl: String? = null,
 )
@@ -523,6 +524,8 @@ data class AppState(
     val gitBranchTargetsByThread: Map<String, GitBranchTargets> = emptyMap(),
     val selectedGitBaseBranchByThread: Map<String, String> = emptyMap(),
     val contextWindowUsageByThread: Map<String, ContextWindowUsage> = emptyMap(),
+    val collapsedProjectGroupIds: Set<String> = emptySet(),
+    val assistantRevertPresentationByMessageId: Map<String, AssistantRevertPresentation> = emptyMap(),
     val queuedTurnDraftsByThread: Map<String, List<QueuedTurnDraft>> = emptyMap(),
     val queuePauseMessageByThread: Map<String, String> = emptyMap(),
 ) {
@@ -677,10 +680,42 @@ data class GitDiffTotals(
 
 @Serializable
 data class ContextWindowUsage(
-    val usedTokens: Int,
-    val totalTokens: Int,
-    val percentage: Float
-)
+    val tokensUsed: Int,
+    val tokenLimit: Int,
+) {
+    val fractionUsed: Float
+        get() {
+            if (tokenLimit <= 0) return 0f
+            return (tokensUsed.toFloat() / tokenLimit.toFloat()).coerceIn(0f, 1f)
+        }
+
+    val percentUsed: Int
+        get() = (fractionUsed * 100).toInt()
+
+    val tokensUsedFormatted: String
+        get() = formatTokenCount(tokensUsed)
+
+    val tokenLimitFormatted: String
+        get() = formatTokenCount(tokenLimit)
+
+    private fun formatTokenCount(count: Int): String {
+        return when {
+            count >= 1_000_000 -> {
+                val value = count.toDouble() / 1_000_000.0
+                String.format("%.1fM", value)
+            }
+            count >= 1_000 -> {
+                val value = count.toDouble() / 1_000.0
+                if (value % 1.0 == 0.0) {
+                    "${value.toInt()}k"
+                } else {
+                    String.format("%.1fk", value)
+                }
+            }
+            else -> count.toString()
+        }
+    }
+}
 
 @Serializable
 data class QueuedTurnDraft(

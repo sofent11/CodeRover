@@ -44,6 +44,7 @@ fun SidebarScreen(
     onUnarchiveThread: (String) -> Unit,
     onRenameThread: (String, String) -> Unit,
     onSearchActiveChanged: (Boolean) -> Unit = {},
+    onToggleProjectGroupCollapsed: (String) -> Unit,
 ) {
     var query by rememberSaveable { mutableStateOf("") }
     var isSearchActive by rememberSaveable { mutableStateOf(false) }
@@ -91,6 +92,8 @@ fun SidebarScreen(
                 groups = groups,
                 selectedThreadId = state.selectedThreadId,
                 runningThreadIds = state.runningThreadIds,
+                collapsedProjectGroupIds = state.collapsedProjectGroupIds,
+                onToggleProjectGroupCollapsed = onToggleProjectGroupCollapsed,
                 onSelectThread = { onSelectThread(it.id) },
                 onCreateThreadInProject = { projectPath ->
                     onCreateThread(projectPath, state.selectedProviderId)

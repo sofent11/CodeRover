@@ -4,11 +4,13 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -19,7 +21,9 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -34,6 +38,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.remodex.android.data.model.AssistantRevertPresentation
 import com.remodex.android.data.model.ChatMessage
 import com.remodex.android.data.model.MessageKind
 import com.remodex.android.data.model.MessageRole
@@ -51,6 +56,8 @@ internal fun TurnMessageBubble(
     grouped: Boolean = false,
     replyPresentation: ReplyPresentation? = null,
     copyBlockText: String? = null,
+    assistantRevertPresentation: AssistantRevertPresentation? = null,
+    onTapAssistantRevert: (ChatMessage) -> Unit = {},
 ) {
     when {
         message.role == MessageRole.USER -> {
@@ -69,6 +76,8 @@ internal fun TurnMessageBubble(
                 AssistantMessageBlock(
                     message = message,
                     replyPresentation = replyPresentation,
+                    assistantRevertPresentation = assistantRevertPresentation,
+                    onTapAssistantRevert = onTapAssistantRevert,
                 )
             }
         }
@@ -99,6 +108,8 @@ private fun NonUserMessageBlock(
 private fun AssistantMessageBlock(
     message: ChatMessage,
     replyPresentation: ReplyPresentation? = null,
+    assistantRevertPresentation: AssistantRevertPresentation? = null,
+    onTapAssistantRevert: (ChatMessage) -> Unit = {},
 ) {
     Column(
         modifier = Modifier
@@ -129,6 +140,82 @@ private fun AssistantMessageBlock(
             text = message.text,
             textColor = MaterialTheme.colorScheme.onSurface,
         )
+        assistantRevertPresentation?.let { presentation ->
+            AssistantRevertButton(
+                presentation = presentation,
+                onClick = { onTapAssistantRevert(message) },
+            )
+        }
+        if (message.isStreaming) {
+            TypingIndicator(modifier = Modifier.padding(top = 4.dp))
+        }
+    }
+}
+
+@Composable
+private fun AssistantRevertButton(
+    presentation: AssistantRevertPresentation,
+    onClick: () -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        OutlinedButton(
+            onClick = onClick,
+            enabled = presentation.isEnabled,
+            shape = RoundedCornerShape(12.dp),
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+            modifier = Modifier.height(32.dp)
+        ) {
+            Icon(
+                painter = androidx.compose.ui.res.painterResource(id = android.R.drawable.ic_menu_revert),
+                contentDescription = null,
+                modifier = Modifier.size(14.dp)
+            )
+            Spacer(Modifier.width(6.dp))
+            Text(
+                text = presentation.title,
+                style = MaterialTheme.typography.labelMedium
+            )
+        }
+        presentation.helperText?.let { text ->
+            Text(
+                text = text,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                modifier = Modifier.padding(horizontal = 4.dp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun TypingIndicator(modifier: Modifier = Modifier) {
+    val infiniteTransition = androidx.compose.animation.core.rememberInfiniteTransition(label = "typing")
+    val dotCount = 3
+    Row(
+        modifier = modifier,
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        repeat(dotCount) { index ->
+            val delay = index * 200
+            val alpha by infiniteTransition.animateFloat(
+                initialValue = 0.2f,
+                targetValue = 1f,
+                animationSpec = infiniteRepeatable(
+                    animation = tween(600, delayMillis = delay),
+                    repeatMode = RepeatMode.Reverse
+                ),
+                label = "alpha"
+            )
+            Box(
+                modifier = Modifier
+                    .size(6.dp)
+                    .background(
+                        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = alpha),
+                        CircleShape
+                    )
+            )
+        }
     }
 }
 
@@ -191,9 +278,9 @@ private fun ConversationBubble(
                     MessageAttachmentsPreview(message.attachments)
                     Spacer(Modifier.height(10.dp))
                 }
-                Text(
+                RichMessageText(
                     text = message.text,
-                    style = MaterialTheme.typography.bodyLarge,
+                    textColor = contentColor,
                 )
             }
         }
@@ -278,12 +365,28 @@ private fun CopyBlockButton(text: String) {
 private fun ThinkingMessageContent(message: ChatMessage) {
     val thinking = remember(message.id, message.text) { parseThinkingDisclosure(message.text) }
     var expandedSectionIds by remember(message.id) { mutableStateOf<Set<String>>(emptySet()) }
+
+    val alpha = if (message.isStreaming) {
+        val infiniteTransition = rememberInfiniteTransition(label = "shimmer")
+        infiniteTransition.animateFloat(
+            initialValue = 0.4f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(800),
+                repeatMode = RepeatMode.Reverse
+            ),
+            label = "alpha"
+        ).value
+    } else {
+        1f
+    }
+
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(
             text = "Thinking...",
             style = MaterialTheme.typography.labelLarge.copy(fontFamily = monoFamily),
             fontWeight = FontWeight.Normal,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = alpha),
         )
         if (thinking.sections.isNotEmpty()) {
             thinking.sections.forEach { section ->

@@ -3,6 +3,7 @@ package com.remodex.android.ui.turn
 import android.graphics.BitmapFactory
 import android.util.Base64
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
@@ -11,7 +12,10 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
@@ -23,6 +27,8 @@ import com.remodex.android.data.model.CodexImageAttachment
 internal fun MessageAttachmentsPreview(
     attachments: List<CodexImageAttachment>,
 ) {
+    var previewAttachment by remember { mutableStateOf<CodexImageAttachment?>(null) }
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -44,10 +50,18 @@ internal fun MessageAttachmentsPreview(
                         .size(TurnAttachmentPipeline.thumbnailSidePx.dp)
                         .clip(
                             RoundedCornerShape(TurnAttachmentPipeline.thumbnailCornerRadiusDp.dp),
-                        ),
+                        )
+                        .clickable { previewAttachment = attachment },
                     contentScale = ContentScale.Crop,
                 )
             }
         }
+    }
+
+    previewAttachment?.let { attachment ->
+        AttachmentPreviewDialog(
+            attachment = attachment,
+            onDismiss = { previewAttachment = null }
+        )
     }
 }

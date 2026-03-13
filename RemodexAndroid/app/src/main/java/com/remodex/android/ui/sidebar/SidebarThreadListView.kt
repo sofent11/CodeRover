@@ -48,6 +48,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.sp
 import com.remodex.android.data.model.ThreadSummary
 import com.remodex.android.data.model.ThreadSyncState
+import com.remodex.android.ui.shared.HapticFeedback
 import com.remodex.android.ui.shared.relativeTimeLabel
 import com.remodex.android.ui.shared.StatusTag
 import com.remodex.android.ui.theme.Danger
@@ -58,6 +59,8 @@ fun SidebarThreadListView(
     groups: List<SidebarThreadGroup>,
     selectedThreadId: String?,
     runningThreadIds: Set<String>,
+    collapsedProjectGroupIds: Set<String>,
+    onToggleProjectGroupCollapsed: (String) -> Unit,
     onSelectThread: (ThreadSummary) -> Unit,
     onCreateThreadInProject: (String?) -> Unit,
     onRequestRenameThread: (ThreadSummary) -> Unit,
@@ -69,29 +72,16 @@ fun SidebarThreadListView(
     modifier: Modifier = Modifier,
     bottomContentPadding: Dp = 0.dp,
 ) {
-    var expandedProjectIds by rememberSaveable { mutableStateOf(emptySet<String>()) }
     var archivedExpanded by rememberSaveable { mutableStateOf(false) }
     var menuThreadId by rememberSaveable { mutableStateOf<String?>(null) }
     val hasVisibleThreads = groups.any { it.threads.isNotEmpty() }
-
-    LaunchedEffect(groups.map { it.id }) {
-        val projectIds = groups
-            .filter { it.kind == SidebarThreadGroupKind.PROJECT }
-            .map { it.id }
-            .toSet()
-        expandedProjectIds = if (expandedProjectIds.isEmpty()) {
-            projectIds
-        } else {
-            expandedProjectIds.intersect(projectIds) + (projectIds - expandedProjectIds)
-        }
-    }
 
     LaunchedEffect(selectedThreadId, groups) {
         val selectedProjectGroupId = groups.firstOrNull { group ->
             group.kind == SidebarThreadGroupKind.PROJECT && group.threads.any { it.id == selectedThreadId }
         }?.id
-        if (selectedProjectGroupId != null) {
-            expandedProjectIds = expandedProjectIds + selectedProjectGroupId
+        if (selectedProjectGroupId != null && collapsedProjectGroupIds.contains(selectedProjectGroupId)) {
+            onToggleProjectGroupCollapsed(selectedProjectGroupId)
         }
     }
 
@@ -118,17 +108,11 @@ fun SidebarThreadListView(
         items(groups, key = { it.id }) { group ->
             when (group.kind) {
                 SidebarThreadGroupKind.PROJECT -> {
-                    val expanded = expandedProjectIds.contains(group.id)
+                    val expanded = !collapsedProjectGroupIds.contains(group.id)
                     SidebarProjectGroupHeader(
                         label = group.label,
                         expanded = expanded,
-                        onToggle = {
-                            expandedProjectIds = if (expanded) {
-                                expandedProjectIds - group.id
-                            } else {
-                                expandedProjectIds + group.id
-                            }
-                        },
+                        onToggle = { onToggleProjectGroupCollapsed(group.id) },
                         onCreate = { onCreateThreadInProject(group.projectPath) },
                     )
                     AnimatedVisibility(visible = expanded) {
@@ -206,10 +190,20 @@ private fun SidebarProjectGroupHeader(
     onToggle: () -> Unit,
     onCreate: () -> Unit,
 ) {
+    val haptic = HapticFeedback.rememberHapticFeedback()
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .combinedClickable(onClick = onToggle, onLongClick = onToggle)
+            .combinedClickable(
+                onClick = {
+                    haptic.triggerImpactFeedback()
+                    onToggle()
+                },
+                onLongClick = {
+                    haptic.triggerImpactFeedback(HapticFeedback.Style.MEDIUM)
+                    onToggle()
+                },
+            )
             .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -247,7 +241,16 @@ private fun SidebarProjectGroupHeader(
                 .size(30.dp)
                 .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f), RoundedCornerShape(999.dp))
                 .padding(6.dp)
-                .combinedClickable(onClick = onCreate, onLongClick = onCreate),
+                .combinedClickable(
+                    onClick = {
+                        haptic.triggerImpactFeedback(HapticFeedback.Style.MEDIUM)
+                        onCreate()
+                    },
+                    onLongClick = {
+                        haptic.triggerImpactFeedback(HapticFeedback.Style.MEDIUM)
+                        onCreate()
+                    }
+                ),
         )
     }
 }
@@ -302,13 +305,20 @@ private fun SidebarThreadRowView(
     onArchiveToggle: () -> Unit,
     onDelete: () -> Unit,
 ) {
+    val haptic = HapticFeedback.rememberHapticFeedback()
     Box {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .combinedClickable(
-                    onClick = onSelect,
-                    onLongClick = onExpandMenu,
+                    onClick = {
+                        haptic.triggerImpactFeedback()
+                        onSelect()
+                    },
+                    onLongClick = {
+                        haptic.triggerImpactFeedback(HapticFeedback.Style.MEDIUM)
+                        onExpandMenu()
+                    },
                 )
                 .background(
                     if (isSelected) MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.32f) else Color.Transparent,

@@ -36,11 +36,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.remodex.android.data.model.AccessMode
 import com.remodex.android.data.model.AppState
 import com.remodex.android.data.model.ModelOption
+import com.remodex.android.ui.shared.HapticFeedback
 import com.remodex.android.ui.theme.CommandAccent
 import com.remodex.android.ui.theme.PlanAccent
 import com.remodex.android.ui.theme.monoFamily
@@ -71,6 +73,7 @@ internal fun ComposerPrimaryToolbar(
     onSend: () -> Unit,
     onStop: () -> Unit,
 ) {
+    val haptic = HapticFeedback.rememberHapticFeedback()
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -79,7 +82,10 @@ internal fun ComposerPrimaryToolbar(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         IconButton(
-            onClick = { turnViewModel.plusMenuExpanded = true },
+            onClick = {
+                haptic.triggerImpactFeedback()
+                turnViewModel.plusMenuExpanded = true
+            },
             enabled = !isRunning,
             modifier = Modifier.size(32.dp),
         ) {
@@ -234,10 +240,11 @@ internal fun ComposerPrimaryToolbar(
         }
 
         Spacer(Modifier.weight(1f))
-        ContextWindowProgressRing(
-            percentage = state.contextWindowUsage?.percentage ?: 0.05f,
-            size = 18.dp,
-        )
+        state.contextWindowUsage?.let { usage ->
+            ContextWindowProgressRing(
+                usage = usage,
+            )
+        }
         Spacer(Modifier.width(4.dp))
 
         if (isQueuePaused && queuedCount > 0) {
@@ -270,7 +277,10 @@ internal fun ComposerPrimaryToolbar(
 
         if (isRunning) {
             IconButton(
-                onClick = onStop,
+                onClick = {
+                    haptic.triggerImpactFeedback(HapticFeedback.Style.MEDIUM)
+                    onStop()
+                },
                 modifier = Modifier
                     .size(40.dp)
                     .background(MaterialTheme.colorScheme.onSurface, CircleShape),
@@ -284,7 +294,10 @@ internal fun ComposerPrimaryToolbar(
             }
         } else {
             IconButton(
-                onClick = onSend,
+                onClick = {
+                    haptic.triggerImpactFeedback()
+                    onSend()
+                },
                 enabled = sendEnabled,
                 modifier = Modifier
                     .size(40.dp)
@@ -331,6 +344,9 @@ internal fun ComposerSecondaryToolbar(
     onCheckoutGitBranch: (String) -> Unit,
     onSelectGitBaseBranch: (String) -> Unit,
 ) {
+    val haptic = HapticFeedback.rememberHapticFeedback()
+    val uriHandler = LocalUriHandler.current
+
     AnimatedVisibility(visible = !turnViewModel.isFocused) {
         Surface(
             modifier = Modifier.fillMaxWidth(),
@@ -346,6 +362,10 @@ internal fun ComposerSecondaryToolbar(
             ) {
                 Box {
                     Surface(
+                        onClick = {
+                            haptic.triggerImpactFeedback()
+                            turnViewModel.runtimeMenuExpanded = true
+                        },
                         shape = RoundedCornerShape(999.dp),
                         color = MaterialTheme.colorScheme.surface.copy(alpha = 0.7f),
                     ) {
@@ -366,13 +386,34 @@ internal fun ComposerSecondaryToolbar(
                             )
                         }
                     }
+
+                    DropdownMenu(
+                        expanded = turnViewModel.runtimeMenuExpanded,
+                        onDismissRequest = { turnViewModel.runtimeMenuExpanded = false },
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Local") },
+                            leadingIcon = { Icon(Icons.Outlined.Check, contentDescription = null) },
+                            onClick = { turnViewModel.runtimeMenuExpanded = false },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Cloud") },
+                            onClick = {
+                                turnViewModel.runtimeMenuExpanded = false
+                                uriHandler.openUri("https://chatgpt.com/codex")
+                            },
+                        )
+                    }
                 }
 
                 Box {
                     ComposerSecondaryChip(
                         label = "Access",
                         value = state.accessMode.displayName,
-                        onClick = { turnViewModel.accessMenuExpanded = true },
+                        onClick = {
+                            haptic.triggerImpactFeedback()
+                            turnViewModel.accessMenuExpanded = true
+                        },
                     )
                     DropdownMenu(
                         expanded = turnViewModel.accessMenuExpanded,

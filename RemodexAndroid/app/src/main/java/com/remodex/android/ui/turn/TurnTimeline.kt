@@ -16,6 +16,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
@@ -29,6 +31,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.unit.dp
+import com.remodex.android.data.model.AssistantRevertPresentation
 import com.remodex.android.data.model.ChatMessage
 import com.remodex.android.data.model.CommandPhase
 import com.remodex.android.data.model.MessageRole
@@ -45,8 +48,12 @@ internal fun TurnTimeline(
     modifier: Modifier = Modifier,
     messages: List<ChatMessage>,
     renderItems: List<TimelineRenderItem>,
+    hasEarlierMessages: Boolean,
+    onLoadEarlierMessages: () -> Unit,
     isRunning: Boolean,
     activeTurnId: String?,
+    assistantRevertPresentationByMessageId: Map<String, AssistantRevertPresentation>,
+    onTapAssistantRevert: (ChatMessage) -> Unit,
     turnViewModel: TurnViewModel,
     onSubmitStructuredInput: (kotlinx.serialization.json.JsonElement, Map<String, String>) -> Unit,
 ) {
@@ -129,12 +136,28 @@ internal fun TurnTimeline(
                     TurnTimelineEmptyState(isRunning = isRunning)
                 }
             }
+            if (hasEarlierMessages) {
+                item(key = "load-earlier") {
+                    TextButton(
+                        onClick = onLoadEarlierMessages,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(
+                            text = "Load earlier messages",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                }
+            }
             items(renderItems, key = { it.key }) { item ->
                 val message = (item as? TimelineRenderItem.Message)?.message ?: return@items
                 TurnMessageBubble(
                     message = message,
                     onSubmitStructuredInput = onSubmitStructuredInput,
                     copyBlockText = copyBlockTextByMessageId[message.id],
+                    assistantRevertPresentation = assistantRevertPresentationByMessageId[message.id],
+                    onTapAssistantRevert = onTapAssistantRevert,
                 )
             }
         }

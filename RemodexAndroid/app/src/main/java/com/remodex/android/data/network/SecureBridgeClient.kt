@@ -9,8 +9,10 @@ import com.remodex.android.data.model.PhoneIdentityState
 import com.remodex.android.data.model.SECURE_PROTOCOL_VERSION
 import com.remodex.android.data.model.SecureConnectionState
 import com.remodex.android.data.model.TrustedMacRecord
+import com.remodex.android.data.model.jsonObjectOrNull
 import com.remodex.android.data.model.responseKey
 import com.remodex.android.data.model.string
+import kotlinx.serialization.json.*
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -33,6 +35,12 @@ import okhttp3.Request
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
+
+class CodexServiceException(
+    val code: Int,
+    override val message: String,
+    val data: JsonObject? = null,
+) : Exception(message)
 
 class SecureBridgeClient(
     private val json: Json = Json {
@@ -181,8 +189,12 @@ class SecureBridgeClient(
             ),
         )
         val response = withTimeout(20_000) { responseDeferred.await() }
-        response["error"]?.let { error ->
-            throw IllegalStateException(error.toString())
+        response["error"]?.jsonObjectOrNull()?.let { errorObj ->
+            throw CodexServiceException(
+                code = errorObj["code"]?.jsonPrimitive?.int ?: -1,
+                message = errorObj["message"]?.jsonPrimitive?.content ?: "Unknown RPC error",
+                data = errorObj["data"]?.jsonObjectOrNull(),
+            )
         }
         return response["result"]
     }

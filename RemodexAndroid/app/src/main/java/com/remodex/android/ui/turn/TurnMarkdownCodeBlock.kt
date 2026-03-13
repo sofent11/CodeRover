@@ -42,6 +42,7 @@ internal fun TurnMarkdownCodeBlock(
     code: String,
     textColor: Color,
 ) {
+    val isDiff = remember(code) { TurnDiffLineKind.detectVerifiedPatch(code) }
     val context = LocalContext.current
     val clipboardManager = remember(context) {
         context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
@@ -53,10 +54,13 @@ internal fun TurnMarkdownCodeBlock(
             copied = false
         }
     }
+
     Surface(
         shape = RoundedCornerShape(12.dp),
         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
     ) {
         Column {
             Row(
@@ -68,7 +72,7 @@ internal fun TurnMarkdownCodeBlock(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    text = language?.takeIf(String::isNotEmpty) ?: "text",
+                    text = if (isDiff) "diff" else (language?.takeIf(String::isNotEmpty) ?: "text"),
                     style = MaterialTheme.typography.labelSmall.copy(fontFamily = monoFamily),
                     color = textColor.copy(alpha = 0.72f),
                 )
@@ -92,12 +96,16 @@ internal fun TurnMarkdownCodeBlock(
                     .fillMaxWidth()
                     .horizontalScroll(rememberScrollState()),
             ) {
-                Text(
-                    text = code.trimEnd(),
-                    style = MaterialTheme.typography.bodyMedium.copy(fontFamily = monoFamily),
-                    color = textColor,
-                    modifier = Modifier.padding(12.dp),
-                )
+                if (isDiff) {
+                    TurnDiffCodeBlockView(code = code)
+                } else {
+                    Text(
+                        text = code.trimEnd(),
+                        style = MaterialTheme.typography.bodyMedium.copy(fontFamily = monoFamily),
+                        color = textColor,
+                        modifier = Modifier.padding(12.dp),
+                    )
+                }
             }
         }
     }

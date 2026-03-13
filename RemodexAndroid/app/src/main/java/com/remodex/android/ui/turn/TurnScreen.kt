@@ -86,7 +86,11 @@ fun TurnScreen(
             state.messagesByThread[thread.id].orEmpty().sortedBy(ChatMessage::orderIndex),
         )
     }
-    val renderItems = remember(messages) { buildTimelineRenderItems(messages) }
+    val visibleMessages = remember(messages, turnViewModel.visibleTailCount) {
+        val startIndex = (messages.size - turnViewModel.visibleTailCount).coerceAtLeast(0)
+        messages.drop(startIndex)
+    }
+    val renderItems = remember(visibleMessages) { buildTimelineRenderItems(visibleMessages) }
     val isRunning = state.runningThreadIds.contains(thread.id)
     val pendingApproval = state.pendingApproval?.takeIf { approval ->
         approval.threadId == null || approval.threadId == thread.id
@@ -94,10 +98,13 @@ fun TurnScreen(
     TurnConversationContainer(
         state = state,
         input = input,
-        messages = messages,
+        messages = visibleMessages,
         renderItems = renderItems,
+        hasEarlierMessages = turnViewModel.visibleTailCount < messages.size,
+        onLoadEarlierMessages = { turnViewModel.loadEarlierMessages(messages.size) },
         isRunning = isRunning,
         activeTurnId = state.activeTurnIdByThread[thread.id],
+        assistantRevertPresentationByMessageId = state.assistantRevertPresentationByMessageId,
         turnViewModel = turnViewModel,
         pendingApproval = pendingApproval,
         onInputChanged = onInputChanged,
@@ -110,6 +117,9 @@ fun TurnScreen(
         onApprove = onApprove,
         onDeny = onDeny,
         onSubmitStructuredInput = onSubmitStructuredInput,
+        onTapAssistantRevert = { message ->
+            viewModel.revertAssistantMessage(message.id)
+        },
         viewModel = viewModel,
     )
 }

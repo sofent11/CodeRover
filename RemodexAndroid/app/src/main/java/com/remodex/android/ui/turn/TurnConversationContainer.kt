@@ -15,6 +15,7 @@ import com.remodex.android.app.AppViewModel
 import com.remodex.android.data.model.AccessMode
 import com.remodex.android.data.model.AppState
 import com.remodex.android.data.model.ApprovalRequest
+import com.remodex.android.data.model.AssistantRevertPresentation
 import com.remodex.android.data.model.ChatMessage
 import com.remodex.android.data.model.CodexImageAttachment
 import com.remodex.android.data.model.CodexTurnSkillMention
@@ -25,8 +26,11 @@ internal fun TurnConversationContainer(
     input: String,
     messages: List<ChatMessage>,
     renderItems: List<TimelineRenderItem>,
+    hasEarlierMessages: Boolean,
+    onLoadEarlierMessages: () -> Unit,
     isRunning: Boolean,
     activeTurnId: String?,
+    assistantRevertPresentationByMessageId: Map<String, AssistantRevertPresentation>,
     turnViewModel: TurnViewModel,
     pendingApproval: ApprovalRequest?,
     onInputChanged: (String) -> Unit,
@@ -39,6 +43,7 @@ internal fun TurnConversationContainer(
     onApprove: () -> Unit,
     onDeny: () -> Unit,
     onSubmitStructuredInput: (kotlinx.serialization.json.JsonElement, Map<String, String>) -> Unit,
+    onTapAssistantRevert: (ChatMessage) -> Unit,
     viewModel: AppViewModel,
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
@@ -51,8 +56,12 @@ internal fun TurnConversationContainer(
                 modifier = Modifier.fillMaxSize(),
                 messages = messages,
                 renderItems = renderItems,
+                hasEarlierMessages = hasEarlierMessages,
+                onLoadEarlierMessages = onLoadEarlierMessages,
                 isRunning = isRunning,
                 activeTurnId = activeTurnId,
+                assistantRevertPresentationByMessageId = assistantRevertPresentationByMessageId,
+                onTapAssistantRevert = onTapAssistantRevert,
                 turnViewModel = turnViewModel,
                 onSubmitStructuredInput = onSubmitStructuredInput,
             )

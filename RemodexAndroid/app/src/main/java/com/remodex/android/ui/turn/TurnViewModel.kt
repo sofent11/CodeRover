@@ -62,6 +62,7 @@ class TurnViewModel {
     var composerMentionedFiles by mutableStateOf<List<TurnComposerMentionedFile>>(emptyList())
     var composerMentionedSkills by mutableStateOf<List<TurnComposerMentionedSkill>>(emptyList())
     var composerAttachments by mutableStateOf<List<TurnComposerImageAttachment>>(emptyList())
+    var visibleTailCount by mutableStateOf(40)
 
     val hasBlockingAttachmentState: Boolean
         get() = composerAttachments.any {
@@ -162,6 +163,23 @@ class TurnViewModel {
 
     fun finishResumingQueue() {
         isQueueResuming = false
+    }
+
+    fun resetForThread() {
+        visibleTailCount = 40
+        isPlanModeArmed = false
+        plusMenuExpanded = false
+        steeringDraftId = null
+        isQueueResuming = false
+        isFocused = false
+        shouldAnchorToAssistantResponse = false
+        isScrolledToBottom = true
+        composerNoticeMessage = null
+        clearComposerSelections()
+    }
+
+    fun loadEarlierMessages(totalMessages: Int) {
+        visibleTailCount = (visibleTailCount + 40).coerceAtMost(totalMessages)
     }
 
     suspend fun performDraftSteer(
@@ -388,5 +406,9 @@ class TurnViewModel {
 
 @Composable
 fun rememberTurnViewModel(threadId: String?): TurnViewModel {
-    return remember(threadId) { TurnViewModel() }
+    val viewModel = remember { TurnViewModel() }
+    androidx.compose.runtime.LaunchedEffect(threadId) {
+        viewModel.resetForThread()
+    }
+    return viewModel
 }

@@ -14,6 +14,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = RemodexRepository(application.applicationContext)
     val state: StateFlow<com.remodex.android.data.model.AppState> = repository.state
 
+    fun toggleProjectGroupCollapsed(projectId: String) = repository.toggleProjectGroupCollapsed(projectId)
+
     fun completeOnboarding() = repository.completeOnboarding()
 
     fun setFontStyle(fontStyle: AppFontStyle) = repository.setFontStyle(fontStyle)
@@ -95,6 +97,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     suspend fun gitCommit(cwd: String, message: String) = repository.gitCommit(cwd, message)
 
     suspend fun gitDiff(cwd: String) = repository.gitDiff(cwd)
+
+    fun revertAssistantMessage(messageId: String) = repository.revertAssistantMessage(messageId)
+
+    fun compactThreadContext(threadId: String) = repository.compactThreadContext(threadId)
 
     suspend fun performGitAction(cwd: String, action: com.remodex.android.data.model.TurnGitActionKind) = repository.performGitAction(cwd, action)
 }
