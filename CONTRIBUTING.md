@@ -1,4 +1,4 @@
-# Contributing to Remodex
+# Contributing to CodeRover
 
 I am not actively accepting contributions right now.
 
@@ -37,18 +37,18 @@ Opening a PR does not create an obligation on my side. I may close it. I may ign
 ### Prerequisites
 
 - **Node.js** v18+
-- **[Codex CLI](https://github.com/openai/codex)** installed and working
-- **[Codex desktop app](https://openai.com/index/codex/)** (optional — for viewing threads on Mac)
+- **CodeRover CLI** installed and working
+- **CodeRover desktop app** (optional — for viewing threads on Mac)
 - **macOS** (required for desktop refresh; core bridge works on any OS)
 - **Xcode 16+** (only for building the iOS app)
-- **iPhone** with the Remodex app (or built from source)
+- **iPhone** with the CodeRover app (or built from source)
 
 ### Bridge setup
 
 ```sh
 # Clone the repo
-git clone https://github.com/Emanuele-web04/remodex.git
-cd remodex/phodex-bridge
+git clone https://github.com/Emanuele-web04/coderover.git
+cd coderover/coderover-bridge
 
 # Install dependencies
 npm install
@@ -57,18 +57,18 @@ npm install
 npm start
 ```
 
-This runs `remodex up`, which:
-1. Spawns a Codex `app-server` process
+This runs `coderover up`, which:
+1. Spawns a CodeRover `app-server` process
 2. Starts a stable local bridge endpoint on your Mac
 3. Prints a QR code in your terminal
 
-Scan the QR code with the Remodex iOS app to pair.
+Scan the QR code with the CodeRover iOS app to pair.
 
 ### iOS app setup
 
 ```sh
-cd CodexMobile
-open CodexMobile.xcodeproj
+cd CodeRoverMobile
+open CodeRoverMobile.xcodeproj
 ```
 
 1. Select your team in **Signing & Capabilities** (you'll need an Apple Developer account)
@@ -79,10 +79,10 @@ The app uses SwiftUI and the current project target is iOS 18.6. No CocoaPods or
 
 ### Testing a full local session
 
-1. Start the bridge: `cd phodex-bridge && npm start`
+1. Start the bridge: `cd coderover-bridge && npm start`
 2. Open the iOS app and scan the QR code
 3. Create a new thread from the app
-4. Send a message — you should see Codex respond in real-time
+4. Send a message — you should see CodeRover respond in real-time
 5. Try git operations from the phone (commit, push, branch switching)
 
 ### Environment variables
@@ -91,49 +91,49 @@ All optional. Override defaults as needed:
 
 ```sh
 # Local bridge port (used when you do not override anything)
-# REMODEX_LOCAL_PORT=8765
+# CODEROVER_LOCAL_PORT=8765
 
-# Connect to an existing Codex instance instead of spawning one
-REMODEX_CODEX_ENDPOINT=ws://localhost:8080 npm start
+# Connect to an existing CodeRover instance instead of spawning one
+CODEROVER_ENDPOINT=ws://localhost:8080 npm start
 
 # Add a tailnet fallback candidate
-REMODEX_TAILNET_URL=wss://my-mac.tailnet.example npm start
+CODEROVER_TAILNET_URL=wss://my-mac.tailnet.example npm start
 
 # Add one explicit relay candidate to the QR payload
-REMODEX_RELAY_URL=wss://relay.example.com npm start
+CODEROVER_RELAY_URL=wss://relay.example.com npm start
 
 # Or advertise multiple relay candidates
-REMODEX_RELAY_URLS=wss://relay-a.example.com,wss://relay-b.example.com/remodex npm start
+CODEROVER_RELAY_URLS=wss://relay-a.example.com,wss://relay-b.example.com/coderover npm start
 
-# Enable auto-refresh of Codex.app on Mac
-REMODEX_REFRESH_ENABLED=true npm start
+# Enable auto-refresh of CodeRover.app on Mac
+CODEROVER_REFRESH_ENABLED=true npm start
 ```
 
 ### Project structure
 
 ```
-remodex/
-├── phodex-bridge/          # Node.js CLI bridge (npm package)
-│   ├── bin/remodex.js      # CLI entrypoint
+coderover/
+├── coderover-bridge/          # Node.js CLI bridge (npm package)
+│   ├── bin/coderover.js      # CLI entrypoint
 │   └── src/
 │       ├── bridge.js               # Core local bridge + message forwarding
-│       ├── codex-transport.js      # Spawn vs WebSocket abstraction
-│       ├── codex-desktop-refresher.js  # Debounced Codex.app refresh
+│       ├── coderover-transport.js      # Spawn vs WebSocket abstraction
+│       ├── coderover-desktop-refresher.js  # Debounced CodeRover.app refresh
 │       ├── git-handler.js          # Git command execution from phone
 │       ├── workspace-handler.js    # Workspace/cwd management
-│       ├── session-state.js        # Thread persistence (~/.remodex/)
+│       ├── session-state.js        # Thread persistence (~/.coderover/)
 │       ├── rollout-watch.js        # Thread event log tailing
 │       └── qr.js                   # QR code generation
 │
-├── CodexMobile/            # Xcode project root
-│   ├── CodexMobile/        # App source target
+├── CodeRoverMobile/            # Xcode project root
+│   ├── CodeRoverMobile/        # App source target
 │   │   ├── Services/       # Core services
-│   │   │   ├── CodexService.swift              # Main service coordinator
-│   │   │   ├── CodexService+Connection.swift   # WebSocket connection
-│   │   │   ├── CodexService+Incoming.swift     # Message handling
-│   │   │   ├── CodexService+Messages.swift     # Message composition
-│   │   │   ├── CodexService+History.swift      # Thread history
-│   │   │   ├── CodexService+ThreadsTurns.swift # Thread/turn management
+│   │   │   ├── CodeRoverService.swift              # Main service coordinator
+│   │   │   ├── CodeRoverService+Connection.swift   # WebSocket connection
+│   │   │   ├── CodeRoverService+Incoming.swift     # Message handling
+│   │   │   ├── CodeRoverService+Messages.swift     # Message composition
+│   │   │   ├── CodeRoverService+History.swift      # Thread history
+│   │   │   ├── CodeRoverService+ThreadsTurns.swift # Thread/turn management
 │   │   │   ├── GitActionsService.swift         # Git operations
 │   │   │   └── AppEnvironment.swift            # Runtime config
 │   │   ├── Views/          # SwiftUI views
@@ -141,8 +141,8 @@ remodex/
 │   │   │   ├── Sidebar/    # Project/thread navigation
 │   │   │   └── Home/       # Home + onboarding
 │   │   └── Models/         # Data models
-│   ├── CodexMobileTests/   # Unit tests
-│   ├── CodexMobileUITests/ # UI tests
+│   ├── CodeRoverMobileTests/   # Unit tests
+│   ├── CodeRoverMobileUITests/ # UI tests
 │   └── BuildSupport/       # Build support files
 ```
 
@@ -156,4 +156,4 @@ remodex/
 
 - The QR pairing is possession-based: it contains the stable bridge identity plus transport candidates.
 - The default path is direct local transport to the Mac bridge; tailnet is an optional cross-network fallback.
-- Remodex keeps an authenticated end-to-end encryption layer above whichever transport is selected.
+- CodeRover keeps an authenticated end-to-end encryption layer above whichever transport is selected.

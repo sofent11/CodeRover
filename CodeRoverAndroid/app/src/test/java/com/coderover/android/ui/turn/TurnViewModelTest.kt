@@ -1,0 +1,409 @@
+package com.coderover.android.ui.turn
+
+import com.coderover.android.data.model.ImageAttachment
+import com.coderover.android.data.model.FuzzyFileMatch
+import com.coderover.android.data.model.ChatMessage
+import com.coderover.android.data.model.MessageRole
+import com.coderover.android.data.model.SkillMetadata
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+import kotlinx.coroutines.runBlocking
+
+class TurnViewModelTest {
+    @Test
+    fun addMentionedFileStoresChipAndComposeSendTextUsesFullPath() {
+        val viewModel = TurnViewModel()
+
+        val updatedInput = viewModel.addMentionedFile(
+            input = "Please inspect @src/ma",
+            file = FuzzyFileMatch(path = "src/main/App.kt", root = "/tmp/project"),
+        )
+
+        assertEquals("Please inspect @App.kt", updatedInput)
+        assertEquals(1, viewModel.composerMentionedFiles.size)
+        assertEquals(
+            "Please inspect @src/main/App.kt",
+            viewModel.composeSendText(updatedInput),
+        )
+    }
+
+    @Test
+    fun addMentionedSkillDeduplicatesByNameIgnoringCase() {
+        val viewModel = TurnViewModel()
+
+        val firstInput = viewModel.addMentionedSkill(
+            input = "Use \$tes",
+            skill = SkillMetadata(id = "1", name = "test-skill", description = null),
+        )
+        viewModel.addMentionedSkill(
+            input = "Use \$tes",
+            skill = SkillMetadata(id = "2", name = "TEST-SKILL", description = null),
+        )
+
+        assertEquals(1, viewModel.composerMentionedSkills.size)
+        assertEquals("Use \$test-skill", firstInput)
+        assertEquals("1", viewModel.readySkillMentions.single().id)
+    }
+
+    @Test
+    fun clearComposerSelectionsRemovesMentions() {
+        val viewModel = TurnViewModel()
+        viewModel.addMentionedFile("See @foo", FuzzyFileMatch(path = "src/Foo.kt", root = "/tmp"))
+        viewModel.addMentionedSkill("Use #bar", SkillMetadata(id = "1", name = "bar", description = null))
+        viewModel.composerAttachments = listOf(
+            TurnComposerImageAttachment(
+                state = TurnComposerImageAttachmentState.Ready(fakeAttachment()),
+            ),
+        )
+
+        viewModel.clearComposerSelections()
+
+        assertTrue(viewModel.composerMentionedFiles.isEmpty())
+        assertTrue(viewModel.composerMentionedSkills.isEmpty())
+        assertTrue(viewModel.composerAttachments.isEmpty())
+    }
+
+    @Test
+    fun removeMentionedFileRemovesInlineAliasFromInput() {
+        val viewModel = TurnViewModel()
+        val updatedInput = viewModel.addMentionedFile(
+            input = "Inspect @src/ma",
+            file = FuzzyFileMatch(path = "src/main/App.kt", root = "/tmp/project"),
+        )
+
+        val mentionId = viewModel.composerMentionedFiles.firstOrNull()?.id
+        assertNotNull(mentionId)
+
+        val clearedInput = viewModel.removeMentionedFile(updatedInput, mentionId!!)
+
+        assertEquals("Inspect", clearedInput)
+        assertTrue(viewModel.composerMentionedFiles.isEmpty())
+    }
+
+    @Test
+    fun removeMentionedSkillRemovesInlineAliasFromInput() {
+        val viewModel = TurnViewModel()
+        val updatedInput = viewModel.addMentionedSkill(
+            input = "Use \$tes",
+            skill = SkillMetadata(id = "1", name = "test-skill", description = null),
+        )
+
+        val mentionId = viewModel.composerMentionedSkills.firstOrNull()?.id
+        assertNotNull(mentionId)
+
+        val clearedInput = viewModel.removeMentionedSkill(updatedInput, mentionId!!)
+
+        assertEquals("Use", clearedInput)
+        assertTrue(viewModel.composerMentionedSkills.isEmpty())
+    }
+
+    @Test
+    fun attachmentDerivedStateReflectsReadyAttachments() {
+        val viewModel = TurnViewModel()
+        viewModel.composerAttachments = listOf(
+            TurnComposerImageAttachment(
+                state = TurnComposerImageAttachmentState.Ready(fakeAttachment()),
+            ),
+        )
+
+        assertEquals(1, viewModel.composerAttachments.size)
+        assertEquals(3, viewModel.remainingAttachmentSlots)
+        assertFalse(viewModel.hasBlockingAttachmentState)
+        assertEquals(1, viewModel.readyComposerAttachments.size)
+    }
+
+    @Test
+    fun attachmentDerivedStateBlocksWhileLoadingOrFailed() {
+        val viewModel = TurnViewModel()
+        viewModel.composerAttachments = listOf(
+            TurnComposerImageAttachment(state = TurnComposerImageAttachmentState.Loading),
+            TurnComposerImageAttachment(state = TurnComposerImageAttachmentState.Failed),
+            TurnComposerImageAttachment(
+                state = TurnComposerImageAttachmentState.Ready(fakeAttachment()),
+            ),
+            TurnComposerImageAttachment(
+                state = TurnComposerImageAttachmentState.Ready(fakeAttachment()),
+            ),
+        )
+
+        assertEquals(4, viewModel.composerAttachments.size)
+        assertEquals(0, viewModel.remainingAttachmentSlots)
+        assertTrue(viewModel.hasBlockingAttachmentState)
+        assertEquals(2, viewModel.readyComposerAttachments.size)
+    }
+
+    @Test
+    fun remainingAttachmentSlotsReflectsNearLimitState() {
+        val viewModel = TurnViewModel()
+        viewModel.composerAttachments = List(3) {
+            TurnComposerImageAttachment(
+                state = TurnComposerImageAttachmentState.Ready(fakeAttachment()),
+            )
+        }
+
+        assertEquals(1, viewModel.remainingAttachmentSlots)
+        assertEquals(3, viewModel.composerAttachments.size)
+    }
+
+    @Test
+    fun prepareAttachmentIntakeAddsLoadingEntries() {
+        val viewModel = TurnViewModel()
+
+        val intakePlan = viewModel.prepareAttachmentIntake(2)
+
+        assertEquals(2, intakePlan.acceptedCount)
+        assertEquals(0, intakePlan.droppedCount)
+        assertEquals(2, viewModel.composerAttachments.size)
+        assertTrue(viewModel.composerAttachments.all { it.state == TurnComposerImageAttachmentState.Loading })
+        assertTrue(viewModel.hasBlockingAttachmentState)
+    }
+
+    @Test
+    fun prepareAttachmentIntakeStoresOverflowNotice() {
+        val viewModel = TurnViewModel()
+        viewModel.composerAttachments = List(3) {
+            TurnComposerImageAttachment(
+                state = TurnComposerImageAttachmentState.Ready(fakeAttachment()),
+            )
+        }
+
+        val intakePlan = viewModel.prepareAttachmentIntake(2)
+
+        assertEquals(1, intakePlan.acceptedCount)
+        assertEquals(1, intakePlan.droppedCount)
+        assertEquals("Only 1 image slot available.", viewModel.composerNoticeMessage)
+    }
+
+    @Test
+    fun resolveComposerAttachmentMarksEntryFailedWhenPayloadMissing() {
+        val viewModel = TurnViewModel()
+        val reservedId = viewModel.prepareAttachmentIntake(1).reservedAttachmentIds.single()
+
+        viewModel.resolveComposerAttachment(reservedId, null)
+
+        assertEquals(TurnComposerImageAttachmentState.Failed, viewModel.composerAttachments.single().state)
+        assertEquals("One or more images could not be loaded.", viewModel.composerNoticeMessage)
+    }
+
+    @Test
+    fun composerPresentationCalculatesSendAndQueueState() {
+        val viewModel = TurnViewModel()
+        viewModel.composerAttachments = listOf(
+            TurnComposerImageAttachment(
+                state = TurnComposerImageAttachmentState.Ready(fakeAttachment()),
+            ),
+        )
+
+        val presentation = viewModel.composerPresentation(
+            input = "",
+            isConnected = true,
+            queuedDraftCount = 2,
+            queuePauseMessage = "busy",
+        )
+
+        assertTrue(presentation.hasComposerContent)
+        assertTrue(presentation.canSend)
+        assertTrue(presentation.isQueuePaused)
+        assertEquals(2, presentation.queuedDraftCount)
+    }
+
+    @Test
+    fun removeComposerAttachmentClearsFailureNoticeWhenNoFailedRemain() {
+        val viewModel = TurnViewModel()
+        viewModel.composerAttachments = listOf(
+            TurnComposerImageAttachment(
+                id = "failed",
+                state = TurnComposerImageAttachmentState.Failed,
+            ),
+            TurnComposerImageAttachment(
+                id = "ready",
+                state = TurnComposerImageAttachmentState.Ready(fakeAttachment()),
+            ),
+        )
+        viewModel.setComposerNotice("One or more images could not be loaded.")
+
+        viewModel.removeComposerAttachment("failed")
+
+        assertEquals(1, viewModel.composerAttachments.size)
+        assertEquals(null, viewModel.composerNoticeMessage)
+    }
+
+    @Test
+    fun queuePresentationReflectsPauseAndSteeringState() {
+        val viewModel = TurnViewModel()
+        viewModel.beginSteeringDraft("draft-1")
+
+        val presentation = viewModel.queuePresentation(
+            queuedDraftCount = 3,
+            queuePauseMessage = "busy",
+        )
+
+        assertEquals(3, presentation.draftCount)
+        assertTrue(presentation.isPaused)
+        assertEquals("busy", presentation.pauseMessage)
+        assertFalse(presentation.canResume)
+        assertFalse(presentation.isResuming)
+        assertTrue(presentation.canSteerDrafts)
+        assertEquals("draft-1", presentation.steeringDraftId)
+    }
+
+    @Test
+    fun queuePresentationReflectsResumeInFlightState() {
+        val viewModel = TurnViewModel()
+        viewModel.beginResumingQueue()
+
+        val presentation = viewModel.queuePresentation(
+            queuedDraftCount = 2,
+            queuePauseMessage = "busy",
+        )
+
+        assertTrue(presentation.isPaused)
+        assertFalse(presentation.canResume)
+        assertTrue(presentation.isResuming)
+        assertFalse(presentation.canSteerDrafts)
+        assertEquals(null, presentation.steeringDraftId)
+    }
+
+    @Test
+    fun finishSteeringDraftClearsOnlyMatchingDraft() {
+        val viewModel = TurnViewModel()
+        viewModel.beginSteeringDraft("draft-1")
+
+        viewModel.finishSteeringDraft("other")
+        assertEquals("draft-1", viewModel.steeringDraftId)
+
+        viewModel.finishSteeringDraft("draft-1")
+        assertEquals(null, viewModel.steeringDraftId)
+    }
+
+    @Test
+    fun finishResumingQueueClearsResumeBusyState() {
+        val viewModel = TurnViewModel()
+        viewModel.beginResumingQueue()
+
+        viewModel.finishResumingQueue()
+
+        val presentation = viewModel.queuePresentation(
+            queuedDraftCount = 1,
+            queuePauseMessage = "busy",
+        )
+        assertTrue(presentation.canResume)
+        assertFalse(presentation.isResuming)
+    }
+
+    @Test
+    fun performQueueResumeClearsBusyStateAfterFailure() = runBlocking {
+        val viewModel = TurnViewModel()
+
+        runCatching {
+            viewModel.performQueueResume {
+                throw IllegalStateException("boom")
+            }
+        }
+
+        val presentation = viewModel.queuePresentation(
+            queuedDraftCount = 1,
+            queuePauseMessage = "busy",
+        )
+        assertFalse(presentation.isResuming)
+        assertTrue(presentation.canResume)
+    }
+
+    @Test
+    fun performDraftSteerClearsSteeringStateAfterFailure() = runBlocking {
+        val viewModel = TurnViewModel()
+
+        runCatching {
+            viewModel.performDraftSteer("draft-1") {
+                throw IllegalStateException("boom")
+            }
+        }
+
+        assertEquals(null, viewModel.steeringDraftId)
+    }
+
+    @Test
+    fun requestAssistantResponseAnchorArmsTimelineAnchor() {
+        val viewModel = TurnViewModel()
+
+        viewModel.requestAssistantResponseAnchor()
+
+        assertTrue(viewModel.shouldAnchorToAssistantResponse)
+    }
+
+    @Test
+    fun buildCopyBlockTextByMessageIdHidesLatestRunningBlock() {
+        val result = buildCopyBlockTextByMessageId(
+            messages = listOf(
+                ChatMessage(
+                    threadId = "thread-1",
+                    role = MessageRole.USER,
+                    text = "question",
+                    orderIndex = 1,
+                ),
+                ChatMessage(
+                    threadId = "thread-1",
+                    role = MessageRole.ASSISTANT,
+                    text = "draft reply",
+                    turnId = "turn-live",
+                    orderIndex = 2,
+                ),
+            ),
+            activeTurnId = "turn-live",
+            isThreadRunning = true,
+        )
+
+        assertTrue(result.isEmpty())
+    }
+
+    @Test
+    fun buildCopyBlockTextByMessageIdShowsCompletedEarlierBlock() {
+        val earlierAssistant = ChatMessage(
+            id = "assistant-1",
+            threadId = "thread-1",
+            role = MessageRole.ASSISTANT,
+            text = "stable reply",
+            turnId = "turn-old",
+            orderIndex = 2,
+        )
+
+        val result = buildCopyBlockTextByMessageId(
+            messages = listOf(
+                ChatMessage(
+                    threadId = "thread-1",
+                    role = MessageRole.USER,
+                    text = "question",
+                    orderIndex = 1,
+                ),
+                earlierAssistant,
+                ChatMessage(
+                    threadId = "thread-1",
+                    role = MessageRole.USER,
+                    text = "follow-up",
+                    orderIndex = 3,
+                ),
+                ChatMessage(
+                    threadId = "thread-1",
+                    role = MessageRole.ASSISTANT,
+                    text = "live reply",
+                    turnId = "turn-live",
+                    orderIndex = 4,
+                ),
+            ),
+            activeTurnId = "turn-live",
+            isThreadRunning = true,
+        )
+
+        assertEquals(mapOf("assistant-1" to "stable reply"), result)
+    }
+
+    private fun fakeAttachment(): ImageAttachment {
+        return ImageAttachment(
+            thumbnailBase64JPEG = "thumb",
+            payloadDataURL = "data:image/jpeg;base64,payload",
+        )
+    }
+}
