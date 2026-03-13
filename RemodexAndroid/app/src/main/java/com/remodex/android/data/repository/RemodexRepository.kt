@@ -36,6 +36,7 @@ import com.remodex.android.data.model.ThreadSummary
 import com.remodex.android.data.model.ThreadSyncState
 import com.remodex.android.data.model.TrustedMacRecord
 import com.remodex.android.data.model.TrustedMacRegistry
+import com.remodex.android.data.model.RuntimeProvider
 import com.remodex.android.data.model.array
 import com.remodex.android.data.model.asIntOrNull
 import com.remodex.android.data.model.bool
@@ -109,7 +110,9 @@ class RemodexRepository(context: Context) {
         AppState(
             onboardingSeen = store.loadOnboardingSeen(),
             fontStyle = store.loadFontStyle(),
-            accessMode = store.loadAccessMode(),
+            availableProviders = listOf(RuntimeProvider.CODEX_DEFAULT),
+            selectedProviderId = normalizeProviderId(store.loadSelectedProviderId()),
+            accessMode = store.loadAccessMode(normalizeProviderId(store.loadSelectedProviderId())),
             pairings = store.loadPairings(),
             activePairingMacDeviceId = store.loadActivePairingMacDeviceId(),
             phoneIdentityState = loadOrCreatePhoneIdentityState(),
@@ -117,8 +120,8 @@ class RemodexRepository(context: Context) {
             threads = store.loadCachedThreads(),
             selectedThreadId = store.loadCachedSelectedThreadId(),
             messagesByThread = store.loadCachedMessagesByThread(),
-            selectedModelId = store.loadSelectedModelId(),
-            selectedReasoningEffort = store.loadSelectedReasoningEffort(),
+            selectedModelId = store.loadSelectedModelId(normalizeProviderId(store.loadSelectedProviderId())),
+            selectedReasoningEffort = store.loadSelectedReasoningEffort(normalizeProviderId(store.loadSelectedProviderId())),
         ),
     )
     val state: StateFlow<AppState> = _state.asStateFlow()
@@ -151,17 +154,27 @@ class RemodexRepository(context: Context) {
     }
 
     fun setAccessMode(accessMode: AccessMode) {
-        store.saveAccessMode(accessMode)
+        val providerId = currentRuntimeProviderId()
+        store.saveAccessMode(accessMode, providerId)
         updateState { copy(accessMode = accessMode) }
     }
 
+    fun setSelectedProviderId(providerId: String) {
+        val normalizedProviderId = normalizeProviderId(providerId)
+        store.saveSelectedProviderId(normalizedProviderId)
+        updateState { copy(selectedProviderId = normalizedProviderId) }
+        scope.launch {
+            syncRuntimeSelectionContext(normalizedProviderId, refreshModels = state.value.isConnected)
+        }
+    }
+
     fun setSelectedModelId(modelId: String?) {
-        store.saveSelectedModelId(modelId)
+        store.saveSelectedModelId(modelId, currentRuntimeProviderId())
         updateState { copy(selectedModelId = modelId) }
     }
 
     fun setSelectedReasoningEffort(reasoningEffort: String?) {
-        store.saveSelectedReasoningEffort(reasoningEffort)
+        store.saveSelectedReasoningEffort(reasoningEffort, currentRuntimeProviderId())
         updateState { copy(selectedReasoningEffort = reasoningEffort) }
     }
 
@@ -297,10 +310,12 @@ class RemodexRepository(context: Context) {
                         rememberSuccessfulTransport(url)
                         initializeSession()
                         Log.d(TAG, "initialize ok epoch=$epoch")
-                        listModels()
-                        Log.d(TAG, "model/list ok epoch=$epoch")
+                        listProviders()
+                        Log.d(TAG, "runtime/provider/list ok epoch=$epoch")
                         listThreads()
                         Log.d(TAG, "thread/list ok epoch=$epoch")
+                        syncRuntimeSelectionContext(currentRuntimeProviderId(), refreshModels = true)
+                        Log.d(TAG, "model/list ok epoch=$epoch provider=${currentRuntimeProviderId()}")
                         updateState {
                             copy(
                                 connectionPhase = ConnectionPhase.CONNECTED,
@@ -411,7 +426,11 @@ class RemodexRepository(context: Context) {
     }
 
     fun selectThread(threadId: String) {
+        val thread = state.value.threads.firstOrNull { it.id == threadId }
         updateState { copy(selectedThreadId = threadId, pendingApproval = null) }
+        scope.launch {
+            syncRuntimeSelectionContext(thread?.provider ?: state.value.selectedProviderId, refreshModels = state.value.isConnected)
+        }
         scope.launch {
             loadThreadHistory(threadId)
         }
@@ -419,11 +438,18 @@ class RemodexRepository(context: Context) {
 
     fun clearSelectedThread() {
         updateState { copy(selectedThreadId = null, pendingApproval = null) }
+        scope.launch {
+            syncRuntimeSelectionContext(state.value.selectedProviderId, refreshModels = state.value.isConnected)
+        }
     }
 
-    fun createThread(preferredProjectPath: String? = null) {
+    fun createThread(preferredProjectPath: String? = null, providerId: String? = null) {
         scope.launch {
-            startThread(preferredProjectPath)
+            val resolvedProviderId = normalizeProviderId(providerId ?: state.value.selectedProviderId)
+            store.saveSelectedProviderId(resolvedProviderId)
+            updateState { copy(selectedProviderId = resolvedProviderId) }
+            syncRuntimeSelectionContext(resolvedProviderId, refreshModels = state.value.isConnected)
+            startThread(preferredProjectPath, resolvedProviderId)
         }
     }
 
@@ -1038,11 +1064,42 @@ class RemodexRepository(context: Context) {
         client.sendNotification("initialized", null)
     }
 
-    private suspend fun listModels() {
+    private suspend fun listProviders() {
+        val result = activeClient().sendRequest(
+            method = "runtime/provider/list",
+            params = null,
+        )?.jsonObjectOrNull() ?: return
+        val providers = (
+            result["providers"]?.jsonArrayOrNull()
+                ?: result["items"]?.jsonArrayOrNull()
+                ?: JsonArray(emptyList())
+            ).mapNotNull { it.jsonObjectOrNull()?.let(RuntimeProvider::fromJson) }
+        val normalizedProviders = if (providers.isEmpty()) {
+            listOf(RuntimeProvider.CODEX_DEFAULT)
+        } else {
+            providers
+        }
+        val selectedProviderId = normalizeProviderId(
+            state.value.selectedProviderId.takeIf { selectedId ->
+                normalizedProviders.any { it.id == selectedId }
+            } ?: normalizedProviders.firstOrNull()?.id,
+        )
+        store.saveSelectedProviderId(selectedProviderId)
+        updateState {
+            copy(
+                availableProviders = normalizedProviders,
+                selectedProviderId = selectedProviderId,
+            )
+        }
+    }
+
+    private suspend fun listModels(providerId: String? = null) {
+        val resolvedProviderId = normalizeProviderId(providerId ?: currentRuntimeProviderId())
         val result = activeClient().sendRequest(
             method = "model/list",
             params = JsonObject(
                 mapOf(
+                    "provider" to JsonPrimitive(resolvedProviderId),
                     "cursor" to JsonNull,
                     "limit" to JsonPrimitive(50),
                     "includeHidden" to JsonPrimitive(false),
@@ -1055,24 +1112,46 @@ class RemodexRepository(context: Context) {
                 ?: result["models"]?.jsonArrayOrNull()
                 ?: JsonArray(emptyList())
             ).mapNotNull { it.jsonObjectOrNull()?.let(ModelOption::fromJson) }
-        if (models.isNotEmpty()) {
-            val selectedModel = state.value.selectedModelId
-                ?.let { wanted -> models.firstOrNull { it.id == wanted || it.model == wanted } }
-                ?: models.firstOrNull { it.isDefault }
-                ?: models.firstOrNull()
-            val reasoning = selectedModel?.supportedReasoningEfforts?.firstOrNull()
-            updateState {
-                copy(
-                    availableModels = models,
-                    selectedModelId = selectedModel?.id,
-                    selectedReasoningEffort = selectedReasoningEffort
-                        ?.takeIf { effort -> selectedModel?.supportedReasoningEfforts?.contains(effort) == true }
-                        ?: selectedModel?.defaultReasoningEffort
-                        ?: reasoning,
-                )
+        val storedModelId = store.loadSelectedModelId(resolvedProviderId)
+        val selectedModel = storedModelId
+            ?.let { wanted -> models.firstOrNull { it.id == wanted || it.model == wanted } }
+            ?: models.firstOrNull { it.isDefault }
+            ?: models.firstOrNull()
+            ?: state.value.availableProviders.firstOrNull { it.id == resolvedProviderId }?.defaultModelId?.let { fallbackModelId ->
+                models.firstOrNull { it.id == fallbackModelId || it.model == fallbackModelId }
             }
-            store.saveSelectedModelId(state.value.selectedModelId)
-            store.saveSelectedReasoningEffort(state.value.selectedReasoningEffort)
+        val storedReasoningEffort = store.loadSelectedReasoningEffort(resolvedProviderId)
+        val reasoning = selectedModel?.supportedReasoningEfforts?.firstOrNull()
+        val resolvedReasoning = storedReasoningEffort
+            ?.takeIf { effort -> selectedModel?.supportedReasoningEfforts?.contains(effort) == true }
+            ?: selectedModel?.defaultReasoningEffort
+            ?: reasoning
+
+        updateState {
+            copy(
+                availableModels = models,
+                selectedModelId = selectedModel?.id,
+                selectedReasoningEffort = resolvedReasoning,
+            )
+        }
+        store.saveSelectedModelId(state.value.selectedModelId, resolvedProviderId)
+        store.saveSelectedReasoningEffort(state.value.selectedReasoningEffort, resolvedProviderId)
+    }
+
+    private suspend fun syncRuntimeSelectionContext(
+        providerId: String,
+        refreshModels: Boolean,
+    ) {
+        val resolvedProviderId = normalizeProviderId(providerId)
+        updateState {
+            copy(
+                accessMode = store.loadAccessMode(resolvedProviderId),
+                selectedModelId = store.loadSelectedModelId(resolvedProviderId),
+                selectedReasoningEffort = store.loadSelectedReasoningEffort(resolvedProviderId),
+            )
+        }
+        if (refreshModels) {
+            listModels(resolvedProviderId)
         }
     }
 
@@ -2848,6 +2927,11 @@ class RemodexRepository(context: Context) {
         }
     }
 
+    private fun currentRuntimeProviderId(): String {
+        val currentState = state.value
+        return normalizeProviderId(currentState.selectedThread?.provider ?: currentState.selectedProviderId)
+    }
+
     private fun orderedTransportUrls(pairingRecord: PairingRecord): List<String> {
         val priority = mapOf(
             "local_ipv4" to 0,
@@ -2866,9 +2950,11 @@ class RemodexRepository(context: Context) {
         return unique.toList()
     }
 
-    private suspend fun startThread(preferredProjectPath: String?): ThreadSummary? {
+    private suspend fun startThread(preferredProjectPath: String?, providerId: String? = null): ThreadSummary? {
+        val resolvedProviderId = normalizeProviderId(providerId ?: state.value.selectedProviderId)
         val params = buildJsonObject(
-            "model" to state.value.selectedModelId?.let(::JsonPrimitive),
+            "provider" to JsonPrimitive(resolvedProviderId),
+            "model" to store.loadSelectedModelId(resolvedProviderId)?.let(::JsonPrimitive),
             "cwd" to preferredProjectPath?.trim()?.takeIf(String::isNotEmpty)?.let(::JsonPrimitive),
         )
         val response = requestWithSandboxFallback("thread/start", params)
@@ -2885,6 +2971,7 @@ class RemodexRepository(context: Context) {
             copy(
                 threads = upsertThread(threads, thread),
                 selectedThreadId = thread.id,
+                selectedProviderId = resolvedProviderId,
                 lastErrorMessage = null,
             )
         }
@@ -3010,6 +3097,14 @@ class RemodexRepository(context: Context) {
 private fun JsonElement?.jsonObjectOrNull(): JsonObject? = this as? JsonObject
 
 private fun JsonElement?.jsonArrayOrNull(): JsonArray? = this as? JsonArray
+
+private fun normalizeProviderId(providerId: String?): String {
+    return when (providerId?.trim()?.lowercase()) {
+        "claude" -> "claude"
+        "gemini" -> "gemini"
+        else -> "codex"
+    }
+}
 
 private fun JsonObject.threadPayload(): JsonObject? {
     return this["thread"]?.jsonObjectOrNull()

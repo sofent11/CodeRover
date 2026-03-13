@@ -7,6 +7,7 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -43,10 +44,12 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.sp
 import com.remodex.android.data.model.ThreadSummary
 import com.remodex.android.data.model.ThreadSyncState
 import com.remodex.android.ui.shared.relativeTimeLabel
+import com.remodex.android.ui.shared.StatusTag
 import com.remodex.android.ui.theme.Danger
 import com.remodex.android.ui.theme.PlanAccent
 
@@ -63,6 +66,8 @@ fun SidebarThreadListView(
     isFiltering: Boolean,
     isConnected: Boolean,
     isSearchActive: Boolean,
+    modifier: Modifier = Modifier,
+    bottomContentPadding: Dp = 0.dp,
 ) {
     var expandedProjectIds by rememberSaveable { mutableStateOf(emptySet<String>()) }
     var archivedExpanded by rememberSaveable { mutableStateOf(false) }
@@ -107,7 +112,8 @@ fun SidebarThreadListView(
 
     LazyColumn(
         verticalArrangement = Arrangement.Top,
-        modifier = Modifier.fillMaxWidth(),
+        modifier = modifier.fillMaxWidth(),
+        contentPadding = PaddingValues(bottom = bottomContentPadding),
     ) {
         items(groups, key = { it.id }) { group ->
             when (group.kind) {
@@ -360,6 +366,12 @@ private fun SidebarThreadRowView(
                 }
 
                 Row(verticalAlignment = Alignment.CenterVertically) {
+                    StatusTag(
+                        text = thread.providerBadgeTitle,
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.75f),
+                        contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.width(8.dp))
                     if (thread.syncState == ThreadSyncState.ARCHIVED_LOCAL) {
                         Text(
                             text = "Archived",

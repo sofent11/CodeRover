@@ -24,6 +24,7 @@ internal fun ComposerTopPanels(
     turnViewModel: TurnViewModel,
     queuedDrafts: List<QueuedTurnDraft>,
     canSteerDrafts: Boolean,
+    showsPlanMode: Boolean,
     onSteerDraft: (String) -> Unit,
     onFileSelected: (FuzzyFileMatch) -> Unit,
     onSkillSelected: (SkillMetadata) -> Unit,
@@ -33,7 +34,7 @@ internal fun ComposerTopPanels(
         visible = turnViewModel.autocompleteFiles.isNotEmpty() ||
             turnViewModel.autocompleteSkills.isNotEmpty() ||
             queuedDrafts.isNotEmpty() ||
-            turnViewModel.isPlanModeArmed,
+            (turnViewModel.isPlanModeArmed && showsPlanMode),
     ) {
         Column(
             modifier = Modifier
@@ -64,7 +65,7 @@ internal fun ComposerTopPanels(
                 }
             }
 
-            if (turnViewModel.isPlanModeArmed) {
+            if (turnViewModel.isPlanModeArmed && showsPlanMode) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()

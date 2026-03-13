@@ -19,6 +19,9 @@ struct CodexThread: Identifiable, Codable, Hashable, Sendable {
     var createdAt: Date?
     var updatedAt: Date?
     var cwd: String?
+    var provider: String
+    var providerSessionId: String?
+    var capabilities: CodexRuntimeCapabilities?
     var metadata: [String: JSONValue]?
     var syncState: CodexThreadSyncState
 
@@ -32,6 +35,9 @@ struct CodexThread: Identifiable, Codable, Hashable, Sendable {
         createdAt: Date? = nil,
         updatedAt: Date? = nil,
         cwd: String? = nil,
+        provider: String = "codex",
+        providerSessionId: String? = nil,
+        capabilities: CodexRuntimeCapabilities? = .codexDefault,
         metadata: [String: JSONValue]? = nil,
         syncState: CodexThreadSyncState = .live
     ) {
@@ -42,6 +48,9 @@ struct CodexThread: Identifiable, Codable, Hashable, Sendable {
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.cwd = Self.normalizeProjectPath(cwd)
+        self.provider = provider.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "codex" : provider
+        self.providerSessionId = providerSessionId
+        self.capabilities = capabilities
         self.metadata = metadata
         self.syncState = syncState
     }
@@ -60,6 +69,9 @@ struct CodexThread: Identifiable, Codable, Hashable, Sendable {
         case cwd
         case cwdSnake = "current_working_directory"
         case cwdWorkingDirectory = "working_directory"
+        case provider
+        case providerSessionId
+        case capabilities
         case metadata
         case syncState
     }
@@ -76,6 +88,9 @@ struct CodexThread: Identifiable, Codable, Hashable, Sendable {
         createdAt = try Self.decodeDateIfPresent(from: container, keys: [.createdAt, .createdAtSnake])
         updatedAt = try Self.decodeDateIfPresent(from: container, keys: [.updatedAt, .updatedAtSnake])
         cwd = Self.decodeStringIfPresent(from: container, keys: [.cwd, .cwdSnake, .cwdWorkingDirectory])
+        provider = try container.decodeIfPresent(String.self, forKey: .provider) ?? "codex"
+        providerSessionId = try container.decodeIfPresent(String.self, forKey: .providerSessionId)
+        capabilities = try container.decodeIfPresent(CodexRuntimeCapabilities.self, forKey: .capabilities)
         metadata = try container.decodeIfPresent([String: JSONValue].self, forKey: .metadata)
         syncState = try container.decodeIfPresent(CodexThreadSyncState.self, forKey: .syncState) ?? .live
     }
@@ -92,6 +107,9 @@ struct CodexThread: Identifiable, Codable, Hashable, Sendable {
         try container.encodeIfPresent(createdAt, forKey: .createdAt)
         try container.encodeIfPresent(updatedAt, forKey: .updatedAt)
         try container.encodeIfPresent(Self.normalizeProjectPath(cwd), forKey: .cwd)
+        try container.encode(provider, forKey: .provider)
+        try container.encodeIfPresent(providerSessionId, forKey: .providerSessionId)
+        try container.encodeIfPresent(capabilities, forKey: .capabilities)
         try container.encodeIfPresent(metadata, forKey: .metadata)
         try container.encode(syncState, forKey: .syncState)
     }
@@ -159,6 +177,22 @@ extension CodexThread {
         }
 
         return normalizedProjectPath
+    }
+
+    var providerBadgeTitle: String {
+        let metadataProviderTitle = metadata?["providerTitle"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let metadataProviderTitle, !metadataProviderTitle.isEmpty {
+            return metadataProviderTitle
+        }
+
+        switch provider.lowercased() {
+        case "claude":
+            return "Claude"
+        case "gemini":
+            return "Gemini"
+        default:
+            return "Codex"
+        }
     }
 
     // --- Date parsing ---------------------------------------------------------

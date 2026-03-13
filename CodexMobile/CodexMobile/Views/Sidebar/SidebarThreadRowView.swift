@@ -40,6 +40,13 @@ struct SidebarThreadRowView: View {
 
                 // Keeps the row tail scannable: status, relative time, then compact diff total.
                 HStack(spacing: 4) {
+                    Text(thread.providerBadgeTitle)
+                        .font(AppFont.caption2(weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 2)
+                        .background(Color(.secondarySystemFill), in: Capsule())
+
                     if thread.syncState == .archivedLocal {
                         Text("Archived")
                             .font(AppFont.caption2())

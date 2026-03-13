@@ -139,6 +139,7 @@ struct TurnView: View {
         .toolbar {
             TurnToolbarContent(
                 displayTitle: thread.displayTitle,
+                providerTitle: thread.providerBadgeTitle,
                 navigationContext: threadNavigationContext,
                 repoDiffTotals: viewModel.gitRepoSync?.repoDiffTotals,
                 isLoadingRepoDiff: isLoadingRepositoryDiff,
@@ -511,6 +512,8 @@ struct TurnView: View {
     }
 
     private func prepareThreadIfReady(gitWorkingDirectory: String?) async {
+        codex.activeThreadId = thread.id
+        codex.syncRuntimeSelectionContext()
         await codex.prepareThreadForDisplay(threadId: thread.id)
         viewModel.flushQueueIfPossible(codex: codex, threadID: thread.id)
         guard gitWorkingDirectory != nil else { return }

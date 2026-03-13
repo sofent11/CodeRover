@@ -172,10 +172,13 @@ private fun RemodexAppShell(
             ) {
                 SidebarScreen(
                     state = state,
-                    onCreateThread = { projectPath ->
+                    onCreateThread = { projectPath, providerId ->
                         contentViewModel.selectThread()
-                        viewModel.createThread(projectPath)
+                        viewModel.createThread(projectPath, providerId)
                         coroutineScope.launch { drawerState.close() }
+                    },
+                    onSelectProvider = { providerId ->
+                        viewModel.setSelectedProviderId(providerId)
                     },
                     onSelectThread = { threadId ->
                         contentViewModel.selectThread()
@@ -374,7 +377,10 @@ private fun shellHeader(
 
         AppShellContent.THREAD -> ShellHeader(
             title = state.selectedThread?.displayTitle ?: "Remodex",
-            subtitle = state.selectedThread?.projectDisplayName ?: "Your paired Mac",
+            subtitle = listOfNotNull(
+                state.selectedThread?.providerBadgeTitle,
+                state.selectedThread?.projectDisplayName,
+            ).joinToString(" · ").ifBlank { "Your paired Mac" },
         )
 
         AppShellContent.EMPTY -> ShellHeader(

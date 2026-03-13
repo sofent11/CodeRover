@@ -13,6 +13,7 @@ struct TurnThreadNavigationContext {
 
 struct TurnToolbarContent: ToolbarContent {
     let displayTitle: String
+    let providerTitle: String?
     let navigationContext: TurnThreadNavigationContext?
     let repoDiffTotals: GitDiffTotals?
     let isLoadingRepoDiff: Bool
@@ -39,18 +40,29 @@ struct TurnToolbarContent: ToolbarContent {
                     .frame(maxWidth: .infinity, alignment: .leading)
 
                 if let context = navigationContext {
-                    Button {
-                        HapticFeedback.shared.triggerImpactFeedback(style: .light)
-                        isShowingPathSheet = true
-                    } label: {
-                        Text(context.subtitle)
-                            .font(AppFont.mono(.caption))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                    HStack(spacing: 6) {
+                        if let providerTitle, !providerTitle.isEmpty {
+                            Text(providerTitle)
+                                .font(AppFont.caption(weight: .semibold))
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(Color(.secondarySystemFill), in: Capsule())
+                        }
+
+                        Button {
+                            HapticFeedback.shared.triggerImpactFeedback(style: .light)
+                            isShowingPathSheet = true
+                        } label: {
+                            Text(context.subtitle)
+                                .font(AppFont.mono(.caption))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)

@@ -20,6 +20,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setAccessMode(accessMode: AccessMode) = repository.setAccessMode(accessMode)
 
+    fun setSelectedProviderId(providerId: String) = repository.setSelectedProviderId(providerId)
+
     fun setSelectedModelId(modelId: String?) = repository.setSelectedModelId(modelId)
 
     fun setSelectedReasoningEffort(reasoningEffort: String?) = repository.setSelectedReasoningEffort(reasoningEffort)
@@ -45,7 +47,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun clearSelectedThread() = repository.clearSelectedThread()
 
-    fun createThread(preferredProjectPath: String? = null) = repository.createThread(preferredProjectPath)
+    fun createThread(preferredProjectPath: String? = null, providerId: String? = null) =
+        repository.createThread(preferredProjectPath, providerId)
 
     fun deleteThread(threadId: String) = repository.deleteThread(threadId)
 

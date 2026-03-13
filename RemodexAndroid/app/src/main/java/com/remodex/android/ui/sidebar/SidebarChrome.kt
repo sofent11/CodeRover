@@ -30,6 +30,7 @@ import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -52,6 +53,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.LocalFocusManager
+import com.remodex.android.data.model.RuntimeProvider
 import com.remodex.android.R
 import com.remodex.android.ui.theme.Border
 import com.remodex.android.ui.theme.monoFamily
@@ -201,39 +203,26 @@ fun SidebarNewChatButton(
 @Composable
 fun SidebarFloatingSettingsButton(
     onClick: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
-    HorizontalDivider(
-        modifier = Modifier.fillMaxWidth(),
-        color = Border.copy(alpha = 0.5f),
-    )
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 16.dp),
-        verticalAlignment = Alignment.CenterVertically,
+    Surface(
+        onClick = onClick,
+        shape = CircleShape,
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
+        border = androidx.compose.foundation.BorderStroke(1.dp, Border.copy(alpha = 0.65f)),
+        shadowElevation = 8.dp,
+        modifier = modifier,
     ) {
-        Surface(
-            shape = CircleShape,
-            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f),
+        Box(
+            modifier = Modifier.size(52.dp),
+            contentAlignment = Alignment.Center,
         ) {
-            Box(
-                modifier = Modifier.size(40.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.Settings,
-                    contentDescription = "Settings",
-                    tint = MaterialTheme.colorScheme.onSurface,
-                )
-            }
+            Icon(
+                imageVector = Icons.Filled.Settings,
+                contentDescription = "Settings",
+                tint = MaterialTheme.colorScheme.onSurface,
+            )
         }
-        Spacer(Modifier.width(12.dp))
-        Text(
-            text = "Settings",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
     }
 }
 
@@ -241,8 +230,11 @@ fun SidebarFloatingSettingsButton(
 @Composable
 fun SidebarProjectPickerSheet(
     projectPaths: List<String>,
+    providers: List<RuntimeProvider>,
+    selectedProviderId: String,
+    onSelectProvider: (String) -> Unit,
     onDismiss: () -> Unit,
-    onSelectProject: (String?) -> Unit,
+    onSelectProject: (String?, String) -> Unit,
 ) {
     val sheetState = rememberModalBottomSheetState()
     ModalBottomSheet(
@@ -263,16 +255,36 @@ fun SidebarProjectPickerSheet(
                 fontWeight = FontWeight.Bold,
                 modifier = Modifier.padding(bottom = 12.dp, start = 8.dp),
             )
+            Text(
+                text = "Runtime",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+            )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                providers.forEach { provider ->
+                    FilterChip(
+                        selected = provider.id == selectedProviderId,
+                        onClick = { onSelectProvider(provider.id) },
+                        label = { Text(provider.title) },
+                    )
+                }
+            }
             SidebarProjectPickerItem(
                 name = "No Project",
                 path = "Open without a local working directory",
-                onClick = { onSelectProject(null) },
+                onClick = { onSelectProject(null, selectedProviderId) },
             )
             projectPaths.forEach { projectPath ->
                 SidebarProjectPickerItem(
                     name = projectPath.substringAfterLast('/').ifEmpty { projectPath },
                     path = projectPath,
-                    onClick = { onSelectProject(projectPath) },
+                    onClick = { onSelectProject(projectPath, selectedProviderId) },
                 )
             }
         }

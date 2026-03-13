@@ -25,71 +25,7 @@ struct SidebarView: View {
     @State private var createThreadErrorMessage: String? = nil
 
     var body: some View {
-        let diffTotalsByThreadID = sidebarDiffTotalsByThreadID
-
-        VStack(alignment: .leading, spacing: 0) {
-            SidebarHeaderView()
-
-            SidebarSearchField(text: $searchText, isActive: $isSearchActive)
-                .padding(.horizontal, 16)
-                .padding(.top, 6)
-                .padding(.bottom, 6)
-
-            SidebarNewChatButton(
-                isCreatingThread: isCreatingThread,
-                isEnabled: canCreateThread,
-                statusMessage: nil,
-                action: handleNewChatButtonTap
-            )
-            .padding(.horizontal, 16)
-            .padding(.bottom, 10)
-
-            SidebarThreadListView(
-                isFiltering: !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                isConnected: codex.isConnected,
-                isCreatingThread: isCreatingThread,
-                threads: codex.threads,
-                groups: groupedThreads,
-                selectedThread: selectedThread,
-                bottomContentInset: 0,
-                timingLabelProvider: { SidebarRelativeTimeFormatter.compactLabel(for: $0) },
-                diffTotalsByThreadID: diffTotalsByThreadID,
-                runBadgeStateByThreadID: runBadgeStateByThreadID,
-                onSelectThread: selectThread,
-                onCreateThreadInProjectGroup: { group in
-                    handleNewChatTap(preferredProjectPath: group.projectPath)
-                },
-                onArchiveProjectGroup: { group in
-                    projectGroupPendingArchive = group
-                },
-                onRenameThread: { thread, newName in
-                    codex.renameThread(thread.id, name: newName)
-                },
-                onArchiveToggleThread: { thread in
-                    if thread.syncState == .archivedLocal {
-                        codex.unarchiveThread(thread.id)
-                    } else {
-                        codex.archiveThread(thread.id)
-                        if selectedThread?.id == thread.id {
-                            selectedThread = nil
-                        }
-                    }
-                },
-                onDeleteThread: { thread in
-                    threadPendingDeletion = thread
-                }
-            )
-            .refreshable {
-                await refreshThreads()
-            }
-
-            HStack(spacing: 10) {
-                SidebarFloatingSettingsButton(colorScheme: colorScheme, action: openSettings)
-            }
-            .padding(.horizontal, 16)
-            .padding(.top, 10)
-        }
-        .frame(maxHeight: .infinity)
+        sidebarContent
         .background(Color(.systemBackground))
         .task {
             rebuildGroupedThreads()
@@ -110,23 +46,10 @@ struct SidebarView: View {
                     .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
             }
         }
-        .sheet(isPresented: $isShowingNewChatProjectPicker) {
-            SidebarNewChatProjectPickerSheet(
-                choices: newChatProjectChoices,
-                onSelectProject: { projectPath in
-                    handleNewChatTap(preferredProjectPath: projectPath)
-                },
-                onSelectWithoutProject: {
-                    handleNewChatTap(preferredProjectPath: nil)
-                }
-            )
-        }
+        .sheet(isPresented: $isShowingNewChatProjectPicker, content: newChatSheet)
         .confirmationDialog(
             "Archive \"\(projectGroupPendingArchive?.label ?? "project")\"?",
-            isPresented: Binding(
-                get: { projectGroupPendingArchive != nil },
-                set: { if !$0 { projectGroupPendingArchive = nil } }
-            ),
+            isPresented: isArchiveDialogPresented,
             titleVisibility: .visible
         ) {
             Button("Archive Project") {
@@ -140,10 +63,7 @@ struct SidebarView: View {
         }
         .confirmationDialog(
             "Delete \"\(threadPendingDeletion?.displayTitle ?? "conversation")\"?",
-            isPresented: Binding(
-                get: { threadPendingDeletion != nil },
-                set: { if !$0 { threadPendingDeletion = nil } }
-            ),
+            isPresented: isDeleteDialogPresented,
             titleVisibility: .visible
         ) {
             Button("Delete", role: .destructive) {
@@ -161,10 +81,7 @@ struct SidebarView: View {
         }
         .alert(
             "Action failed",
-            isPresented: Binding(
-                get: { createThreadErrorMessage != nil },
-                set: { if !$0 { createThreadErrorMessage = nil } }
-            ),
+            isPresented: isCreateThreadErrorPresented,
             actions: {
                 Button("OK", role: .cancel) {
                     createThreadErrorMessage = nil
@@ -173,6 +90,117 @@ struct SidebarView: View {
             message: {
                 Text(createThreadErrorMessage ?? "Please try again.")
             }
+        )
+    }
+
+    private var sidebarContent: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            SidebarHeaderView()
+
+            SidebarSearchField(text: $searchText, isActive: $isSearchActive)
+                .padding(.horizontal, 16)
+                .padding(.top, 6)
+                .padding(.bottom, 6)
+
+            SidebarNewChatButton(
+                isCreatingThread: isCreatingThread,
+                isEnabled: canCreateThread,
+                statusMessage: nil,
+                action: handleNewChatButtonTap
+            )
+            .padding(.horizontal, 16)
+            .padding(.bottom, 10)
+
+            threadListView
+
+            HStack(spacing: 10) {
+                SidebarFloatingSettingsButton(colorScheme: colorScheme, action: openSettings)
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 10)
+        }
+        .frame(maxHeight: .infinity)
+    }
+
+    private var threadListView: some View {
+        SidebarThreadListView(
+            isFiltering: !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            isConnected: codex.isConnected,
+            isCreatingThread: isCreatingThread,
+            threads: codex.threads,
+            groups: groupedThreads,
+            selectedThread: selectedThread,
+            bottomContentInset: 0,
+            timingLabelProvider: { SidebarRelativeTimeFormatter.compactLabel(for: $0) },
+            diffTotalsByThreadID: sidebarDiffTotalsByThreadID,
+            runBadgeStateByThreadID: runBadgeStateByThreadID,
+            onSelectThread: selectThread,
+            onCreateThreadInProjectGroup: { group in
+                handleNewChatTap(
+                    preferredProjectPath: group.projectPath,
+                    providerID: codex.selectedProviderID
+                )
+            },
+            onArchiveProjectGroup: { group in
+                projectGroupPendingArchive = group
+            },
+            onRenameThread: { thread, newName in
+                codex.renameThread(thread.id, name: newName)
+            },
+            onArchiveToggleThread: { thread in
+                if thread.syncState == .archivedLocal {
+                    codex.unarchiveThread(thread.id)
+                } else {
+                    codex.archiveThread(thread.id)
+                    if selectedThread?.id == thread.id {
+                        selectedThread = nil
+                    }
+                }
+            },
+            onDeleteThread: { thread in
+                threadPendingDeletion = thread
+            }
+        )
+        .refreshable {
+            await refreshThreads()
+        }
+    }
+
+    private func newChatSheet() -> some View {
+        SidebarNewChatProjectPickerSheet(
+            choices: newChatProjectChoices,
+            providers: codex.availableProviders,
+            selectedProviderID: Binding(
+                get: { codex.selectedProviderID },
+                set: { codex.setSelectedProviderID($0) }
+            ),
+            onSelectProject: { projectPath, providerID in
+                handleNewChatTap(preferredProjectPath: projectPath, providerID: providerID)
+            },
+            onSelectWithoutProject: { providerID in
+                handleNewChatTap(preferredProjectPath: nil, providerID: providerID)
+            }
+        )
+    }
+
+    private var isArchiveDialogPresented: Binding<Bool> {
+        Binding(
+            get: { projectGroupPendingArchive != nil },
+            set: { if !$0 { projectGroupPendingArchive = nil } }
+        )
+    }
+
+    private var isDeleteDialogPresented: Binding<Bool> {
+        Binding(
+            get: { threadPendingDeletion != nil },
+            set: { if !$0 { threadPendingDeletion = nil } }
+        )
+    }
+
+    private var isCreateThreadErrorPresented: Binding<Bool> {
+        Binding(
+            get: { createThreadErrorMessage != nil },
+            set: { if !$0 { createThreadErrorMessage = nil } }
         )
     }
 
@@ -190,14 +218,14 @@ struct SidebarView: View {
     // Shows a native sheet so folder names and full paths stay readable on small screens.
     private func handleNewChatButtonTap() {
         if newChatProjectChoices.isEmpty {
-            handleNewChatTap(preferredProjectPath: nil)
+            handleNewChatTap(preferredProjectPath: nil, providerID: codex.selectedProviderID)
             return
         }
 
         isShowingNewChatProjectPicker = true
     }
 
-    private func handleNewChatTap(preferredProjectPath: String?) {
+    private func handleNewChatTap(preferredProjectPath: String?, providerID: String) {
         Task { @MainActor in
             guard codex.isConnected else {
                 createThreadErrorMessage = "Connect to runtime first."
@@ -213,7 +241,11 @@ struct SidebarView: View {
             defer { isCreatingThread = false }
 
             do {
-                let thread = try await codex.startThread(preferredProjectPath: preferredProjectPath)
+                codex.setSelectedProviderID(providerID)
+                let thread = try await codex.startThread(
+                    preferredProjectPath: preferredProjectPath,
+                    provider: providerID
+                )
                 selectedThread = thread
                 onClose()
             } catch {
@@ -311,8 +343,10 @@ struct SidebarView: View {
 
 private struct SidebarNewChatProjectPickerSheet: View {
     let choices: [SidebarProjectChoice]
-    let onSelectProject: (String) -> Void
-    let onSelectWithoutProject: () -> Void
+    let providers: [CodexRuntimeProvider]
+    @Binding var selectedProviderID: String
+    let onSelectProject: (String, String) -> Void
+    let onSelectWithoutProject: (String) -> Void
 
     @Environment(\.dismiss) private var dismiss
 
@@ -326,11 +360,20 @@ private struct SidebarNewChatProjectPickerSheet: View {
                         .listRowBackground(Color.clear)
                 }
 
+                Section("Runtime") {
+                    Picker("Provider", selection: $selectedProviderID) {
+                        ForEach(providers) { provider in
+                            Text(provider.title).tag(provider.id)
+                        }
+                    }
+                    .pickerStyle(.inline)
+                }
+
                 Section("Projects") {
                     ForEach(choices) { choice in
                         Button {
                             dismiss()
-                            onSelectProject(choice.projectPath)
+                            onSelectProject(choice.projectPath, selectedProviderID)
                         } label: {
                             HStack(alignment: .top, spacing: 12) {
                                 Image(systemName: "folder")
@@ -359,7 +402,7 @@ private struct SidebarNewChatProjectPickerSheet: View {
                 Section {
                     Button {
                         dismiss()
-                        onSelectWithoutProject()
+                        onSelectWithoutProject(selectedProviderID)
                     } label: {
                         HStack(alignment: .top, spacing: 12) {
                             Image(systemName: "plus.bubble")

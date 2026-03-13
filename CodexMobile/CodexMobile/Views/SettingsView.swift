@@ -46,6 +46,19 @@ struct SettingsView: View {
     @ViewBuilder private var runtimeDefaultsSection: some View {
         SettingsCard(title: "Runtime defaults") {
             HStack {
+                Text("Provider")
+                Spacer()
+                Picker("Provider", selection: runtimeProviderSelection) {
+                    ForEach(codex.availableProviders) { provider in
+                        Text(provider.title).tag(provider.id)
+                    }
+                }
+                .pickerStyle(.menu)
+                .labelsHidden()
+                .tint(.cyan)
+            }
+
+            HStack {
                 Text("Model")
                 Spacer()
                 Picker("Model", selection: runtimeModelSelection) {
@@ -79,7 +92,7 @@ struct SettingsView: View {
                 Text("Access")
                 Spacer()
                 Picker("Access", selection: runtimeAccessSelection) {
-                    ForEach(CodexAccessMode.allCases, id: \.self) { mode in
+                    ForEach(runtimeAccessModes, id: \.self) { mode in
                         Text(mode.displayName).tag(mode)
                     }
                 }
@@ -324,6 +337,17 @@ struct SettingsView: View {
         TurnComposerMetaMapper.orderedModels(from: codex.availableModels)
     }
 
+    private var runtimeAccessModes: [CodexAccessMode] {
+        codex.availableAccessModes(for: codex.selectedProviderID)
+    }
+
+    private var runtimeProviderSelection: Binding<String> {
+        Binding(
+            get: { codex.selectedProviderID },
+            set: { codex.setSelectedProviderID($0) }
+        )
+    }
+
     private var runtimeReasoningOptions: [TurnComposerReasoningDisplayOption] {
         TurnComposerMetaMapper.reasoningDisplayOptions(
             from: codex.supportedReasoningEffortsForSelectedModel().map(\.reasoningEffort)
@@ -351,7 +375,9 @@ struct SettingsView: View {
     private var runtimeAccessSelection: Binding<CodexAccessMode> {
         Binding(
             get: { codex.selectedAccessMode },
-            set: { codex.setSelectedAccessMode($0) }
+            set: { selectedMode in
+                codex.setSelectedAccessMode(selectedMode)
+            }
         )
     }
 

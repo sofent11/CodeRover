@@ -45,6 +45,10 @@ internal fun TurnComposerView(
     val queuedDrafts = if (threadIdForQueue != null) state.queuedTurnDraftsByThread[threadIdForQueue].orEmpty() else emptyList()
     val queuePauseMessage = threadIdForQueue?.let { state.queuePauseMessageByThread[it] }
     val reasoningOptions = selectedModel?.supportedReasoningEfforts.orEmpty()
+    val runtimeCapabilities = state.activeRuntimeCapabilities
+    val supportsPlanMode = runtimeCapabilities.planMode
+    val supportsReasoningOptions = runtimeCapabilities.reasoningOptions
+    val supportsTurnSteer = runtimeCapabilities.turnSteer
     val queuePresentation = turnViewModel.queuePresentation(
         queuedDraftCount = queuedDrafts.size,
         queuePauseMessage = queuePauseMessage,
@@ -80,7 +84,8 @@ internal fun TurnComposerView(
                 ComposerTopPanels(
                     turnViewModel = turnViewModel,
                     queuedDrafts = queuedDrafts,
-                    canSteerDrafts = isRunning && queuePresentation.canSteerDrafts,
+                    canSteerDrafts = isRunning && queuePresentation.canSteerDrafts && supportsTurnSteer,
+                    showsPlanMode = supportsPlanMode,
                     onSteerDraft = { draftId ->
                         if (threadIdForQueue != null) {
                             coroutineScope.launch {
@@ -144,7 +149,7 @@ internal fun TurnComposerView(
                                 turnViewModel.composeSendText(input),
                                 turnViewModel.readyComposerAttachments,
                                 turnViewModel.readySkillMentions,
-                                turnViewModel.isPlanModeArmed,
+                                turnViewModel.isPlanModeArmed && supportsPlanMode,
                             )
                             turnViewModel.clearComposerSelections()
                         }
@@ -159,7 +164,8 @@ internal fun TurnComposerView(
                     orderedModels = orderedModels,
                     selectedModelTitle = selectedModelTitle,
                     selectedReasoningTitle = selectedReasoningTitle,
-                    reasoningOptions = reasoningOptions,
+                    reasoningOptions = if (supportsReasoningOptions) reasoningOptions else emptyList(),
+                    supportsPlanMode = supportsPlanMode,
                     isRunning = isRunning,
                     sendEnabled = presentation.canSend,
                     queuedCount = queuePresentation.draftCount,
@@ -188,7 +194,7 @@ internal fun TurnComposerView(
                             turnViewModel.composeSendText(input),
                             turnViewModel.readyComposerAttachments,
                             turnViewModel.readySkillMentions,
-                            turnViewModel.isPlanModeArmed,
+                            turnViewModel.isPlanModeArmed && supportsPlanMode,
                         )
                         turnViewModel.clearComposerSelections()
                     },

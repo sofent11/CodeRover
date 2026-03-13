@@ -18,6 +18,7 @@ struct TurnComposerView: View {
     let isComposerInteractionLocked: Bool
     let isSendDisabled: Bool
     let isPlanModeArmed: Bool
+    let supportsPlanMode: Bool
     let queuedDrafts: [QueuedTurnDraft]
     let queuedCount: Int
     let isQueuePaused: Bool
@@ -220,6 +221,7 @@ struct TurnComposerView: View {
                     isComposerInteractionLocked: isComposerInteractionLocked,
                     isSendDisabled: isSendDisabled,
                     isPlanModeArmed: isPlanModeArmed,
+                    supportsPlanMode: supportsPlanMode,
                     queuedCount: queuedCount,
                     isQueuePaused: isQueuePaused,
                     activeTurnID: activeTurnID,
@@ -416,6 +418,7 @@ private struct QueuedDraftsPanelPreviewWrapper: View {
                 isComposerInteractionLocked: false,
                 isSendDisabled: false,
                 isPlanModeArmed: true,
+                supportsPlanMode: true,
                 queuedDrafts: fakeDrafts,
                 queuedCount: 3,
                 isQueuePaused: false,

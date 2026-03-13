@@ -11,18 +11,21 @@ final class CodexThreadStartProjectBindingTests: XCTestCase {
     func testMakeThreadStartParamsIncludesModelAndCwd() {
         let params = CodexThreadStartProjectBinding.makeThreadStartParams(
             modelIdentifier: "gpt-5",
-            preferredProjectPath: "/Users/me/work/project"
+            preferredProjectPath: "/Users/me/work/project",
+            provider: "claude"
         )
 
         XCTAssertEqual(params["model"]?.stringValue, "gpt-5")
         XCTAssertEqual(params["cwd"]?.stringValue, "/Users/me/work/project")
+        XCTAssertEqual(params["provider"]?.stringValue, "claude")
     }
 
     func testMakeThreadStartParamsSkipsEmptyCwd() {
         let normalized = CodexThreadStartProjectBinding.normalizedProjectPath("   ")
         let params = CodexThreadStartProjectBinding.makeThreadStartParams(
             modelIdentifier: nil,
-            preferredProjectPath: normalized
+            preferredProjectPath: normalized,
+            provider: nil
         )
 
         XCTAssertNil(params["cwd"])

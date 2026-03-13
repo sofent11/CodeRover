@@ -94,7 +94,12 @@ final class CodexService {
     // Tracks the non-blocking bootstrap that hydrates chats/models after the socket is ready.
     var isBootstrappingConnectionSync = false
     var currentOutput = ""
-    var activeThreadId: String?
+    var activeThreadId: String? {
+        didSet {
+            guard oldValue != activeThreadId else { return }
+            syncRuntimeSelectionContext()
+        }
+    }
     var activeTurnId: String?
     var activeTurnIdByThread: [String: String] = [:]
 
@@ -120,10 +125,32 @@ final class CodexService {
     // Monotonic per-thread revision so views can react to message mutations without hashing full transcripts.
     var messageRevisionByThread: [String: Int] = [:]
     var syncRealtimeEnabled = true
+    var availableProviders: [CodexRuntimeProvider] = [.codexDefault]
+    var selectedProviderID: String = "codex" {
+        didSet {
+            guard oldValue != selectedProviderID else { return }
+            defaults.set(selectedProviderID, forKey: Self.selectedProviderDefaultsKey)
+        }
+    }
     var availableModels: [CodexModelOption] = []
-    var selectedModelId: String?
-    var selectedReasoningEffort: String?
-    var selectedAccessMode: CodexAccessMode = .onRequest
+    var selectedModelId: String? {
+        didSet {
+            guard oldValue != selectedModelId else { return }
+            persistRuntimeSelections()
+        }
+    }
+    var selectedReasoningEffort: String? {
+        didSet {
+            guard oldValue != selectedReasoningEffort else { return }
+            persistRuntimeSelections()
+        }
+    }
+    var selectedAccessMode: CodexAccessMode = .onRequest {
+        didSet {
+            guard oldValue != selectedAccessMode else { return }
+            persistRuntimeSelections()
+        }
+    }
     var isLoadingModels = false
     var modelsErrorMessage: String?
     var notificationAuthorizationStatus: UNAuthorizationStatus = .notDetermined
@@ -133,6 +160,47 @@ final class CodexService {
     var supportsTurnCollaborationMode = false
     // User-initiated disconnects can request that the shell returns to the home screen.
     var shouldReturnHomeAfterDisconnect = false
+
+    func persistRuntimeSelections(providerID: String? = nil) {
+        let normalizedProvider: String = {
+            let explicitProvider = providerID?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if let explicitProvider, ["codex", "claude", "gemini"].contains(explicitProvider) {
+                return explicitProvider
+            }
+            if let activeThreadId,
+               let threadProvider = threads.first(where: { $0.id == activeThreadId })?.provider
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .lowercased(),
+               ["codex", "claude", "gemini"].contains(threadProvider) {
+                return threadProvider
+            }
+            let selectedProvider = selectedProviderID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            return ["codex", "claude", "gemini"].contains(selectedProvider) ? selectedProvider : "codex"
+        }()
+
+        defaults.set(selectedProviderID, forKey: Self.selectedProviderDefaultsKey)
+
+        let modelDefaultsKey = "runtime.\(normalizedProvider).selectedModelId"
+        if let selectedModelId, !selectedModelId.isEmpty {
+            runtimeModelIdByProvider[normalizedProvider] = selectedModelId
+            defaults.set(selectedModelId, forKey: modelDefaultsKey)
+        } else {
+            runtimeModelIdByProvider.removeValue(forKey: normalizedProvider)
+            defaults.removeObject(forKey: modelDefaultsKey)
+        }
+
+        let reasoningDefaultsKey = "runtime.\(normalizedProvider).selectedReasoningEffort"
+        if let selectedReasoningEffort, !selectedReasoningEffort.isEmpty {
+            runtimeReasoningEffortByProvider[normalizedProvider] = selectedReasoningEffort
+            defaults.set(selectedReasoningEffort, forKey: reasoningDefaultsKey)
+        } else {
+            runtimeReasoningEffortByProvider.removeValue(forKey: normalizedProvider)
+            defaults.removeObject(forKey: reasoningDefaultsKey)
+        }
+
+        runtimeAccessModeByProvider[normalizedProvider] = selectedAccessMode
+        defaults.set(selectedAccessMode.rawValue, forKey: "runtime.\(normalizedProvider).selectedAccessMode")
+    }
 
     // Pairing persistence
     var savedBridgePairings: [CodexBridgePairingRecord] = []
@@ -206,9 +274,11 @@ final class CodexService {
     let defaults: UserDefaults
     let userNotificationCenter: CodexUserNotificationCentering
 
-    static let selectedModelIdDefaultsKey = "codex.selectedModelId"
-    static let selectedReasoningEffortDefaultsKey = "codex.selectedReasoningEffort"
-    static let selectedAccessModeDefaultsKey = "codex.selectedAccessMode"
+    @ObservationIgnored var runtimeModelIdByProvider: [String: String] = [:]
+    @ObservationIgnored var runtimeReasoningEffortByProvider: [String: String] = [:]
+    @ObservationIgnored var runtimeAccessModeByProvider: [String: CodexAccessMode] = [:]
+
+    static let selectedProviderDefaultsKey = "runtime.selectedProviderId"
     static let locallyArchivedThreadIDsKey = "codex.locallyArchivedThreadIDs"
     static let notificationsPromptedDefaultsKey = "codex.notifications.prompted"
 
@@ -248,20 +318,13 @@ final class CodexService {
             }
         }
 
-        let savedModelId = defaults.string(forKey: Self.selectedModelIdDefaultsKey)?
+        let savedProvider = defaults.string(forKey: Self.selectedProviderDefaultsKey)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        self.selectedModelId = (savedModelId?.isEmpty == false) ? savedModelId : nil
-
-        let savedReasoning = defaults.string(forKey: Self.selectedReasoningEffortDefaultsKey)?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        self.selectedReasoningEffort = (savedReasoning?.isEmpty == false) ? savedReasoning : nil
-
-        if let savedAccessMode = defaults.string(forKey: Self.selectedAccessModeDefaultsKey),
-           let parsedAccessMode = CodexAccessMode(rawValue: savedAccessMode) {
-            self.selectedAccessMode = parsedAccessMode
-        } else {
-            self.selectedAccessMode = .onRequest
-        }
+        self.selectedProviderID = (savedProvider?.isEmpty == false) ? (savedProvider ?? "codex") : "codex"
+        self.selectedModelId = nil
+        self.selectedReasoningEffort = nil
+        self.selectedAccessMode = .onRequest
+        self.syncRuntimeSelectionContext()
 
         // Restore saved Mac pairings. Legacy single-pairing keys are migrated into the
         // new multi-pairing store the first time a newer client launches.

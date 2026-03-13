@@ -36,6 +36,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.remodex.android.data.model.PairingRecord
@@ -57,6 +58,7 @@ fun PairingEntryScreen(
 ) {
     var scannerMode by rememberSaveable { mutableStateOf(true) }
     val transportSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val clipboardManager = LocalClipboardManager.current
 
     Box(
         modifier = Modifier
@@ -189,6 +191,18 @@ fun PairingEntryScreen(
                         shape = RoundedCornerShape(20.dp),
                     )
                     Spacer(Modifier.height(16.dp))
+                    TextButton(
+                        onClick = {
+                            val clipboardText = clipboardManager.getText()?.text
+                                ?.takeIf { it.isNotBlank() }
+                                ?: return@TextButton
+                            onImportTextChanged(clipboardText)
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text("Paste from Clipboard")
+                    }
+                    Spacer(Modifier.height(8.dp))
                     Button(
                         onClick = onImport,
                         modifier = Modifier.fillMaxWidth(),

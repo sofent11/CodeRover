@@ -1,9 +1,11 @@
 package com.remodex.android.ui.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -15,7 +17,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import com.remodex.android.data.model.AppState
 import com.remodex.android.data.model.ThreadSummary
 import com.remodex.android.data.model.ThreadSyncState
@@ -31,7 +35,8 @@ import com.remodex.android.ui.theme.Danger
 @Composable
 fun SidebarScreen(
     state: AppState,
-    onCreateThread: (String?) -> Unit,
+    onCreateThread: (String?, String) -> Unit,
+    onSelectProvider: (String) -> Unit,
     onSelectThread: (String) -> Unit,
     onOpenSettings: () -> Unit,
     onDeleteThread: (String) -> Unit,
@@ -57,55 +62,69 @@ fun SidebarScreen(
             .sorted()
     }
 
-    Column(
+    Box(
         modifier = Modifier
             .fillMaxHeight()
             .background(MaterialTheme.colorScheme.surface),
     ) {
-        SidebarHeaderView()
-        SidebarSearchField(
-            value = query,
-            onValueChange = { query = it },
-            onActiveChange = { isActive ->
-                isSearchActive = isActive
-                onSearchActiveChanged(isActive)
-            },
+        Column(modifier = Modifier.fillMaxHeight()) {
+            SidebarHeaderView()
+            SidebarSearchField(
+                value = query,
+                onValueChange = { query = it },
+                onActiveChange = { isActive ->
+                    isSearchActive = isActive
+                    onSearchActiveChanged(isActive)
+                },
+            )
+            SidebarNewChatButton(
+                enabled = state.isConnected,
+                onClick = {
+                    if (projectPaths.isEmpty()) {
+                        onCreateThread(null, state.selectedProviderId)
+                    } else {
+                        showProjectPicker = true
+                    }
+                },
+            )
+            SidebarThreadListView(
+                groups = groups,
+                selectedThreadId = state.selectedThreadId,
+                runningThreadIds = state.runningThreadIds,
+                onSelectThread = { onSelectThread(it.id) },
+                onCreateThreadInProject = { projectPath ->
+                    onCreateThread(projectPath, state.selectedProviderId)
+                },
+                onRequestRenameThread = { threadPendingRename = it },
+                onRequestDeleteThread = { threadPendingDeletion = it },
+                onArchiveToggleThread = { thread ->
+                    threadPendingArchiveToggle = thread
+                },
+                isFiltering = query.isNotBlank(),
+                isConnected = state.isConnected,
+                isSearchActive = isSearchActive,
+                modifier = Modifier.weight(1f),
+                bottomContentPadding = 96.dp,
+            )
+        }
+        SidebarFloatingSettingsButton(
+            onClick = onOpenSettings,
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(end = 16.dp, bottom = 16.dp),
         )
-        SidebarNewChatButton(
-            enabled = state.isConnected,
-            onClick = {
-                if (projectPaths.isEmpty()) {
-                    onCreateThread(null)
-                } else {
-                    showProjectPicker = true
-                }
-            },
-        )
-        SidebarThreadListView(
-            groups = groups,
-            selectedThreadId = state.selectedThreadId,
-            runningThreadIds = state.runningThreadIds,
-            onSelectThread = { onSelectThread(it.id) },
-            onCreateThreadInProject = onCreateThread,
-            onRequestRenameThread = { threadPendingRename = it },
-            onRequestDeleteThread = { threadPendingDeletion = it },
-            onArchiveToggleThread = { thread ->
-                threadPendingArchiveToggle = thread
-            },
-            isFiltering = query.isNotBlank(),
-            isConnected = state.isConnected,
-            isSearchActive = isSearchActive,
-        )
-        SidebarFloatingSettingsButton(onClick = onOpenSettings)
     }
 
     if (showProjectPicker) {
         SidebarProjectPickerSheet(
             projectPaths = projectPaths,
             onDismiss = { showProjectPicker = false },
-            onSelectProject = { projectPath ->
+            providers = state.availableProviders,
+            selectedProviderId = state.selectedProviderId,
+            onSelectProvider = onSelectProvider,
+            onSelectProject = { projectPath, providerId ->
                 showProjectPicker = false
-                onCreateThread(projectPath)
+                onCreateThread(projectPath, providerId)
             },
         )
     }

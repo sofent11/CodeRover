@@ -31,6 +31,11 @@ struct TurnComposerHostView: View {
 
     // ─── ENTRY POINT ─────────────────────────────────────────────
     var body: some View {
+        let runtimeCapabilities = thread.capabilities ?? codex.currentRuntimeProvider().supports
+        let supportsPlanMode = runtimeCapabilities.planMode && codex.supportsTurnCollaborationMode
+        let supportsReasoningOptions = runtimeCapabilities.reasoningOptions
+        let supportsTurnSteer = runtimeCapabilities.turnSteer
+
         TurnComposerView(
             input: $viewModel.input,
             isInputFocused: isInputFocused,
@@ -38,11 +43,12 @@ struct TurnComposerHostView: View {
             remainingAttachmentSlots: viewModel.remainingAttachmentSlots,
             isComposerInteractionLocked: viewModel.isComposerInteractionLocked(activeTurnID: activeTurnID),
             isSendDisabled: viewModel.isSendDisabled(isConnected: isConnected, activeTurnID: activeTurnID),
-            isPlanModeArmed: viewModel.isPlanModeArmed,
+            isPlanModeArmed: supportsPlanMode ? viewModel.isPlanModeArmed : false,
+            supportsPlanMode: supportsPlanMode,
             queuedDrafts: viewModel.queuedDraftsList(codex: codex, threadID: thread.id),
             queuedCount: viewModel.queuedCount(codex: codex, threadID: thread.id),
             isQueuePaused: viewModel.isQueuePaused(codex: codex, threadID: thread.id),
-            canSteerQueuedDrafts: isThreadRunning,
+            canSteerQueuedDrafts: isThreadRunning && supportsTurnSteer,
             steeringDraftID: viewModel.steeringDraftID,
             activeTurnID: activeTurnID,
             isThreadRunning: isThreadRunning,
@@ -63,7 +69,7 @@ struct TurnComposerHostView: View {
             reasoningDisplayOptions: reasoningDisplayOptions,
             selectedReasoningEffort: codex.selectedReasoningEffortForSelectedModel(),
             selectedReasoningTitle: selectedReasoningTitle,
-            reasoningMenuDisabled: reasoningDisplayOptions.isEmpty || codex.selectedModelOption() == nil,
+            reasoningMenuDisabled: !supportsReasoningOptions || reasoningDisplayOptions.isEmpty || codex.selectedModelOption() == nil,
             selectedAccessMode: codex.selectedAccessMode,
             isConnected: isConnected,
             isReconnectAvailable: isReconnectAvailable,
@@ -86,7 +92,9 @@ struct TurnComposerHostView: View {
             onSelectAccessMode: codex.setSelectedAccessMode,
             onTapAddImage: { viewModel.openPhotoLibraryPicker(codex: codex) },
             onTapTakePhoto: { viewModel.openCamera(codex: codex) },
-            onSetPlanModeArmed: viewModel.setPlanModeArmed,
+            onSetPlanModeArmed: { isArmed in
+                viewModel.setPlanModeArmed(supportsPlanMode ? isArmed : false)
+            },
             onRemoveAttachment: viewModel.removeComposerAttachment,
             onStopTurn: { turnID in
                 viewModel.interruptTurn(turnID, codex: codex, threadID: thread.id)

@@ -32,6 +32,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -42,6 +43,7 @@ import com.remodex.android.data.model.AppFontStyle
 import com.remodex.android.data.model.AppState
 import com.remodex.android.data.model.ModelOption
 import com.remodex.android.data.model.PairingRecord
+import com.remodex.android.data.model.RuntimeProvider
 import com.remodex.android.data.model.ThreadSummary
 import com.remodex.android.ui.shared.StatusTag
 import com.remodex.android.ui.shared.connectionStatusLabel
@@ -119,15 +121,26 @@ fun SettingsAppearanceCard(
 @Composable
 fun SettingsRuntimeDefaultsCard(
     state: AppState,
+    onProviderSelected: (String) -> Unit,
     onAccessModeSelected: (AccessMode) -> Unit,
     onModelSelected: (String?) -> Unit,
     onReasoningSelected: (String?) -> Unit,
 ) {
     SettingsCard(title = "Runtime defaults") {
         SettingsPickerRow(
+            label = "Provider",
+            selectedValue = state.selectedProvider,
+            options = state.availableProviders,
+            displayValue = RuntimeProvider::title,
+            onValueSelected = { onProviderSelected(it.id) },
+        )
+
+        SettingsPickerRow(
             label = "Access",
             selectedValue = state.accessMode,
-            options = AccessMode.entries,
+            options = AccessMode.entries.filter { mode ->
+                state.selectedProvider.accessModes.any { it.id == mode.rawValue }
+            }.ifEmpty { AccessMode.entries },
             displayValue = { it.displayName },
             onValueSelected = onAccessModeSelected,
         )
@@ -491,6 +504,7 @@ fun SettingsPairAnotherMacCard(
     onImportTextChanged: (String) -> Unit,
     onImport: () -> Unit,
 ) {
+    val clipboardManager = LocalClipboardManager.current
     SettingsCard(title = "Pair another Mac") {
         Text(
             text = "Import another local bridge pairing payload to switch between Macs without leaving Android.",
@@ -505,6 +519,16 @@ fun SettingsPairAnotherMacCard(
             label = { Text("Paste pairing payload") },
             shape = RoundedCornerShape(18.dp),
         )
+        TextButton(
+            onClick = {
+                val clipboardText = clipboardManager.getText()?.text
+                    ?.takeIf { it.isNotBlank() }
+                    ?: return@TextButton
+                onImportTextChanged(clipboardText)
+            },
+        ) {
+            Text("Paste from Clipboard")
+        }
         Button(onClick = onImport, shape = RoundedCornerShape(16.dp)) {
             Text("Import Pairing")
         }

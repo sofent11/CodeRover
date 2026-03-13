@@ -24,6 +24,7 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.2.74",
     "qrcode-terminal": "^0.12.0",
     "uuid": "^13.0.0",
     "ws": "^8.19.0"

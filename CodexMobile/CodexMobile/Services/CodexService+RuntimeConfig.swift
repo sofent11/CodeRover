@@ -7,6 +7,22 @@
 import Foundation
 
 extension CodexService {
+    func listProviders() async throws {
+        let response = try await sendRequest(method: "runtime/provider/list", params: nil)
+        let resultObject = response.result?.objectValue
+        let providerValues = resultObject?["providers"]?.arrayValue
+            ?? resultObject?["items"]?.arrayValue
+            ?? []
+        let decodedProviders = providerValues.compactMap { decodeModel(CodexRuntimeProvider.self, from: $0) }
+        availableProviders = decodedProviders.isEmpty ? [.codexDefault] : decodedProviders
+
+        let availableIDs = Set(availableProviders.map(\.id))
+        if !availableIDs.contains(selectedProviderID) {
+            selectedProviderID = availableProviders.first?.id ?? "codex"
+        }
+        syncRuntimeSelectionContext()
+    }
+
     // Sends one request while trying approvalPolicy enum variants for cross-version compatibility.
     func sendRequestWithApprovalPolicyFallback(
         method: String,
@@ -36,14 +52,16 @@ extension CodexService {
         throw lastError ?? CodexServiceError.invalidResponse("\(method) failed with unknown approvalPolicy error")
     }
 
-    func listModels() async throws {
+    func listModels(provider: String? = nil) async throws {
         isLoadingModels = true
         defer { isLoadingModels = false }
 
+        let resolvedProvider = runtimeProviderID(for: provider)
         do {
             let response = try await sendRequest(
                 method: "model/list",
                 params: .object([
+                    "provider": .string(resolvedProvider),
                     "cursor": .null,
                     "limit": .integer(50),
                     "includeHidden": .bool(false),
@@ -63,7 +81,7 @@ extension CodexService {
             let decodedModels = items.compactMap { decodeModel(CodexModelOption.self, from: $0) }
             availableModels = decodedModels
             modelsErrorMessage = nil
-            normalizeRuntimeSelectionsAfterModelsUpdate()
+            normalizeRuntimeSelectionsAfterModelsUpdate(provider: resolvedProvider)
 
             debugRuntimeLog("model/list success count=\(decodedModels.count)")
         } catch {
@@ -87,6 +105,16 @@ extension CodexService {
     func setSelectedAccessMode(_ accessMode: CodexAccessMode) {
         selectedAccessMode = accessMode
         persistRuntimeSelections()
+    }
+
+    func setSelectedProviderID(_ providerID: String) {
+        let normalized = runtimeProviderID(for: providerID)
+        guard selectedProviderID != normalized else {
+            syncRuntimeSelectionContext(for: normalized, refreshModels: isConnected)
+            return
+        }
+        selectedProviderID = normalized
+        syncRuntimeSelectionContext(for: normalized, refreshModels: isConnected)
     }
 
     func selectedModelOption() -> CodexModelOption? {
@@ -126,6 +154,84 @@ extension CodexService {
 
     func runtimeModelIdentifierForTurn() -> String? {
         selectedModelOption()?.model
+    }
+
+    func runtimeModelIdentifier(for providerID: String) -> String? {
+        let resolvedProviderID = runtimeProviderID(for: providerID)
+        let storedModelID = runtimeModelIdByProvider[resolvedProviderID]
+            ?? defaults.string(forKey: runtimeModelDefaultsKey(resolvedProviderID))
+        if let matchingModel = availableModels.first(where: {
+            $0.id == storedModelID || $0.model == storedModelID
+        }) {
+            return matchingModel.model
+        }
+        return storedModelID?.trimmingCharacters(in: .whitespacesAndNewlines)
+            ?? availableProviders.first(where: { $0.id == resolvedProviderID })?.defaultModelId
+    }
+
+    func currentRuntimeProviderID() -> String {
+        if let activeThreadId,
+           let thread = threads.first(where: { $0.id == activeThreadId }) {
+            return runtimeProviderID(for: thread.provider)
+        }
+        return runtimeProviderID(for: selectedProviderID)
+    }
+
+    func runtimeProviderID(for providerID: String?) -> String {
+        let normalized = providerID?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        if normalized == "claude" || normalized == "gemini" || normalized == "codex" {
+            return normalized
+        }
+        return "codex"
+    }
+
+    func currentRuntimeProvider() -> CodexRuntimeProvider {
+        let providerID = currentRuntimeProviderID()
+        return availableProviders.first(where: { $0.id == providerID }) ?? .codexDefault
+    }
+
+    func selectedDefaultsProvider() -> CodexRuntimeProvider {
+        let providerID = runtimeProviderID(for: selectedProviderID)
+        return availableProviders.first(where: { $0.id == providerID }) ?? .codexDefault
+    }
+
+    func availableAccessModes(for providerID: String? = nil) -> [CodexAccessMode] {
+        let runtimeProvider = availableProviders.first(where: { $0.id == runtimeProviderID(for: providerID) })
+            ?? .codexDefault
+        let allowedModeIDs = Set(runtimeProvider.accessModes.map(\.id))
+        let filtered = CodexAccessMode.allCases.filter { allowedModeIDs.contains($0.rawValue) }
+        return filtered.isEmpty ? CodexAccessMode.allCases : filtered
+    }
+
+    func syncRuntimeSelectionContext() {
+        syncRuntimeSelectionContext(for: currentRuntimeProviderID(), refreshModels: isConnected)
+    }
+
+    func syncRuntimeSelectionContext(for providerID: String, refreshModels: Bool) {
+        let resolvedProviderID = runtimeProviderID(for: providerID)
+        let storedModel = runtimeModelIdByProvider[resolvedProviderID]
+            ?? defaults.string(forKey: runtimeModelDefaultsKey(resolvedProviderID))
+        selectedModelId = storedModel?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let storedReasoning = runtimeReasoningEffortByProvider[resolvedProviderID]
+            ?? defaults.string(forKey: runtimeReasoningDefaultsKey(resolvedProviderID))
+        selectedReasoningEffort = storedReasoning?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if let inMemoryAccess = runtimeAccessModeByProvider[resolvedProviderID] {
+            selectedAccessMode = inMemoryAccess
+        } else if let storedAccess = defaults.string(forKey: runtimeAccessDefaultsKey(resolvedProviderID)),
+                  let parsedAccess = CodexAccessMode(rawValue: storedAccess) {
+            selectedAccessMode = parsedAccess
+        } else {
+            selectedAccessMode = .onRequest
+        }
+
+        if refreshModels {
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                try? await self.listModels(provider: resolvedProviderID)
+            }
+        }
     }
 
     func runtimeSandboxPolicyObject(for accessMode: CodexAccessMode) -> JSONValue {
@@ -241,9 +347,10 @@ extension CodexService {
 }
 
 private extension CodexService {
-    func normalizeRuntimeSelectionsAfterModelsUpdate() {
+    func normalizeRuntimeSelectionsAfterModelsUpdate(provider: String? = nil) {
+        let providerID = runtimeProviderID(for: provider ?? currentRuntimeProviderID())
         guard !availableModels.isEmpty else {
-            persistRuntimeSelections()
+            persistRuntimeSelections(providerID: providerID)
             return
         }
 
@@ -269,7 +376,7 @@ private extension CodexService {
             selectedReasoningEffort = nil
         }
 
-        persistRuntimeSelections()
+        persistRuntimeSelections(providerID: providerID)
     }
 
     func selectedModelOption(from models: [CodexModelOption]) -> CodexModelOption? {
@@ -292,19 +399,39 @@ private extension CodexService {
         return models.first
     }
 
-    func persistRuntimeSelections() {
+    func persistRuntimeSelectionsImpl(providerID: String? = nil) {
+        let providerID = runtimeProviderID(for: providerID ?? currentRuntimeProviderID())
+        defaults.set(selectedProviderID, forKey: Self.selectedProviderDefaultsKey)
+
         if let selectedModelId, !selectedModelId.isEmpty {
-            defaults.set(selectedModelId, forKey: Self.selectedModelIdDefaultsKey)
+            runtimeModelIdByProvider[providerID] = selectedModelId
+            defaults.set(selectedModelId, forKey: runtimeModelDefaultsKey(providerID))
         } else {
-            defaults.removeObject(forKey: Self.selectedModelIdDefaultsKey)
+            runtimeModelIdByProvider.removeValue(forKey: providerID)
+            defaults.removeObject(forKey: runtimeModelDefaultsKey(providerID))
         }
 
         if let selectedReasoningEffort, !selectedReasoningEffort.isEmpty {
-            defaults.set(selectedReasoningEffort, forKey: Self.selectedReasoningEffortDefaultsKey)
+            runtimeReasoningEffortByProvider[providerID] = selectedReasoningEffort
+            defaults.set(selectedReasoningEffort, forKey: runtimeReasoningDefaultsKey(providerID))
         } else {
-            defaults.removeObject(forKey: Self.selectedReasoningEffortDefaultsKey)
+            runtimeReasoningEffortByProvider.removeValue(forKey: providerID)
+            defaults.removeObject(forKey: runtimeReasoningDefaultsKey(providerID))
         }
 
-        defaults.set(selectedAccessMode.rawValue, forKey: Self.selectedAccessModeDefaultsKey)
+        runtimeAccessModeByProvider[providerID] = selectedAccessMode
+        defaults.set(selectedAccessMode.rawValue, forKey: runtimeAccessDefaultsKey(providerID))
+    }
+
+    func runtimeModelDefaultsKey(_ providerID: String) -> String {
+        "runtime.\(providerID).selectedModelId"
+    }
+
+    func runtimeReasoningDefaultsKey(_ providerID: String) -> String {
+        "runtime.\(providerID).selectedReasoningEffort"
+    }
+
+    func runtimeAccessDefaultsKey(_ providerID: String) -> String {
+        "runtime.\(providerID).selectedAccessMode"
     }
 }

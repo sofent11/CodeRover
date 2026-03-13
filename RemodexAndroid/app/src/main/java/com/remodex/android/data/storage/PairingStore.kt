@@ -45,12 +45,21 @@ class PairingStore(context: Context) {
         prefs.edit().putString(KEY_FONT_STYLE, fontStyle.name).apply()
     }
 
-    fun loadAccessMode(): AccessMode {
-        return AccessMode.fromRawValue(prefs.getString(KEY_ACCESS_MODE, AccessMode.ON_REQUEST.rawValue))
+    fun loadSelectedProviderId(): String? = prefs.getString(KEY_SELECTED_PROVIDER_ID, null)
+
+    fun saveSelectedProviderId(providerId: String?) {
+        prefs.edit().putString(KEY_SELECTED_PROVIDER_ID, providerId).apply()
     }
 
-    fun saveAccessMode(accessMode: AccessMode) {
-        prefs.edit().putString(KEY_ACCESS_MODE, accessMode.rawValue).apply()
+    fun loadAccessMode(providerId: String? = null): AccessMode {
+        val scopedKey = providerKey(KEY_ACCESS_MODE, providerId)
+        val storedValue = prefs.getString(scopedKey, null)
+            ?: prefs.getString(KEY_ACCESS_MODE, AccessMode.ON_REQUEST.rawValue)
+        return AccessMode.fromRawValue(storedValue)
+    }
+
+    fun saveAccessMode(accessMode: AccessMode, providerId: String? = null) {
+        prefs.edit().putString(providerKey(KEY_ACCESS_MODE, providerId), accessMode.rawValue).apply()
     }
 
     fun loadPairings(): List<PairingRecord> {
@@ -98,16 +107,22 @@ class PairingStore(context: Context) {
             .apply()
     }
 
-    fun loadSelectedModelId(): String? = prefs.getString(KEY_SELECTED_MODEL_ID, null)
-
-    fun saveSelectedModelId(modelId: String?) {
-        prefs.edit().putString(KEY_SELECTED_MODEL_ID, modelId).apply()
+    fun loadSelectedModelId(providerId: String? = null): String? {
+        return prefs.getString(providerKey(KEY_SELECTED_MODEL_ID, providerId), null)
+            ?: prefs.getString(KEY_SELECTED_MODEL_ID, null)
     }
 
-    fun loadSelectedReasoningEffort(): String? = prefs.getString(KEY_SELECTED_REASONING, null)
+    fun saveSelectedModelId(modelId: String?, providerId: String? = null) {
+        prefs.edit().putString(providerKey(KEY_SELECTED_MODEL_ID, providerId), modelId).apply()
+    }
 
-    fun saveSelectedReasoningEffort(reasoningEffort: String?) {
-        prefs.edit().putString(KEY_SELECTED_REASONING, reasoningEffort).apply()
+    fun loadSelectedReasoningEffort(providerId: String? = null): String? {
+        return prefs.getString(providerKey(KEY_SELECTED_REASONING, providerId), null)
+            ?: prefs.getString(KEY_SELECTED_REASONING, null)
+    }
+
+    fun saveSelectedReasoningEffort(reasoningEffort: String?, providerId: String? = null) {
+        prefs.edit().putString(providerKey(KEY_SELECTED_REASONING, providerId), reasoningEffort).apply()
     }
 
     fun loadCachedThreads(): List<ThreadSummary> {
@@ -155,6 +170,7 @@ class PairingStore(context: Context) {
         const val KEY_ONBOARDING_SEEN = "onboarding_seen"
         const val KEY_FONT_STYLE = "font_style"
         const val KEY_ACCESS_MODE = "access_mode"
+        const val KEY_SELECTED_PROVIDER_ID = "runtime.selected_provider_id"
         const val KEY_PAIRINGS = "pairings"
         const val KEY_ACTIVE_PAIRING = "active_pairing_mac_device_id"
         const val KEY_PHONE_IDENTITY = "phone_identity"
@@ -164,5 +180,13 @@ class PairingStore(context: Context) {
         const val KEY_CACHED_THREADS = "cached_threads"
         const val KEY_CACHED_SELECTED_THREAD_ID = "cached_selected_thread_id"
         const val KEY_CACHED_MESSAGES_BY_THREAD = "cached_messages_by_thread"
+    }
+
+    private fun providerKey(baseKey: String, providerId: String?): String {
+        val normalizedProviderId = providerId?.trim()?.lowercase().orEmpty()
+        if (normalizedProviderId.isEmpty()) {
+            return baseKey
+        }
+        return "runtime.$normalizedProviderId.$baseKey"
     }
 }

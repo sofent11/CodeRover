@@ -51,6 +51,7 @@ fun SettingsScreen(
         item {
             SettingsRuntimeDefaultsCard(
                 state = state,
+                onProviderSelected = viewModel::setSelectedProviderId,
                 onAccessModeSelected = viewModel::setAccessMode,
                 onModelSelected = viewModel::setSelectedModelId,
                 onReasoningSelected = viewModel::setSelectedReasoningEffort,

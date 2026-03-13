@@ -22,6 +22,7 @@ struct ComposerBottomBar: View {
     let isComposerInteractionLocked: Bool
     let isSendDisabled: Bool
     let isPlanModeArmed: Bool
+    let supportsPlanMode: Bool
     let queuedCount: Int
     let isQueuePaused: Bool
     let activeTurnID: String?
@@ -128,14 +129,18 @@ struct ComposerBottomBar: View {
 
     private var attachmentMenu: some View {
         Menu {
-            Toggle(isOn: Binding(
-                get: { isPlanModeArmed },
-                set: { newValue in
-                    HapticFeedback.shared.triggerImpactFeedback(style: .light)
-                    onSetPlanModeArmed(newValue)
+            if supportsPlanMode {
+                Toggle(isOn: Binding(
+                    get: { isPlanModeArmed },
+                    set: { newValue in
+                        HapticFeedback.shared.triggerImpactFeedback(style: .light)
+                        onSetPlanModeArmed(newValue)
+                    }
+                )) {
+                    Label("Plan mode", systemImage: "checklist")
                 }
-            )) {
-                Label("Plan mode", systemImage: "checklist")
+            } else {
+                Label("Plan mode unavailable", systemImage: "checklist")
             }
 
             Section {

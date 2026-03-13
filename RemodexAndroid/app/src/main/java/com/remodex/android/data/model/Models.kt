@@ -128,6 +128,84 @@ enum class AccessMode(
 }
 
 @Serializable
+data class RuntimeCapabilities(
+    val planMode: Boolean = true,
+    val structuredUserInput: Boolean = true,
+    val inlineApproval: Boolean = true,
+    val turnSteer: Boolean = true,
+    val reasoningOptions: Boolean = true,
+    val desktopRefresh: Boolean = true,
+) {
+    companion object {
+        val CODEX_DEFAULT = RuntimeCapabilities()
+
+        fun fromJson(json: JsonObject?): RuntimeCapabilities {
+            if (json == null) {
+                return CODEX_DEFAULT
+            }
+            return RuntimeCapabilities(
+                planMode = json.bool("planMode") ?: CODEX_DEFAULT.planMode,
+                structuredUserInput = json.bool("structuredUserInput") ?: CODEX_DEFAULT.structuredUserInput,
+                inlineApproval = json.bool("inlineApproval") ?: CODEX_DEFAULT.inlineApproval,
+                turnSteer = json.bool("turnSteer") ?: CODEX_DEFAULT.turnSteer,
+                reasoningOptions = json.bool("reasoningOptions") ?: CODEX_DEFAULT.reasoningOptions,
+                desktopRefresh = json.bool("desktopRefresh") ?: CODEX_DEFAULT.desktopRefresh,
+            )
+        }
+    }
+}
+
+@Serializable
+data class RuntimeAccessModeOption(
+    val id: String,
+    val title: String,
+) {
+    companion object {
+        fun fromJson(json: JsonObject): RuntimeAccessModeOption? {
+            val id = json.string("id") ?: return null
+            val title = json.string("title") ?: return null
+            return RuntimeAccessModeOption(id = id, title = title)
+        }
+    }
+}
+
+@Serializable
+data class RuntimeProvider(
+    val id: String,
+    val title: String,
+    val supports: RuntimeCapabilities = RuntimeCapabilities.CODEX_DEFAULT,
+    val accessModes: List<RuntimeAccessModeOption> = emptyList(),
+    val defaultModelId: String? = null,
+) {
+    companion object {
+        val CODEX_DEFAULT = RuntimeProvider(
+            id = "codex",
+            title = "Codex",
+            supports = RuntimeCapabilities.CODEX_DEFAULT,
+            accessModes = listOf(
+                RuntimeAccessModeOption(id = AccessMode.ON_REQUEST.rawValue, title = AccessMode.ON_REQUEST.displayName),
+                RuntimeAccessModeOption(id = AccessMode.FULL_ACCESS.rawValue, title = AccessMode.FULL_ACCESS.displayName),
+            ),
+            defaultModelId = null,
+        )
+
+        fun fromJson(json: JsonObject): RuntimeProvider? {
+            val id = json.string("id") ?: return null
+            val title = json.string("title") ?: return null
+            return RuntimeProvider(
+                id = id,
+                title = title,
+                supports = RuntimeCapabilities.fromJson(json["supports"]?.jsonObjectOrNull()),
+                accessModes = json.array("accessModes")
+                    ?.mapNotNull { it.jsonObjectOrNull()?.let(RuntimeAccessModeOption::fromJson) }
+                    .orEmpty(),
+                defaultModelId = json.string("defaultModelId"),
+            )
+        }
+    }
+}
+
+@Serializable
 enum class ThreadSyncState {
     LIVE,
     ARCHIVED_LOCAL,
@@ -142,6 +220,9 @@ data class ThreadSummary(
     val createdAt: Long? = null,
     val updatedAt: Long? = null,
     val cwd: String? = null,
+    val provider: String = "codex",
+    val providerSessionId: String? = null,
+    val capabilities: RuntimeCapabilities? = RuntimeCapabilities.CODEX_DEFAULT,
     val syncState: ThreadSyncState = ThreadSyncState.LIVE,
 ) {
     val displayTitle: String
@@ -161,6 +242,13 @@ data class ThreadSummary(
             return project.substringAfterLast('/').ifEmpty { project }
         }
 
+    val providerBadgeTitle: String
+        get() = when (provider.trim().lowercase()) {
+            "claude" -> "Claude"
+            "gemini" -> "Gemini"
+            else -> "Codex"
+        }
+
     companion object {
         fun fromJson(json: JsonObject): ThreadSummary? {
             val id = json.string("id") ?: return null
@@ -174,6 +262,9 @@ data class ThreadSummary(
                 cwd = json.string("cwd")
                     ?: json.string("current_working_directory")
                     ?: json.string("working_directory"),
+                provider = json.string("provider") ?: "codex",
+                providerSessionId = json.string("providerSessionId"),
+                capabilities = RuntimeCapabilities.fromJson(json["capabilities"]?.jsonObjectOrNull()),
                 syncState = if (json.string("syncState") == "archivedLocal") {
                     ThreadSyncState.ARCHIVED_LOCAL
                 } else {
@@ -407,6 +498,8 @@ data class AppState(
     val onboardingSeen: Boolean = false,
     val fontStyle: AppFontStyle = AppFontStyle.SYSTEM,
     val accessMode: AccessMode = AccessMode.ON_REQUEST,
+    val availableProviders: List<RuntimeProvider> = listOf(RuntimeProvider.CODEX_DEFAULT),
+    val selectedProviderId: String = "codex",
     val pairings: List<PairingRecord> = emptyList(),
     val activePairingMacDeviceId: String? = null,
     val phoneIdentityState: PhoneIdentityState? = null,
@@ -458,6 +551,18 @@ data class AppState(
         get() = pendingTransportSelectionMacDeviceId?.let { macDeviceId ->
             pairings.firstOrNull { it.macDeviceId == macDeviceId }
         }
+
+    val selectedProvider: RuntimeProvider
+        get() = availableProviders.firstOrNull { it.id == selectedProviderId } ?: RuntimeProvider.CODEX_DEFAULT
+
+    val activeRuntimeProviderId: String
+        get() = selectedThread?.provider ?: selectedProviderId
+
+    val activeRuntimeProvider: RuntimeProvider
+        get() = availableProviders.firstOrNull { it.id == activeRuntimeProviderId } ?: RuntimeProvider.CODEX_DEFAULT
+
+    val activeRuntimeCapabilities: RuntimeCapabilities
+        get() = selectedThread?.capabilities ?: activeRuntimeProvider.supports
 }
 
 fun JsonObject.string(key: String): String? = this[key].stringOrNull()

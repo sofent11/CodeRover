@@ -239,12 +239,13 @@ extension CodexService {
 
     // Runs the post-connect sync work that is useful but not required to mark the socket usable.
     func performPostConnectSyncPass(preferredThreadId: String? = nil) async {
-        try? await listModels()
+        try? await listProviders()
         try? await listThreads()
         let resolvedPreferredThreadId = normalizedInterruptIdentifier(preferredThreadId)
         if let resolvedPreferredThreadId {
             activeThreadId = resolvedPreferredThreadId
         }
+        try? await listModels(provider: currentRuntimeProviderID())
         if let threadId = activeThreadId
             ?? resolvedPreferredThreadId
             ?? threads.first(where: { $0.syncState == .live })?.id {

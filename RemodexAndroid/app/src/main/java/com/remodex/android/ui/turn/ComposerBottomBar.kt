@@ -54,6 +54,7 @@ internal fun ComposerPrimaryToolbar(
     selectedModelTitle: String,
     selectedReasoningTitle: String,
     reasoningOptions: List<String>,
+    supportsPlanMode: Boolean,
     isRunning: Boolean,
     sendEnabled: Boolean,
     queuedCount: Int,
@@ -139,18 +140,26 @@ internal fun ComposerPrimaryToolbar(
                         turnViewModel.plusMenuExpanded = false
                     },
                 )
-                DropdownMenuItem(
-                    text = { Text(if (turnViewModel.isPlanModeArmed) "Disable Plan Mode" else "Enable Plan Mode") },
-                    leadingIcon = {
-                        if (turnViewModel.isPlanModeArmed) {
-                            Icon(Icons.Outlined.Check, contentDescription = null)
-                        }
-                    },
-                    onClick = {
-                        turnViewModel.togglePlanMode()
-                        turnViewModel.plusMenuExpanded = false
-                    },
-                )
+                if (supportsPlanMode) {
+                    DropdownMenuItem(
+                        text = { Text(if (turnViewModel.isPlanModeArmed) "Disable Plan Mode" else "Enable Plan Mode") },
+                        leadingIcon = {
+                            if (turnViewModel.isPlanModeArmed) {
+                                Icon(Icons.Outlined.Check, contentDescription = null)
+                            }
+                        },
+                        onClick = {
+                            turnViewModel.togglePlanMode()
+                            turnViewModel.plusMenuExpanded = false
+                        },
+                    )
+                } else {
+                    DropdownMenuItem(
+                        text = { Text("Plan Mode Unavailable") },
+                        enabled = false,
+                        onClick = {},
+                    )
+                }
             }
         }
 

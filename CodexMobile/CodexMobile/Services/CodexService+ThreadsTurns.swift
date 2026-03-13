@@ -33,11 +33,13 @@ extension CodexService {
     }
 
     // Starts a new thread and stores it in local state.
-    func startThread(preferredProjectPath: String? = nil) async throws -> CodexThread {
+    func startThread(preferredProjectPath: String? = nil, provider: String? = nil) async throws -> CodexThread {
         let normalizedPreferredProjectPath = CodexThreadStartProjectBinding.normalizedProjectPath(preferredProjectPath)
+        let resolvedProvider = runtimeProviderID(for: provider ?? selectedProviderID)
         let params = CodexThreadStartProjectBinding.makeThreadStartParams(
-            modelIdentifier: runtimeModelIdentifierForTurn(),
-            preferredProjectPath: normalizedPreferredProjectPath
+            modelIdentifier: runtimeModelIdentifier(for: resolvedProvider),
+            preferredProjectPath: normalizedPreferredProjectPath,
+            provider: resolvedProvider
         )
         let response = try await sendRequestWithSandboxFallback(method: "thread/start", baseParams: params)
 
@@ -401,11 +403,19 @@ enum CodexThreadStartProjectBinding {
         return normalized.isEmpty ? "/" : normalized
     }
 
-    static func makeThreadStartParams(modelIdentifier: String?, preferredProjectPath: String?) -> RPCObject {
+    static func makeThreadStartParams(
+        modelIdentifier: String?,
+        preferredProjectPath: String?,
+        provider: String?
+    ) -> RPCObject {
         var params: RPCObject = [:]
 
         if let modelIdentifier {
             params["model"] = .string(modelIdentifier)
+        }
+
+        if let provider {
+            params["provider"] = .string(provider)
         }
 
         if let preferredProjectPath {
@@ -517,7 +527,11 @@ extension CodexService {
     }
 
     func createContinuationThread(from archivedThreadId: String) async throws -> CodexThread {
-        let continuationThread = try await startThread()
+        let archivedThread = threads.first(where: { $0.id == archivedThreadId })
+        let continuationThread = try await startThread(
+            preferredProjectPath: archivedThread?.normalizedProjectPath,
+            provider: archivedThread?.provider
+        )
         appendSystemMessage(
             threadId: continuationThread.id,
             text: "Continued from archived thread `\(archivedThreadId)`"
@@ -657,8 +671,11 @@ extension CodexService {
 
         var includeStructuredSkillItems = supportsStructuredSkillInput && !skillMentions.isEmpty
         var imageURLKey = "url"
-        var effectiveCollaborationMode = supportsTurnCollaborationMode ? collaborationMode : nil
-        var didDowngradePlanModeForRuntime = false
+        let threadCapabilities = threads.first(where: { $0.id == threadId })?.capabilities
+            ?? currentRuntimeProvider().supports
+        let runtimeSupportsPlanMode = supportsTurnCollaborationMode && threadCapabilities.planMode
+        var effectiveCollaborationMode = runtimeSupportsPlanMode ? collaborationMode : nil
+        var didDowngradePlanModeForRuntime = collaborationMode != nil && effectiveCollaborationMode == nil
 
         while true {
             do {
@@ -735,6 +752,13 @@ extension CodexService {
         let pendingMessageId = shouldAppendUserMessage
             ? appendUserMessage(threadId: normalizedThreadID, text: userInput, attachments: attachments)
             : ""
+        let threadCapabilities = threads.first(where: { $0.id == normalizedThreadID })?.capabilities
+            ?? currentRuntimeProvider().supports
+        guard threadCapabilities.turnSteer else {
+            let error = CodexServiceError.invalidInput("Steering is not supported for this runtime")
+            handleSteerFailure(error, pendingMessageId: pendingMessageId, threadId: normalizedThreadID)
+            throw error
+        }
         var resolvedExpectedTurnID = normalizedInterruptIdentifier(expectedTurnId)
         if resolvedExpectedTurnID == nil {
             do {

@@ -13,6 +13,7 @@ const { printQR } = require("./qr");
 const { rememberActiveThread } = require("./session-state");
 const { handleGitRequest } = require("./git-handler");
 const { handleWorkspaceRequest } = require("./workspace-handler");
+const { createRuntimeManager } = require("./runtime-manager");
 const { loadOrCreateBridgeDeviceState } = require("./secure-device-state");
 const {
   buildTransportCandidates,
@@ -35,13 +36,17 @@ function startBridge() {
   });
 
   let isShuttingDown = false;
-  let codexHandshakeState = config.codexEndpoint ? "warm" : "cold";
-  const forwardedInitializeRequestIds = new Set();
   let codex = null;
   let codexRestartTimer = null;
   let codexRestartAttempt = 0;
   let pairingQRRefreshTimer = null;
   let secureTransport = null;
+  const runtimeManager = createRuntimeManager({
+    sendApplicationMessage(rawMessage) {
+      sendApplicationResponse(rawMessage);
+    },
+    logPrefix: "[remodex]",
+  });
   const localServer = startLocalBridgeServer({
     bridgeId,
     host: config.localHost,
@@ -99,23 +104,16 @@ function startBridge() {
 
   // Routes decrypted app payloads through the same bridge handlers as before.
   function handleApplicationMessage(rawMessage) {
-    if (!codex) {
-      localServer.disconnectAllClients();
-      return;
-    }
-
-    if (handleBridgeManagedHandshakeMessage(rawMessage)) {
-      return;
-    }
     if (handleWorkspaceRequest(rawMessage, sendApplicationResponse)) {
       return;
     }
     if (handleGitRequest(rawMessage, sendApplicationResponse)) {
       return;
     }
-    desktopRefresher.handleInbound(rawMessage);
-    rememberThreadFromMessage("phone", rawMessage);
-    codex.send(rawMessage);
+    maybeTrackPhoneThread(rawMessage);
+    void runtimeManager.handleClientMessage(rawMessage).catch((error) => {
+      console.error(`[remodex] ${error.message}`);
+    });
   }
 
   // Encrypts bridge-generated responses before writing them to the paired transport.
@@ -125,53 +123,14 @@ function startBridge() {
 
   function rememberThreadFromMessage(source, rawMessage) {
     const threadId = extractThreadId(rawMessage);
-    if (!threadId) {
+    if (!threadId || threadId.startsWith("claude:") || threadId.startsWith("gemini:")) {
       return;
     }
 
     rememberActiveThread(threadId, source);
   }
 
-  // The spawned/shared Codex app-server stays warm across phone reconnects.
-  // When iPhone reconnects it sends initialize again, but forwarding that to the
-  // already-initialized Codex transport only produces "Already initialized".
-  function handleBridgeManagedHandshakeMessage(rawMessage) {
-    let parsed = null;
-    try {
-      parsed = JSON.parse(rawMessage);
-    } catch {
-      return false;
-    }
-
-    const method = typeof parsed?.method === "string" ? parsed.method.trim() : "";
-    if (!method) {
-      return false;
-    }
-
-    if (method === "initialize" && parsed.id != null) {
-      if (codexHandshakeState !== "warm") {
-        forwardedInitializeRequestIds.add(String(parsed.id));
-        return false;
-      }
-
-      sendApplicationResponse(JSON.stringify({
-        id: parsed.id,
-        result: {
-          bridgeManaged: true,
-        },
-      }));
-      return true;
-    }
-
-    if (method === "initialized") {
-      return codexHandshakeState === "warm";
-    }
-
-    return false;
-  }
-
-  // Learns whether the underlying Codex transport has already completed its own MCP handshake.
-  function trackCodexHandshakeState(rawMessage) {
+  function maybeTrackPhoneThread(rawMessage) {
     let parsed = null;
     try {
       parsed = JSON.parse(rawMessage);
@@ -179,40 +138,22 @@ function startBridge() {
       return;
     }
 
-    const responseId = parsed?.id;
-    if (responseId == null) {
+    const provider = readString(parsed?.params?.provider);
+    if (provider && provider !== "codex") {
       return;
     }
-
-    const responseKey = String(responseId);
-    if (!forwardedInitializeRequestIds.has(responseKey)) {
-      return;
-    }
-
-    forwardedInitializeRequestIds.delete(responseKey);
-
-    if (parsed?.result != null) {
-      codexHandshakeState = "warm";
-      return;
-    }
-
-    const errorMessage = typeof parsed?.error?.message === "string"
-      ? parsed.error.message.toLowerCase()
-      : "";
-    if (errorMessage.includes("already initialized")) {
-      codexHandshakeState = "warm";
-    }
+    desktopRefresher.handleInbound(rawMessage);
+    rememberThreadFromMessage("phone", rawMessage);
   }
 
   function launchCodexTransport() {
-    resetCodexHandshakeState();
-
     const transport = createCodexTransport({
       endpoint: config.codexEndpoint,
       env: process.env,
       logPrefix: "[remodex]",
     });
     codex = transport;
+    runtimeManager.attachCodexTransport(transport);
 
     transport.onError((error) => {
       if (codex !== transport) {
@@ -227,10 +168,9 @@ function startBridge() {
       }
 
       codexRestartAttempt = 0;
-      trackCodexHandshakeState(message);
       desktopRefresher.handleOutbound(message);
       rememberThreadFromMessage("codex", message);
-      secureTransport.queueOutboundApplicationMessage(message);
+      runtimeManager.handleCodexTransportMessage(message);
     });
 
     transport.onClose(() => {
@@ -259,7 +199,7 @@ function startBridge() {
     console.error(`[remodex] ${message}`);
     desktopRefresher.handleTransportReset();
     localServer.disconnectAllClients();
-    resetCodexHandshakeState();
+    runtimeManager.handleCodexTransportClosed(message);
     printFreshPairingQR();
 
     if (codex) {
@@ -285,11 +225,6 @@ function startBridge() {
     }, delayMs);
   }
 
-  function resetCodexHandshakeState() {
-    codexHandshakeState = config.codexEndpoint ? "warm" : "cold";
-    forwardedInitializeRequestIds.clear();
-  }
-
   function printFreshPairingQR() {
     printQR(secureTransport.createPairingPayload());
   }
@@ -305,6 +240,7 @@ function startBridge() {
       pairingQRRefreshTimer = null;
     }
     codex?.shutdown();
+    runtimeManager.shutdown();
     setTimeout(() => process.exit(0), 100);
   }
 }
