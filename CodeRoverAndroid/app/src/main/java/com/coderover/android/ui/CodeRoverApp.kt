@@ -50,6 +50,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.coderover.android.app.AppViewModel
 import com.coderover.android.data.model.AppState
+import com.coderover.android.ui.screens.ArchivedChatsScreen
 import com.coderover.android.ui.screens.HomeEmptyScreen
 import com.coderover.android.ui.screens.OnboardingScreen
 import com.coderover.android.ui.screens.PairingEntryScreen
@@ -333,6 +334,15 @@ private fun CodeRoverAppShell(
                                 viewModel.clearSelectedThread()
                                 viewModel.disconnect()
                             },
+                            onOpenArchivedChats = contentViewModel::openArchivedChats,
+                        )
+
+                        AppShellContent.ARCHIVED_CHATS -> ArchivedChatsScreen(
+                            archivedThreads = state.threads.filter { it.syncState == com.coderover.android.data.model.ThreadSyncState.ARCHIVED_LOCAL }
+                                .sortedByDescending { it.updatedAt ?: it.createdAt ?: 0L },
+                            onUnarchiveThread = viewModel::unarchiveThread,
+                            onDeleteThread = viewModel::deleteThread,
+                            onBack = contentViewModel::closeArchivedChats,
                         )
 
                         AppShellContent.PAIRING -> PairingEntryScreen(
@@ -424,6 +434,11 @@ private fun shellHeader(
         AppShellContent.PAIRING -> ShellHeader(
             title = "Pair Another Mac",
             subtitle = "Scan or paste a local bridge payload",
+        )
+
+        AppShellContent.ARCHIVED_CHATS -> ShellHeader(
+            title = "Archived Chats",
+            subtitle = "Local device history",
         )
 
         AppShellContent.THREAD -> ShellHeader(

@@ -24,6 +24,7 @@ fun SettingsScreen(
     state: AppState,
     viewModel: AppViewModel,
     onDisconnect: () -> Unit = viewModel::disconnect,
+    onOpenArchivedChats: () -> Unit = {},
 ) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -33,7 +34,7 @@ fun SettingsScreen(
         item {
             SettingsArchivedChatsCard(
                 threads = state.threads,
-                onUnarchiveThread = viewModel::unarchiveThread,
+                onOpenArchivedChats = onOpenArchivedChats,
             )
         }
 

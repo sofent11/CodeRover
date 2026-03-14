@@ -10,6 +10,7 @@ import com.coderover.android.data.model.ConnectionPhase
 internal enum class AppShellContent {
     SETTINGS,
     PAIRING,
+    ARCHIVED_CHATS,
     THREAD,
     EMPTY,
 }
@@ -20,6 +21,9 @@ internal class ContentViewModel {
     private var lastSidebarOpenSyncAt by mutableLongStateOf(0L)
 
     var showSettings by mutableStateOf(false)
+        private set
+
+    var showArchivedChats by mutableStateOf(false)
         private set
 
     var showPairingEntry by mutableStateOf(false)
@@ -33,6 +37,7 @@ internal class ContentViewModel {
 
     fun shellContent(state: AppState): AppShellContent {
         return when {
+            showArchivedChats -> AppShellContent.ARCHIVED_CHATS
             showSettings -> AppShellContent.SETTINGS
             showPairingEntry -> AppShellContent.PAIRING
             state.selectedThread != null -> AppShellContent.THREAD
@@ -82,6 +87,7 @@ internal class ContentViewModel {
 
     fun openSettings() {
         showPairingEntry = false
+        showArchivedChats = false
         showSettings = true
     }
 
@@ -89,8 +95,24 @@ internal class ContentViewModel {
         showSettings = false
     }
 
+    fun openArchivedChats() {
+        showPairingEntry = false
+        showSettings = false
+        showArchivedChats = true
+    }
+
+    fun closeArchivedChats() {
+        showArchivedChats = false
+        // Opening archived chats means we are probably in settings,
+        // but if we just close it, we fall back to thread or empty.
+        // Wait, in iOS ArchivedChats is pushed onto the nav stack on top of Settings.
+        // To approximate this, we just go back to Settings.
+        showSettings = true
+    }
+
     fun startPairingFlow(currentPhase: ConnectionPhase) {
         showSettings = false
+        showArchivedChats = false
         pairingEntryBaselinePhase = currentPhase
         pendingPairingDismiss = false
         showPairingEntry = true
@@ -111,6 +133,7 @@ internal class ContentViewModel {
 
     fun selectThread() {
         showSettings = false
+        showArchivedChats = false
         showPairingEntry = false
         pendingPairingDismiss = false
     }
