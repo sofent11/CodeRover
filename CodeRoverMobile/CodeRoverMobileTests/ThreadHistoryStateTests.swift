@@ -1,309 +1,49 @@
-import XCTest
 import Observation
+import XCTest
 @testable import CodeRoverMobile
 
 @MainActor
 final class ThreadHistoryStateTests: XCTestCase {
-    func testTailMergeCreatesGapWhenLatestWindowSkipsMiddleHistory() {
+    func testTailMergeStoresCursorWindow() {
         let service = makeService()
-        let threadID = "thread-gap"
-
-        service.messagesByThread[threadID] = makeMessages(threadID: threadID, range: 1...20)
+        let threadID = "thread-cursor-window"
 
         service.mergeHistoryWindow(
             threadId: threadID,
             mode: .tail,
-            historyMessages: makeMessages(threadID: threadID, range: 71...120),
-            oldestAnchor: makeAnchor(index: 71),
-            newestAnchor: makeAnchor(index: 120),
+            historyMessages: makeMessages(threadID: threadID, range: 71 ... 120),
+            olderCursor: "cursor-71",
+            newerCursor: "cursor-120",
             hasOlder: true,
             hasNewer: false
         )
 
         let state = try XCTUnwrap(service.historyStateByThread[threadID])
-        XCTAssertEqual(state.segments.count, 2)
-        XCTAssertEqual(state.gaps.count, 1)
-        XCTAssertEqual(state.segments.first?.oldestAnchor, makeAnchor(index: 1))
-        XCTAssertEqual(state.segments.last?.newestAnchor, makeAnchor(index: 120))
+        XCTAssertEqual(state.oldestCursor, "cursor-71")
+        XCTAssertEqual(state.newestCursor, "cursor-120")
         XCTAssertTrue(state.hasOlderOnServer)
         XCTAssertFalse(state.hasNewerOnServer)
     }
 
-    func testBeforeMergeClosesGapOnceMissingRangeArrives() {
+    func testLoadThreadHistoryUsesAfterWhenNewestCursorExists() async throws {
         let service = makeService()
-        let threadID = "thread-close-gap"
-
-        service.messagesByThread[threadID] = makeMessages(threadID: threadID, range: 1...20)
-        service.mergeHistoryWindow(
-            threadId: threadID,
-            mode: .tail,
-            historyMessages: makeMessages(threadID: threadID, range: 71...120),
-            oldestAnchor: makeAnchor(index: 71),
-            newestAnchor: makeAnchor(index: 120),
-            hasOlder: true,
-            hasNewer: false
+        let threadID = "thread-after-catch-up"
+        service.isConnected = true
+        service.isInitialized = true
+        service.messagesByThread[threadID] = makeMessages(threadID: threadID, range: 1 ... 20)
+        service.historyStateByThread[threadID] = ThreadHistoryState(
+            oldestCursor: "cursor-1",
+            newestCursor: "cursor-20",
+            hasOlderOnServer: false,
+            hasNewerOnServer: true
         )
 
-        service.mergeHistoryWindow(
-            threadId: threadID,
-            mode: .before,
-            historyMessages: makeMessages(threadID: threadID, range: 21...70),
-            oldestAnchor: makeAnchor(index: 21),
-            newestAnchor: makeAnchor(index: 70),
-            hasOlder: false,
-            hasNewer: false
-        )
-
-        let state = try XCTUnwrap(service.historyStateByThread[threadID])
-        XCTAssertEqual(state.segments.count, 1)
-        XCTAssertTrue(state.gaps.isEmpty)
-        XCTAssertEqual(state.oldestLoadedAnchor, makeAnchor(index: 1))
-        XCTAssertEqual(state.newestLoadedAnchor, makeAnchor(index: 120))
-        XCTAssertFalse(state.hasOlderOnServer)
-    }
-
-    func testEnsureThreadResumedStillAllowsTailHistoryRefresh() async throws {
-        let service = makeService()
-        let threadID = "thread-tail-refresh"
-        service.isConnected = true
-        service.isInitialized = true
-
-        var recordedMethods: [String] = []
-        service.requestTransportOverride = { method, _ in
-            recordedMethods.append(method)
-            switch method {
-            case "thread/resume":
-                return RPCMessage(
-                    id: .string(UUID().uuidString),
-                    result: .object([
-                        "thread": self.makeThreadPayload(
-                            threadID: threadID,
-                            title: "Resume",
-                            messageRange: 1...2
-                        ),
-                    ]),
-                    includeJSONRPC: false
-                )
-            case "thread/read":
-                return RPCMessage(
-                    id: .string(UUID().uuidString),
-                    result: .object([
-                        "thread": self.makeThreadPayload(
-                            threadID: threadID,
-                            title: "Tail",
-                            messageRange: 71...120
-                        ),
-                        "historyWindow": .object([
-                            "oldestAnchor": self.makeAnchorObject(index: 71),
-                            "newestAnchor": self.makeAnchorObject(index: 120),
-                            "hasOlder": .bool(true),
-                            "hasNewer": .bool(false),
-                        ]),
-                    ]),
-                    includeJSONRPC: false
-                )
-            default:
-                XCTFail("Unexpected method \(method)")
-                return RPCMessage(id: .string(UUID().uuidString), result: .object([:]), includeJSONRPC: false)
-            }
-        }
-
-        _ = try await service.ensureThreadResumed(threadId: threadID)
-        XCTAssertFalse(service.hydratedThreadIDs.contains(threadID))
-
-        try await service.loadThreadHistoryIfNeeded(threadId: threadID)
-
-        XCTAssertEqual(recordedMethods, ["thread/resume", "thread/read"])
-        XCTAssertEqual(service.messagesByThread[threadID]?.first?.itemId, "item-1")
-        XCTAssertEqual(service.messagesByThread[threadID]?.last?.itemId, "item-120")
-        XCTAssertEqual(service.historyStateByThread[threadID]?.segments.count, 2)
-    }
-
-    func testCachedResumeAndHydrationDoNotBlockReloadWhenLocalMessagesAreEmpty() async throws {
-        let service = makeService()
-        let threadID = "thread-reload-empty"
-        service.isConnected = true
-        service.isInitialized = true
-        service.threads = [ConversationThread(id: threadID, title: "Thread")]
-        service.resumedThreadIDs.insert(threadID)
-        service.hydratedThreadIDs.insert(threadID)
-        service.messagesByThread[threadID] = []
-
-        var recordedMethods: [String] = []
-        service.requestTransportOverride = { method, _ in
-            recordedMethods.append(method)
-            switch method {
-            case "thread/resume":
-                return RPCMessage(
-                    id: .string(UUID().uuidString),
-                    result: .object([
-                        "thread": self.makeThreadPayload(
-                            threadID: threadID,
-                            title: "Resume",
-                            messageRange: 1...2
-                        ),
-                    ]),
-                    includeJSONRPC: false
-                )
-            case "thread/read":
-                return RPCMessage(
-                    id: .string(UUID().uuidString),
-                    result: .object([
-                        "thread": self.makeThreadPayload(
-                            threadID: threadID,
-                            title: "Tail",
-                            messageRange: 11...20
-                        ),
-                        "historyWindow": .object([
-                            "oldestAnchor": self.makeAnchorObject(index: 11),
-                            "newestAnchor": self.makeAnchorObject(index: 20),
-                            "hasOlder": .bool(true),
-                            "hasNewer": .bool(false),
-                        ]),
-                    ]),
-                    includeJSONRPC: false
-                )
-            default:
-                XCTFail("Unexpected method \(method)")
-                return RPCMessage(id: .string(UUID().uuidString), result: .object([:]), includeJSONRPC: false)
-            }
-        }
-
-        _ = try await service.ensureThreadResumed(threadId: threadID)
-        try await service.loadThreadHistoryIfNeeded(threadId: threadID)
-
-        XCTAssertEqual(recordedMethods, ["thread/resume", "thread/read"])
-        XCTAssertEqual(service.messagesByThread[threadID]?.first?.itemId, "item-1")
-        XCTAssertEqual(service.messagesByThread[threadID]?.last?.itemId, "item-20")
-    }
-
-    func testForceTailRefreshMergesRunningThreadSnapshot() async throws {
-        let service = makeService()
-        let threadID = "thread-running-refresh"
-        service.isConnected = true
-        service.isInitialized = true
-        service.runningThreadIDs.insert(threadID)
-        service.messagesByThread[threadID] = [
-            ChatMessage(
-                id: "assistant-local",
-                threadId: threadID,
-                role: .assistant,
-                text: "partial",
-                createdAt: Date(timeIntervalSince1970: 100),
-                turnId: "turn-1",
-                itemId: "item-100",
-                isStreaming: true,
-                orderIndex: 1
-            ),
-        ]
-
-        service.requestTransportOverride = { method, _ in
-            XCTAssertEqual(method, "thread/read")
-            return RPCMessage(
-                id: .string(UUID().uuidString),
-                result: .object([
-                    "thread": self.makeThreadPayload(
-                        threadID: threadID,
-                        title: "Tail",
-                        messageRange: 100...101
-                    ),
-                    "historyWindow": .object([
-                        "oldestAnchor": self.makeAnchorObject(index: 100),
-                        "newestAnchor": self.makeAnchorObject(index: 101),
-                        "hasOlder": .bool(true),
-                        "hasNewer": .bool(false),
-                    ]),
-                ]),
-                includeJSONRPC: false
-            )
-        }
-
-        try await service.loadThreadHistoryIfNeeded(threadId: threadID, forceRefresh: true)
-
-        let messages = try XCTUnwrap(service.messagesByThread[threadID])
-        XCTAssertEqual(messages.count, 2)
-        XCTAssertEqual(messages.first?.itemId, "item-100")
-        XCTAssertTrue(messages.first?.text.contains("message-100") == true)
-        XCTAssertTrue(messages.first?.isStreaming == true)
-        XCTAssertEqual(messages.last?.itemId, "item-101")
-    }
-
-    func testSyncActiveThreadStateRefreshesHistoryEvenWhenThreadIsStillRunning() async throws {
-        let service = makeService()
-        let threadID = "thread-active-running"
-        service.isConnected = true
-        service.isInitialized = true
-        service.runningThreadIDs.insert(threadID)
-        service.activeTurnIdByThread[threadID] = "turn-1"
-
-        var recordedRequestKinds: [String] = []
-        service.requestTransportOverride = { method, params in
-            XCTAssertEqual(method, "thread/read")
-            let paramsObject = params?.objectValue ?? [:]
-            if paramsObject["includeTurns"]?.boolValue == true {
-                recordedRequestKinds.append("turn-state")
-                return RPCMessage(
-                    id: .string(UUID().uuidString),
-                    result: .object([
-                        "thread": .object([
-                            "id": .string(threadID),
-                            "provider": .string("codex"),
-                            "turns": .array([
-                                .object([
-                                    "id": .string("turn-1"),
-                                    "status": .string("running"),
-                                    "items": .array([]),
-                                ]),
-                            ]),
-                        ]),
-                    ]),
-                    includeJSONRPC: false
-                )
-            }
-
-            recordedRequestKinds.append("history-tail")
-            return RPCMessage(
-                id: .string(UUID().uuidString),
-                result: .object([
-                    "thread": self.makeThreadPayload(
-                        threadID: threadID,
-                        title: "Tail",
-                        messageRange: 201...202
-                    ),
-                    "historyWindow": .object([
-                        "oldestAnchor": self.makeAnchorObject(index: 201),
-                        "newestAnchor": self.makeAnchorObject(index: 202),
-                        "hasOlder": .bool(true),
-                        "hasNewer": .bool(false),
-                    ]),
-                ]),
-                includeJSONRPC: false
-            )
-        }
-
-        await service.syncActiveThreadState(threadId: threadID)
-
-        XCTAssertEqual(recordedRequestKinds, ["turn-state", "history-tail"])
-        XCTAssertEqual(service.messagesByThread[threadID]?.last?.itemId, "item-202")
-    }
-
-    func testIncomingDeltaSchedulesAfterCatchUpWhenTailHasGap() async throws {
-        let service = makeService()
-        let threadID = "thread-event-after-gap"
-        service.isConnected = true
-        service.isInitialized = true
-        service.activeThreadId = threadID
-        service.threads = [ConversationThread(id: threadID, title: "Thread", provider: "codex")]
-        service.runningThreadIDs.insert(threadID)
-        service.activeTurnIdByThread[threadID] = "turn-0"
-        service.messagesByThread[threadID] = makeMessages(threadID: threadID, range: 1...1)
-
-        let afterExpectation = expectation(description: "after history request")
+        let afterExpectation = expectation(description: "after request")
         service.requestTransportOverride = { method, params in
             XCTAssertEqual(method, "thread/read")
             let historyObject = try XCTUnwrap(params?.objectValue?["history"]?.objectValue)
             XCTAssertEqual(historyObject["mode"]?.stringValue, "after")
-            XCTAssertEqual(historyObject["anchor"]?.objectValue?["itemId"]?.stringValue, "item-1")
+            XCTAssertEqual(historyObject["cursor"]?.stringValue, "cursor-20")
             afterExpectation.fulfill()
             return RPCMessage(
                 id: .string(UUID().uuidString),
@@ -311,46 +51,87 @@ final class ThreadHistoryStateTests: XCTestCase {
                     "thread": self.makeThreadPayload(
                         threadID: threadID,
                         title: "After",
-                        messageRange: 2...3
+                        messageRange: 21 ... 22
                     ),
-                    "historyWindow": .object([
-                        "oldestAnchor": self.makeAnchorObject(index: 2),
-                        "newestAnchor": self.makeAnchorObject(index: 3),
-                        "hasOlder": .bool(false),
-                        "hasNewer": .bool(false),
-                    ]),
+                    "historyWindow": self.makeHistoryWindowObject(
+                        olderCursor: "cursor-21",
+                        newerCursor: "cursor-22",
+                        hasOlder: false,
+                        hasNewer: false
+                    ),
                 ]),
                 includeJSONRPC: false
             )
         }
 
-        service.handleNotification(
-            method: "item/agentMessage/delta",
-            params: .object([
-                "threadId": .string(threadID),
-                "turnId": .string("turn-0"),
-                "itemId": .string("item-3"),
-                "delta": .string("partial-3"),
-            ])
-        )
+        try await service.loadThreadHistoryIfNeeded(threadId: threadID)
 
         await fulfillment(of: [afterExpectation], timeout: 1.0)
-        XCTAssertEqual(service.messagesByThread[threadID]?.map(\.itemId), ["item-1", "item-2", "item-3"])
+        XCTAssertEqual(service.messagesByThread[threadID]?.map(\.itemId), ["item-1", "item-2", "item-3", "item-4", "item-5", "item-6", "item-7", "item-8", "item-9", "item-10", "item-11", "item-12", "item-13", "item-14", "item-15", "item-16", "item-17", "item-18", "item-19", "item-20", "item-21", "item-22"])
+        XCTAssertEqual(service.historyStateByThread[threadID]?.newestCursor, "cursor-22")
     }
 
-    func testIncomingDeltaSkipsAfterCatchUpWhenPreviousItemMatchesTail() async throws {
+    func testLoadThreadHistoryReplacesLegacyLocalTimelineWithTailSnapshot() async throws {
         let service = makeService()
-        let threadID = "thread-event-direct-tail"
+        let threadID = "thread-tail-replace"
+        service.isConnected = true
+        service.isInitialized = true
+        service.messagesByThread[threadID] = makeMessages(threadID: threadID, range: 1 ... 20)
+
+        let tailExpectation = expectation(description: "tail request")
+        service.requestTransportOverride = { method, params in
+            XCTAssertEqual(method, "thread/read")
+            let historyObject = try XCTUnwrap(params?.objectValue?["history"]?.objectValue)
+            XCTAssertEqual(historyObject["mode"]?.stringValue, "tail")
+            XCTAssertNil(historyObject["cursor"])
+            tailExpectation.fulfill()
+            return RPCMessage(
+                id: .string(UUID().uuidString),
+                result: .object([
+                    "thread": self.makeThreadPayload(
+                        threadID: threadID,
+                        title: "Tail",
+                        messageRange: 71 ... 120
+                    ),
+                    "historyWindow": self.makeHistoryWindowObject(
+                        olderCursor: "cursor-71",
+                        newerCursor: "cursor-120",
+                        hasOlder: true,
+                        hasNewer: false
+                    ),
+                ]),
+                includeJSONRPC: false
+            )
+        }
+
+        try await service.loadThreadHistoryIfNeeded(threadId: threadID)
+
+        await fulfillment(of: [tailExpectation], timeout: 1.0)
+        XCTAssertEqual(service.messagesByThread[threadID]?.first?.itemId, "item-71")
+        XCTAssertEqual(service.messagesByThread[threadID]?.last?.itemId, "item-120")
+        XCTAssertEqual(service.historyStateByThread[threadID]?.oldestCursor, "cursor-71")
+        XCTAssertEqual(service.historyStateByThread[threadID]?.newestCursor, "cursor-120")
+    }
+
+    func testIncomingDeltaAppendsDirectlyWhenPreviousCursorMatchesTail() async throws {
+        let service = makeService()
+        let threadID = "thread-direct-append"
         service.isConnected = true
         service.isInitialized = true
         service.activeThreadId = threadID
-        service.threads = [ConversationThread(id: threadID, title: "Thread", provider: "codex")]
         service.runningThreadIDs.insert(threadID)
         service.activeTurnIdByThread[threadID] = "turn-1"
-        service.messagesByThread[threadID] = makeMessages(threadID: threadID, range: 1...10)
+        service.threads = [ConversationThread(id: threadID, title: "Thread", provider: "claude")]
+        service.messagesByThread[threadID] = makeMessages(threadID: threadID, range: 1 ... 10)
+        service.historyStateByThread[threadID] = ThreadHistoryState(
+            oldestCursor: "cursor-1",
+            newestCursor: "cursor-10",
+            hasOlderOnServer: false,
+            hasNewerOnServer: false
+        )
 
         service.requestTransportOverride = { method, _ in
-            XCTFail("Did not expect realtime catch-up request for \(method)")
+            XCTFail("Did not expect history catch-up for \(method)")
             return RPCMessage(id: .string(UUID().uuidString), result: .object([:]), includeJSONRPC: false)
         }
 
@@ -361,53 +142,329 @@ final class ThreadHistoryStateTests: XCTestCase {
                 "turnId": .string("turn-1"),
                 "itemId": .string("item-11"),
                 "previousItemId": .string("item-10"),
-                "delta": .string("partial-11"),
+                "cursor": .string("cursor-11"),
+                "previousCursor": .string("cursor-10"),
+                "delta": .string("message-11"),
             ])
         )
 
-        try await Task.sleep(nanoseconds: 250_000_000)
+        try await Task.sleep(nanoseconds: 200_000_000)
         XCTAssertEqual(service.messagesByThread[threadID]?.last?.itemId, "item-11")
+        XCTAssertEqual(service.historyStateByThread[threadID]?.newestCursor, "cursor-11")
     }
 
-    func testLoadOlderHistoryBootstrapsTailWhenLocalTimelineIsEmpty() async throws {
+    func testIncomingDeltaTriggersAfterCatchUpWhenCursorMismatches() async throws {
         let service = makeService()
-        let threadID = "thread-bootstrap-empty"
+        let threadID = "thread-after-gap"
         service.isConnected = true
         service.isInitialized = true
-        service.threads = [ConversationThread(id: threadID, title: "Thread", provider: "codex")]
-        service.messagesByThread[threadID] = []
+        service.activeThreadId = threadID
+        service.runningThreadIDs.insert(threadID)
+        service.activeTurnIdByThread[threadID] = "turn-1"
+        service.threads = [ConversationThread(id: threadID, title: "Thread", provider: "gemini")]
+        service.messagesByThread[threadID] = makeMessages(threadID: threadID, range: 1 ... 1)
+        service.historyStateByThread[threadID] = ThreadHistoryState(
+            oldestCursor: "cursor-1",
+            newestCursor: "cursor-1",
+            hasOlderOnServer: false,
+            hasNewerOnServer: true
+        )
 
-        let tailExpectation = expectation(description: "tail history bootstrap request")
+        let afterExpectation = expectation(description: "after catch-up request")
         service.requestTransportOverride = { method, params in
             XCTAssertEqual(method, "thread/read")
             let historyObject = try XCTUnwrap(params?.objectValue?["history"]?.objectValue)
+            XCTAssertEqual(historyObject["mode"]?.stringValue, "after")
+            XCTAssertEqual(historyObject["cursor"]?.stringValue, "cursor-1")
+            afterExpectation.fulfill()
+            return RPCMessage(
+                id: .string(UUID().uuidString),
+                result: .object([
+                    "thread": self.makeThreadPayload(
+                        threadID: threadID,
+                        title: "After",
+                        messageRange: 2 ... 3
+                    ),
+                    "historyWindow": self.makeHistoryWindowObject(
+                        olderCursor: "cursor-2",
+                        newerCursor: "cursor-3",
+                        hasOlder: false,
+                        hasNewer: false
+                    ),
+                ]),
+                includeJSONRPC: false
+            )
+        }
+
+        service.handleNotification(
+            method: "item/agentMessage/delta",
+            params: .object([
+                "threadId": .string(threadID),
+                "turnId": .string("turn-1"),
+                "itemId": .string("item-3"),
+                "cursor": .string("cursor-3"),
+                "previousCursor": .string("cursor-2"),
+                "delta": .string("partial-3"),
+            ])
+        )
+
+        await fulfillment(of: [afterExpectation], timeout: 1.0)
+        XCTAssertEqual(service.messagesByThread[threadID]?.map(\.itemId), ["item-1", "item-2", "item-3"])
+        XCTAssertEqual(service.historyStateByThread[threadID]?.newestCursor, "cursor-3")
+    }
+
+    func testIncomingDeltaAfterLocalTurnStartBypassesSeededUserCursorGap() async throws {
+        let service = makeService()
+        let threadID = "thread-local-turn-gap"
+        let turnID = "turn-11"
+        service.isConnected = true
+        service.isInitialized = true
+        service.activeThreadId = threadID
+        service.threads = [ConversationThread(id: threadID, title: "Thread", provider: "codex")]
+        service.messagesByThread[threadID] = makeMessages(threadID: threadID, range: 1 ... 10)
+        service.historyStateByThread[threadID] = ThreadHistoryState(
+            oldestCursor: "cursor-1",
+            newestCursor: "cursor-10",
+            hasOlderOnServer: false,
+            hasNewerOnServer: false
+        )
+
+        let pendingMessageId = service.appendUserMessage(threadId: threadID, text: "hello")
+        service.markThreadAsRunning(threadID)
+        service.handleSuccessfulTurnStartResponse(
+            RPCMessage(
+                id: .string(UUID().uuidString),
+                result: .object([
+                    "turn": .object([
+                        "id": .string(turnID),
+                    ]),
+                ]),
+                includeJSONRPC: false
+            ),
+            pendingMessageId: pendingMessageId,
+            threadId: threadID
+        )
+
+        XCTAssertEqual(service.pendingRealtimeSeededTurnIDByThread[threadID], turnID)
+
+        let catchUpExpectation = expectation(description: "no realtime catch-up")
+        catchUpExpectation.isInverted = true
+        service.requestTransportOverride = { method, _ in
+            if method == "thread/read" {
+                catchUpExpectation.fulfill()
+            }
+            return RPCMessage(id: .string(UUID().uuidString), result: .object([:]), includeJSONRPC: false)
+        }
+
+        service.handleNotification(
+            method: "item/agentMessage/delta",
+            params: .object([
+                "threadId": .string(threadID),
+                "turnId": .string(turnID),
+                "itemId": .string("item-11"),
+                "previousItemId": .string("local:\(turnID):user"),
+                "cursor": .string("cursor-11"),
+                "previousCursor": .string("cursor-user-\(turnID)"),
+                "delta": .string("live-11"),
+            ])
+        )
+
+        try await Task.sleep(nanoseconds: 200_000_000)
+        await fulfillment(of: [catchUpExpectation], timeout: 0.3)
+        XCTAssertEqual(service.messagesByThread[threadID]?.last?.role, .assistant)
+        XCTAssertEqual(service.messagesByThread[threadID]?.last?.text, "live-11")
+        XCTAssertEqual(service.historyStateByThread[threadID]?.newestCursor, "cursor-11")
+        XCTAssertNil(service.pendingRealtimeSeededTurnIDByThread[threadID])
+    }
+
+    func testIncomingDeltaAfterLocalTurnStartAppendsWithoutCursorBaseline() async throws {
+        let service = makeService()
+        let threadID = "thread-local-turn-no-cursor"
+        let turnID = "turn-1"
+        service.isConnected = true
+        service.isInitialized = true
+        service.activeThreadId = threadID
+        service.threads = [ConversationThread(id: threadID, title: "Thread", provider: "codex")]
+
+        let pendingMessageId = service.appendUserMessage(threadId: threadID, text: "first")
+        service.markThreadAsRunning(threadID)
+        service.handleSuccessfulTurnStartResponse(
+            RPCMessage(
+                id: .string(UUID().uuidString),
+                result: .object([
+                    "turn": .object([
+                        "id": .string(turnID),
+                    ]),
+                ]),
+                includeJSONRPC: false
+            ),
+            pendingMessageId: pendingMessageId,
+            threadId: threadID
+        )
+
+        let catchUpExpectation = expectation(description: "no realtime catch-up")
+        catchUpExpectation.isInverted = true
+        service.requestTransportOverride = { method, _ in
+            if method == "thread/read" {
+                catchUpExpectation.fulfill()
+            }
+            return RPCMessage(id: .string(UUID().uuidString), result: .object([:]), includeJSONRPC: false)
+        }
+
+        service.handleNotification(
+            method: "item/agentMessage/delta",
+            params: .object([
+                "threadId": .string(threadID),
+                "turnId": .string(turnID),
+                "itemId": .string("item-1"),
+                "previousItemId": .string("local:\(turnID):user"),
+                "cursor": .string("cursor-1"),
+                "previousCursor": .string("cursor-user-\(turnID)"),
+                "delta": .string("first-live"),
+            ])
+        )
+
+        try await Task.sleep(nanoseconds: 200_000_000)
+        await fulfillment(of: [catchUpExpectation], timeout: 0.3)
+        XCTAssertEqual(service.messagesByThread[threadID]?.last?.text, "first-live")
+        XCTAssertEqual(service.historyStateByThread[threadID]?.newestCursor, "cursor-1")
+        XCTAssertNil(service.pendingRealtimeSeededTurnIDByThread[threadID])
+    }
+
+    func testAssistantRealtimeDeltaUsesTopLevelIDWithoutHistoryCatchUp() async throws {
+        let service = makeService()
+        let threadID = "thread-top-level-item-id"
+        let turnID = "turn-top-level-item-id"
+        service.isConnected = true
+        service.isInitialized = true
+        service.activeThreadId = threadID
+        service.runningThreadIDs.insert(threadID)
+        service.activeTurnIdByThread[threadID] = turnID
+        service.threads = [ConversationThread(id: threadID, title: "Thread", provider: "claude")]
+
+        let catchUpExpectation = expectation(description: "no realtime catch-up")
+        catchUpExpectation.isInverted = true
+        service.requestTransportOverride = { method, _ in
+            if method == "thread/read" {
+                catchUpExpectation.fulfill()
+            }
+            return RPCMessage(id: .string(UUID().uuidString), result: .object([:]), includeJSONRPC: false)
+        }
+
+        service.handleNotification(
+            method: "item/started",
+            params: .object([
+                "threadId": .string(threadID),
+                "turnId": .string(turnID),
+                "id": .string("item-top-level"),
+                "type": .string("message"),
+                "role": .string("assistant"),
+                "content": .array([
+                    .object([
+                        "type": .string("text"),
+                        "text": .string(""),
+                    ]),
+                ]),
+            ])
+        )
+
+        service.handleNotification(
+            method: "item/agentMessage/delta",
+            params: .object([
+                "threadId": .string(threadID),
+                "turnId": .string(turnID),
+                "id": .string("item-top-level"),
+                "delta": .string("live-top-level"),
+            ])
+        )
+
+        try await Task.sleep(nanoseconds: 200_000_000)
+        await fulfillment(of: [catchUpExpectation], timeout: 0.3)
+
+        let lastMessage = try XCTUnwrap(service.messagesByThread[threadID]?.last)
+        XCTAssertEqual(lastMessage.itemId, "item-top-level")
+        XCTAssertEqual(lastMessage.text, "live-top-level")
+        XCTAssertTrue(lastMessage.isStreaming)
+    }
+
+    func testSyncActiveThreadStateForceResumesRunningThreadBeforeHistoryCatchUp() async throws {
+        let service = makeService()
+        let threadID = "thread-force-resume"
+        let turnID = "turn-force-resume"
+        service.isConnected = true
+        service.isInitialized = true
+        service.activeThreadId = threadID
+        service.runningThreadIDs.insert(threadID)
+        service.activeTurnIdByThread[threadID] = turnID
+        service.threads = [ConversationThread(id: threadID, title: "Thread", provider: "codex")]
+
+        var observedMethods: [String] = []
+        service.requestTransportOverride = { method, params in
+            observedMethods.append(method)
+
+            if observedMethods.count == 1 {
+                XCTAssertEqual(method, "thread/read")
+                XCTAssertNil(params?.objectValue?["history"])
+                return RPCMessage(
+                    id: .string(UUID().uuidString),
+                    result: .object([
+                        "thread": .object([
+                            "id": .string(threadID),
+                            "turns": .array([
+                                .object([
+                                    "id": .string(turnID),
+                                    "status": .string("running"),
+                                    "items": .array([]),
+                                ]),
+                            ]),
+                        ]),
+                    ]),
+                    includeJSONRPC: false
+                )
+            }
+
+            if observedMethods.count == 2 {
+                XCTAssertEqual(method, "thread/resume")
+                return RPCMessage(
+                    id: .string(UUID().uuidString),
+                    result: .object([
+                        "thread": self.makeThreadPayload(
+                            threadID: threadID,
+                            title: "Resume",
+                            messageRange: 1 ... 1
+                        ),
+                    ]),
+                    includeJSONRPC: false
+                )
+            }
+
+            XCTAssertEqual(method, "thread/read")
+            let historyObject = try XCTUnwrap(params?.objectValue?["history"]?.objectValue)
             XCTAssertEqual(historyObject["mode"]?.stringValue, "tail")
-            tailExpectation.fulfill()
             return RPCMessage(
                 id: .string(UUID().uuidString),
                 result: .object([
                     "thread": self.makeThreadPayload(
                         threadID: threadID,
                         title: "Tail",
-                        messageRange: 11...20
+                        messageRange: 1 ... 1
                     ),
-                    "historyWindow": .object([
-                        "oldestAnchor": self.makeAnchorObject(index: 11),
-                        "newestAnchor": self.makeAnchorObject(index: 20),
-                        "hasOlder": .bool(true),
-                        "hasNewer": .bool(false),
-                    ]),
+                    "historyWindow": self.makeHistoryWindowObject(
+                        olderCursor: "cursor-1",
+                        newerCursor: "cursor-1",
+                        hasOlder: false,
+                        hasNewer: false
+                    ),
                 ]),
                 includeJSONRPC: false
             )
         }
 
-        try await service.loadOlderThreadHistoryIfNeeded(threadId: threadID)
+        await service.syncActiveThreadState(threadId: threadID)
 
-        await fulfillment(of: [tailExpectation], timeout: 1.0)
-        XCTAssertEqual(service.messagesByThread[threadID]?.first?.itemId, "item-11")
-        XCTAssertEqual(service.messagesByThread[threadID]?.last?.itemId, "item-20")
-        XCTAssertEqual(service.historyStateByThread[threadID]?.newestLoadedAnchor?.itemId, "item-20")
+        XCTAssertEqual(observedMethods, ["thread/read", "thread/resume", "thread/read"])
+        XCTAssertEqual(service.messagesByThread[threadID]?.last?.itemId, "item-1")
+        XCTAssertEqual(service.historyStateByThread[threadID]?.newestCursor, "cursor-1")
     }
 
     func testUpdateCurrentOutputPublishesInPlaceMessageMutation() {
@@ -465,19 +522,17 @@ final class ThreadHistoryStateTests: XCTestCase {
         }
     }
 
-    private func makeAnchor(index: Int) -> ThreadHistoryAnchor {
-        ThreadHistoryAnchor(
-            itemId: "item-\(index)",
-            createdAt: Date(timeIntervalSince1970: TimeInterval(index)),
-            turnId: "turn-\(index / 10)"
-        )
-    }
-
-    private func makeAnchorObject(index: Int) -> JSONValue {
+    private func makeHistoryWindowObject(
+        olderCursor: String?,
+        newerCursor: String?,
+        hasOlder: Bool,
+        hasNewer: Bool
+    ) -> JSONValue {
         .object([
-            "itemId": .string("item-\(index)"),
-            "createdAt": .string(ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: TimeInterval(index)))),
-            "turnId": .string("turn-\(index / 10)"),
+            "olderCursor": olderCursor.map(JSONValue.string) ?? .null,
+            "newerCursor": newerCursor.map(JSONValue.string) ?? .null,
+            "hasOlder": .bool(hasOlder),
+            "hasNewer": .bool(hasNewer),
         ])
     }
 
@@ -498,7 +553,11 @@ final class ThreadHistoryStateTests: XCTestCase {
                             .object([
                                 "id": .string("item-\(index)"),
                                 "type": .string("assistantMessage"),
-                                "createdAt": .string(ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: TimeInterval(index)))),
+                                "createdAt": .string(
+                                    ISO8601DateFormatter().string(
+                                        from: Date(timeIntervalSince1970: TimeInterval(index))
+                                    )
+                                ),
                                 "content": .array([
                                     .object([
                                         "type": .string("text"),

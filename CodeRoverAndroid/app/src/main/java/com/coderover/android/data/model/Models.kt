@@ -519,6 +519,7 @@ data class AppState(
     val messagesByThread: Map<String, List<ChatMessage>> = emptyMap(),
     val historyStateByThread: Map<String, ThreadHistoryState> = emptyMap(),
     val activeTurnIdByThread: Map<String, String> = emptyMap(),
+    val pendingRealtimeSeededTurnIdByThread: Map<String, String> = emptyMap(),
     val runningThreadIds: Set<String> = emptySet(),
     val readyThreadIds: Set<String> = emptySet(),
     val failedThreadIds: Set<String> = emptySet(),
@@ -580,23 +581,29 @@ data class AppState(
         get() = selectedThread?.capabilities ?: activeRuntimeProvider.supports
 }
 
+@Serializable
 data class ThreadHistoryAnchor(
     val itemId: String? = null,
     val createdAt: Long,
     val turnId: String? = null,
 )
 
+@Serializable
 data class ThreadHistorySegment(
     val oldestAnchor: ThreadHistoryAnchor,
     val newestAnchor: ThreadHistoryAnchor,
 )
 
+@Serializable
 data class ThreadHistoryGap(
     val olderAnchor: ThreadHistoryAnchor,
     val newerAnchor: ThreadHistoryAnchor,
 )
 
+@Serializable
 data class ThreadHistoryState(
+    val oldestCursor: String? = null,
+    val newestCursor: String? = null,
     val segments: List<ThreadHistorySegment> = emptyList(),
     val gaps: List<ThreadHistoryGap> = emptyList(),
     val oldestLoadedAnchor: ThreadHistoryAnchor? = null,

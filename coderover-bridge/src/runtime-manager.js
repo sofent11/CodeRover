@@ -25,6 +25,7 @@ const DEFAULT_HISTORY_WINDOW_LIMIT = 50;
 const DEFAULT_THREAD_LIST_PAGE_SIZE = 60;
 const CODEX_HISTORY_CACHE_THREAD_LIMIT = 20;
 const CODEX_HISTORY_CACHE_MESSAGE_LIMIT = 50;
+const HISTORY_CURSOR_VERSION = 1;
 
 function createRuntimeManager({
   sendApplicationMessage,
@@ -51,7 +52,7 @@ function createRuntimeManager({
   const codexAdapter = providedCodexAdapter || createCodexAdapter({
     logPrefix,
     sendToClient(rawMessage, parsedMessage) {
-      sendApplicationMessage(decorateCodexTransportMessage(rawMessage, parsedMessage));
+      forwardCodexTransportMessage(rawMessage, parsedMessage);
     },
   });
 
@@ -363,7 +364,6 @@ function createRuntimeManager({
 
   function handleCodexTransportMessage(rawMessage) {
     codexAdapter.handleIncomingRaw(rawMessage);
-    handleCodexHistoryCacheEvent(rawMessage);
   }
 
   function handleCodexTransportClosed(reason) {
@@ -377,6 +377,11 @@ function createRuntimeManager({
     store.shutdown();
   }
 
+  function forwardCodexTransportMessage(rawMessage, parsedMessage) {
+    handleCodexHistoryCacheEvent(rawMessage);
+    sendApplicationMessage(decorateCodexTransportMessage(rawMessage, parsedMessage));
+  }
+
   function decorateCodexTransportMessage(rawMessage, parsedMessage) {
     const method = normalizeOptionalString(parsedMessage?.method);
     const params = asObject(parsedMessage?.params);
@@ -384,31 +389,16 @@ function createRuntimeManager({
       return rawMessage;
     }
 
-    const itemId = extractNotificationItemId(params);
-    if (!itemId || params.previousItemId || params.previous_item_id) {
-      return rawMessage;
-    }
-
-    if (!shouldDecorateNotificationWithPreviousItemId(method)) {
-      return rawMessage;
-    }
-
-    const threadId = extractNotificationThreadId(params);
-    if (!threadId) {
-      return rawMessage;
-    }
-
-    const previousItemId = previousCodexHistoryItemId(threadId, itemId);
-    if (!previousItemId) {
+    const decoratedParams = decorateNotificationWithHistoryMetadata(method, params, (threadId) =>
+      readCodexHistorySnapshot(threadId)
+    );
+    if (decoratedParams === params) {
       return rawMessage;
     }
 
     return JSON.stringify({
       ...parsedMessage,
-      params: {
-        ...params,
-        previousItemId,
-      },
+      params: decoratedParams,
     });
   }
 
@@ -555,17 +545,13 @@ function createRuntimeManager({
   async function readThread(params) {
     const threadId = normalizeOptionalString(params.threadId || params.thread_id);
     const threadMeta = await requireThreadMeta(threadId);
+    const historyRequest = normalizeHistoryRequest(params?.history);
 
     if (threadMeta.provider === "codex") {
-      return readCodexThread(threadId, params);
+      return readCodexThread(threadId, params, historyRequest);
     }
 
-    await getManagedProviderAdapter(threadMeta.provider).hydrateThread(threadMeta);
-    const refreshedMeta = store.getThreadMeta(threadMeta.id) || threadMeta;
-    const history = store.getThreadHistory(threadMeta.id);
-    return {
-      thread: buildManagedThreadObject(refreshedMeta, history?.turns || []),
-    };
+    return readManagedThread(threadMeta, params, historyRequest);
   }
 
   async function requireThreadMeta(threadId) {
@@ -621,9 +607,23 @@ function createRuntimeManager({
     throw createMethodError(`Managed adapter unavailable for provider: ${provider}`);
   }
 
-  async function readCodexThread(threadId, params) {
+  async function readManagedThread(threadMeta, params, historyRequest) {
+    await getManagedProviderAdapter(threadMeta.provider).hydrateThread(threadMeta);
+    const refreshedMeta = store.getThreadMeta(threadMeta.id) || threadMeta;
+    const history = store.getThreadHistory(threadMeta.id);
+    const thread = buildManagedThreadObject(refreshedMeta, history?.turns || []);
+    if (!historyRequest) {
+      return { thread };
+    }
+    return buildHistoryWindowResponse(
+      createHistorySnapshotFromThread(thread),
+      historyRequest,
+      false
+    );
+  }
+
+  async function readCodexThread(threadId, params, historyRequest = null) {
     await ensureCodexWarm();
-    const historyRequest = normalizeHistoryRequest(params?.history);
 
     if (!historyRequest) {
       const result = await codexAdapter.readThread(stripProviderField(params));
@@ -646,7 +646,7 @@ function createRuntimeManager({
     }
 
     const fullSnapshot = await fetchFullCodexThreadSnapshot(threadId, params);
-    return buildCodexHistoryWindowResponse(fullSnapshot, historyRequest, false);
+    return buildHistoryWindowResponse(fullSnapshot, historyRequest, false);
   }
 
   async function fetchFullCodexThreadSnapshot(threadId, params) {
@@ -674,8 +674,8 @@ function createRuntimeManager({
     if (!cacheEntry) {
       return null;
     }
-    const anchorIndex = historyRequest.anchor
-      ? findHistoryRecordIndexByAnchor(cacheEntry.records, historyRequest.anchor)
+    const anchorIndex = historyRequest.cursor
+      ? findHistoryRecordIndexByCursor(cacheEntry.records, historyRequest.cursor, threadId)
       : -1;
     const canServe = historyRequest.mode === "tail"
       || (
@@ -686,48 +686,62 @@ function createRuntimeManager({
     if (!canServe) {
       return null;
     }
-    return buildCodexHistoryWindowResponse(cacheEntry, historyRequest, true);
+    return buildHistoryWindowResponse(cacheEntry, historyRequest, true);
   }
 
-  function buildCodexHistoryWindowResponse(snapshot, historyRequest, servedFromCache) {
+  function buildHistoryWindowResponse(snapshot, historyRequest, servedFromCache) {
     const records = [...snapshot.records].sort(compareHistoryRecord);
     const limit = historyRequest.limit;
     let selected = [];
+    let anchorIndex = -1;
+    let startIndex = 0;
+    let endIndexExclusive = 0;
 
     if (historyRequest.mode === "tail") {
-      selected = records.slice(Math.max(records.length - limit, 0));
+      startIndex = Math.max(records.length - limit, 0);
+      endIndexExclusive = records.length;
+      selected = records.slice(startIndex, endIndexExclusive);
     } else {
-      const anchorIndex = findHistoryRecordIndexByAnchor(records, historyRequest.anchor);
+      anchorIndex = findHistoryRecordIndexByCursor(records, historyRequest.cursor, snapshot.threadId);
       if (anchorIndex < 0) {
-        throw createRuntimeError(ERROR_INVALID_PARAMS, "history.anchor did not match any cached message");
+        throw createRuntimeError(ERROR_INVALID_PARAMS, "history.cursor is invalid");
       }
       if (historyRequest.mode === "before") {
-        selected = records.slice(Math.max(anchorIndex - limit, 0), anchorIndex);
+        startIndex = Math.max(anchorIndex - limit, 0);
+        endIndexExclusive = anchorIndex;
+        selected = records.slice(startIndex, endIndexExclusive);
       } else {
-        selected = records.slice(anchorIndex + 1, anchorIndex + 1 + limit);
+        startIndex = anchorIndex + 1;
+        endIndexExclusive = anchorIndex + 1 + limit;
+        selected = records.slice(startIndex, endIndexExclusive);
       }
     }
 
     const hasOlder = selected.length > 0
-      ? findHistoryRecordIndexByAnchor(records, historyRecordAnchor(selected[0])) > 0
+      ? startIndex > 0
       : records.length > 0
         ? historyRequest.mode !== "tail" || snapshot.hasOlder
         : false;
     const hasNewer = selected.length > 0
-      ? findHistoryRecordIndexByAnchor(records, historyRecordAnchor(selected[selected.length - 1])) < (records.length - 1)
+      ? endIndexExclusive < records.length
       : false;
     const thread = rebuildThreadFromHistoryRecords(snapshot.threadBase, selected);
+    const oldestRecord = selected.length > 0 ? selected[0] : null;
+    const newestRecord = selected.length > 0 ? selected[selected.length - 1] : null;
 
     return {
       thread,
       historyWindow: {
         mode: historyRequest.mode,
-        oldestAnchor: selected.length > 0 ? historyRecordAnchor(selected[0]) : null,
-        newestAnchor: selected.length > 0 ? historyRecordAnchor(selected[selected.length - 1]) : null,
+        olderCursor: oldestRecord ? historyCursorForRecord(snapshot.threadId, oldestRecord) : null,
+        newerCursor: newestRecord ? historyCursorForRecord(snapshot.threadId, newestRecord) : null,
+        oldestAnchor: oldestRecord ? historyRecordAnchor(oldestRecord) : null,
+        newestAnchor: newestRecord ? historyRecordAnchor(newestRecord) : null,
         hasOlder: hasOlder || (selected.length === 0 && snapshot.hasOlder),
         hasNewer: hasNewer || (selected.length === 0 && snapshot.hasNewer),
         isPartial: selected.length !== records.length || snapshot.hasOlder || snapshot.hasNewer,
         servedFromCache,
+        pageSize: selected.length,
       },
     };
   }
@@ -766,6 +780,39 @@ function createRuntimeManager({
     codexHistoryCache.delete(normalizedThreadId);
     codexHistoryCache.set(normalizedThreadId, entry);
     return entry;
+  }
+
+  function readCodexHistorySnapshot(threadId) {
+    const normalizedThreadId = normalizeOptionalString(threadId);
+    if (!normalizedThreadId) {
+      return null;
+    }
+    const entry = codexHistoryCache.get(normalizedThreadId);
+    if (!entry) {
+      return null;
+    }
+    return {
+      threadId: normalizedThreadId,
+      threadBase: entry.threadBase,
+      records: [...entry.records],
+      hasOlder: entry.hasOlder,
+      hasNewer: entry.hasNewer,
+    };
+  }
+
+  function readManagedHistorySnapshot(threadId) {
+    const normalizedThreadId = normalizeOptionalString(threadId);
+    if (!normalizedThreadId) {
+      return null;
+    }
+    const threadMeta = store.getThreadMeta(normalizedThreadId);
+    const history = store.getThreadHistory(normalizedThreadId);
+    if (!threadMeta || !history) {
+      return null;
+    }
+    return createHistorySnapshotFromThread(
+      buildManagedThreadObject(threadMeta, history.turns || [])
+    );
   }
 
   function writeCodexHistoryCache(threadId, entry) {
@@ -1052,6 +1099,66 @@ function createRuntimeManager({
       return orderedItemIds[orderedItemIds.length - 1] || null;
     }
     return null;
+  }
+
+  function decorateNotificationWithHistoryMetadata(method, params, readSnapshot) {
+    if (!shouldDecorateNotificationWithPreviousItemId(method) || !params) {
+      return params;
+    }
+
+    const threadId = extractNotificationThreadId(params);
+    const itemId = extractNotificationItemId(params);
+    if (!threadId || !itemId) {
+      return params;
+    }
+
+    const snapshot = typeof readSnapshot === "function" ? readSnapshot(threadId) : null;
+    const metadata = snapshot ? historyMetadataForItem(snapshot, itemId) : null;
+    if (!metadata) {
+      return params;
+    }
+
+    let didChange = false;
+    const nextParams = { ...params };
+    if (metadata.currentCursor && nextParams.cursor == null) {
+      nextParams.cursor = metadata.currentCursor;
+      didChange = true;
+    }
+    if (metadata.previousCursor && nextParams.previousCursor == null && nextParams.previous_cursor == null) {
+      nextParams.previousCursor = metadata.previousCursor;
+      didChange = true;
+    }
+    if (metadata.previousItemId && nextParams.previousItemId == null && nextParams.previous_item_id == null) {
+      nextParams.previousItemId = metadata.previousItemId;
+      didChange = true;
+    }
+    return didChange ? nextParams : params;
+  }
+
+  function historyMetadataForItem(snapshot, itemId) {
+    const normalizedThreadId = normalizeOptionalString(snapshot?.threadId);
+    const normalizedItemId = normalizeOptionalString(itemId);
+    if (!normalizedThreadId || !normalizedItemId) {
+      return null;
+    }
+    const records = Array.isArray(snapshot.records)
+      ? snapshot.records.slice().sort(compareHistoryRecord)
+      : [];
+    const currentIndex = records.findIndex((record) =>
+      normalizeOptionalString(record?.itemObject?.id) === normalizedItemId
+    );
+    if (currentIndex < 0) {
+      return null;
+    }
+    const currentRecord = records[currentIndex];
+    const previousRecord = currentIndex > 0 ? records[currentIndex - 1] : null;
+    return {
+      currentCursor: historyCursorForRecord(normalizedThreadId, currentRecord),
+      previousCursor: previousRecord
+        ? historyCursorForRecord(normalizedThreadId, previousRecord)
+        : null,
+      previousItemId: normalizeOptionalString(previousRecord?.itemObject?.id) || null,
+    };
   }
 
   function ensureHistoryTurn(entry, turnId, turnMeta) {
@@ -1529,10 +1636,13 @@ function createRuntimeManager({
   }
 
   function sendNotification(method, params) {
+    const decoratedParams = decorateNotificationWithHistoryMetadata(method, params, (threadId) =>
+      readManagedHistorySnapshot(threadId)
+    );
     sendApplicationMessage(JSON.stringify({
       jsonrpc: "2.0",
       method,
-      params,
+      params: decoratedParams,
     }));
   }
 
@@ -1757,17 +1867,33 @@ function normalizeHistoryRequest(history) {
     return null;
   }
   const limit = normalizePositiveInteger(history.limit) || DEFAULT_HISTORY_WINDOW_LIMIT;
-  const anchor = history.anchor && typeof history.anchor === "object"
-    ? normalizeHistoryAnchor(history.anchor)
-    : null;
-  if ((mode === "before" || mode === "after") && !anchor) {
-    throw createRuntimeError(ERROR_INVALID_PARAMS, "history.anchor is required for before/after windows");
+  const cursor = normalizeHistoryCursor(
+    history.cursor,
+    history.anchor && typeof history.anchor === "object" ? history.anchor : null
+  );
+  if ((mode === "before" || mode === "after") && !cursor) {
+    throw createRuntimeError(ERROR_INVALID_PARAMS, "history.cursor is required for before/after windows");
   }
   return {
     mode,
     limit,
-    anchor,
+    cursor,
   };
+}
+
+function normalizeHistoryCursor(rawCursor, legacyAnchor = null) {
+  const normalizedCursor = normalizeOptionalString(rawCursor);
+  if (normalizedCursor) {
+    const decoded = decodeHistoryCursor(normalizedCursor);
+    if (!decoded) {
+      throw createRuntimeError(ERROR_INVALID_PARAMS, "history.cursor is invalid");
+    }
+    return decoded;
+  }
+  if (legacyAnchor && typeof legacyAnchor === "object") {
+    return normalizeHistoryAnchor(legacyAnchor);
+  }
+  return null;
 }
 
 function normalizeHistoryAnchor(anchor) {
@@ -1889,27 +2015,84 @@ function historyRecordAnchor(record) {
   };
 }
 
-function historyAnchorMatchesRecord(record, anchor) {
-  if (!record || !anchor) {
+function historyCursorForRecord(threadId, record) {
+  const normalizedThreadId = normalizeOptionalString(threadId);
+  if (!normalizedThreadId || !record) {
+    return null;
+  }
+  const payload = {
+    v: HISTORY_CURSOR_VERSION,
+    threadId: normalizedThreadId,
+    itemId: normalizeOptionalString(record?.itemObject?.id) || null,
+    turnId: normalizeOptionalString(record?.turnId) || null,
+    createdAt: normalizeTimestampString(record?.createdAt || record?.itemObject?.createdAt) || null,
+    ordinal: Number.isFinite(record?.ordinal) ? Number(record.ordinal) : null,
+  };
+  return encodeHistoryCursor(payload);
+}
+
+function encodeHistoryCursor(payload) {
+  try {
+    return Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
+  } catch {
+    return null;
+  }
+}
+
+function decodeHistoryCursor(cursor) {
+  try {
+    const decoded = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
+    if (!decoded || typeof decoded !== "object") {
+      return null;
+    }
+    const createdAt = normalizeTimestampString(decoded.createdAt || decoded.created_at);
+    const itemId = normalizeOptionalString(decoded.itemId || decoded.item_id);
+    const turnId = normalizeOptionalString(decoded.turnId || decoded.turn_id);
+    const threadId = normalizeOptionalString(decoded.threadId || decoded.thread_id);
+    const ordinal = Number.isFinite(decoded.ordinal) ? Number(decoded.ordinal) : null;
+    if (!createdAt || !threadId) {
+      return null;
+    }
+    return {
+      createdAt,
+      threadId,
+      ...(itemId ? { itemId } : {}),
+      ...(turnId ? { turnId } : {}),
+      ...(ordinal != null ? { ordinal } : {}),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function historyCursorMatchesRecord(record, cursor, threadId) {
+  if (!record || !cursor) {
+    return false;
+  }
+  const normalizedThreadId = normalizeOptionalString(threadId);
+  if (cursor.threadId && normalizedThreadId && cursor.threadId !== normalizedThreadId) {
+    return false;
+  }
+  if (Number.isFinite(cursor.ordinal) && Number(cursor.ordinal) !== Number(record?.ordinal)) {
     return false;
   }
   const recordCreatedAt = normalizeTimestampString(record.createdAt || record.itemObject?.createdAt);
-  if (recordCreatedAt !== anchor.createdAt) {
+  if (recordCreatedAt !== cursor.createdAt) {
     return false;
   }
   const recordItemId = normalizeOptionalString(record.itemObject?.id);
-  if (anchor.itemId && recordItemId) {
-    return anchor.itemId === recordItemId;
+  if (cursor.itemId && recordItemId) {
+    return cursor.itemId === recordItemId;
   }
   const recordTurnId = normalizeOptionalString(record.turnId);
-  return Boolean(anchor.turnId && recordTurnId && anchor.turnId === recordTurnId);
+  return Boolean(cursor.turnId && recordTurnId && cursor.turnId === recordTurnId);
 }
 
-function findHistoryRecordIndexByAnchor(records, anchor) {
-  if (!anchor) {
+function findHistoryRecordIndexByCursor(records, cursor, threadId) {
+  if (!cursor) {
     return -1;
   }
-  return records.findIndex((record) => historyAnchorMatchesRecord(record, anchor));
+  return records.findIndex((record) => historyCursorMatchesRecord(record, cursor, threadId));
 }
 
 function rebuildThreadFromHistoryRecords(threadBase, records) {

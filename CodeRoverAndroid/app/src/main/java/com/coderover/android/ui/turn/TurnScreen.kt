@@ -121,7 +121,7 @@ fun TurnScreen(
         renderItems = renderItems,
         hasEarlierMessages = turnViewModel.visibleTailCount < messages.size,
         onLoadEarlierMessages = { turnViewModel.loadEarlierMessages(messages.size) },
-        hasOlderHistory = !(historyState?.gaps.isNullOrEmpty()) || (historyState?.hasOlderOnServer == true),
+        hasOlderHistory = historyState?.hasOlderOnServer == true,
         isLoadingOlderHistory = historyState?.isLoadingOlder == true,
         onLoadOlderHistory = {
             coroutineScope.launch {

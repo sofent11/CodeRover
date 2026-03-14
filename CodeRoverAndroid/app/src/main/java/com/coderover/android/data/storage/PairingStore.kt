@@ -8,6 +8,7 @@ import com.coderover.android.data.model.AppFontStyle
 import com.coderover.android.data.model.ChatMessage
 import com.coderover.android.data.model.PairingRecord
 import com.coderover.android.data.model.PhoneIdentityState
+import com.coderover.android.data.model.ThreadHistoryState
 import com.coderover.android.data.model.ThreadSummary
 import com.coderover.android.data.model.TrustedMacRegistry
 import kotlinx.serialization.builtins.MapSerializer
@@ -166,6 +167,33 @@ class PairingStore(context: Context) {
             .apply()
     }
 
+    fun loadCachedHistoryStateByThread(): Map<String, ThreadHistoryState> {
+        val encoded = prefs.getString(KEY_CACHED_HISTORY_STATE_BY_THREAD, null) ?: return emptyMap()
+        return runCatching {
+            json.decodeFromString(
+                MapSerializer(String.serializer(), ThreadHistoryState.serializer()),
+                encoded,
+            )
+        }.getOrDefault(emptyMap())
+    }
+
+    fun saveCachedHistoryStateByThread(historyStateByThread: Map<String, ThreadHistoryState>) {
+        prefs.edit()
+            .putString(
+                KEY_CACHED_HISTORY_STATE_BY_THREAD,
+                json.encodeToString(
+                    MapSerializer(String.serializer(), ThreadHistoryState.serializer()),
+                    historyStateByThread.mapValues { (_, state) ->
+                        state.copy(
+                            isLoadingOlder = false,
+                            isTailRefreshing = false,
+                        )
+                    },
+                ),
+            )
+            .apply()
+    }
+
     private companion object {
         const val KEY_ONBOARDING_SEEN = "onboarding_seen"
         const val KEY_FONT_STYLE = "font_style"
@@ -180,6 +208,7 @@ class PairingStore(context: Context) {
         const val KEY_CACHED_THREADS = "cached_threads"
         const val KEY_CACHED_SELECTED_THREAD_ID = "cached_selected_thread_id"
         const val KEY_CACHED_MESSAGES_BY_THREAD = "cached_messages_by_thread"
+        const val KEY_CACHED_HISTORY_STATE_BY_THREAD = "cached_history_state_by_thread"
     }
 
     private fun providerKey(baseKey: String, providerId: String?): String {

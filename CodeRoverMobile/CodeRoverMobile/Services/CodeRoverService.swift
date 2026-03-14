@@ -241,6 +241,8 @@ final class CodeRoverService {
     // Monotonic per-thread revision so views can react to message mutations without hashing full transcripts.
     var messageRevisionByThread: [String: Int] = [:]
     var historyStateByThread: [String: ThreadHistoryState] = [:]
+    // Tracks locally started turns whose first realtime item may legitimately bridge over a server-seeded user cursor.
+    var pendingRealtimeSeededTurnIDByThread: [String: String] = [:]
     var activeThreadListNextCursor: JSONValue = .null
     var activeThreadListHasMore = false
     var syncRealtimeEnabled = true
@@ -420,7 +422,8 @@ final class CodeRoverService {
         self.userNotificationCenter = userNotificationCenter
         self.phoneIdentityState = coderoverPhoneIdentityStateFromSecureStore()
         self.trustedMacRegistry = coderoverTrustedMacRegistryFromSecureStore()
-        let loadedMessages = messagePersistence.load().mapValues { messages in
+        let loadedCache = messagePersistence.load()
+        let loadedMessages = loadedCache.messagesByThread.mapValues { messages in
             messages.map { message in
                 var value = message
                 // Streaming cannot survive app relaunch; clear stale flags loaded from disk.
@@ -430,6 +433,7 @@ final class CodeRoverService {
         }
         MessageOrderCounter.seed(from: loadedMessages)
         self.messagesByThread = loadedMessages
+        self.historyStateByThread = loadedCache.historyStateByThread
 
         let loadedChangeSets = aiChangeSetPersistence.load()
         self.aiChangeSetsByID = loadedChangeSets.reduce(into: [:]) { partialResult, changeSet in

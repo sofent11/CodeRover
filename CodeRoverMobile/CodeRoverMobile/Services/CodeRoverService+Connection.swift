@@ -96,7 +96,10 @@ extension CodeRoverService {
         finalizeAllStreamingState()
         messagePersistenceDebounceTask?.cancel()
         messagePersistenceDebounceTask = nil
-        messagePersistence.save(messagesByThread)
+        messagePersistence.save(
+            messagesByThread: messagesByThread,
+            historyStateByThread: historyStateByThread
+        )
         assistantCompletionFingerprintByThread.removeAll()
         recentActivityLineByThread.removeAll()
         runningThreadIDs.removeAll()

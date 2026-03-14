@@ -1479,6 +1479,7 @@ extension CodeRoverService {
             activeTurnId = turnID
             activeTurnIdByThread[threadId] = turnID
             threadIdByTurnID[turnID] = threadId
+            pendingRealtimeSeededTurnIDByThread[threadId] = turnID
             protectedRunningFallbackThreadIDs.remove(threadId)
             beginAssistantMessage(threadId: threadId, turnId: turnID)
         }
