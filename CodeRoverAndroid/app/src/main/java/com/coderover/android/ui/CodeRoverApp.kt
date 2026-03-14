@@ -19,18 +19,28 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Menu
 import androidx.compose.material.icons.outlined.Tune
-import androidx.compose.material3.DrawerValue
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.ui.input.pointer.pointerInput
+import kotlinx.coroutines.launch
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.offset
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalDrawerSheet
-import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.rememberDrawerState
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
+import kotlin.math.max
+import kotlin.math.min
+import androidx.compose.ui.unit.IntOffset
+import kotlin.math.roundToInt
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -111,7 +121,8 @@ private fun CodeRoverAppShell(
     contentViewModel: ContentViewModel,
 ) {
     val haptic = HapticFeedback.rememberHapticFeedback()
-    val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
+    var isSidebarOpen by rememberSaveable { mutableStateOf(false) }
+    var sidebarDragOffset by remember { mutableStateOf(0f) }
     val coroutineScope = rememberCoroutineScope()
     val lifecycleOwner = LocalLifecycleOwner.current
     val shellContent = contentViewModel.shellContent(state)
@@ -119,7 +130,7 @@ private fun CodeRoverAppShell(
     val isSelectedThreadRunning = selectedThread?.id?.let { threadId ->
         state.runningThreadIds.contains(threadId)
     } == true
-    val shellHeader = remember(
+    val currentShellHeader = remember(
         shellContent,
         state.selectedThreadId,
         state.selectedThread?.displayTitle,
@@ -162,60 +173,128 @@ private fun CodeRoverAppShell(
         contentViewModel.maybeDismissPairingEntry(state)
     }
 
-    LaunchedEffect(drawerState.isOpen, state.isConnected) {
-        if (drawerState.isOpen && contentViewModel.shouldRequestSidebarFreshSync(state.isConnected)) {
+    LaunchedEffect(isSidebarOpen, state.isConnected) {
+        if (isSidebarOpen && contentViewModel.shouldRequestSidebarFreshSync(state.isConnected)) {
             viewModel.refreshThreadsIfConnected()
         }
     }
 
-    ModalNavigationDrawer(
-        drawerState = drawerState,
-        drawerContent = {
-            ModalDrawerSheet(
-                modifier = if (isSidebarSearchActive) {
-                    Modifier.fillMaxWidth()
-                } else {
-                    Modifier.width(330.dp)
-                },
-                drawerContainerColor = MaterialTheme.colorScheme.surface,
-            ) {
-                SidebarScreen(
-                    state = state,
-                    onCreateThread = { projectPath, providerId ->
-                        contentViewModel.selectThread()
-                        viewModel.createThread(projectPath, providerId)
-                        coroutineScope.launch { drawerState.close() }
+    val density = LocalDensity.current
+    val screenWidth = LocalConfiguration.current.screenWidthDp.dp
+    val effectiveSidebarWidthDp = if (isSidebarSearchActive) screenWidth else 280.dp
+    val effectiveSidebarWidthPx = with(density) { effectiveSidebarWidthDp.toPx() }
+
+    val animatedOffset = remember { Animatable(0f) }
+
+    LaunchedEffect(isSidebarOpen, effectiveSidebarWidthPx) {
+        val target = if (isSidebarOpen) effectiveSidebarWidthPx else 0f
+        animatedOffset.animateTo(
+            targetValue = target,
+            animationSpec = spring(stiffness = Spring.StiffnessMediumLow, dampingRatio = 0.85f)
+        )
+    }
+
+    val edgeDragWidthPx = with(density) { 30.dp.toPx() }
+    var dragStartedValidly by remember { mutableStateOf(false) }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .pointerInput(isSidebarOpen, effectiveSidebarWidthPx) {
+                detectHorizontalDragGestures(
+                    onDragStart = { offset ->
+                        dragStartedValidly = isSidebarOpen || offset.x < edgeDragWidthPx
                     },
-                    onSelectProvider = { providerId ->
-                        viewModel.setSelectedProviderId(providerId)
+                    onDragEnd = {
+                        if (!dragStartedValidly) return@detectHorizontalDragGestures
+                        coroutineScope.launch {
+                            val threshold = effectiveSidebarWidthPx * 0.4f
+                            val currentOffset = animatedOffset.value
+                            if (!isSidebarOpen) {
+                                if (currentOffset > threshold) {
+                                    isSidebarOpen = true
+                                } else {
+                                    animatedOffset.animateTo(0f, spring(stiffness = Spring.StiffnessMediumLow, dampingRatio = 0.85f))
+                                }
+                            } else {
+                                if (effectiveSidebarWidthPx - currentOffset > threshold) {
+                                    isSidebarOpen = false
+                                } else {
+                                    animatedOffset.animateTo(effectiveSidebarWidthPx, spring(stiffness = Spring.StiffnessMediumLow, dampingRatio = 0.85f))
+                                }
+                            }
+                        }
                     },
-                    onSelectThread = { threadId ->
-                        contentViewModel.selectThread()
-                        viewModel.selectThread(threadId)
-                        coroutineScope.launch { drawerState.close() }
+                    onDragCancel = {
+                        if (!dragStartedValidly) return@detectHorizontalDragGestures
+                        coroutineScope.launch {
+                            animatedOffset.animateTo(
+                                targetValue = if (isSidebarOpen) effectiveSidebarWidthPx else 0f,
+                                animationSpec = spring(stiffness = Spring.StiffnessMediumLow, dampingRatio = 0.85f)
+                            )
+                        }
                     },
-                    onOpenSettings = {
-                        contentViewModel.openSettings()
-                        coroutineScope.launch { drawerState.close() }
-                    },
-                    onDeleteThread = viewModel::deleteThread,
-                    onArchiveThread = viewModel::archiveThread,
-                    onUnarchiveThread = viewModel::unarchiveThread,
-                    onRenameThread = viewModel::renameThread,
-                    onSearchActiveChanged = { isSidebarSearchActive = it },
-                    onToggleProjectGroupCollapsed = viewModel::toggleProjectGroupCollapsed,
+                    onHorizontalDrag = { change, dragAmount ->
+                        if (!dragStartedValidly) return@detectHorizontalDragGestures
+                        change.consume()
+                        coroutineScope.launch {
+                            val newOffset = max(0f, min(effectiveSidebarWidthPx, animatedOffset.value + dragAmount))
+                            animatedOffset.snapTo(newOffset)
+                        }
+                    }
                 )
             }
-        },
     ) {
-        Scaffold(
-            contentWindowInsets = WindowInsets.safeDrawing,
-            topBar = {
+        // Sidebar Content
+        Box(
+            modifier = Modifier
+                .width(effectiveSidebarWidthDp)
+                .fillMaxSize()
+                .background(MaterialTheme.colorScheme.surface)
+        ) {
+            SidebarScreen(
+                state = state,
+                onCreateThread = { projectPath, providerId ->
+                    contentViewModel.selectThread()
+                    viewModel.createThread(projectPath, providerId)
+                    isSidebarOpen = false
+                },
+                onSelectProvider = { providerId ->
+                    viewModel.setSelectedProviderId(providerId)
+                },
+                onSelectThread = { threadId ->
+                    contentViewModel.selectThread()
+                    viewModel.selectThread(threadId)
+                    isSidebarOpen = false
+                },
+                onOpenSettings = {
+                    contentViewModel.openSettings()
+                    isSidebarOpen = false
+                },
+                onDeleteThread = viewModel::deleteThread,
+                onArchiveThread = viewModel::archiveThread,
+                onUnarchiveThread = viewModel::unarchiveThread,
+                onRenameThread = viewModel::renameThread,
+                onSearchActiveChanged = { isSidebarSearchActive = it },
+                onToggleProjectGroupCollapsed = viewModel::toggleProjectGroupCollapsed,
+            )
+        }
+
+        // Main App Content Layer
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .offset { IntOffset(animatedOffset.value.roundToInt(), 0) }
+        ) {
+            Scaffold(
+                modifier = Modifier.fillMaxSize(),
+                contentWindowInsets = WindowInsets.safeDrawing,
+                topBar = {
                 TopAppBar(
                     title = {
                         Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                             Text(
-                                text = shellHeader.title,
+                                text = currentShellHeader.title,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                                 style = MaterialTheme.typography.titleMedium,
@@ -245,7 +324,7 @@ private fun CodeRoverAppShell(
                                     )
                                 } else {
                                     Text(
-                                        text = shellHeader.subtitle,
+                                        text = currentShellHeader.subtitle,
                                         style = MaterialTheme.typography.labelMedium,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                         maxLines = 1,
@@ -263,7 +342,7 @@ private fun CodeRoverAppShell(
                                 .clip(androidx.compose.foundation.shape.CircleShape),
                         ) {
                             IconButton(
-                                onClick = { coroutineScope.launch { drawerState.open() } },
+                                onClick = { isSidebarOpen = true },
                                 modifier = Modifier.padding(2.dp),
                             ) {
                                 Icon(Icons.Outlined.Menu, contentDescription = "Open drawer")
@@ -405,8 +484,27 @@ private fun CodeRoverAppShell(
                     )
                 }
             }
+
+            // Dim Layer for Main Content when Sidebar is open
+            if (isSidebarOpen || animatedOffset.value > 0f) {
+                val progress = min(1f, animatedOffset.value / effectiveSidebarWidthPx)
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(
+                            color = MaterialTheme.colorScheme.scrim.copy(alpha = 0.08f * progress)
+                        )
+                        .clickable(
+                            interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                            indication = null
+                        ) {
+                            isSidebarOpen = false
+                        }
+                )
+            }
         }
     }
+}
 }
 
 private data class ShellHeader(
