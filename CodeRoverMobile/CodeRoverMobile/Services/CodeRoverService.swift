@@ -9,6 +9,7 @@ import Network
 import Observation
 import UIKit
 import UserNotifications
+import Darwin
 
 struct CodeRoverApprovalRequest: Identifiable, Sendable {
     let id: String
@@ -511,16 +512,28 @@ final class CodeRoverService {
         Self.normalizeTransportCandidates(pairedTransportCandidates)
     }
 
-    var orderedTransportCandidateURLs: [String] {
-        let candidates = normalizedTransportCandidates
-            .filter { $0.isUsableReconnectCandidate }
-            .sorted { lhs, rhs in
-                lhs.reconnectPriority < rhs.reconnectPriority
-            }
-        guard !candidates.isEmpty else {
-            return []
-        }
+    var localIPv4AddressesProvider: () -> [String] = {
+        CodeRoverService.currentLocalIPv4Addresses()
+    }
 
+    var orderedTransportCandidateURLs: [String] {
+        orderedTransportCandidates.map(\.url)
+    }
+
+    var orderedTransportCandidates: [CodeRoverTransportCandidate] {
+        orderedTransportCandidates(
+            from: normalizedTransportCandidates,
+            preferredTransportURL: preferredTransportURL,
+            lastSuccessfulTransportURL: lastSuccessfulTransportURL
+        )
+    }
+
+    func orderedTransportCandidates(
+        from candidates: [CodeRoverTransportCandidate],
+        preferredTransportURL: String? = nil,
+        lastSuccessfulTransportURL: String? = nil
+    ) -> [CodeRoverTransportCandidate] {
+        let localIPv4Addresses = localIPv4AddressesProvider()
         let preferredTransportURL = preferredTransportURL?
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .nilIfEmpty
@@ -528,22 +541,32 @@ final class CodeRoverService {
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .nilIfEmpty
 
-        var prioritizedURLs: [String] = []
-        if let preferredTransportURL {
-            prioritizedURLs.append(preferredTransportURL)
-        }
-        if let lastSuccessfulTransportURL, lastSuccessfulTransportURL != preferredTransportURL {
-            prioritizedURLs.append(lastSuccessfulTransportURL)
-        }
-
-        let preferred = candidates.filter { prioritizedURLs.contains($0.url) }
-            .sorted { lhs, rhs in
-                let lhsIndex = prioritizedURLs.firstIndex(of: lhs.url) ?? prioritizedURLs.count
-                let rhsIndex = prioritizedURLs.firstIndex(of: rhs.url) ?? prioritizedURLs.count
-                return lhsIndex < rhsIndex
+        let candidates = candidates
+            .enumerated()
+            .compactMap { index, candidate -> (index: Int, candidate: CodeRoverTransportCandidate)? in
+                candidate.isUsableReconnectCandidate ? (index, candidate) : nil
             }
-        let remainder = candidates.filter { !prioritizedURLs.contains($0.url) }
-        return (preferred + remainder).map(\.url)
+            .sorted { lhs, rhs in
+                let lhsScore = lhs.candidate.reconnectScore(
+                    localIPv4Addresses: localIPv4Addresses,
+                    preferredTransportURL: preferredTransportURL,
+                    lastSuccessfulTransportURL: lastSuccessfulTransportURL
+                )
+                let rhsScore = rhs.candidate.reconnectScore(
+                    localIPv4Addresses: localIPv4Addresses,
+                    preferredTransportURL: preferredTransportURL,
+                    lastSuccessfulTransportURL: lastSuccessfulTransportURL
+                )
+                if lhsScore != rhsScore {
+                    return lhsScore < rhsScore
+                }
+                return lhs.index < rhs.index
+            }
+            .map(\.candidate)
+        guard !candidates.isEmpty else {
+            return []
+        }
+        return candidates
     }
 
     var normalizedPairedMacDeviceId: String? {
@@ -587,19 +610,6 @@ private extension String {
 }
 
 private extension CodeRoverTransportCandidate {
-    var reconnectPriority: Int {
-        switch kind {
-        case "local_ipv4":
-            return 0
-        case "tailnet_ipv4", "tailnet":
-            return 1
-        case "local_hostname":
-            return 2
-        default:
-            return 3
-        }
-    }
-
     var isUsableReconnectCandidate: Bool {
         guard let url = URL(string: url),
               let host = url.host?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -611,6 +621,155 @@ private extension CodeRoverTransportCandidate {
             return !host.hasPrefix("169.254.")
         }
 
+        return true
+    }
+
+    func reconnectScore(
+        localIPv4Addresses: [String],
+        preferredTransportURL: String?,
+        lastSuccessfulTransportURL: String?
+    ) -> (Int, Int, Int) {
+        let host = URL(string: url)?.host?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let networkPriority = reconnectNetworkPriority(host: host, localIPv4Addresses: localIPv4Addresses)
+        let rememberedPriority: Int
+        if url == preferredTransportURL {
+            rememberedPriority = 0
+        } else if url == lastSuccessfulTransportURL {
+            rememberedPriority = 1
+        } else {
+            rememberedPriority = 2
+        }
+        let kindPriority = reconnectKindPriority
+        return (networkPriority, rememberedPriority, kindPriority)
+    }
+
+    private func reconnectNetworkPriority(host: String, localIPv4Addresses: [String]) -> Int {
+        if let ipv4 = host.normalizedIPv4Address {
+            if localIPv4Addresses.contains(where: { $0.isSameIPv4Subnet(as: ipv4) }) {
+                return 0
+            }
+            if ipv4.isPublicIPv4Address {
+                return 1
+            }
+            return 4
+        }
+
+        if kind == "tailnet_ipv4" || kind == "tailnet" || host.hasSuffix(".ts.net") {
+            return 2
+        }
+
+        if kind == "local_hostname" || host.hasSuffix(".local") {
+            return 3
+        }
+
+        return 1
+    }
+
+    private var reconnectKindPriority: Int {
+        switch kind {
+        case "local_ipv4":
+            return 0
+        case "tailnet_ipv4", "tailnet":
+            return 1
+        case "local_hostname":
+            return 2
+        default:
+            return 3
+        }
+    }
+}
+
+private extension CodeRoverService {
+    static func currentLocalIPv4Addresses() -> [String] {
+        var addresses: [String] = []
+        var interfacePointer: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&interfacePointer) == 0, let first = interfacePointer else {
+            return []
+        }
+        defer { freeifaddrs(first) }
+
+        for pointer in sequence(first: first, next: { $0.pointee.ifa_next }) {
+            let interface = pointer.pointee
+            guard let addressPointer = interface.ifa_addr,
+                  addressPointer.pointee.sa_family == UInt8(AF_INET) else {
+                continue
+            }
+
+            let flags = Int32(interface.ifa_flags)
+            if (flags & IFF_UP) == 0 || (flags & IFF_LOOPBACK) != 0 {
+                continue
+            }
+
+            var hostBuffer = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            let result = getnameinfo(
+                addressPointer,
+                socklen_t(addressPointer.pointee.sa_len),
+                &hostBuffer,
+                socklen_t(hostBuffer.count),
+                nil,
+                0,
+                NI_NUMERICHOST
+            )
+            guard result == 0 else {
+                continue
+            }
+
+            let address = String(cString: hostBuffer)
+            guard let normalized = address.normalizedIPv4Address,
+                  !normalized.hasPrefix("127."),
+                  !normalized.hasPrefix("169.254.") else {
+                continue
+            }
+            addresses.append(normalized)
+        }
+
+        return Array(Set(addresses)).sorted()
+    }
+}
+
+private extension String {
+    var normalizedIPv4Address: String? {
+        let components = split(separator: ".", omittingEmptySubsequences: false)
+        guard components.count == 4 else { return nil }
+        let octets = components.compactMap { Int($0) }
+        guard octets.count == 4, octets.allSatisfy({ 0...255 ~= $0 }) else {
+            return nil
+        }
+        return octets.map(String.init).joined(separator: ".")
+    }
+
+    func isSameIPv4Subnet(as other: String) -> Bool {
+        guard let lhs = normalizedIPv4Address?.split(separator: "."),
+              let rhs = other.normalizedIPv4Address?.split(separator: "."),
+              lhs.count == 4,
+              rhs.count == 4 else {
+            return false
+        }
+        return lhs[0] == rhs[0] && lhs[1] == rhs[1] && lhs[2] == rhs[2]
+    }
+
+    var isPublicIPv4Address: Bool {
+        guard let octets = normalizedIPv4Address?.split(separator: ".").compactMap({ Int($0) }),
+              octets.count == 4 else {
+            return false
+        }
+        let first = octets[0]
+        let second = octets[1]
+        if first == 10 || first == 127 || first == 0 {
+            return false
+        }
+        if first == 169 && second == 254 {
+            return false
+        }
+        if first == 172 && (16...31).contains(second) {
+            return false
+        }
+        if first == 192 && second == 168 {
+            return false
+        }
+        if first >= 224 {
+            return false
+        }
         return true
     }
 }

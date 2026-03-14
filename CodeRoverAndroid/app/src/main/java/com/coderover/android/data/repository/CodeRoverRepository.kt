@@ -54,6 +54,7 @@ import com.coderover.android.data.model.timestamp
 import com.coderover.android.data.model.ChatMessage
 import com.coderover.android.data.network.SecureBridgeClient
 import com.coderover.android.data.network.SecureCrypto
+import com.coderover.android.data.network.TransportCandidatePrioritizer
 import com.coderover.android.data.storage.PairingStore
 import com.coderover.android.data.storage.UserPreferencesStore
 import java.util.UUID
@@ -253,26 +254,22 @@ class CodeRoverRepository(context: Context) {
             store.savePairings(updatedPairings)
             store.saveActivePairingMacDeviceId(record.macDeviceId)
             store.saveTrustedMacRegistry(updatedTrustedRegistry)
+            val bestTransportUrl = TransportCandidatePrioritizer.orderedTransportUrls(record).firstOrNull()
 
             updateState {
                 copy(
                     pairings = updatedPairings,
                     activePairingMacDeviceId = record.macDeviceId,
                     trustedMacRegistry = updatedTrustedRegistry,
-                    pendingTransportSelectionMacDeviceId = if (record.transportCandidates.size > 1) {
-                        record.macDeviceId
-                    } else {
-                        null
-                    },
+                    pendingTransportSelectionMacDeviceId = null,
                     secureConnectionState = resolveSecureConnectionState(record.macDeviceId, updatedTrustedRegistry),
                     secureMacFingerprint = SecureCrypto.fingerprint(record.macIdentityPublicKey),
                     importText = "",
                     lastErrorMessage = null,
                 )
             }
-            if (record.transportCandidates.size == 1) {
-                val selectedUrl = record.transportCandidates.first().url
-                setPreferredTransport(record.macDeviceId, selectedUrl)
+            if (bestTransportUrl != null) {
+                setPreferredTransport(record.macDeviceId, bestTransportUrl)
                 connectActivePairing()
             }
         }
@@ -3380,21 +3377,7 @@ class CodeRoverRepository(context: Context) {
     }
 
     private fun orderedTransportUrls(pairingRecord: PairingRecord): List<String> {
-        val priority = mapOf(
-            "local_ipv4" to 0,
-            "tailnet_ipv4" to 1,
-            "tailnet" to 1,
-            "local_hostname" to 2,
-        )
-        val unique = linkedSetOf<String>()
-        pairingRecord.preferredTransportUrl?.let(unique::add)
-        pairingRecord.lastSuccessfulTransportUrl?.let(unique::add)
-        pairingRecord.transportCandidates
-            .sortedBy { priority[it.kind] ?: 99 }
-            .map { it.url.trim() }
-            .filter(String::isNotEmpty)
-            .forEach(unique::add)
-        return unique.toList()
+        return TransportCandidatePrioritizer.orderedTransportUrls(pairingRecord)
     }
 
     private suspend fun startThread(preferredProjectPath: String?, providerId: String? = null): ThreadSummary? {

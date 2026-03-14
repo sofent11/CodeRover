@@ -573,32 +573,45 @@ final class CodeRoverServiceIncomingRunIndicatorTests: XCTestCase {
         XCTAssertEqual(storedCandidates, payload.transportCandidates)
     }
 
-    func testPreferredTransportURLOverridesReconnectOrdering() {
+    func testSameSubnetReconnectCandidateBeatsPublicAndOtherPrivateIPs() {
         let service = makeService()
+        service.localIPv4AddressesProvider = { ["192.168.1.23"] }
         service.pairedTransportCandidates = [
-            CodeRoverTransportCandidate(kind: "local_ipv4", url: "ws://192.168.0.10:8765/bridge/test", label: "Home"),
-            CodeRoverTransportCandidate(kind: "tailnet", url: "ws://coderover-host.tailnet.ts.net:8765/bridge/test", label: "Tailscale"),
-            CodeRoverTransportCandidate(kind: "local_hostname", url: "ws://coderover.local:8765/bridge/test", label: "Hostname"),
+            CodeRoverTransportCandidate(kind: "local_ipv4", url: "ws://10.0.0.8:8765/bridge/test", label: "Old WiFi"),
+            CodeRoverTransportCandidate(kind: "relay", url: "ws://8.8.8.8:8765/bridge/test", label: "Public"),
+            CodeRoverTransportCandidate(kind: "local_ipv4", url: "ws://192.168.1.40:8765/bridge/test", label: "Same Subnet"),
         ]
-        service.lastSuccessfulTransportURL = "ws://192.168.0.10:8765/bridge/test"
-
-        service.setPreferredTransportURL("ws://coderover-host.tailnet.ts.net:8765/bridge/test")
 
         XCTAssertEqual(
             service.orderedTransportCandidateURLs,
             [
-                "ws://coderover-host.tailnet.ts.net:8765/bridge/test",
-                "ws://192.168.0.10:8765/bridge/test",
-                "ws://coderover.local:8765/bridge/test",
+                "ws://192.168.1.40:8765/bridge/test",
+                "ws://8.8.8.8:8765/bridge/test",
+                "ws://10.0.0.8:8765/bridge/test",
             ]
         )
-        XCTAssertEqual(
-            SecureStore.readString(for: CodeRoverSecureKeys.pairingPreferredTransportURL),
-            "ws://coderover-host.tailnet.ts.net:8765/bridge/test"
-        )
+    }
+
+    func testPublicIPBeatsMismatchedPrivateIPEvenIfPrivateWasPreferred() {
+        let service = makeService()
+        service.localIPv4AddressesProvider = { ["172.20.10.5"] }
+        service.pairedTransportCandidates = [
+            CodeRoverTransportCandidate(kind: "local_ipv4", url: "ws://192.168.0.10:8765/bridge/test", label: "Private"),
+            CodeRoverTransportCandidate(kind: "relay", url: "ws://1.2.3.4:8765/bridge/test", label: "Public"),
+        ]
         defer {
             SecureStore.deleteValue(for: CodeRoverSecureKeys.pairingPreferredTransportURL)
         }
+
+        service.setPreferredTransportURL("ws://192.168.0.10:8765/bridge/test")
+
+        XCTAssertEqual(
+            service.orderedTransportCandidateURLs,
+            [
+                "ws://1.2.3.4:8765/bridge/test",
+                "ws://192.168.0.10:8765/bridge/test",
+            ]
+        )
     }
 
     func testInitMigratesLegacyPairingIntoMultiPairingStore() {

@@ -144,18 +144,24 @@ struct ContentView: View {
             let usableCandidates = pairingPayload.transportCandidates.filter { candidate in
                 !candidate.url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             }
+            let preferredCandidate = coderover.orderedTransportCandidates(
+                from: usableCandidates,
+                preferredTransportURL: nil,
+                lastSuccessfulTransportURL: nil
+            ).first
 
-            if usableCandidates.count > 1 {
+            if usableCandidates.count > 1, preferredCandidate == nil {
                 pendingTransportSelection = PendingTransportSelection(pairingPayload: pairingPayload)
                 return
             }
 
             Task {
                 isShowingManualScanner = false
+                pendingTransportSelection = nil
                 await viewModel.connectToBridge(
                     pairingPayload: pairingPayload,
                     coderover: coderover,
-                    preferredTransportURL: usableCandidates.first?.url
+                    preferredTransportURL: preferredCandidate?.url ?? usableCandidates.first?.url
                 )
             }
         }
