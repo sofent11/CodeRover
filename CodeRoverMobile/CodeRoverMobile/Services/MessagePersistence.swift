@@ -7,10 +7,16 @@
 import CryptoKit
 import Foundation
 
+struct PersistedConversationCache: Codable {
+    var messagesByThread: [String: [ChatMessage]]
+    var historyStateByThread: [String: ThreadHistoryState]
+}
+
 struct MessagePersistence {
-    // v6 encrypts the on-device message cache while keeping backward-compatible legacy fallbacks.
-    private let fileName = "coderover-message-history-v6.bin"
+    // v7 encrypts the on-device message cache while keeping backward-compatible legacy fallbacks.
+    private let fileName = "coderover-message-history-v7.bin"
     private let legacyFileNames = [
+        "coderover-message-history-v6.bin",
         "coderover-message-history-v5.json",
         "coderover-message-history-v4.json",
         "coderover-message-history-v3.json",
@@ -18,8 +24,8 @@ struct MessagePersistence {
         "coderover-message-history.json",
     ]
 
-    // Loads the saved message map from disk. Returns an empty store on failure.
-    func load() -> [String: [ChatMessage]] {
+    // Loads the saved message/cache envelope from disk. Returns an empty store on failure.
+    func load() -> PersistedConversationCache {
         let decoder = JSONDecoder()
 
         for fileURL in storeURLs {
@@ -27,24 +33,45 @@ struct MessagePersistence {
                 continue
             }
 
-            if fileURL.lastPathComponent == fileName,
-               let decrypted = decryptPersistedPayload(data),
-               let value = try? decoder.decode([String: [ChatMessage]].self, from: decrypted) {
-                return sanitizedForPersistence(value)
+            if fileURL.pathExtension == "bin",
+               let decrypted = decryptPersistedPayload(data) {
+                if let envelope = try? decoder.decode(PersistedConversationCache.self, from: decrypted) {
+                    return sanitizedForPersistence(envelope)
+                }
+                if let legacyMessages = try? decoder.decode([String: [ChatMessage]].self, from: decrypted) {
+                    return PersistedConversationCache(
+                        messagesByThread: sanitizedForPersistence(legacyMessages),
+                        historyStateByThread: [:]
+                    )
+                }
             }
 
-            if let value = try? decoder.decode([String: [ChatMessage]].self, from: data) {
-                return sanitizedForPersistence(value)
+            if let envelope = try? decoder.decode(PersistedConversationCache.self, from: data) {
+                return sanitizedForPersistence(envelope)
+            }
+
+            if let legacyMessages = try? decoder.decode([String: [ChatMessage]].self, from: data) {
+                return PersistedConversationCache(
+                    messagesByThread: sanitizedForPersistence(legacyMessages),
+                    historyStateByThread: [:]
+                )
             }
         }
 
-        return [:]
+        return PersistedConversationCache(messagesByThread: [:], historyStateByThread: [:])
     }
 
     // Persists all thread timelines atomically to avoid corrupt partial writes.
-    func save(_ value: [String: [ChatMessage]]) {
+    func save(
+        messagesByThread: [String: [ChatMessage]],
+        historyStateByThread: [String: ThreadHistoryState]
+    ) {
         let encoder = JSONEncoder()
-        guard let plaintext = try? encoder.encode(sanitizedForPersistence(value)),
+        let envelope = PersistedConversationCache(
+            messagesByThread: sanitizedForPersistence(messagesByThread),
+            historyStateByThread: sanitizedHistoryStateForPersistence(historyStateByThread)
+        )
+        guard let plaintext = try? encoder.encode(envelope),
               let data = encryptPersistedPayload(plaintext) else {
             return
         }
@@ -105,6 +132,24 @@ struct MessagePersistence {
     private func sanitizedForPersistence(_ value: [String: [ChatMessage]]) -> [String: [ChatMessage]] {
         value.mapValues { messages in
             messages.filter { $0.kind != .userInputPrompt }
+        }
+    }
+
+    private func sanitizedForPersistence(_ cache: PersistedConversationCache) -> PersistedConversationCache {
+        PersistedConversationCache(
+            messagesByThread: sanitizedForPersistence(cache.messagesByThread),
+            historyStateByThread: sanitizedHistoryStateForPersistence(cache.historyStateByThread)
+        )
+    }
+
+    private func sanitizedHistoryStateForPersistence(
+        _ value: [String: ThreadHistoryState]
+    ) -> [String: ThreadHistoryState] {
+        value.mapValues { state in
+            var sanitized = state
+            sanitized.isLoadingOlder = false
+            sanitized.isTailRefreshing = false
+            return sanitized
         }
     }
 }

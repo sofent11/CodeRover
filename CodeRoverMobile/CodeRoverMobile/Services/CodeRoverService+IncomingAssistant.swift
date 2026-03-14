@@ -41,14 +41,23 @@ extension CodeRoverService {
         }
 
         markThreadAsRunning(context.threadId)
-        scheduleRealtimeHistoryCatchUp(
+        guard handleRealtimeHistoryEvent(
             threadId: context.threadId,
+            turnId: context.identity.turnId ?? activeTurnIdByThread[context.threadId],
             itemId: context.identity.itemId,
             previousItemId: extractPreviousItemID(
                 from: paramsObject,
                 eventObject: eventObject
+            ),
+            cursor: extractCursorString(
+                from: paramsObject,
+                eventObject: eventObject
+            ),
+            previousCursor: extractPreviousCursorString(
+                from: paramsObject,
+                eventObject: eventObject
             )
-        )
+        ) else { return }
         appendAssistantDelta(
             threadId: context.threadId,
             turnId: turnId,
@@ -76,14 +85,23 @@ extension CodeRoverService {
                 paramsObject: paramsObject,
                 eventObject: eventObject
             ) else { return }
-            scheduleRealtimeHistoryCatchUp(
+            guard handleRealtimeHistoryEvent(
                 threadId: context.threadId,
+                turnId: context.identity.turnId ?? activeTurnIdByThread[context.threadId],
                 itemId: context.identity.itemId,
                 previousItemId: extractPreviousItemID(
                     from: paramsObject,
                     eventObject: eventObject
+                ),
+                cursor: extractCursorString(
+                    from: paramsObject,
+                    eventObject: eventObject
+                ),
+                previousCursor: extractPreviousCursorString(
+                    from: paramsObject,
+                    eventObject: eventObject
                 )
-            )
+            ) else { return }
             completeAssistantMessage(
                 threadId: context.threadId,
                 turnId: context.identity.turnId,
@@ -118,15 +136,26 @@ extension CodeRoverService {
             eventObject: eventObject,
             itemObject: itemObject
         ) else { return }
-        scheduleRealtimeHistoryCatchUp(
+        guard handleRealtimeHistoryEvent(
             threadId: context.threadId,
+            turnId: context.identity.turnId ?? activeTurnIdByThread[context.threadId],
             itemId: context.identity.itemId,
             previousItemId: extractPreviousItemID(
                 from: paramsObject,
                 eventObject: eventObject,
                 itemObject: itemObject
+            ),
+            cursor: extractCursorString(
+                from: paramsObject,
+                eventObject: eventObject,
+                itemObject: itemObject
+            ),
+            previousCursor: extractPreviousCursorString(
+                from: paramsObject,
+                eventObject: eventObject,
+                itemObject: itemObject
             )
-        )
+        ) else { return }
         completeAssistantMessage(
             threadId: context.threadId,
             turnId: context.identity.turnId,
@@ -308,6 +337,7 @@ private extension CodeRoverService {
             paramsObject["event"]?.objectValue?["item"]?.objectValue?["id"]?.stringValue,
             paramsObject["event"]?.objectValue?["messageId"]?.stringValue,
             paramsObject["event"]?.objectValue?["message_id"]?.stringValue,
+            paramsObject["id"]?.stringValue,
             eventObject?["id"]?.stringValue,
         ]
 

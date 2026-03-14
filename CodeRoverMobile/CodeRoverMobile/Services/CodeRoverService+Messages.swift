@@ -208,7 +208,9 @@ extension CodeRoverService {
     // Loads the latest thread/read history window once per thread and keeps older ranges lazy.
     func loadThreadHistoryIfNeeded(threadId: String, forceRefresh: Bool = false) async throws {
         let hasLocalMessages = !(messagesByThread[threadId] ?? []).isEmpty
-        if !forceRefresh, hydratedThreadIDs.contains(threadId), hasLocalMessages {
+        let currentState = historyStateByThread[threadId]
+        let hasNewestCursor = normalizedHistoryCursor(currentState?.newestCursor) != nil
+        if !forceRefresh, hydratedThreadIDs.contains(threadId), hasLocalMessages, hasNewestCursor {
             return
         }
 
@@ -223,18 +225,20 @@ extension CodeRoverService {
             historyStateByThread[threadId, default: ThreadHistoryState()].isTailRefreshing = false
         }
 
-        var response: RPCMessage
         do {
-            response = try await sendRequest(
-                method: "thread/read",
-                params: .object([
-                    "threadId": .string(threadId),
-                    "history": .object([
-                        "mode": .string("tail"),
-                        "limit": .integer(50),
-                    ]),
-                ])
-            )
+            if let newestCursor = normalizedHistoryCursor(currentState?.newestCursor),
+               hasLocalMessages {
+                try await catchUpThreadHistoryToLatest(
+                    threadId: threadId,
+                    initialCursor: newestCursor,
+                    allowTailFallback: true
+                )
+            } else {
+                try await loadTailThreadHistory(
+                    threadId: threadId,
+                    replaceLocalHistory: hasLocalMessages && !hasNewestCursor
+                )
+            }
         } catch let error as CodeRoverServiceError {
             if case .rpcError(let rpcError) = error, rpcError.code == -32600 {
                 // Thread not materialized yet — mark as hydrated and return silently.
@@ -244,38 +248,6 @@ extension CodeRoverService {
             throw error
         }
 
-        guard let resultObject = response.result?.objectValue,
-              let threadObject = resultObject["thread"]?.objectValue else {
-            throw CodeRoverServiceError.invalidResponse("thread/read response missing thread payload")
-        }
-
-        applyTerminalStatesFromThreadRead(threadId: threadId, threadObject: threadObject)
-
-        extractContextWindowUsageIfAvailable(threadId: threadId, threadObject: threadObject)
-
-        let historyMessages = decodeMessagesFromThreadRead(threadId: threadId, threadObject: threadObject)
-        let historyWindow = decodeHistoryWindow(from: resultObject, fallbackMessages: historyMessages, mode: .tail)
-        if !historyMessages.isEmpty {
-            let existingMessages = messagesByThread[threadId] ?? []
-            let activeThreadIDs = Set(activeTurnIdByThread.keys)
-            let runningIDs = runningThreadIDs
-            let merged = await Task.detached {
-                Self.mergeHistoryMessages(existingMessages, historyMessages, activeThreadIDs: activeThreadIDs, runningThreadIDs: runningIDs)
-            }.value
-            messagesByThread[threadId] = merged
-            persistMessages()
-        }
-
-        mergeHistoryWindow(
-            threadId: threadId,
-            mode: .tail,
-            historyMessages: historyMessages,
-            oldestAnchor: historyWindow.oldestAnchor,
-            newestAnchor: historyWindow.newestAnchor,
-            hasOlder: historyWindow.hasOlder,
-            hasNewer: historyWindow.hasNewer
-        )
-
         hydratedThreadIDs.insert(threadId)
         updateCurrentOutput(for: threadId)
     }
@@ -284,11 +256,8 @@ extension CodeRoverService {
         guard isConnected, isInitialized else { return }
         guard !loadingThreadIDs.contains(threadId) else { return }
 
-        buildLegacyHistoryStateIfNeeded(threadId: threadId)
-        guard let requestAnchor = nextOlderHistoryAnchor(for: threadId) else {
-            if (messagesByThread[threadId] ?? []).isEmpty {
-                try await loadThreadHistoryIfNeeded(threadId: threadId, forceRefresh: true)
-            }
+        guard let requestCursor = nextOlderHistoryCursor(for: threadId) else {
+            try await loadThreadHistoryIfNeeded(threadId: threadId, forceRefresh: true)
             return
         }
 
@@ -306,7 +275,7 @@ extension CodeRoverService {
                 "history": .object([
                     "mode": .string("before"),
                     "limit": .integer(50),
-                    "anchor": encodeHistoryAnchor(requestAnchor),
+                    "cursor": .string(requestCursor),
                 ]),
             ])
         )
@@ -320,38 +289,27 @@ extension CodeRoverService {
         let historyMessages = decodeMessagesFromThreadRead(threadId: threadId, threadObject: threadObject)
         let historyWindow = decodeHistoryWindow(from: resultObject, fallbackMessages: historyMessages, mode: .before)
 
-        if !historyMessages.isEmpty {
-            let existingMessages = messagesByThread[threadId] ?? []
-            let activeThreadIDs = Set(activeTurnIdByThread.keys)
-            let runningIDs = runningThreadIDs
-            let merged = await Task.detached {
-                Self.mergeHistoryMessages(existingMessages, historyMessages, activeThreadIDs: activeThreadIDs, runningThreadIDs: runningIDs)
-            }.value
-            messagesByThread[threadId] = merged
-            persistMessages()
-            updateCurrentOutput(for: threadId)
-        }
-
-        mergeHistoryWindow(
+        try await applyHistoryWindow(
             threadId: threadId,
             mode: .before,
             historyMessages: historyMessages,
-            oldestAnchor: historyWindow.oldestAnchor,
-            newestAnchor: historyWindow.newestAnchor,
+            olderCursor: historyWindow.olderCursor,
+            newerCursor: historyWindow.newerCursor,
             hasOlder: historyWindow.hasOlder,
-            hasNewer: historyWindow.hasNewer
+            hasNewer: historyWindow.hasNewer,
+            replaceLocalHistory: false
         )
     }
 
     func loadNewerThreadHistoryIfNeeded(
         threadId: String,
-        anchor: ThreadHistoryAnchor
-    ) async throws -> (newestAnchor: ThreadHistoryAnchor?, hasNewer: Bool, didAdvance: Bool) {
+        cursor: String
+    ) async throws -> (newestCursor: String?, hasNewer: Bool, didAdvance: Bool, itemCount: Int) {
         guard isConnected, isInitialized else {
-            return (anchor, false, false)
+            return (cursor, false, false, 0)
         }
         guard !loadingThreadIDs.contains(threadId) else {
-            return (anchor, true, false)
+            return (cursor, true, false, 0)
         }
 
         historyStateByThread[threadId, default: ThreadHistoryState()].isTailRefreshing = true
@@ -368,7 +326,7 @@ extension CodeRoverService {
                 "history": .object([
                     "mode": .string("after"),
                     "limit": .integer(50),
-                    "anchor": encodeHistoryAnchor(anchor),
+                    "cursor": .string(cursor),
                 ]),
             ])
         )
@@ -383,55 +341,48 @@ extension CodeRoverService {
 
         let historyMessages = decodeMessagesFromThreadRead(threadId: threadId, threadObject: threadObject)
         let historyWindow = decodeHistoryWindow(from: resultObject, fallbackMessages: historyMessages, mode: .after)
-
-        if !historyMessages.isEmpty {
-            let existingMessages = messagesByThread[threadId] ?? []
-            let activeThreadIDs = Set(activeTurnIdByThread.keys)
-            let runningIDs = runningThreadIDs
-            let merged = await Task.detached {
-                Self.mergeHistoryMessages(existingMessages, historyMessages, activeThreadIDs: activeThreadIDs, runningThreadIDs: runningIDs)
-            }.value
-            messagesByThread[threadId] = merged
-            persistMessages()
-            updateCurrentOutput(for: threadId)
-        }
-
-        mergeHistoryWindow(
+        try await applyHistoryWindow(
             threadId: threadId,
             mode: .after,
             historyMessages: historyMessages,
-            oldestAnchor: historyWindow.oldestAnchor,
-            newestAnchor: historyWindow.newestAnchor,
+            olderCursor: historyWindow.olderCursor,
+            newerCursor: historyWindow.newerCursor,
             hasOlder: historyWindow.hasOlder,
-            hasNewer: historyWindow.hasNewer
+            hasNewer: historyWindow.hasNewer,
+            replaceLocalHistory: false
         )
 
-        let nextAnchor = historyWindow.newestAnchor
-            ?? historyMessages.last.map(messageHistoryAnchor(for:))
-            ?? anchor
+        let nextCursor = normalizedHistoryCursor(historyWindow.newerCursor) ?? cursor
         return (
-            newestAnchor: nextAnchor,
+            newestCursor: nextCursor,
             hasNewer: historyWindow.hasNewer,
-            didAdvance: nextAnchor != anchor
+            didAdvance: !historyMessages.isEmpty && nextCursor != cursor,
+            itemCount: historyMessages.count
         )
     }
 
-    func newestHistoryAnchor(for threadId: String) -> ThreadHistoryAnchor? {
-        if let anchor = historyStateByThread[threadId]?.newestLoadedAnchor {
-            return anchor
-        }
-        return messagesByThread[threadId]?.last.map(messageHistoryAnchor(for:))
+    func newestHistoryCursor(for threadId: String) -> String? {
+        normalizedHistoryCursor(historyStateByThread[threadId]?.newestCursor)
     }
 
     func scheduleRealtimeHistoryCatchUp(
         threadId: String,
+        turnId: String?,
         itemId: String?,
-        previousItemId: String?
+        previousItemId: String?,
+        cursor: String?,
+        previousCursor: String?
     ) {
         guard isConnected, isInitialized else { return }
         guard activeThreadId == threadId else { return }
-        guard runtimeProviderID(for: threads.first(where: { $0.id == threadId })?.provider) == "codex" else { return }
-        guard shouldCatchUpRealtimeHistory(threadId: threadId, itemId: itemId, previousItemId: previousItemId) else {
+        guard shouldCatchUpRealtimeHistory(
+            threadId: threadId,
+            turnId: turnId,
+            itemId: itemId,
+            previousItemId: previousItemId,
+            cursor: cursor,
+            previousCursor: previousCursor
+        ) else {
             return
         }
 
@@ -475,48 +426,100 @@ extension CodeRoverService {
         guard isConnected, isInitialized else { return }
         guard activeThreadId == threadId else { return }
 
-        guard var anchor = newestHistoryAnchor(for: threadId) else {
-            try await loadThreadHistoryIfNeeded(threadId: threadId, forceRefresh: true)
+        if let newestCursor = newestHistoryCursor(for: threadId) {
+            try await catchUpThreadHistoryToLatest(
+                threadId: threadId,
+                initialCursor: newestCursor,
+                allowTailFallback: true
+            )
             return
         }
 
-        var pageCount = 0
-        while !Task.isCancelled, pageCount < 8 {
-            let result = try await loadNewerThreadHistoryIfNeeded(threadId: threadId, anchor: anchor)
-            guard result.didAdvance, let nextAnchor = result.newestAnchor else {
-                break
-            }
-            anchor = nextAnchor
-            pageCount += 1
-            if !result.hasNewer {
-                break
-            }
-        }
+        try await loadThreadHistoryIfNeeded(threadId: threadId, forceRefresh: true)
     }
 
-    func nextOlderHistoryAnchor(for threadId: String) -> ThreadHistoryAnchor? {
+    func nextOlderHistoryCursor(for threadId: String) -> String? {
         let state = historyStateByThread[threadId]
-        if let newestSegment = state?.segments.last, (state?.gaps.isEmpty == false) {
-            return newestSegment.oldestAnchor
+        guard state?.hasOlderOnServer == true else {
+            return nil
         }
-        if state?.hasOlderOnServer == true {
-            return state?.segments.first?.oldestAnchor
+        return normalizedHistoryCursor(state?.oldestCursor)
+    }
+
+    func shouldBypassRealtimeHistoryCatchUpForLocallyStartedTurn(
+        threadId: String,
+        turnId: String?,
+        cursor: String?,
+        previousCursor: String?
+    ) -> Bool {
+        guard let normalizedTurnId = normalizedIdentifier(turnId)
+                ?? normalizedIdentifier(activeTurnIdByThread[threadId]),
+              pendingRealtimeSeededTurnIDByThread[threadId] == normalizedTurnId,
+              activeTurnIdByThread[threadId] == normalizedTurnId else {
+            return false
         }
-        return nil
+
+        let hasStreamingAssistantPlaceholder = (messagesByThread[threadId] ?? []).contains { message in
+            message.role == .assistant
+                && message.isStreaming
+                && normalizedIdentifier(message.turnId) == normalizedTurnId
+        }
+        guard hasStreamingAssistantPlaceholder else {
+            return false
+        }
+
+        let hasLocalUserMessageForTurn = (messagesByThread[threadId] ?? []).contains { message in
+            message.role == .user
+                && normalizedIdentifier(message.turnId) == normalizedTurnId
+                && message.itemId == nil
+        }
+        guard hasLocalUserMessageForTurn else {
+            return false
+        }
+
+        return normalizedHistoryCursor(cursor) != nil
+            || normalizedHistoryCursor(previousCursor) != nil
+            || normalizedHistoryCursor(historyStateByThread[threadId]?.newestCursor) == nil
     }
 
     func shouldCatchUpRealtimeHistory(
         threadId: String,
+        turnId: String?,
         itemId: String?,
-        previousItemId: String?
+        previousItemId: String?,
+        cursor: String?,
+        previousCursor: String?
     ) -> Bool {
-        let latestLoadedItemId = normalizedIdentifier(
-            historyStateByThread[threadId]?.newestLoadedAnchor?.itemId
-        )
+        let newestCursor = normalizedHistoryCursor(historyStateByThread[threadId]?.newestCursor)
+        let normalizedCursor = normalizedHistoryCursor(cursor)
+        let normalizedPreviousCursor = normalizedHistoryCursor(previousCursor)
+        if let newestCursor {
+            if normalizedCursor == newestCursor || normalizedPreviousCursor == newestCursor {
+                return false
+            }
+            if normalizedCursor != nil || normalizedPreviousCursor != nil {
+                return !shouldBypassRealtimeHistoryCatchUpForLocallyStartedTurn(
+                    threadId: threadId,
+                    turnId: turnId,
+                    cursor: cursor,
+                    previousCursor: previousCursor
+                )
+            }
+        }
+
+        if shouldBypassRealtimeHistoryCatchUpForLocallyStartedTurn(
+            threadId: threadId,
+            turnId: turnId,
+            cursor: cursor,
+            previousCursor: previousCursor
+        ) {
+            return false
+        }
+
         let normalizedItemId = normalizedIdentifier(itemId)
         let normalizedPreviousItemId = normalizedIdentifier(previousItemId)
 
-        let latestItemId = latestLoadedItemId ?? messagesByThread[threadId]?
+        let latestItemId = messagesByThread[threadId]?
             .last(where: { message in
                 let trimmed = message.itemId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
                 return !trimmed.isEmpty
@@ -532,6 +535,44 @@ extension CodeRoverService {
             return false
         }
 
+        return true
+    }
+
+    @discardableResult
+    func handleRealtimeHistoryEvent(
+        threadId: String,
+        turnId: String?,
+        itemId: String?,
+        previousItemId: String?,
+        cursor: String?,
+        previousCursor: String?
+    ) -> Bool {
+        let needsCatchUp = shouldCatchUpRealtimeHistory(
+            threadId: threadId,
+            turnId: turnId,
+            itemId: itemId,
+            previousItemId: previousItemId,
+            cursor: cursor,
+            previousCursor: previousCursor
+        )
+        if needsCatchUp {
+            scheduleRealtimeHistoryCatchUp(
+                threadId: threadId,
+                turnId: turnId,
+                itemId: itemId,
+                previousItemId: previousItemId,
+                cursor: cursor,
+                previousCursor: previousCursor
+            )
+            return false
+        }
+
+        applyRealtimeHistoryCursorAdvance(
+            threadId: threadId,
+            turnId: turnId,
+            cursor: cursor,
+            previousCursor: previousCursor
+        )
         return true
     }
 
@@ -553,8 +594,8 @@ extension CodeRoverService {
         fallbackMessages: [ChatMessage],
         mode: ThreadHistoryWindowMode
     ) -> (
-        oldestAnchor: ThreadHistoryAnchor?,
-        newestAnchor: ThreadHistoryAnchor?,
+        olderCursor: String?,
+        newerCursor: String?,
         hasOlder: Bool,
         hasNewer: Bool
     ) {
@@ -562,19 +603,182 @@ extension CodeRoverService {
             ?? resultObject["history_window"]?.objectValue
         if let historyWindowObject {
             return (
-                decodeHistoryAnchor(from: historyWindowObject["oldestAnchor"]?.objectValue ?? historyWindowObject["oldest_anchor"]?.objectValue),
-                decodeHistoryAnchor(from: historyWindowObject["newestAnchor"]?.objectValue ?? historyWindowObject["newest_anchor"]?.objectValue),
+                historyWindowObject["olderCursor"]?.stringValue
+                    ?? historyWindowObject["older_cursor"]?.stringValue,
+                historyWindowObject["newerCursor"]?.stringValue
+                    ?? historyWindowObject["newer_cursor"]?.stringValue,
                 historyWindowObject["hasOlder"]?.boolValue ?? historyWindowObject["has_older"]?.boolValue ?? false,
                 historyWindowObject["hasNewer"]?.boolValue ?? historyWindowObject["has_newer"]?.boolValue ?? false
             )
         }
 
         return (
-            fallbackMessages.first.map(messageHistoryAnchor(for:)),
-            fallbackMessages.last.map(messageHistoryAnchor(for:)),
-            mode != .after && !fallbackMessages.isEmpty,
-            mode != .before && !fallbackMessages.isEmpty
+            nil,
+            nil,
+            false,
+            false
         )
+    }
+
+    func normalizedHistoryCursor(_ cursor: String?) -> String? {
+        let trimmed = cursor?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    func isInvalidHistoryCursorError(_ error: Error) -> Bool {
+        let message: String
+        if let serviceError = error as? CodeRoverServiceError,
+           case .rpcError(let rpcError) = serviceError {
+            message = rpcError.message.lowercased()
+        } else {
+            message = error.localizedDescription.lowercased()
+        }
+
+        return message.contains("history.cursor is invalid")
+            || message.contains("cursor is invalid")
+            || message.contains("invalid cursor")
+    }
+
+    func loadTailThreadHistory(
+        threadId: String,
+        replaceLocalHistory: Bool
+    ) async throws {
+        let response = try await sendRequest(
+            method: "thread/read",
+            params: .object([
+                "threadId": .string(threadId),
+                "history": .object([
+                    "mode": .string("tail"),
+                    "limit": .integer(50),
+                ]),
+            ])
+        )
+
+        guard let resultObject = response.result?.objectValue,
+              let threadObject = resultObject["thread"]?.objectValue else {
+            throw CodeRoverServiceError.invalidResponse("thread/read response missing thread payload")
+        }
+
+        applyTerminalStatesFromThreadRead(threadId: threadId, threadObject: threadObject)
+        extractContextWindowUsageIfAvailable(threadId: threadId, threadObject: threadObject)
+
+        let historyMessages = decodeMessagesFromThreadRead(threadId: threadId, threadObject: threadObject)
+        let historyWindow = decodeHistoryWindow(from: resultObject, fallbackMessages: historyMessages, mode: .tail)
+        try await applyHistoryWindow(
+            threadId: threadId,
+            mode: .tail,
+            historyMessages: historyMessages,
+            olderCursor: historyWindow.olderCursor,
+            newerCursor: historyWindow.newerCursor,
+            hasOlder: historyWindow.hasOlder,
+            hasNewer: historyWindow.hasNewer,
+            replaceLocalHistory: replaceLocalHistory
+        )
+    }
+
+    func applyHistoryWindow(
+        threadId: String,
+        mode: ThreadHistoryWindowMode,
+        historyMessages: [ChatMessage],
+        olderCursor: String?,
+        newerCursor: String?,
+        hasOlder: Bool,
+        hasNewer: Bool,
+        replaceLocalHistory: Bool
+    ) async throws {
+        let existingMessages = messagesByThread[threadId] ?? []
+        let activeThreadIDs = Set(activeTurnIdByThread.keys)
+        let runningIDs = runningThreadIDs
+        let mergedMessages: [ChatMessage]
+        if replaceLocalHistory {
+            mergedMessages = historyMessages
+        } else {
+            mergedMessages = await Task.detached {
+                Self.mergeHistoryMessages(
+                    existingMessages,
+                    historyMessages,
+                    activeThreadIDs: activeThreadIDs,
+                    runningThreadIDs: runningIDs
+                )
+            }.value
+        }
+
+        if replaceLocalHistory || !historyMessages.isEmpty {
+            messagesByThread[threadId] = mergedMessages
+        }
+
+        mergeHistoryWindow(
+            threadId: threadId,
+            mode: mode,
+            historyMessages: historyMessages,
+            olderCursor: olderCursor,
+            newerCursor: newerCursor,
+            hasOlder: hasOlder,
+            hasNewer: hasNewer
+        )
+
+        persistMessages()
+        updateCurrentOutput(for: threadId)
+    }
+
+    func catchUpThreadHistoryToLatest(
+        threadId: String,
+        initialCursor: String,
+        allowTailFallback: Bool
+    ) async throws {
+        var cursor = initialCursor
+        var pageCount = 0
+        var itemCount = 0
+
+        while !Task.isCancelled, pageCount < 200, itemCount < 10_000 {
+            do {
+                let result = try await loadNewerThreadHistoryIfNeeded(threadId: threadId, cursor: cursor)
+                guard result.didAdvance, let nextCursor = normalizedHistoryCursor(result.newestCursor) else {
+                    break
+                }
+                cursor = nextCursor
+                pageCount += 1
+                itemCount += max(result.itemCount, 1)
+                if !result.hasNewer {
+                    break
+                }
+            } catch {
+                guard allowTailFallback, isInvalidHistoryCursorError(error) else {
+                    throw error
+                }
+                try await loadTailThreadHistory(
+                    threadId: threadId,
+                    replaceLocalHistory: !(messagesByThread[threadId] ?? []).isEmpty
+                )
+                break
+            }
+        }
+    }
+
+    func applyRealtimeHistoryCursorAdvance(
+        threadId: String,
+        turnId: String?,
+        cursor: String?,
+        previousCursor: String?
+    ) {
+        guard let normalizedCursor = normalizedHistoryCursor(cursor) else {
+            return
+        }
+
+        var state = historyStateByThread[threadId] ?? ThreadHistoryState()
+        if normalizedHistoryCursor(state.oldestCursor) == nil {
+            state.oldestCursor = normalizedCursor
+            state.hasOlderOnServer = normalizedHistoryCursor(previousCursor) != nil
+        }
+        state.newestCursor = normalizedCursor
+        state.hasNewerOnServer = false
+        historyStateByThread[threadId] = state
+        if let normalizedTurnId = normalizedIdentifier(turnId)
+            ?? normalizedIdentifier(activeTurnIdByThread[threadId]),
+           pendingRealtimeSeededTurnIDByThread[threadId] == normalizedTurnId {
+            pendingRealtimeSeededTurnIDByThread.removeValue(forKey: threadId)
+        }
+        persistMessages()
     }
 
     func applyTerminalStatesFromThreadRead(threadId: String, threadObject: [String: JSONValue]) {
@@ -1852,6 +2056,12 @@ extension CodeRoverService {
         protectedRunningFallbackThreadIDs.remove(threadId)
         clearRunningThreadWatch(threadId)
         let resolvedTurnId = turnId ?? activeTurnIdByThread[threadId]
+        if let normalizedTurnId = normalizedIdentifier(resolvedTurnId),
+           pendingRealtimeSeededTurnIDByThread[threadId] == normalizedTurnId {
+            pendingRealtimeSeededTurnIDByThread.removeValue(forKey: threadId)
+        } else if resolvedTurnId == nil {
+            pendingRealtimeSeededTurnIDByThread.removeValue(forKey: threadId)
+        }
 
         if let resolvedTurnId {
             let turnStreamingKey = streamingMessageKey(threadId: threadId, turnId: resolvedTurnId)
@@ -1976,12 +2186,16 @@ extension CodeRoverService {
         activeTurnIdByThread.removeAll()
         runningThreadIDs.removeAll()
         protectedRunningFallbackThreadIDs.removeAll()
+        pendingRealtimeSeededTurnIDByThread.removeAll()
         streamingAssistantMessageByTurnID.removeAll()
         streamingSystemMessageByItemID.removeAll()
         threadIdByTurnID.removeAll()
 
         if didMutate {
-            messagePersistence.save(messagesByThread)
+            messagePersistence.save(
+                messagesByThread: messagesByThread,
+                historyStateByThread: historyStateByThread
+            )
             if let activeThreadId {
                 updateCurrentOutput(for: activeThreadId)
             }
@@ -1992,11 +2206,15 @@ extension CodeRoverService {
 extension CodeRoverService {
     func persistMessages() {
         let snapshot = messagesByThread
+        let historySnapshot = historyStateByThread
         messagePersistenceDebounceTask?.cancel()
         messagePersistenceDebounceTask = Task.detached { [messagePersistence] in
             try? await Task.sleep(nanoseconds: 250_000_000)
             guard !Task.isCancelled else { return }
-            messagePersistence.save(snapshot)
+            messagePersistence.save(
+                messagesByThread: snapshot,
+                historyStateByThread: historySnapshot
+            )
         }
     }
 }

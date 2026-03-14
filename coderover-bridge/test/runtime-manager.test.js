@@ -17,6 +17,8 @@ function createManagerFixture() {
 
 function createManagerFixtureWithOptions({
   codexAdapter: providedCodexAdapter = null,
+  claudeAdapter: providedClaudeAdapter = null,
+  geminiAdapter: providedGeminiAdapter = null,
   useDefaultCodexAdapter = false,
 } = {}) {
   const messages = [];
@@ -30,12 +32,12 @@ function createManagerFixtureWithOptions({
       return false;
     },
   });
-  const claudeAdapter = {
+  const claudeAdapter = providedClaudeAdapter || {
     syncImportedThreads: noopAsync,
     hydrateThread: noopAsync,
     startTurn: noopAsync,
   };
-  const geminiAdapter = {
+  const geminiAdapter = providedGeminiAdapter || {
     syncImportedThreads: noopAsync,
     hydrateThread: noopAsync,
     startTurn: noopAsync,
@@ -58,6 +60,11 @@ function createManagerFixtureWithOptions({
       fs.rmSync(baseDir, { recursive: true, force: true });
     },
   };
+}
+
+async function drainMicrotasks() {
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
 }
 
 async function request(fixture, id, method, params) {
@@ -305,6 +312,9 @@ test("thread/read history tail and after windows reuse the Codex cache", async (
     assert.equal(tailResponse.result.historyWindow.mode, "tail");
     assert.equal(tailResponse.result.historyWindow.servedFromCache, false);
     assert.equal(tailResponse.result.historyWindow.hasOlder, true);
+    assert.equal(tailResponse.result.historyWindow.pageSize, 50);
+    assert.ok(tailResponse.result.historyWindow.olderCursor);
+    assert.ok(tailResponse.result.historyWindow.newerCursor);
     assert.equal(tailResponse.result.thread.turns[0].items.length, 50);
     assert.equal(tailResponse.result.thread.turns[0].items[0].id, "item-131");
 
@@ -323,23 +333,19 @@ test("thread/read history tail and after windows reuse the Codex cache", async (
       history: {
         mode: "after",
         limit: 5,
-        anchor: {
-          itemId: "item-150",
-          createdAt: thread.turns[0].items[149].createdAt,
-          turnId: "turn-1",
-        },
+        cursor: tailResponse.result.historyWindow.olderCursor,
       },
     });
     const afterResponse = responseById(afterMessages, "thread-read-after");
     assert.equal(afterResponse.result.historyWindow.servedFromCache, true);
     assert.equal(afterResponse.result.thread.turns[0].items.length, 5);
-    assert.equal(afterResponse.result.thread.turns[0].items[0].id, "item-151");
+    assert.equal(afterResponse.result.thread.turns[0].items[0].id, "item-132");
   } finally {
     fixture.cleanup();
   }
 });
 
-test("forwarded Codex item delta notifications include previousItemId when cache context exists", async () => {
+test("forwarded Codex item delta notifications include cursor metadata when cache context exists", async () => {
   const fixture = createManagerFixtureWithOptions({
     useDefaultCodexAdapter: true,
   });
@@ -390,6 +396,8 @@ test("forwarded Codex item delta notifications include previousItemId when cache
     const forwarded = fixture.messages[beforeCount];
     assert.ok(forwarded);
     assert.equal(forwarded.method, "item/agentMessage/delta");
+    assert.ok(forwarded.params.cursor);
+    assert.ok(forwarded.params.previousCursor);
     assert.equal(forwarded.params.previousItemId, "item-3");
   } finally {
     fixture.cleanup();
@@ -404,13 +412,14 @@ test("thread/read history before window falls back to upstream when the cache bo
   });
 
   try {
-    await request(fixture, "thread-read-tail", "thread/read", {
+    const tailMessages = await request(fixture, "thread-read-tail", "thread/read", {
       threadId: thread.id,
       history: {
         mode: "tail",
         limit: 50,
       },
     });
+    const tailResponse = responseById(tailMessages, "thread-read-tail");
     assert.equal(codexFixture.readCountsByThread.get(thread.id), 2);
 
     const beforeMessages = await request(fixture, "thread-read-before", "thread/read", {
@@ -418,11 +427,7 @@ test("thread/read history before window falls back to upstream when the cache bo
       history: {
         mode: "before",
         limit: 50,
-        anchor: {
-          itemId: "item-131",
-          createdAt: thread.turns[0].items[130].createdAt,
-          turnId: "turn-1",
-        },
+        cursor: tailResponse.result.historyWindow.olderCursor,
       },
     });
     const beforeResponse = responseById(beforeMessages, "thread-read-before");
@@ -430,6 +435,151 @@ test("thread/read history before window falls back to upstream when the cache bo
     assert.equal(beforeResponse.result.thread.turns[0].items[0].id, "item-81");
     assert.equal(beforeResponse.result.thread.turns[0].items.length, 50);
     assert.equal(codexFixture.readCountsByThread.get(thread.id), 3);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("managed thread/read history windows expose the same cursor shape as Codex", async () => {
+  const claudeAdapter = {
+    syncImportedThreads: async () => {},
+    hydrateThread: async () => {},
+    async startTurn({ turnContext }) {
+      turnContext.appendAgentDelta("message-1", { itemId: "item-1" });
+      turnContext.appendAgentDelta("message-2", { itemId: "item-2" });
+      turnContext.appendAgentDelta("message-3", { itemId: "item-3" });
+      return {};
+    },
+  };
+  const fixture = createManagerFixtureWithOptions({ claudeAdapter });
+
+  try {
+    const started = await request(fixture, "managed-thread-start", "thread/start", {
+      provider: "claude",
+      cwd: "/tmp/managed-project",
+    });
+    const threadId = responseById(started, "managed-thread-start").result.thread.id;
+
+    await request(fixture, "managed-turn-start", "turn/start", {
+      threadId,
+      input: [],
+    });
+    await drainMicrotasks();
+
+    const tailMessages = await request(fixture, "managed-thread-tail", "thread/read", {
+      threadId,
+      history: {
+        mode: "tail",
+        limit: 2,
+      },
+    });
+    const tailResponse = responseById(tailMessages, "managed-thread-tail");
+    assert.equal(tailResponse.result.historyWindow.pageSize, 2);
+    assert.equal(tailResponse.result.historyWindow.hasOlder, true);
+    assert.equal(tailResponse.result.historyWindow.hasNewer, false);
+    assert.ok(tailResponse.result.historyWindow.olderCursor);
+    assert.ok(tailResponse.result.historyWindow.newerCursor);
+    assert.deepEqual(
+      tailResponse.result.thread.turns[0].items.map((item) => item.id),
+      ["item-2", "item-3"]
+    );
+
+    const beforeMessages = await request(fixture, "managed-thread-before", "thread/read", {
+      threadId,
+      history: {
+        mode: "before",
+        limit: 1,
+        cursor: tailResponse.result.historyWindow.olderCursor,
+      },
+    });
+    const beforeResponse = responseById(beforeMessages, "managed-thread-before");
+    assert.deepEqual(
+      beforeResponse.result.thread.turns[0].items.map((item) => item.id),
+      ["item-1"]
+    );
+    assert.equal(beforeResponse.result.historyWindow.hasOlder, false);
+    assert.equal(beforeResponse.result.historyWindow.hasNewer, true);
+
+    const afterMessages = await request(fixture, "managed-thread-after", "thread/read", {
+      threadId,
+      history: {
+        mode: "after",
+        limit: 1,
+        cursor: tailResponse.result.historyWindow.olderCursor,
+      },
+    });
+    const afterResponse = responseById(afterMessages, "managed-thread-after");
+    assert.deepEqual(
+      afterResponse.result.thread.turns[0].items.map((item) => item.id),
+      ["item-3"]
+    );
+    assert.equal(afterResponse.result.historyWindow.hasOlder, true);
+    assert.equal(afterResponse.result.historyWindow.hasNewer, false);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("managed realtime notifications include cursor and previousCursor metadata", async () => {
+  const geminiAdapter = {
+    syncImportedThreads: async () => {},
+    hydrateThread: async () => {},
+    async startTurn({ turnContext }) {
+      turnContext.appendAgentDelta("message-1", { itemId: "item-1" });
+      turnContext.appendAgentDelta("message-2", { itemId: "item-2" });
+      return {};
+    },
+  };
+  const fixture = createManagerFixtureWithOptions({ geminiAdapter });
+
+  try {
+    const started = await request(fixture, "managed-gemini-thread", "thread/start", {
+      provider: "gemini",
+      cwd: "/tmp/gemini-project",
+    });
+    const threadId = responseById(started, "managed-gemini-thread").result.thread.id;
+
+    const beforeCount = fixture.messages.length;
+    await request(fixture, "managed-gemini-turn", "turn/start", {
+      threadId,
+      input: [],
+    });
+    await drainMicrotasks();
+
+    const itemNotifications = fixture.messages
+      .slice(beforeCount)
+      .filter((message) => message.method === "item/agentMessage/delta");
+    assert.equal(itemNotifications.length, 2);
+    assert.ok(itemNotifications[0].params.cursor);
+    assert.equal(itemNotifications[0].params.previousCursor, undefined);
+    assert.ok(itemNotifications[1].params.cursor);
+    assert.equal(itemNotifications[1].params.previousItemId, "item-1");
+    assert.equal(itemNotifications[1].params.previousCursor, itemNotifications[0].params.cursor);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("thread/read rejects malformed history.cursor", async () => {
+  const codexFixture = createCodexAdapterFixture({
+    threads: [buildCodexThread({ threadId: "codex-invalid-cursor", messageCount: 4 })],
+  });
+  const fixture = createManagerFixtureWithOptions({
+    codexAdapter: codexFixture.adapter,
+  });
+
+  try {
+    const messages = await request(fixture, "thread-read-invalid-cursor", "thread/read", {
+      threadId: "codex-invalid-cursor",
+      history: {
+        mode: "after",
+        limit: 5,
+        cursor: "not-a-valid-cursor",
+      },
+    });
+    const response = responseById(messages, "thread-read-invalid-cursor");
+    assert.equal(response.error.code, -32602);
+    assert.match(response.error.message, /history\.cursor is invalid/i);
   } finally {
     fixture.cleanup();
   }

@@ -1,5 +1,5 @@
 // FILE: ThreadHistoryState.swift
-// Purpose: Models partial per-thread history coverage for incremental sync and gap loading.
+// Purpose: Models per-thread cursor coverage for incremental sync and on-demand paging.
 // Layer: Model
 // Exports: ThreadHistoryAnchor, ThreadHistorySegment, ThreadHistoryGap, ThreadHistoryState
 
@@ -46,6 +46,8 @@ struct ThreadHistoryGap: Codable, Hashable, Sendable, Identifiable {
 }
 
 struct ThreadHistoryState: Codable, Hashable, Sendable {
+    var oldestCursor: String?
+    var newestCursor: String?
     var segments: [ThreadHistorySegment] = []
     var gaps: [ThreadHistoryGap] = []
     var oldestLoadedAnchor: ThreadHistoryAnchor?

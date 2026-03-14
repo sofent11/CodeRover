@@ -392,7 +392,10 @@ extension CodeRoverService {
 
         threads.removeAll { $0.id == threadId }
         messagesByThread.removeValue(forKey: threadId)
-        messagePersistence.save(messagesByThread)
+        messagePersistence.save(
+            messagesByThread: messagesByThread,
+            historyStateByThread: historyStateByThread
+        )
 
         hydratedThreadIDs.remove(threadId)
         loadingThreadIDs.remove(threadId)
@@ -475,6 +478,13 @@ extension CodeRoverService {
         let wasRunning = threadHasActiveOrRunningTurn(threadId)
         if wasRunning {
             _ = await refreshInFlightTurnState(threadId: threadId)
+        }
+
+        // A reconnect/background transition can leave the current thread onscreen while the
+        // realtime stream was interrupted. Force one live resume snapshot on every running-thread
+        // poll so the open timeline catches up even when the user never leaves the conversation.
+        if wasRunning || threadHasActiveOrRunningTurn(threadId) {
+            _ = try? await ensureThreadResumed(threadId: threadId, force: true)
         }
 
         await syncThreadHistory(threadId: threadId, force: true)

@@ -96,6 +96,20 @@ class CodeRoverRepository(context: Context) {
         val hasMore: Boolean,
     )
 
+    data class HistoryWindowState(
+        val olderCursor: String?,
+        val newerCursor: String?,
+        val hasOlder: Boolean,
+        val hasNewer: Boolean,
+    )
+
+    data class NewerHistoryResult(
+        val newestCursor: String?,
+        val hasNewer: Boolean,
+        val didAdvance: Boolean,
+        val itemCount: Int,
+    )
+
     private val json = Json {
         ignoreUnknownKeys = true
         explicitNulls = false
@@ -149,6 +163,7 @@ class CodeRoverRepository(context: Context) {
             threads = store.loadCachedThreads(),
             selectedThreadId = store.loadCachedSelectedThreadId(),
             messagesByThread = store.loadCachedMessagesByThread(),
+            historyStateByThread = store.loadCachedHistoryStateByThread(),
             selectedModelId = store.loadSelectedModelId(normalizeProviderId(store.loadSelectedProviderId())),
             selectedReasoningEffort = store.loadSelectedReasoningEffort(normalizeProviderId(store.loadSelectedProviderId())),
             collapsedProjectGroupIds = prefs.getCollapsedProjectGroupIds(),
@@ -422,6 +437,7 @@ class CodeRoverRepository(context: Context) {
                     connectionPhase = ConnectionPhase.OFFLINE,
                     runningThreadIds = emptySet(),
                     activeTurnIdByThread = emptyMap(),
+                    pendingRealtimeSeededTurnIdByThread = emptyMap(),
                 )
             }
         }
@@ -1511,6 +1527,38 @@ class CodeRoverRepository(context: Context) {
             )?.jsonObjectOrNull()
             resumeResult?.threadPayload()
         }.getOrNull()
+        resumedThreadObject?.let { threadObject ->
+            ThreadSummary.fromJson(threadObject)?.let { thread ->
+                updateState {
+                    copy(threads = upsertThread(threads, thread.copy(syncState = ThreadSyncState.LIVE)))
+                }
+            }
+        }
+
+        val currentState = state.value
+        val hasLocalMessages = currentState.messagesByThread[threadId].orEmpty().isNotEmpty()
+        val newestCursor = normalizedHistoryCursor(currentState.historyStateByThread[threadId]?.newestCursor)
+        if (hasLocalMessages && newestCursor != null) {
+            catchUpThreadHistoryToLatest(
+                threadId = threadId,
+                initialCursor = newestCursor,
+                allowTailFallback = true,
+                fallbackThreadObject = resumedThreadObject,
+            )
+        } else {
+            loadTailThreadHistory(
+                threadId = threadId,
+                replaceLocalHistory = hasLocalMessages && newestCursor == null,
+                fallbackThreadObject = resumedThreadObject,
+            )
+        }
+    }
+
+    private suspend fun loadTailThreadHistory(
+        threadId: String,
+        replaceLocalHistory: Boolean,
+        fallbackThreadObject: JsonObject?,
+    ) {
         val historyResult = try {
             activeClient().sendRequest(
                 method = "thread/read",
@@ -1523,75 +1571,38 @@ class CodeRoverRepository(context: Context) {
                 ),
             )?.jsonObjectOrNull()
         } catch (failure: Throwable) {
-            if (resumedThreadObject == null) {
+            if (fallbackThreadObject == null) {
                 throw failure
             }
             Log.w(TAG, "thread/read tail refresh failed; falling back to resume snapshot threadId=$threadId", failure)
             null
         }
-        val historyThreadObject = historyResult?.threadPayload() ?: resumedThreadObject ?: return
-        val summaryThreadObject = resumedThreadObject ?: historyThreadObject
+        val threadObject = historyResult?.threadPayload() ?: fallbackThreadObject ?: return
+        val summaryThreadObject = fallbackThreadObject ?: threadObject
         ThreadSummary.fromJson(summaryThreadObject)?.let { thread ->
             updateState {
                 copy(threads = upsertThread(threads, thread.copy(syncState = ThreadSyncState.LIVE)))
             }
         }
-        extractContextWindowUsageIfAvailable(threadId, historyThreadObject)
-        val history = decodeMessagesFromThreadRead(threadId, historyThreadObject)
-        val historyWindow = historyResult?.get("historyWindow")?.jsonObjectOrNull()
-        val activeTurnId = resolveActiveTurnId(resumedThreadObject ?: historyThreadObject)
-        if (history.isNotEmpty()) {
-            val existingMessages = state.value.messagesByThread[threadId].orEmpty()
-            val mergedHistory = mergeHistoryMessages(existingMessages, history)
-            updateState {
-                copy(
-                    messagesByThread = messagesByThread + (threadId to mergedHistory),
-                    historyStateByThread = historyStateByThread + (threadId to mergeHistoryState(
-                        threadId = threadId,
-                        existingMessages = existingMessages,
-                        currentState = historyStateByThread[threadId],
-                        historyWindow = historyWindow,
-                        mode = "tail",
-                        mergedMessages = mergedHistory,
-                    )),
-                    activeTurnIdByThread = if (activeTurnId == null) {
-                        activeTurnIdByThread
-                    } else {
-                        activeTurnIdByThread + (threadId to activeTurnId)
-                    },
-                    runningThreadIds = if (activeTurnId == null) {
-                        runningThreadIds - threadId
-                    } else {
-                        runningThreadIds + threadId
-                    },
-                    readyThreadIds = readyThreadIds - threadId,
-                    failedThreadIds = failedThreadIds - threadId,
-                )
-            }
-        } else if (activeTurnId != null) {
-            updateState {
-                copy(
-                    historyStateByThread = historyStateByThread + (threadId to mergeHistoryState(
-                        threadId = threadId,
-                        existingMessages = messagesByThread[threadId].orEmpty(),
-                        currentState = historyStateByThread[threadId],
-                        historyWindow = historyWindow,
-                        mode = "tail",
-                        mergedMessages = messagesByThread[threadId].orEmpty(),
-                    )),
-                    activeTurnIdByThread = activeTurnIdByThread + (threadId to activeTurnId),
-                    runningThreadIds = runningThreadIds + threadId,
-                    readyThreadIds = readyThreadIds - threadId,
-                    failedThreadIds = failedThreadIds - threadId,
-                )
-            }
-        }
+        extractContextWindowUsageIfAvailable(threadId, threadObject)
+        val history = decodeMessagesFromThreadRead(threadId, threadObject)
+        val historyWindow = decodeHistoryWindow(historyResult, history)
+        val activeTurnId = resolveActiveTurnId(summaryThreadObject)
+        applyHistoryWindow(
+            threadId = threadId,
+            mode = "tail",
+            history = history,
+            historyWindow = historyWindow,
+            replaceLocalHistory = replaceLocalHistory,
+            activeTurnId = activeTurnId,
+            replaceRunningState = true,
+        )
     }
 
     private suspend fun loadNewerThreadHistoryIfNeeded(
         threadId: String,
-        anchor: ThreadHistoryAnchor,
-    ): Triple<ThreadHistoryAnchor?, Boolean, Boolean> {
+        cursor: String,
+    ): NewerHistoryResult {
         val result = activeClient().sendRequest(
             method = "thread/read",
             params = buildJsonObject(
@@ -1599,11 +1610,11 @@ class CodeRoverRepository(context: Context) {
                 "history" to buildJsonObject(
                     "mode" to JsonPrimitive("after"),
                     "limit" to JsonPrimitive(50),
-                    "anchor" to encodeHistoryAnchor(anchor),
+                    "cursor" to JsonPrimitive(cursor),
                 ),
             ),
-        )?.jsonObjectOrNull() ?: return Triple(anchor, false, false)
-        val threadObject = result.threadPayload() ?: return Triple(anchor, false, false)
+        )?.jsonObjectOrNull() ?: return NewerHistoryResult(cursor, false, false, 0)
+        val threadObject = result.threadPayload() ?: return NewerHistoryResult(cursor, false, false, 0)
         ThreadSummary.fromJson(threadObject)?.let { thread ->
             updateState {
                 copy(threads = upsertThread(threads, thread.copy(syncState = ThreadSyncState.LIVE)))
@@ -1611,60 +1622,34 @@ class CodeRoverRepository(context: Context) {
         }
         extractContextWindowUsageIfAvailable(threadId, threadObject)
         val history = decodeMessagesFromThreadRead(threadId, threadObject)
-        val historyWindow = result["historyWindow"]?.jsonObjectOrNull()
+        val historyWindow = decodeHistoryWindow(result, history)
         val activeTurnId = resolveActiveTurnId(threadObject)
-        val existingMessages = state.value.messagesByThread[threadId].orEmpty()
-        val mergedHistory = mergeHistoryMessages(existingMessages, history)
-        updateState {
-            copy(
-                messagesByThread = messagesByThread + (threadId to mergedHistory),
-                historyStateByThread = historyStateByThread + (threadId to mergeHistoryState(
-                    threadId = threadId,
-                    existingMessages = existingMessages,
-                    currentState = historyStateByThread[threadId],
-                    historyWindow = historyWindow,
-                    mode = "after",
-                    mergedMessages = mergedHistory,
-                )),
-                activeTurnIdByThread = if (activeTurnId == null) {
-                    activeTurnIdByThread
-                } else {
-                    activeTurnIdByThread + (threadId to activeTurnId)
-                },
-                runningThreadIds = if (activeTurnId == null) {
-                    runningThreadIds
-                } else {
-                    runningThreadIds + threadId
-                },
-                readyThreadIds = readyThreadIds - threadId,
-                failedThreadIds = failedThreadIds - threadId,
-                threads = threads.refreshThreadSummaryFromMessages(threadId, mergedHistory),
-            )
-        }
-        val newestAnchor = parseHistoryAnchor(
-            historyWindow?.get("newestAnchor")?.jsonObjectOrNull()
-                ?: historyWindow?.get("newest_anchor")?.jsonObjectOrNull(),
-        ) ?: mergedHistory.lastOrNull()?.toHistoryAnchor()
-        val hasNewer = historyWindow?.bool("hasNewer") ?: historyWindow?.bool("has_newer") ?: false
-        val didAdvance = history.isNotEmpty() && newestAnchor != null &&
-            (newestAnchor.createdAt > anchor.createdAt ||
-                (newestAnchor.createdAt == anchor.createdAt &&
-                    newestAnchor.itemId?.trim() != anchor.itemId?.trim()))
-        return Triple(newestAnchor, hasNewer, didAdvance)
+        applyHistoryWindow(
+            threadId = threadId,
+            mode = "after",
+            history = history,
+            historyWindow = historyWindow,
+            replaceLocalHistory = false,
+            activeTurnId = activeTurnId,
+            replaceRunningState = false,
+        )
+        val nextCursor = normalizedHistoryCursor(historyWindow.newerCursor) ?: cursor
+        return NewerHistoryResult(
+            newestCursor = nextCursor,
+            hasNewer = historyWindow.hasNewer,
+            didAdvance = history.isNotEmpty() && nextCursor != cursor,
+            itemCount = history.size,
+        )
     }
 
     suspend fun loadOlderThreadHistory(threadId: String) {
         val currentState = state.value
         val historyState = currentState.historyStateByThread[threadId]
-        val olderHistoryRequest = resolveOlderHistoryLoadRequest(
-            historyState = historyState,
-            localMessages = currentState.messagesByThread[threadId].orEmpty(),
-        )
-        if (olderHistoryRequest.shouldBootstrapTail) {
+        val requestCursor = nextOlderHistoryCursor(historyState)
+        if (requestCursor == null) {
             refreshThreadHistory(threadId, reason = "older-bootstrap-empty")
             return
         }
-        val requestAnchor = olderHistoryRequest.anchor ?: return
 
         updateState {
             copy(
@@ -1682,34 +1667,21 @@ class CodeRoverRepository(context: Context) {
                     "history" to buildJsonObject(
                         "mode" to JsonPrimitive("before"),
                         "limit" to JsonPrimitive(50),
-                        "anchor" to buildJsonObject(
-                            "createdAt" to JsonPrimitive(requestAnchor.createdAt),
-                            "itemId" to requestAnchor.itemId?.let(::JsonPrimitive),
-                            "turnId" to requestAnchor.turnId?.let(::JsonPrimitive),
-                        ),
+                        "cursor" to JsonPrimitive(requestCursor),
                     ),
                 ),
             )?.jsonObjectOrNull()
         }.onSuccess { result ->
             val threadObject = result?.threadPayload() ?: return@onSuccess
             val history = decodeMessagesFromThreadRead(threadId, threadObject)
-            val historyWindow = result["historyWindow"]?.jsonObjectOrNull()
-            val existingMessages = state.value.messagesByThread[threadId].orEmpty()
-            val mergedHistory = mergeHistoryMessages(existingMessages, history)
-            updateState {
-                copy(
-                    messagesByThread = messagesByThread + (threadId to mergedHistory),
-                    historyStateByThread = historyStateByThread + (threadId to mergeHistoryState(
-                        threadId = threadId,
-                        existingMessages = existingMessages,
-                        currentState = historyStateByThread[threadId],
-                        historyWindow = historyWindow,
-                        mode = "before",
-                        mergedMessages = mergedHistory,
-                    )),
-                    threads = threads.refreshThreadSummaryFromMessages(threadId, mergedHistory),
-                )
-            }
+            val historyWindow = decodeHistoryWindow(result, history)
+            applyHistoryWindow(
+                threadId = threadId,
+                mode = "before",
+                history = history,
+                historyWindow = historyWindow,
+                replaceLocalHistory = false,
+            )
         }.onFailure {
             updateState {
                 copy(
@@ -1721,28 +1693,118 @@ class CodeRoverRepository(context: Context) {
         }
     }
 
-    private fun newestHistoryAnchor(threadId: String): ThreadHistoryAnchor? {
+    private fun applyHistoryWindow(
+        threadId: String,
+        mode: String,
+        history: List<ChatMessage>,
+        historyWindow: HistoryWindowState,
+        replaceLocalHistory: Boolean,
+        activeTurnId: String? = null,
+        replaceRunningState: Boolean = false,
+    ) {
         val currentState = state.value
-        return currentState.historyStateByThread[threadId]?.newestLoadedAnchor
-            ?: currentState.messagesByThread[threadId].orEmpty().lastOrNull()?.toHistoryAnchor()
+        val existingMessages = currentState.messagesByThread[threadId].orEmpty()
+        val mergedHistory = if (replaceLocalHistory) {
+            history
+        } else {
+            mergeHistoryMessages(existingMessages, history)
+        }
+        val nextMessages = if (replaceLocalHistory || history.isNotEmpty()) {
+            currentState.messagesByThread + (threadId to mergedHistory)
+        } else {
+            currentState.messagesByThread
+        }
+        val timelineMessages = nextMessages[threadId].orEmpty()
+
+        updateState {
+            copy(
+                messagesByThread = nextMessages,
+                historyStateByThread = historyStateByThread + (
+                    threadId to mergeHistoryState(
+                        currentState = historyStateByThread[threadId],
+                        historyWindow = historyWindow,
+                        mode = mode,
+                    )
+                ),
+                activeTurnIdByThread = when {
+                    activeTurnId == null && replaceRunningState -> activeTurnIdByThread - threadId
+                    activeTurnId == null -> activeTurnIdByThread
+                    else -> activeTurnIdByThread + (threadId to activeTurnId)
+                },
+                runningThreadIds = when {
+                    activeTurnId == null && replaceRunningState -> runningThreadIds - threadId
+                    activeTurnId == null -> runningThreadIds
+                    else -> runningThreadIds + threadId
+                },
+                readyThreadIds = readyThreadIds - threadId,
+                failedThreadIds = failedThreadIds - threadId,
+                threads = if (timelineMessages.isNotEmpty()) {
+                    threads.refreshThreadSummaryFromMessages(threadId, timelineMessages)
+                } else {
+                    threads
+                },
+            )
+        }
+    }
+
+    private fun newestHistoryCursor(threadId: String): String? {
+        return normalizedHistoryCursor(state.value.historyStateByThread[threadId]?.newestCursor)
+    }
+
+    private fun nextOlderHistoryCursor(historyState: ThreadHistoryState?): String? {
+        if (historyState?.hasOlderOnServer != true) {
+            return null
+        }
+        return normalizedHistoryCursor(historyState.oldestCursor)
     }
 
     private suspend fun catchUpRealtimeHistoryToLatest(threadId: String) {
-        var anchor = newestHistoryAnchor(threadId)
-        if (anchor == null) {
-            refreshThreadHistory(threadId, reason = "realtime-no-anchor")
-            anchor = newestHistoryAnchor(threadId) ?: return
+        var cursor = newestHistoryCursor(threadId)
+        if (cursor == null) {
+            refreshThreadHistory(threadId, reason = "realtime-no-cursor")
+            cursor = newestHistoryCursor(threadId) ?: return
         }
-        repeat(8) {
-            val currentAnchor = anchor ?: return
-            val (nextAnchor, hasNewer, didAdvance) = loadNewerThreadHistoryIfNeeded(threadId, currentAnchor)
-            val resolvedNextAnchor = nextAnchor ?: newestHistoryAnchor(threadId)
-            if (!didAdvance || resolvedNextAnchor == null) {
-                return
-            }
-            anchor = resolvedNextAnchor
-            if (!hasNewer) {
-                return
+
+        catchUpThreadHistoryToLatest(
+            threadId = threadId,
+            initialCursor = cursor,
+            allowTailFallback = true,
+        )
+    }
+
+    private suspend fun catchUpThreadHistoryToLatest(
+        threadId: String,
+        initialCursor: String,
+        allowTailFallback: Boolean,
+        fallbackThreadObject: JsonObject? = null,
+    ) {
+        var cursor = initialCursor
+        var pageCount = 0
+        var itemCount = 0
+
+        while (pageCount < 200 && itemCount < 10_000) {
+            try {
+                val result = loadNewerThreadHistoryIfNeeded(threadId, cursor)
+                val nextCursor = normalizedHistoryCursor(result.newestCursor)
+                if (!result.didAdvance || nextCursor == null) {
+                    break
+                }
+                cursor = nextCursor
+                pageCount += 1
+                itemCount += maxOf(result.itemCount, 1)
+                if (!result.hasNewer) {
+                    break
+                }
+            } catch (failure: Throwable) {
+                if (!allowTailFallback || !isInvalidHistoryCursorError(failure)) {
+                    throw failure
+                }
+                loadTailThreadHistory(
+                    threadId = threadId,
+                    replaceLocalHistory = state.value.messagesByThread[threadId].orEmpty().isNotEmpty(),
+                    fallbackThreadObject = fallbackThreadObject,
+                )
+                break
             }
         }
     }
@@ -1751,8 +1813,18 @@ class CodeRoverRepository(context: Context) {
         threadId: String,
         itemId: String?,
         previousItemId: String?,
+        cursor: String?,
+        previousCursor: String?,
     ) {
-        if (!shouldCatchUpRealtimeHistory(threadId, itemId, previousItemId)) {
+        if (!shouldCatchUpRealtimeHistory(
+                threadId = threadId,
+                turnId = state.value.activeTurnIdByThread[threadId],
+                itemId = itemId,
+                previousItemId = previousItemId,
+                cursor = cursor,
+                previousCursor = previousCursor,
+            )
+        ) {
             return
         }
         scope.launch {
@@ -1806,8 +1878,11 @@ class CodeRoverRepository(context: Context) {
 
     private fun shouldCatchUpRealtimeHistory(
         threadId: String,
+        turnId: String?,
         itemId: String?,
         previousItemId: String?,
+        cursor: String?,
+        previousCursor: String?,
     ): Boolean {
         val currentState = state.value
         if (!currentState.isConnected) {
@@ -1816,19 +1891,126 @@ class CodeRoverRepository(context: Context) {
         if (currentState.selectedThreadId != threadId) {
             return false
         }
-        val thread = currentState.selectedThread ?: return false
-        if (thread.provider.trim().lowercase() != "codex") {
+
+        val newestCursor = normalizedHistoryCursor(currentState.historyStateByThread[threadId]?.newestCursor)
+        val normalizedCursor = normalizedHistoryCursor(cursor)
+        val normalizedPreviousCursor = normalizedHistoryCursor(previousCursor)
+        if (newestCursor != null) {
+            if (normalizedCursor == newestCursor || normalizedPreviousCursor == newestCursor) {
+                return false
+            }
+            if (normalizedCursor != null || normalizedPreviousCursor != null) {
+                return !currentState.shouldBypassRealtimeHistoryCatchUpForLocallyStartedTurn(
+                    threadId = threadId,
+                    turnId = turnId,
+                    cursor = cursor,
+                    previousCursor = previousCursor,
+                )
+            }
+        }
+
+        if (currentState.shouldBypassRealtimeHistoryCatchUpForLocallyStartedTurn(
+                threadId = threadId,
+                turnId = turnId,
+                cursor = cursor,
+                previousCursor = previousCursor,
+            )
+        ) {
             return false
         }
-        val latestItemId = latestItemIdForRealtimeHistoryCatchUp(
-            historyState = currentState.historyStateByThread[threadId],
-            localMessages = currentState.messagesByThread[threadId].orEmpty(),
+
+        val latestItemId = currentState.messagesByThread[threadId]
+            .orEmpty()
+            .asReversed()
+            .firstOrNull { !it.itemId.isNullOrBlank() }
+            ?.itemId
+            ?.trim()
+
+        return shouldRequestRealtimeHistoryCatchUp(latestItemId, itemId, previousItemId)
+    }
+
+    @Suppress("SameParameterValue")
+    private fun handleRealtimeHistoryEvent(
+        threadId: String,
+        itemId: String?,
+        payload: JsonObject?,
+    ): Boolean {
+        return handleRealtimeHistoryEvent(
+            threadId = threadId,
+            turnId = payload.resolveTurnId() ?: state.value.activeTurnIdByThread[threadId],
+            itemId = itemId,
+            previousItemId = payload.resolvePreviousItemId(),
+            cursor = payload.resolveCursor(),
+            previousCursor = payload.resolvePreviousCursor(),
         )
-        return shouldRequestRealtimeHistoryCatchUp(
-            latestItemId = latestItemId,
-            incomingItemId = itemId,
+    }
+
+    private fun handleRealtimeHistoryEvent(
+        threadId: String,
+        turnId: String?,
+        itemId: String?,
+        previousItemId: String?,
+        cursor: String?,
+        previousCursor: String?,
+    ): Boolean {
+        val needsCatchUp = shouldCatchUpRealtimeHistory(
+            threadId = threadId,
+            turnId = turnId,
+            itemId = itemId,
             previousItemId = previousItemId,
+            cursor = cursor,
+            previousCursor = previousCursor,
         )
+        if (needsCatchUp) {
+            scheduleRealtimeHistoryCatchUp(
+                threadId = threadId,
+                itemId = itemId,
+                previousItemId = previousItemId,
+                cursor = cursor,
+                previousCursor = previousCursor,
+            )
+            return false
+        }
+
+        applyRealtimeHistoryCursorAdvance(
+            threadId = threadId,
+            turnId = turnId,
+            cursor = cursor,
+            previousCursor = previousCursor,
+        )
+        return true
+    }
+
+    private fun applyRealtimeHistoryCursorAdvance(
+        threadId: String,
+        turnId: String?,
+        cursor: String?,
+        previousCursor: String?,
+    ) {
+        val normalizedCursor = normalizedHistoryCursor(cursor) ?: return
+        updateState {
+            val currentHistoryState = historyStateByThread[threadId] ?: ThreadHistoryState()
+            val normalizedTurnId = normalizedIdentifier(turnId) ?: normalizedIdentifier(activeTurnIdByThread[threadId])
+            val nextOldestCursor = normalizedHistoryCursor(currentHistoryState.oldestCursor) ?: normalizedCursor
+            copy(
+                historyStateByThread = historyStateByThread + (
+                    threadId to currentHistoryState.copy(
+                        oldestCursor = nextOldestCursor,
+                        newestCursor = normalizedCursor,
+                        hasOlderOnServer = currentHistoryState.hasOlderOnServer || normalizedHistoryCursor(previousCursor) != null,
+                        hasNewerOnServer = false,
+                    )
+                ),
+                pendingRealtimeSeededTurnIdByThread = if (
+                    normalizedTurnId != null &&
+                    pendingRealtimeSeededTurnIdByThread[threadId] == normalizedTurnId
+                ) {
+                    pendingRealtimeSeededTurnIdByThread - threadId
+                } else {
+                    pendingRealtimeSeededTurnIdByThread
+                },
+            )
+        }
     }
 
     private suspend fun resolveActiveTurnId(threadId: String): String? {
@@ -2705,6 +2887,7 @@ class CodeRoverRepository(context: Context) {
                 updateState {
                     copy(
                         connectionPhase = ConnectionPhase.OFFLINE,
+                        pendingRealtimeSeededTurnIdByThread = emptyMap(),
                         lastErrorMessage = if (isBenignDisconnect) lastErrorMessage else throwable?.message,
                     )
                 }
@@ -2791,18 +2974,7 @@ class CodeRoverRepository(context: Context) {
             "turn/started" -> {
                 val threadId = params.resolveThreadId() ?: return
                 val turnId = params.resolveTurnId()
-                updateState {
-                    copy(
-                        runningThreadIds = runningThreadIds + threadId,
-                        readyThreadIds = readyThreadIds - threadId,
-                        failedThreadIds = failedThreadIds - threadId,
-                        activeTurnIdByThread = if (turnId.isNullOrBlank()) {
-                            activeTurnIdByThread
-                        } else {
-                            activeTurnIdByThread + (threadId to turnId)
-                        },
-                    )
-                }
+                markRealtimeTurnStarted(threadId = threadId, turnId = turnId)
             }
 
             "turn/plan/updated" -> {
@@ -2846,6 +3018,7 @@ class CodeRoverRepository(context: Context) {
                     copy(
                         runningThreadIds = runningThreadIds - threadId,
                         activeTurnIdByThread = activeTurnIdByThread - threadId,
+                        pendingRealtimeSeededTurnIdByThread = pendingRealtimeSeededTurnIdByThread - threadId,
                         readyThreadIds = if (terminalState == ThreadRunBadgeState.READY && selectedThreadId != threadId) readyThreadIds + threadId else readyThreadIds,
                         failedThreadIds = if (terminalState == ThreadRunBadgeState.FAILED && selectedThreadId != threadId) failedThreadIds + threadId else failedThreadIds
                     )
@@ -2879,11 +3052,13 @@ class CodeRoverRepository(context: Context) {
                 val resolvedParams = params ?: return
                 val threadId = params.resolveThreadId() ?: return
                 val itemId = resolvedParams.string("itemId") ?: resolvedParams.string("id")
-                scheduleRealtimeHistoryCatchUp(
+                if (!handleRealtimeHistoryEvent(
                     threadId = threadId,
                     itemId = itemId,
-                    previousItemId = resolvedParams.resolvePreviousItemId(),
-                )
+                    payload = resolvedParams,
+                )) {
+                    return
+                }
                 upsertStreamingMessage(
                     threadId = threadId,
                     role = MessageRole.ASSISTANT,
@@ -2900,11 +3075,13 @@ class CodeRoverRepository(context: Context) {
                 val resolvedParams = params ?: return
                 val threadId = params.resolveThreadId() ?: return
                 val itemId = resolvedParams.string("itemId") ?: resolvedParams.string("id")
-                scheduleRealtimeHistoryCatchUp(
+                if (!handleRealtimeHistoryEvent(
                     threadId = threadId,
                     itemId = itemId,
-                    previousItemId = resolvedParams.resolvePreviousItemId(),
-                )
+                    payload = resolvedParams,
+                )) {
+                    return
+                }
                 upsertStreamingMessage(
                     threadId = threadId,
                     role = MessageRole.SYSTEM,
@@ -2920,11 +3097,13 @@ class CodeRoverRepository(context: Context) {
                 val threadId = resolvedParams.resolveThreadId() ?: return
                 val planState = decodePlanState(resolvedParams)
                 val itemId = resolvedParams.resolveItemId()
-                scheduleRealtimeHistoryCatchUp(
+                if (!handleRealtimeHistoryEvent(
                     threadId = threadId,
                     itemId = itemId,
-                    previousItemId = resolvedParams.resolvePreviousItemId(),
-                )
+                    payload = resolvedParams,
+                )) {
+                    return
+                }
                 upsertStreamingMessage(
                     threadId = threadId,
                     role = MessageRole.SYSTEM,
@@ -2946,11 +3125,13 @@ class CodeRoverRepository(context: Context) {
                 val threadId = params.resolveThreadId() ?: return
                 val fileChanges = decodeFileChangeEntries(resolvedParams)
                 val itemId = resolvedParams.resolveItemId()
-                scheduleRealtimeHistoryCatchUp(
+                if (!handleRealtimeHistoryEvent(
                     threadId = threadId,
                     itemId = itemId,
-                    previousItemId = resolvedParams.resolvePreviousItemId(),
-                )
+                    payload = resolvedParams,
+                )) {
+                    return
+                }
                 upsertStreamingMessage(
                     threadId = threadId,
                     role = MessageRole.SYSTEM,
@@ -2972,11 +3153,13 @@ class CodeRoverRepository(context: Context) {
                 val threadId = resolvedParams.resolveThreadId() ?: return
                 val fileChanges = decodeFileChangeEntries(resolvedParams)
                 val itemId = resolvedParams.resolveItemId()
-                scheduleRealtimeHistoryCatchUp(
+                if (!handleRealtimeHistoryEvent(
                     threadId = threadId,
                     itemId = itemId,
-                    previousItemId = resolvedParams.resolvePreviousItemId(),
-                )
+                    payload = resolvedParams,
+                )) {
+                    return
+                }
                 upsertStreamingMessage(
                     threadId = threadId,
                     role = MessageRole.SYSTEM,
@@ -2995,11 +3178,13 @@ class CodeRoverRepository(context: Context) {
                 val threadId = params.resolveThreadId() ?: return
                 val commandState = decodeCommandState(resolvedParams, completedFallback = false)
                 val itemId = resolvedParams.resolveItemId()
-                scheduleRealtimeHistoryCatchUp(
+                if (!handleRealtimeHistoryEvent(
                     threadId = threadId,
                     itemId = itemId,
-                    previousItemId = resolvedParams.resolvePreviousItemId(),
-                )
+                    payload = resolvedParams,
+                )) {
+                    return
+                }
                 upsertStreamingMessage(
                     threadId = threadId,
                     role = MessageRole.SYSTEM,
@@ -3019,11 +3204,16 @@ class CodeRoverRepository(context: Context) {
                 val threadId = params.resolveThreadId() ?: return
                 val itemId = resolvedParams.resolveItemId()
                 val previousItemId = resolvedParams.resolvePreviousItemId()
-                scheduleRealtimeHistoryCatchUp(
+                if (!handleRealtimeHistoryEvent(
                     threadId = threadId,
+                    turnId = resolvedParams.resolveTurnId() ?: state.value.activeTurnIdByThread[threadId],
                     itemId = itemId,
                     previousItemId = previousItemId,
-                )
+                    cursor = resolvedParams.resolveCursor(),
+                    previousCursor = resolvedParams.resolvePreviousCursor(),
+                )) {
+                    return
+                }
                 when (resolvedParams.resolveMessageKind()) {
                     MessageKind.FILE_CHANGE -> {
                         upsertStreamingMessage(
@@ -3115,6 +3305,7 @@ class CodeRoverRepository(context: Context) {
                     copy(
                         runningThreadIds = runningThreadIds - threadId,
                         activeTurnIdByThread = activeTurnIdByThread - threadId,
+                        pendingRealtimeSeededTurnIdByThread = pendingRealtimeSeededTurnIdByThread - threadId,
                         failedThreadIds = if (selectedThreadId != threadId) failedThreadIds + threadId else failedThreadIds
                     )
                 }
@@ -3169,6 +3360,7 @@ class CodeRoverRepository(context: Context) {
                     } else {
                         activeTurnIdByThread - threadId
                     },
+                    pendingRealtimeSeededTurnIdByThread = pendingRealtimeSeededTurnIdByThread - threadId,
                 )
             }
         }
@@ -3515,7 +3707,11 @@ class CodeRoverRepository(context: Context) {
                 ),
             )
             try {
-                requestWithSandboxFallback("turn/start", params)
+                val response = requestWithSandboxFallback("turn/start", params)?.jsonObjectOrNull()
+                markRealtimeTurnStarted(
+                    threadId = threadId,
+                    turnId = response.resolveTurnId(),
+                )
                 return
             } catch (failure: Throwable) {
                 if (includeStructuredSkillItems && shouldRetryTurnStartWithoutSkillItems(failure)) {
@@ -3524,6 +3720,32 @@ class CodeRoverRepository(context: Context) {
                 }
                 throw failure
             }
+        }
+    }
+
+    private fun markRealtimeTurnStarted(
+        threadId: String,
+        turnId: String?,
+    ) {
+        val normalizedTurnId = normalizedIdentifier(turnId)
+        updateState {
+            val shouldTrackPendingRealtimeSeed = normalizedTurnId != null &&
+                messagesByThread[threadId].orEmpty().hasOptimisticLocalUserTailMessage(normalizedTurnId)
+            copy(
+                runningThreadIds = runningThreadIds + threadId,
+                readyThreadIds = readyThreadIds - threadId,
+                failedThreadIds = failedThreadIds - threadId,
+                activeTurnIdByThread = if (normalizedTurnId == null) {
+                    activeTurnIdByThread
+                } else {
+                    activeTurnIdByThread + (threadId to normalizedTurnId)
+                },
+                pendingRealtimeSeededTurnIdByThread = when {
+                    normalizedTurnId == null -> pendingRealtimeSeededTurnIdByThread
+                    shouldTrackPendingRealtimeSeed -> pendingRealtimeSeededTurnIdByThread + (threadId to normalizedTurnId)
+                    else -> pendingRealtimeSeededTurnIdByThread - threadId
+                },
+            )
         }
     }
 
@@ -3860,7 +4082,8 @@ class CodeRoverRepository(context: Context) {
     private fun persistConversationCache(previous: AppState, updated: AppState) {
         if (previous.threads == updated.threads &&
             previous.selectedThreadId == updated.selectedThreadId &&
-            previous.messagesByThread == updated.messagesByThread
+            previous.messagesByThread == updated.messagesByThread &&
+            previous.historyStateByThread == updated.historyStateByThread
         ) {
             return
         }
@@ -3883,6 +4106,16 @@ class CodeRoverRepository(context: Context) {
         store.saveCachedThreads(cachedThreads)
         store.saveCachedSelectedThreadId(updated.selectedThreadId?.takeIf(cachedThreadIds::contains))
         store.saveCachedMessagesByThread(cachedMessagesByThread)
+        store.saveCachedHistoryStateByThread(
+            cachedThreads
+                .take(8)
+                .mapNotNull { thread ->
+                    updated.historyStateByThread[thread.id]?.let { historyState ->
+                        thread.id to historyState
+                    }
+                }
+                .toMap(),
+        )
     }
 
     private fun scheduleThreadHistoryRetry(threadId: String, reason: String) {
@@ -4251,72 +4484,40 @@ private fun historyMessageSyncKey(message: ChatMessage): String {
 }
 
 private fun mergeHistoryState(
-    threadId: String,
-    existingMessages: List<ChatMessage>,
     currentState: ThreadHistoryState?,
-    historyWindow: JsonObject?,
+    historyWindow: CodeRoverRepository.HistoryWindowState,
     mode: String,
-    mergedMessages: List<ChatMessage>,
 ): ThreadHistoryState {
-    val baseState = currentState ?: if (existingMessages.isNotEmpty()) {
-        ThreadHistoryState(
-            segments = listOf(
-                ThreadHistorySegment(
-                    oldestAnchor = existingMessages.first().toHistoryAnchor(),
-                    newestAnchor = existingMessages.last().toHistoryAnchor(),
-                ),
-            ),
-            oldestLoadedAnchor = existingMessages.first().toHistoryAnchor(),
-            newestLoadedAnchor = existingMessages.last().toHistoryAnchor(),
+    val baseState = currentState ?: ThreadHistoryState()
+    return when (mode) {
+        "tail" -> baseState.copy(
+            oldestCursor = normalizedHistoryCursor(historyWindow.olderCursor),
+            newestCursor = normalizedHistoryCursor(historyWindow.newerCursor),
+            hasOlderOnServer = historyWindow.hasOlder,
+            hasNewerOnServer = historyWindow.hasNewer,
+            isLoadingOlder = false,
+            isTailRefreshing = false,
         )
-    } else {
-        ThreadHistoryState()
+
+        "before" -> baseState.copy(
+            oldestCursor = normalizedHistoryCursor(historyWindow.olderCursor) ?: baseState.oldestCursor,
+            hasOlderOnServer = historyWindow.hasOlder,
+            isLoadingOlder = false,
+            isTailRefreshing = false,
+        )
+
+        "after" -> baseState.copy(
+            newestCursor = normalizedHistoryCursor(historyWindow.newerCursor) ?: baseState.newestCursor,
+            hasNewerOnServer = historyWindow.hasNewer,
+            isLoadingOlder = false,
+            isTailRefreshing = false,
+        )
+
+        else -> baseState.copy(
+            isLoadingOlder = false,
+            isTailRefreshing = false,
+        )
     }
-
-    val oldestAnchor = parseHistoryAnchor(historyWindow?.get("oldestAnchor")?.jsonObjectOrNull() ?: historyWindow?.get("oldest_anchor")?.jsonObjectOrNull())
-        ?: mergedMessages.firstOrNull()?.toHistoryAnchor()
-    val newestAnchor = parseHistoryAnchor(historyWindow?.get("newestAnchor")?.jsonObjectOrNull() ?: historyWindow?.get("newest_anchor")?.jsonObjectOrNull())
-        ?: mergedMessages.lastOrNull()?.toHistoryAnchor()
-
-    if (oldestAnchor == null || newestAnchor == null) {
-        return baseState.copy(isLoadingOlder = false, isTailRefreshing = false)
-    }
-
-    val incomingSegment = ThreadHistorySegment(oldestAnchor = oldestAnchor, newestAnchor = newestAnchor)
-    val mergedSegments = (baseState.segments + incomingSegment)
-        .sortedBy { it.oldestAnchor.createdAt }
-        .fold(mutableListOf<ThreadHistorySegment>()) { acc, segment ->
-            val last = acc.lastOrNull()
-            if (last == null || segment.oldestAnchor.createdAt > last.newestAnchor.createdAt) {
-                acc += segment
-            } else {
-                acc[acc.lastIndex] = ThreadHistorySegment(
-                    oldestAnchor = last.oldestAnchor,
-                    newestAnchor = if (segment.newestAnchor.createdAt > last.newestAnchor.createdAt) segment.newestAnchor else last.newestAnchor,
-                )
-            }
-            acc
-        }
-
-    return ThreadHistoryState(
-        segments = mergedSegments,
-        gaps = mergedSegments.zip(mergedSegments.drop(1)).map { (older, newer) ->
-            ThreadHistoryGap(olderAnchor = older.newestAnchor, newerAnchor = newer.oldestAnchor)
-        },
-        oldestLoadedAnchor = mergedSegments.firstOrNull()?.oldestAnchor,
-        newestLoadedAnchor = mergedSegments.lastOrNull()?.newestAnchor,
-        hasOlderOnServer = when (mode) {
-            "tail" -> (historyWindow?.bool("hasOlder") ?: historyWindow?.bool("has_older") ?: false) || mergedSegments.size > 1
-            "before" -> historyWindow?.bool("hasOlder") ?: historyWindow?.bool("has_older") ?: false
-            else -> baseState.hasOlderOnServer
-        },
-        hasNewerOnServer = when (mode) {
-            "tail", "after" -> historyWindow?.bool("hasNewer") ?: historyWindow?.bool("has_newer") ?: false
-            else -> baseState.hasNewerOnServer
-        },
-        isLoadingOlder = false,
-        isTailRefreshing = false,
-    )
 }
 
 private fun JsonObject?.resolveMessageKind(): MessageKind {
@@ -4383,6 +4584,10 @@ internal fun normalizedIdentifier(value: String?): String? {
     return value?.trim()?.takeIf(String::isNotEmpty)
 }
 
+internal fun normalizedHistoryCursor(value: String?): String? {
+    return value?.trim()?.takeIf(String::isNotEmpty)
+}
+
 internal fun shouldRequestRealtimeHistoryCatchUp(
     latestItemId: String?,
     incomingItemId: String?,
@@ -4401,7 +4606,7 @@ internal fun shouldRequestRealtimeHistoryCatchUp(
 }
 
 internal data class OlderHistoryLoadRequest(
-    val anchor: ThreadHistoryAnchor? = null,
+    val cursor: String? = null,
     val shouldBootstrapTail: Boolean = false,
 )
 
@@ -4409,24 +4614,11 @@ internal fun resolveOlderHistoryLoadRequest(
     historyState: ThreadHistoryState?,
     localMessages: List<ChatMessage>,
 ): OlderHistoryLoadRequest {
-    if (historyState == null) {
-        val anchor = localMessages.firstOrNull()?.toHistoryAnchor()
-        return if (anchor != null) {
-            OlderHistoryLoadRequest(anchor = anchor)
-        } else {
-            OlderHistoryLoadRequest(shouldBootstrapTail = true)
-        }
+    val normalizedCursor = normalizedHistoryCursor(historyState?.oldestCursor)
+    if (historyState?.hasOlderOnServer == true && normalizedCursor != null) {
+        return OlderHistoryLoadRequest(cursor = normalizedCursor)
     }
-
-    if (historyState.gaps.isNotEmpty()) {
-        return OlderHistoryLoadRequest(anchor = historyState.segments.lastOrNull()?.oldestAnchor)
-    }
-
-    if (historyState.hasOlderOnServer) {
-        return OlderHistoryLoadRequest(anchor = historyState.segments.firstOrNull()?.oldestAnchor)
-    }
-
-    return OlderHistoryLoadRequest()
+    return OlderHistoryLoadRequest(shouldBootstrapTail = localMessages.isEmpty() || normalizedCursor == null)
 }
 
 internal fun latestItemIdForRealtimeHistoryCatchUp(
@@ -4434,9 +4626,80 @@ internal fun latestItemIdForRealtimeHistoryCatchUp(
     localMessages: List<ChatMessage>,
 ): String? {
     return normalizedIdentifier(
-        historyState?.newestLoadedAnchor?.itemId
-            ?: localMessages.lastOrNull()?.itemId,
+        localMessages.asReversed().firstOrNull { !it.itemId.isNullOrBlank() }?.itemId,
     )
+}
+
+private fun decodeHistoryWindow(
+    result: JsonObject?,
+    fallbackMessages: List<ChatMessage>,
+): CodeRoverRepository.HistoryWindowState {
+    val historyWindow = result?.get("historyWindow")?.jsonObjectOrNull()
+        ?: result?.get("history_window")?.jsonObjectOrNull()
+    if (historyWindow != null) {
+        return CodeRoverRepository.HistoryWindowState(
+            olderCursor = historyWindow.string("olderCursor") ?: historyWindow.string("older_cursor"),
+            newerCursor = historyWindow.string("newerCursor") ?: historyWindow.string("newer_cursor"),
+            hasOlder = historyWindow.bool("hasOlder") ?: historyWindow.bool("has_older") ?: false,
+            hasNewer = historyWindow.bool("hasNewer") ?: historyWindow.bool("has_newer") ?: false,
+        )
+    }
+
+    return CodeRoverRepository.HistoryWindowState(
+        olderCursor = null,
+        newerCursor = null,
+        hasOlder = false,
+        hasNewer = false,
+    )
+}
+
+internal fun JsonObject?.resolveCursor(): String? {
+    val payload = this ?: return null
+    val envelopeEvent = payload.envelopeEventObject()
+    val nestedEvent = payload["event"]?.jsonObjectOrNull()
+    return firstNonBlank(
+        payload.string("cursor"),
+        payload.string("itemCursor"),
+        payload.string("item_cursor"),
+        payload["item"]?.jsonObjectOrNull()?.string("cursor"),
+        payload["item"]?.jsonObjectOrNull()?.string("itemCursor"),
+        payload["item"]?.jsonObjectOrNull()?.string("item_cursor"),
+        envelopeEvent?.string("cursor"),
+        envelopeEvent?.string("itemCursor"),
+        envelopeEvent?.string("item_cursor"),
+        envelopeEvent?.get("item")?.jsonObjectOrNull()?.string("cursor"),
+        nestedEvent?.string("cursor"),
+        nestedEvent?.string("itemCursor"),
+        nestedEvent?.string("item_cursor"),
+        nestedEvent?.get("item")?.jsonObjectOrNull()?.string("cursor"),
+    )
+}
+
+internal fun JsonObject?.resolvePreviousCursor(): String? {
+    val payload = this ?: return null
+    val envelopeEvent = payload.envelopeEventObject()
+    val nestedEvent = payload["event"]?.jsonObjectOrNull()
+    return firstNonBlank(
+        payload.string("previousCursor"),
+        payload.string("previous_cursor"),
+        payload.string("previousItemCursor"),
+        payload.string("previous_item_cursor"),
+        payload["item"]?.jsonObjectOrNull()?.string("previousCursor"),
+        payload["item"]?.jsonObjectOrNull()?.string("previous_cursor"),
+        envelopeEvent?.string("previousCursor"),
+        envelopeEvent?.string("previous_cursor"),
+        envelopeEvent?.get("item")?.jsonObjectOrNull()?.string("previousCursor"),
+        nestedEvent?.string("previousCursor"),
+        nestedEvent?.string("previous_cursor"),
+        nestedEvent?.get("item")?.jsonObjectOrNull()?.string("previousCursor"),
+    )
+}
+
+private fun isInvalidHistoryCursorError(failure: Throwable): Boolean {
+    val message = failure.message?.lowercase().orEmpty()
+    return message.contains("history.cursor is invalid") ||
+        message.contains("cursor is invalid") ||
+        message.contains("invalid cursor")
 }
 
 private fun normalizeMethodToken(value: String): String {
@@ -4451,12 +4714,41 @@ internal fun AppState.selectedCodexThreadIdForTailSync(): String? {
     if (!isConnected) {
         return null
     }
-    val thread = selectedThread ?: return null
-    if (thread.provider.trim().lowercase() != "codex") {
-        return null
-    }
     val threadId = selectedThreadId ?: return null
     return threadId.takeIf { threadHasActiveOrRunningTurn(it) }
+}
+
+internal fun List<ChatMessage>.hasOptimisticLocalUserTailMessage(turnId: String): Boolean {
+    val normalizedTurnId = normalizedIdentifier(turnId) ?: return false
+    val latestMessage = lastOrNull() ?: return false
+    return latestMessage.role == MessageRole.USER &&
+        latestMessage.itemId.isNullOrBlank() &&
+        (
+            latestMessage.turnId.isNullOrBlank() ||
+                normalizedIdentifier(latestMessage.turnId) == normalizedTurnId
+            )
+}
+
+internal fun AppState.shouldBypassRealtimeHistoryCatchUpForLocallyStartedTurn(
+    threadId: String,
+    turnId: String?,
+    cursor: String?,
+    previousCursor: String?,
+): Boolean {
+    val normalizedTurnId = normalizedIdentifier(turnId) ?: normalizedIdentifier(activeTurnIdByThread[threadId]) ?: return false
+    if (pendingRealtimeSeededTurnIdByThread[threadId] != normalizedTurnId) {
+        return false
+    }
+    val activeTurnId = normalizedIdentifier(activeTurnIdByThread[threadId])
+    if (activeTurnId != null && activeTurnId != normalizedTurnId) {
+        return false
+    }
+    if (!messagesByThread[threadId].orEmpty().hasOptimisticLocalUserTailMessage(normalizedTurnId)) {
+        return false
+    }
+    return normalizedHistoryCursor(cursor) != null ||
+        normalizedHistoryCursor(previousCursor) != null ||
+        normalizedHistoryCursor(historyStateByThread[threadId]?.newestCursor) == null
 }
 
 private fun AppState.threadHasActiveOrRunningTurn(threadId: String): Boolean {

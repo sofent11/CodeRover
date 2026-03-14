@@ -34,7 +34,7 @@ struct TurnView: View {
         let rawMessages = coderover.messagesByThread[thread.id] ?? []
         let timelineChangeToken = coderover.messageRevisionByThread[thread.id] ?? 0
         let historyState = coderover.historyStateByThread[thread.id]
-        let hasOlderHistory = !(historyState?.gaps.isEmpty ?? true) || (historyState?.hasOlderOnServer ?? false)
+        let hasOlderHistory = historyState?.hasOlderOnServer ?? false
         let projectedMessages = TurnTimelineReducer.project(messages: rawMessages).messages
         let assistantRevertStatesByMessageID = projectedMessages.reduce(into: [String: AssistantRevertPresentation]()) {
             partialResult, message in

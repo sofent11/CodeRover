@@ -693,11 +693,12 @@ extension CodeRoverService {
 
         let itemId = extractItemID(from: paramsObject, eventObject: eventObject)
         if let itemId, !itemId.isEmpty {
-            scheduleRealtimeHistoryCatchUp(
+            guard handleRealtimeHistoryEvent(
                 threadId: threadId,
                 itemId: itemId,
-                previousItemId: extractPreviousItemID(from: paramsObject, eventObject: eventObject)
-            )
+                paramsObject: paramsObject,
+                eventObject: eventObject
+            ) else { return }
             appendStreamingSystemItemDelta(
                 threadId: threadId,
                 turnId: resolvedTurnId,
@@ -745,11 +746,12 @@ extension CodeRoverService {
 
         let itemId = extractItemID(from: paramsObject, eventObject: eventObject)
         if let itemId, !itemId.isEmpty {
-            scheduleRealtimeHistoryCatchUp(
+            guard handleRealtimeHistoryEvent(
                 threadId: threadId,
                 itemId: itemId,
-                previousItemId: extractPreviousItemID(from: paramsObject, eventObject: eventObject)
-            )
+                paramsObject: paramsObject,
+                eventObject: eventObject
+            ) else { return }
             appendStreamingSystemItemDelta(
                 threadId: threadId,
                 turnId: resolvedTurnId,
@@ -808,11 +810,13 @@ extension CodeRoverService {
 
         let itemId = extractItemID(from: paramsObject, eventObject: eventObject, itemObject: itemObject)
         if let itemId, !itemId.isEmpty {
-            scheduleRealtimeHistoryCatchUp(
+            guard handleRealtimeHistoryEvent(
                 threadId: threadId,
                 itemId: itemId,
-                previousItemId: extractPreviousItemID(from: paramsObject, eventObject: eventObject, itemObject: itemObject)
-            )
+                paramsObject: paramsObject,
+                eventObject: eventObject,
+                itemObject: itemObject
+            ) else { return }
             appendStreamingSystemItemDelta(
                 threadId: threadId,
                 turnId: resolvedTurnId,
@@ -868,11 +872,13 @@ extension CodeRoverService {
 
         let statusText = decodeCommandExecutionStatusText(payloadObject, isCompleted: false)
         appendCommandExecutionOutputToDetails(itemId: context.itemId, paramsObject: paramsObject, eventObject: eventObject)
-        scheduleRealtimeHistoryCatchUp(
+        guard handleRealtimeHistoryEvent(
             threadId: context.threadId,
             itemId: context.itemId,
-            previousItemId: extractPreviousItemID(from: paramsObject, eventObject: eventObject, itemObject: itemObject)
-        )
+            paramsObject: paramsObject,
+            eventObject: eventObject,
+            itemObject: itemObject
+        ) else { return }
         publishCommandExecutionStatus(
             context: context,
             statusText: statusText,
@@ -919,11 +925,12 @@ extension CodeRoverService {
             return
         }
 
-        scheduleRealtimeHistoryCatchUp(
+        guard handleRealtimeHistoryEvent(
             threadId: context.threadId,
             itemId: context.itemId,
-            previousItemId: extractPreviousItemID(from: paramsObject, eventObject: eventObject)
-        )
+            paramsObject: paramsObject,
+            eventObject: eventObject
+        ) else { return }
         publishCommandExecutionStatus(
             context: context,
             statusText: statusText,
@@ -1740,11 +1747,13 @@ extension CodeRoverService {
         }
 
         if let itemId, !itemId.isEmpty {
-            scheduleRealtimeHistoryCatchUp(
+            guard handleRealtimeHistoryEvent(
                 threadId: threadId,
                 itemId: itemId,
-                previousItemId: extractPreviousItemID(from: paramsObject, eventObject: eventObject, itemObject: itemObject)
-            )
+                paramsObject: paramsObject,
+                eventObject: eventObject,
+                itemObject: itemObject
+            ) else { return false }
             if isCompleted {
                 completeStreamingSystemItemMessage(
                     threadId: threadId,
@@ -1896,6 +1905,97 @@ extension CodeRoverService {
             }
         }
         return nil
+    }
+
+    func extractCursorString(
+        from paramsObject: IncomingParamsObject?,
+        eventObject: IncomingParamsObject?,
+        itemObject: IncomingParamsObject? = nil
+    ) -> String? {
+        let candidates: [String?] = [
+            itemObject?["cursor"]?.stringValue,
+            itemObject?["itemCursor"]?.stringValue,
+            itemObject?["item_cursor"]?.stringValue,
+            paramsObject?["cursor"]?.stringValue,
+            paramsObject?["itemCursor"]?.stringValue,
+            paramsObject?["item_cursor"]?.stringValue,
+            paramsObject?["item"]?.objectValue?["cursor"]?.stringValue,
+            eventObject?["cursor"]?.stringValue,
+            eventObject?["itemCursor"]?.stringValue,
+            eventObject?["item_cursor"]?.stringValue,
+            eventObject?["item"]?.objectValue?["cursor"]?.stringValue,
+        ]
+
+        for candidate in candidates {
+            let trimmed = candidate?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !trimmed.isEmpty {
+                return trimmed
+            }
+        }
+        return nil
+    }
+
+    func extractPreviousCursorString(
+        from paramsObject: IncomingParamsObject?,
+        eventObject: IncomingParamsObject?,
+        itemObject: IncomingParamsObject? = nil
+    ) -> String? {
+        let candidates: [String?] = [
+            itemObject?["previousCursor"]?.stringValue,
+            itemObject?["previous_cursor"]?.stringValue,
+            itemObject?["previousItemCursor"]?.stringValue,
+            itemObject?["previous_item_cursor"]?.stringValue,
+            paramsObject?["previousCursor"]?.stringValue,
+            paramsObject?["previous_cursor"]?.stringValue,
+            paramsObject?["previousItemCursor"]?.stringValue,
+            paramsObject?["previous_item_cursor"]?.stringValue,
+            paramsObject?["item"]?.objectValue?["previousCursor"]?.stringValue,
+            paramsObject?["item"]?.objectValue?["previous_cursor"]?.stringValue,
+            eventObject?["previousCursor"]?.stringValue,
+            eventObject?["previous_cursor"]?.stringValue,
+            eventObject?["previousItemCursor"]?.stringValue,
+            eventObject?["previous_item_cursor"]?.stringValue,
+            eventObject?["item"]?.objectValue?["previousCursor"]?.stringValue,
+            eventObject?["item"]?.objectValue?["previous_cursor"]?.stringValue,
+        ]
+
+        for candidate in candidates {
+            let trimmed = candidate?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !trimmed.isEmpty {
+                return trimmed
+            }
+        }
+        return nil
+    }
+
+    @discardableResult
+    func handleRealtimeHistoryEvent(
+        threadId: String,
+        itemId: String?,
+        paramsObject: IncomingParamsObject?,
+        eventObject: IncomingParamsObject?,
+        itemObject: IncomingParamsObject? = nil
+    ) -> Bool {
+        handleRealtimeHistoryEvent(
+            threadId: threadId,
+            turnId: extractTurnID(from: paramsObject) ?? activeTurnIdByThread[threadId],
+            itemId: itemId,
+            previousItemId: extractPreviousItemID(
+                from: paramsObject,
+                eventObject: eventObject,
+                itemObject: itemObject
+            ),
+            cursor: extractCursorString(
+                from: paramsObject,
+                eventObject: eventObject,
+                itemObject: itemObject
+            ),
+            previousCursor: extractPreviousCursorString(
+                from: paramsObject,
+                eventObject: eventObject,
+                itemObject: itemObject
+            )
+        )
     }
 
     private func extractTextDelta(from paramsObject: IncomingParamsObject) -> String {

@@ -466,93 +466,37 @@ extension CodeRoverService {
 
     func buildLegacyHistoryStateIfNeeded(threadId: String) {
         guard historyStateByThread[threadId] == nil else { return }
-        let messages = messagesByThread[threadId] ?? []
-        guard let first = messages.first, let last = messages.last else { return }
-        historyStateByThread[threadId] = ThreadHistoryState(
-            segments: [
-                ThreadHistorySegment(
-                    oldestAnchor: messageHistoryAnchor(for: first),
-                    newestAnchor: messageHistoryAnchor(for: last)
-                ),
-            ],
-            gaps: [],
-            oldestLoadedAnchor: messageHistoryAnchor(for: first),
-            newestLoadedAnchor: messageHistoryAnchor(for: last),
-            hasOlderOnServer: false,
-            hasNewerOnServer: false,
-            isLoadingOlder: false,
-            isTailRefreshing: false
-        )
+        historyStateByThread[threadId] = ThreadHistoryState()
     }
 
     func mergeHistoryWindow(
         threadId: String,
         mode: ThreadHistoryWindowMode,
         historyMessages _: [ChatMessage],
-        oldestAnchor: ThreadHistoryAnchor?,
-        newestAnchor: ThreadHistoryAnchor?,
+        olderCursor: String?,
+        newerCursor: String?,
         hasOlder: Bool,
         hasNewer: Bool
     ) {
         buildLegacyHistoryStateIfNeeded(threadId: threadId)
 
-        guard let oldestAnchor, let newestAnchor else {
-            var state = historyStateByThread[threadId] ?? ThreadHistoryState()
-            if mode == .tail {
-                state.hasOlderOnServer = hasOlder
-                state.hasNewerOnServer = hasNewer
-            } else if mode == .before {
-                state.hasOlderOnServer = hasOlder
-            } else {
-                state.hasNewerOnServer = hasNewer
-            }
-            state.isLoadingOlder = false
-            state.isTailRefreshing = false
-            historyStateByThread[threadId] = state
-            return
-        }
-
         var state = historyStateByThread[threadId] ?? ThreadHistoryState()
-        let incomingSegment = ThreadHistorySegment(oldestAnchor: oldestAnchor, newestAnchor: newestAnchor)
-        var nextSegments = state.segments + [incomingSegment]
-        nextSegments.sort(by: { lhs, rhs in
-            lhs.oldestAnchor.createdAt < rhs.oldestAnchor.createdAt
-        })
-
-        var mergedSegments: [ThreadHistorySegment] = []
-        for segment in nextSegments {
-            guard let last = mergedSegments.last else {
-                mergedSegments.append(segment)
-                continue
-            }
-
-            if segment.oldestAnchor.createdAt <= last.newestAnchor.createdAt {
-                mergedSegments[mergedSegments.count - 1] = ThreadHistorySegment(
-                    oldestAnchor: last.oldestAnchor,
-                    newestAnchor: maxAnchor(last.newestAnchor, segment.newestAnchor)
-                )
-            } else {
-                mergedSegments.append(segment)
-            }
-        }
-
-        state.segments = mergedSegments
-        state.gaps = zip(mergedSegments, mergedSegments.dropFirst()).map { older, newer in
-            ThreadHistoryGap(
-                olderAnchor: older.newestAnchor,
-                newerAnchor: newer.oldestAnchor
-            )
-        }
-        state.oldestLoadedAnchor = mergedSegments.first?.oldestAnchor
-        state.newestLoadedAnchor = mergedSegments.last?.newestAnchor
 
         switch mode {
         case .tail:
-            state.hasOlderOnServer = hasOlder || !state.gaps.isEmpty || mergedSegments.count > 1
+            state.oldestCursor = normalizedHistoryCursor(olderCursor)
+            state.newestCursor = normalizedHistoryCursor(newerCursor)
             state.hasNewerOnServer = hasNewer
+            state.hasOlderOnServer = hasOlder
         case .before:
+            if let olderCursor = normalizedHistoryCursor(olderCursor) {
+                state.oldestCursor = olderCursor
+            }
             state.hasOlderOnServer = hasOlder
         case .after:
+            if let newerCursor = normalizedHistoryCursor(newerCursor) {
+                state.newestCursor = newerCursor
+            }
             state.hasNewerOnServer = hasNewer
         }
 
