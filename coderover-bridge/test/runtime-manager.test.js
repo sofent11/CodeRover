@@ -270,6 +270,57 @@ function buildCodexThread({
   };
 }
 
+function createDefaultCodexTransportFixture(manager, {
+  threadRef,
+} = {}) {
+  const readCountsByThread = new Map();
+  const sentMethods = [];
+
+  const transport = {
+    send(message) {
+      const parsed = JSON.parse(message);
+      sentMethods.push(parsed.method || "response");
+
+      setImmediate(() => {
+        if (parsed.method === "initialize") {
+          manager.handleCodexTransportMessage(JSON.stringify({
+            jsonrpc: "2.0",
+            id: parsed.id,
+            result: { ok: true },
+          }));
+          return;
+        }
+
+        if (parsed.method === "thread/read") {
+          const threadId = parsed.params?.threadId;
+          readCountsByThread.set(threadId, (readCountsByThread.get(threadId) || 0) + 1);
+          const thread = threadRef.current && threadRef.current.id === threadId
+            ? JSON.parse(JSON.stringify(threadRef.current))
+            : null;
+          manager.handleCodexTransportMessage(JSON.stringify({
+            jsonrpc: "2.0",
+            id: parsed.id,
+            result: thread ? { thread } : {},
+          }));
+          return;
+        }
+
+        manager.handleCodexTransportMessage(JSON.stringify({
+          jsonrpc: "2.0",
+          id: parsed.id,
+          result: {},
+        }));
+      });
+    },
+  };
+
+  return {
+    readCountsByThread,
+    sentMethods,
+    transport,
+  };
+}
+
 test("thread/list forwards Codex cursor metadata while merging thread arrays", async () => {
   const codexFixture = createCodexAdapterFixture({
     threads: [buildCodexThread({ threadId: "codex-thread-list", messageCount: 4 })],
@@ -399,6 +450,81 @@ test("forwarded Codex item delta notifications include cursor metadata when cach
     assert.ok(forwarded.params.cursor);
     assert.ok(forwarded.params.previousCursor);
     assert.equal(forwarded.params.previousItemId, "item-3");
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("legacy Codex event notifications invalidate stale history windows so after reads refetch upstream", async () => {
+  const fixture = createManagerFixtureWithOptions({
+    useDefaultCodexAdapter: true,
+  });
+
+  try {
+    const threadRef = {
+      current: buildCodexThread({
+        threadId: "codex-legacy-event-thread",
+        messageCount: 3,
+        turnId: "turn-legacy",
+      }),
+    };
+    const transportFixture = createDefaultCodexTransportFixture(fixture.manager, { threadRef });
+    fixture.manager.attachCodexTransport(transportFixture.transport);
+
+    const tailMessages = await request(fixture, "legacy-tail", "thread/read", {
+      threadId: threadRef.current.id,
+      history: {
+        mode: "tail",
+        limit: 3,
+      },
+    });
+    const tailResponse = responseById(tailMessages, "legacy-tail");
+    assert.ok(tailResponse);
+    assert.equal(tailResponse.result.historyWindow.servedFromCache, false);
+    assert.deepEqual(
+      tailResponse.result.thread.turns[0].items.map((item) => item.id),
+      ["item-1", "item-2", "item-3"]
+    );
+
+    const nextThread = buildCodexThread({
+      threadId: threadRef.current.id,
+      messageCount: 4,
+      turnId: "turn-legacy",
+    });
+    threadRef.current = nextThread;
+
+    fixture.manager.handleCodexTransportMessage(JSON.stringify({
+      jsonrpc: "2.0",
+      method: "coderover/event",
+      params: {
+        conversationId: nextThread.id,
+        event: {
+          type: "agent_message",
+          item: {
+            id: "item-4",
+            turnId: "turn-legacy",
+          },
+          message: "message-4",
+        },
+      },
+    }));
+
+    const afterMessages = await request(fixture, "legacy-after", "thread/read", {
+      threadId: threadRef.current.id,
+      history: {
+        mode: "after",
+        limit: 3,
+        cursor: tailResponse.result.historyWindow.newerCursor,
+      },
+    });
+    const afterResponse = responseById(afterMessages, "legacy-after");
+    assert.ok(afterResponse);
+    assert.equal(afterResponse.result.historyWindow.servedFromCache, false);
+    assert.deepEqual(
+      afterResponse.result.thread.turns[0].items.map((item) => item.id),
+      ["item-4"]
+    );
+    assert.equal(transportFixture.readCountsByThread.get(threadRef.current.id), 3);
   } finally {
     fixture.cleanup();
   }

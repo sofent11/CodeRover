@@ -900,11 +900,12 @@ function createRuntimeManager({
       return;
     }
 
-    const method = normalizeOptionalString(parsed?.method);
+    const rawMethod = normalizeOptionalString(parsed?.method);
     const params = asObject(parsed?.params);
-    if (!method) {
+    if (!rawMethod) {
       return;
     }
+    const method = normalizeCodexHistoryEventMethod(rawMethod, params);
 
     if (method === "thread/started" && params.thread && typeof params.thread === "object") {
       const decoratedThread = decorateConversationThread(params.thread);
@@ -912,9 +913,7 @@ function createRuntimeManager({
       return;
     }
 
-    const threadId = normalizeOptionalString(
-      params.threadId || params.thread_id || params.conversationId
-    );
+    const threadId = extractCodexNotificationThreadId(params);
     if (!threadId) {
       return;
     }
@@ -924,7 +923,7 @@ function createRuntimeManager({
     }
 
     if (method === "turn/started") {
-      const turnId = normalizeOptionalString(params.turnId || params.turn_id);
+      const turnId = extractCodexNotificationTurnId(params);
       if (turnId) {
         ensureHistoryTurn(entry, turnId, {
           id: turnId,
@@ -938,7 +937,7 @@ function createRuntimeManager({
     }
 
     if (method === "turn/completed") {
-      const turnId = normalizeOptionalString(params.turnId || params.turn_id);
+      const turnId = extractCodexNotificationTurnId(params);
       if (turnId) {
         updateHistoryTurnStatus(entry, turnId, normalizeOptionalString(params.status) || "completed");
         entry.threadBase.updatedAt = new Date().toISOString();
@@ -949,11 +948,11 @@ function createRuntimeManager({
 
     if (method === "item/agentMessage/delta") {
       upsertHistoryCacheTextItem(entry, {
-        turnId: params.turnId || params.turn_id,
-        itemId: params.itemId || params.item_id,
+        turnId: extractCodexNotificationTurnId(params),
+        itemId: extractCodexNotificationItemId(params),
         type: "agent_message",
         role: "assistant",
-        delta: params.delta,
+        delta: extractCodexTextDelta(params),
       });
       writeCodexHistoryCache(threadId, entry);
       return;
@@ -961,10 +960,10 @@ function createRuntimeManager({
 
     if (method === "item/reasoning/textDelta" || method === "item/reasoning/summaryTextDelta") {
       upsertHistoryCacheTextItem(entry, {
-        turnId: params.turnId || params.turn_id,
-        itemId: params.itemId || params.item_id,
+        turnId: extractCodexNotificationTurnId(params),
+        itemId: extractCodexNotificationItemId(params),
         type: "reasoning",
-        delta: params.delta,
+        delta: extractCodexTextDelta(params),
       });
       writeCodexHistoryCache(threadId, entry);
       return;
@@ -972,68 +971,113 @@ function createRuntimeManager({
 
     if (method === "item/toolCall/outputDelta" || method === "item/toolCall/completed") {
       upsertHistoryCacheTextItem(entry, {
-        turnId: params.turnId || params.turn_id,
-        itemId: params.itemId || params.item_id,
+        turnId: extractCodexNotificationTurnId(params),
+        itemId: extractCodexNotificationItemId(params),
         type: "tool_call",
-        delta: params.delta,
-        metadata: normalizeOptionalString(params.toolName) ? { toolName: params.toolName } : null,
-        changes: Array.isArray(params.changes) ? params.changes : [],
+        delta: extractCodexTextDelta(params),
+        metadata: normalizeOptionalString(firstNonEmptyString([
+          params.toolName,
+          params.tool_name,
+          asObject(params.item).toolName,
+          asObject(params.item).tool_name,
+        ])) ? {
+          toolName: firstNonEmptyString([
+            params.toolName,
+            params.tool_name,
+            asObject(params.item).toolName,
+            asObject(params.item).tool_name,
+          ]),
+        } : null,
+        changes: Array.isArray(params.changes)
+          ? params.changes
+          : (Array.isArray(asObject(params.item).changes) ? asObject(params.item).changes : []),
       });
       writeCodexHistoryCache(threadId, entry);
       return;
     }
 
     if (method === "item/commandExecution/outputDelta") {
-      const turnId = normalizeOptionalString(params.turnId || params.turn_id);
-      const itemId = normalizeOptionalString(params.itemId || params.item_id) || `local:${turnId}:command`;
+      const turnId = extractCodexNotificationTurnId(params);
+      const itemId = extractCodexNotificationItemId(params) || `local:${turnId}:command`;
+      const command = firstNonEmptyString([
+        params.command,
+        params.cmd,
+        asObject(params.item).command,
+        asObject(params.item).cmd,
+      ]);
+      const cwd = firstNonEmptyString([
+        params.cwd,
+        params.workingDirectory,
+        params.working_directory,
+        asObject(params.item).cwd,
+        asObject(params.item).workingDirectory,
+        asObject(params.item).working_directory,
+      ]);
+      const status = firstNonEmptyString([
+        params.status,
+        asObject(params.item).status,
+      ]);
       const item = ensureHistoryRecord(entry, {
         turnId,
         itemId,
         type: "command_execution",
         defaults: {
-          command: normalizeOptionalString(params.command),
-          cwd: normalizeOptionalString(params.cwd),
-          status: normalizeOptionalString(params.status) || "running",
+          command,
+          cwd,
+          status: status || "running",
           exitCode: typeof params.exitCode === "number" ? params.exitCode : null,
           durationMs: typeof params.durationMs === "number" ? params.durationMs : null,
-          text: normalizeOptionalString(params.delta) || "",
+          text: extractCodexTextDelta(params) || "",
         },
       });
-      item.itemObject.command = normalizeOptionalString(params.command) || item.itemObject.command || null;
-      item.itemObject.cwd = normalizeOptionalString(params.cwd) || item.itemObject.cwd || null;
-      item.itemObject.status = normalizeOptionalString(params.status) || item.itemObject.status || "running";
+      item.itemObject.command = command || item.itemObject.command || null;
+      item.itemObject.cwd = cwd || item.itemObject.cwd || null;
+      item.itemObject.status = status || item.itemObject.status || "running";
       if (typeof params.exitCode === "number") {
         item.itemObject.exitCode = params.exitCode;
       }
       if (typeof params.durationMs === "number") {
         item.itemObject.durationMs = params.durationMs;
       }
-      item.itemObject.text = normalizeOptionalString(params.delta) || item.itemObject.text || "";
+      item.itemObject.text = extractCodexTextDelta(params) || item.itemObject.text || "";
       writeCodexHistoryCache(threadId, entry);
       return;
     }
 
-    if (method === "turn/plan/updated") {
-      const turnId = normalizeOptionalString(params.turnId || params.turn_id);
-      const itemId = normalizeOptionalString(params.itemId || params.item_id) || `local:${turnId}:plan`;
+    if (method === "turn/plan/updated" || method === "item/plan/delta") {
+      const turnId = extractCodexNotificationTurnId(params);
+      const itemId = extractCodexNotificationItemId(params) || `local:${turnId}:plan`;
       const item = ensureHistoryRecord(entry, {
         turnId,
         itemId,
         type: "plan",
         defaults: {
-          text: normalizeOptionalString(params.delta) || normalizeOptionalString(params.explanation) || "Planning...",
-          explanation: normalizeOptionalString(params.explanation),
-          summary: normalizeOptionalString(params.summary),
-          plan: Array.isArray(params.plan) ? params.plan : [],
+          text: extractCodexTextDelta(params) || normalizeOptionalString(params.explanation) || "Planning...",
+          explanation: firstNonEmptyString([params.explanation, asObject(params.item).explanation]),
+          summary: firstNonEmptyString([params.summary, asObject(params.item).summary]),
+          plan: Array.isArray(params.plan)
+            ? params.plan
+            : (Array.isArray(asObject(params.item).plan) ? asObject(params.item).plan : []),
         },
       });
-      item.itemObject.text = normalizeOptionalString(params.delta) || item.itemObject.text || "";
-      item.itemObject.explanation = normalizeOptionalString(params.explanation) || item.itemObject.explanation || null;
-      item.itemObject.summary = normalizeOptionalString(params.summary) || item.itemObject.summary || null;
+      item.itemObject.text = extractCodexTextDelta(params) || item.itemObject.text || "";
+      item.itemObject.explanation = firstNonEmptyString([params.explanation, asObject(params.item).explanation])
+        || item.itemObject.explanation
+        || null;
+      item.itemObject.summary = firstNonEmptyString([params.summary, asObject(params.item).summary])
+        || item.itemObject.summary
+        || null;
       if (Array.isArray(params.plan)) {
         item.itemObject.plan = params.plan;
+      } else if (Array.isArray(asObject(params.item).plan)) {
+        item.itemObject.plan = asObject(params.item).plan;
       }
       writeCodexHistoryCache(threadId, entry);
+      return;
+    }
+
+    if (shouldInvalidateCodexHistoryCacheForMethod(method)) {
+      codexHistoryCache.delete(threadId);
     }
   }
 
@@ -1048,26 +1092,275 @@ function createRuntimeManager({
       || method === "item/completed";
   }
 
+  function normalizeCodexHistoryEventMethod(rawMethod, params) {
+    const normalizedMethod = normalizeOptionalString(rawMethod);
+    if (!normalizedMethod) {
+      return null;
+    }
+
+    if (normalizedMethod === "coderover/event") {
+      const nestedEventType = extractCodexLegacyEventType(params);
+      if (nestedEventType) {
+        return mapCodexLegacyEventTypeToMethod(nestedEventType);
+      }
+      return normalizedMethod;
+    }
+
+    if (normalizedMethod.startsWith("coderover/event/")) {
+      const suffix = normalizedMethod.slice("coderover/event/".length);
+      return mapCodexLegacyEventTypeToMethod(suffix);
+    }
+
+    const methodToken = normalizeCodexMethodToken(normalizedMethod);
+    if (!methodToken) {
+      return normalizedMethod;
+    }
+
+    if (methodToken === "itemplandelta" || methodToken === "turnplanupdated") {
+      return methodToken === "itemplandelta" ? "item/plan/delta" : "turn/plan/updated";
+    }
+    if (methodToken === "itemcompleted") {
+      return "item/completed";
+    }
+    if (methodToken === "itemstarted") {
+      return "item/started";
+    }
+    if (methodToken === "itemagentmessagedelta") {
+      return "item/agentMessage/delta";
+    }
+    if (methodToken === "itemreasoningtextdelta" || methodToken === "itemreasoningsummarytextdelta") {
+      return methodToken === "itemreasoningsummarytextdelta"
+        ? "item/reasoning/summaryTextDelta"
+        : "item/reasoning/textDelta";
+    }
+    if (methodToken.includes("toolcall")) {
+      if (methodToken.includes("delta") || methodToken.includes("partadded")) {
+        return "item/toolCall/outputDelta";
+      }
+      if (methodToken.includes("completed") || methodToken.includes("finished") || methodToken.includes("done")) {
+        return "item/toolCall/completed";
+      }
+      if (methodToken.includes("started")) {
+        return "item/started";
+      }
+    }
+    if (methodToken.includes("filechange")) {
+      if (methodToken.includes("delta") || methodToken.includes("partadded")) {
+        return "item/fileChange/outputDelta";
+      }
+      if (methodToken.includes("completed") || methodToken.includes("finished") || methodToken.includes("done")) {
+        return "item/completed";
+      }
+      if (methodToken.includes("started")) {
+        return "item/started";
+      }
+    }
+    if (methodToken.includes("commandexecution")) {
+      if (methodToken.includes("terminalinteraction")) {
+        return "item/commandExecution/terminalInteraction";
+      }
+      if (methodToken.includes("delta") || methodToken.includes("output")) {
+        return "item/commandExecution/outputDelta";
+      }
+      if (methodToken.includes("completed") || methodToken.includes("finished") || methodToken.includes("done")) {
+        return "item/completed";
+      }
+      if (methodToken.includes("started")) {
+        return "item/started";
+      }
+    }
+    if (methodToken.includes("turndiff") || methodToken.includes("itemdiff")) {
+      return "turn/diff/updated";
+    }
+
+    return normalizedMethod;
+  }
+
+  function extractCodexLegacyEventType(params) {
+    const eventObject = extractCodexEnvelopeEvent(params);
+    return firstNonEmptyString([
+      eventObject.type,
+      eventObject.event_type,
+      asObject(params.event).type,
+      asObject(params.event).event_type,
+      params.type,
+      params.event_type,
+    ]);
+  }
+
+  function mapCodexLegacyEventTypeToMethod(eventType) {
+    const normalizedEventType = normalizeCodexMethodToken(eventType);
+    if (!normalizedEventType) {
+      return "coderover/event";
+    }
+
+    if (normalizedEventType === "agentmessagecontentdelta" || normalizedEventType === "agentmessagedelta") {
+      return "item/agentMessage/delta";
+    }
+    if (normalizedEventType === "itemcompleted" || normalizedEventType === "agentmessage") {
+      return "item/completed";
+    }
+    if (normalizedEventType === "itemstarted") {
+      return "item/started";
+    }
+    if (normalizedEventType === "execcommandoutputdelta") {
+      return "item/commandExecution/outputDelta";
+    }
+    if (normalizedEventType === "execcommandbegin" || normalizedEventType === "execcommandend") {
+      return "item/completed";
+    }
+    if (normalizedEventType === "turndiffupdated" || normalizedEventType === "turndiff") {
+      return "turn/diff/updated";
+    }
+    if (normalizedEventType === "patchapplybegin" || normalizedEventType === "patchapplyend") {
+      return "item/completed";
+    }
+    return `coderover/event/${eventType}`;
+  }
+
+  function shouldInvalidateCodexHistoryCacheForMethod(method) {
+    const normalizedMethod = normalizeOptionalString(method);
+    if (!normalizedMethod) {
+      return false;
+    }
+    if (normalizedMethod === "thread/tokenUsage/updated" || normalizedMethod === "account/rateLimits/updated") {
+      return false;
+    }
+    return normalizedMethod.startsWith("item/")
+      || normalizedMethod.startsWith("turn/")
+      || normalizedMethod.startsWith("coderover/event");
+  }
+
+  function normalizeCodexMethodToken(value) {
+    return normalizeOptionalString(value)
+      ?.toLowerCase()
+      .replace(/[_\-\s]/g, "")
+      || null;
+  }
+
+  function extractCodexEnvelopeEvent(params) {
+    if (!params || typeof params !== "object") {
+      return {};
+    }
+    const messageEnvelope = asObject(params.msg);
+    if (Object.keys(messageEnvelope).length > 0) {
+      return messageEnvelope;
+    }
+    return asObject(params.event);
+  }
+
+  function extractCodexNotificationThreadId(params) {
+    const payload = asObject(params);
+    const envelopeEvent = extractCodexEnvelopeEvent(payload);
+    const nestedEvent = asObject(payload.event);
+    return firstNonEmptyString([
+      payload.threadId,
+      payload.thread_id,
+      payload.conversationId,
+      payload.conversation_id,
+      asObject(payload.thread).id,
+      asObject(payload.turn).threadId,
+      asObject(payload.turn).thread_id,
+      asObject(payload.item).threadId,
+      asObject(payload.item).thread_id,
+      envelopeEvent.threadId,
+      envelopeEvent.thread_id,
+      envelopeEvent.conversationId,
+      envelopeEvent.conversation_id,
+      asObject(envelopeEvent.thread).id,
+      asObject(envelopeEvent.turn).threadId,
+      asObject(envelopeEvent.turn).thread_id,
+      asObject(envelopeEvent.item).threadId,
+      asObject(envelopeEvent.item).thread_id,
+      nestedEvent.threadId,
+      nestedEvent.thread_id,
+      nestedEvent.conversationId,
+      nestedEvent.conversation_id,
+      asObject(nestedEvent.thread).id,
+      asObject(nestedEvent.turn).threadId,
+      asObject(nestedEvent.turn).thread_id,
+      asObject(nestedEvent.item).threadId,
+      asObject(nestedEvent.item).thread_id,
+    ]);
+  }
+
+  function extractCodexNotificationTurnId(params) {
+    const payload = asObject(params);
+    const envelopeEvent = extractCodexEnvelopeEvent(payload);
+    const nestedEvent = asObject(payload.event);
+    return firstNonEmptyString([
+      asObject(payload.turn).id,
+      payload.turnId,
+      payload.turn_id,
+      asObject(payload.item).turnId,
+      asObject(payload.item).turn_id,
+      envelopeEvent.turnId,
+      envelopeEvent.turn_id,
+      asObject(envelopeEvent.turn).id,
+      asObject(envelopeEvent.item).turnId,
+      asObject(envelopeEvent.item).turn_id,
+      nestedEvent.turnId,
+      nestedEvent.turn_id,
+      asObject(nestedEvent.turn).id,
+      asObject(nestedEvent.item).turnId,
+      asObject(nestedEvent.item).turn_id,
+    ]);
+  }
+
+  function extractCodexNotificationItemId(params) {
+    const payload = asObject(params);
+    const envelopeEvent = extractCodexEnvelopeEvent(payload);
+    const nestedEvent = asObject(payload.event);
+    return firstNonEmptyString([
+      payload.itemId,
+      payload.item_id,
+      payload.id,
+      asObject(payload.item).id,
+      payload.callId,
+      payload.call_id,
+      envelopeEvent.itemId,
+      envelopeEvent.item_id,
+      envelopeEvent.id,
+      asObject(envelopeEvent.item).id,
+      nestedEvent.itemId,
+      nestedEvent.item_id,
+      nestedEvent.id,
+      asObject(nestedEvent.item).id,
+    ]);
+  }
+
+  function extractCodexTextDelta(params) {
+    const payload = asObject(params);
+    const envelopeEvent = extractCodexEnvelopeEvent(payload);
+    const nestedEvent = asObject(payload.event);
+    return firstNonEmptyString([
+      payload.delta,
+      payload.text,
+      payload.message,
+      asObject(payload.item).delta,
+      asObject(payload.item).text,
+      asObject(payload.item).message,
+      envelopeEvent.delta,
+      envelopeEvent.text,
+      envelopeEvent.message,
+      asObject(envelopeEvent.item).delta,
+      asObject(envelopeEvent.item).text,
+      asObject(envelopeEvent.item).message,
+      nestedEvent.delta,
+      nestedEvent.text,
+      nestedEvent.message,
+      asObject(nestedEvent.item).delta,
+      asObject(nestedEvent.item).text,
+      asObject(nestedEvent.item).message,
+    ]);
+  }
+
   function extractNotificationThreadId(params) {
-    return normalizeOptionalString(
-      params.threadId
-      || params.thread_id
-      || params.conversationId
-      || asObject(params.thread)?.id
-      || asObject(params.item)?.threadId
-      || asObject(params.item)?.thread_id
-    );
+    return extractCodexNotificationThreadId(params);
   }
 
   function extractNotificationItemId(params) {
-    return normalizeOptionalString(
-      params.itemId
-      || params.item_id
-      || params.id
-      || asObject(params.item)?.id
-      || params.callId
-      || params.call_id
-    );
+    return extractCodexNotificationItemId(params);
   }
 
   function previousCodexHistoryItemId(threadId, itemId) {
