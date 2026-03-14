@@ -15,6 +15,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.foundation.clickable
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.Archive
 import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material.icons.outlined.PowerSettingsNew
@@ -192,58 +194,36 @@ fun SettingsConnectionCard(
         com.coderover.android.data.model.ConnectionPhase.OFFLINE -> false
     }
     SettingsCard(title = "Connection") {
-        Row(
-            modifier = Modifier.horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            SettingsInfoPill(
-                label = "Bridge",
-                value = connectionStatusLabel(state.connectionPhase),
-                accent = if (state.isConnected) CommandAccent else MaterialTheme.colorScheme.outline,
-            )
-            SettingsInfoPill(
-                label = "Security",
-                value = state.secureConnectionState.statusLabel,
-                accent = if (state.secureConnectionState.statusLabel.contains("encrypted", ignoreCase = true)) {
-                    CommandAccent
-                } else {
-                    MaterialTheme.colorScheme.tertiary
-                },
-            )
-        }
+        Text(
+            text = "Status: ${connectionStatusLabel(state.connectionPhase)}",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        Text(
+            text = "Security: ${state.secureConnectionState.statusLabel}",
+            style = MaterialTheme.typography.bodySmall,
+            color = if (state.secureConnectionState.statusLabel.contains("encrypted", ignoreCase = true)) {
+                CommandAccent
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            },
+        )
 
         state.secureMacFingerprint?.let { fingerprint ->
             Text(
                 text = "Trusted Mac: $fingerprint",
-                style = MaterialTheme.typography.bodyMedium.copy(fontFamily = monoFamily),
+                style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
 
-        when (state.connectionPhase) {
-            com.coderover.android.data.model.ConnectionPhase.CONNECTING -> {
-                Text(
-                    text = "Connecting to bridge...",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            com.coderover.android.data.model.ConnectionPhase.LOADING_CHATS -> {
-                Text(
-                    text = "Loading chats...",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            com.coderover.android.data.model.ConnectionPhase.SYNCING -> {
-                Text(
-                    text = "Syncing workspace...",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            com.coderover.android.data.model.ConnectionPhase.CONNECTED,
-            com.coderover.android.data.model.ConnectionPhase.OFFLINE -> Unit
+        if (state.pairings.isNotEmpty()) {
+            Text(
+                text = "Paired Macs: ${state.pairings.size}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
 
         state.pairings.forEach { pairing ->
@@ -260,35 +240,50 @@ fun SettingsConnectionCard(
             )
         }
 
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Button(
-                onClick = {
-                    haptic.triggerImpactFeedback()
-                    onReconnect()
-                },
-                enabled = !connectionActionInFlight,
-                modifier = Modifier.weight(1f),
-                contentPadding = PaddingValues(horizontal = 8.dp)
-            ) {
-                androidx.compose.material3.Icon(Icons.Outlined.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(4.dp))
-                Text("Reconnect", maxLines = 1, overflow = TextOverflow.Ellipsis)
+        when (state.connectionPhase) {
+            com.coderover.android.data.model.ConnectionPhase.CONNECTING -> {
+                Text(
+                    text = "Connecting to bridge...",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
-            OutlinedButton(
+            com.coderover.android.data.model.ConnectionPhase.LOADING_CHATS -> {
+                Text(
+                    text = "Loading chats...",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            com.coderover.android.data.model.ConnectionPhase.SYNCING -> {
+                Text(
+                    text = "Syncing workspace...",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            com.coderover.android.data.model.ConnectionPhase.CONNECTED,
+            com.coderover.android.data.model.ConnectionPhase.OFFLINE -> Unit
+        }
+
+        if (state.isConnected) {
+            Button(
                 onClick = {
                     haptic.triggerImpactFeedback(com.coderover.android.ui.shared.HapticFeedback.Style.MEDIUM)
                     onDisconnect()
                 },
                 enabled = !connectionActionInFlight,
-                modifier = Modifier.weight(1f),
-                contentPadding = PaddingValues(horizontal = 8.dp)
+                modifier = Modifier.fillMaxWidth(),
+                colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                    containerColor = Danger.copy(alpha = 0.08f),
+                    contentColor = Danger,
+                    disabledContainerColor = Danger.copy(alpha = 0.04f),
+                    disabledContentColor = Danger.copy(alpha = 0.5f),
+                ),
+                shape = RoundedCornerShape(10.dp),
+                contentPadding = PaddingValues(vertical = 10.dp)
             ) {
-                androidx.compose.material3.Icon(Icons.Outlined.PowerSettingsNew, contentDescription = null, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(4.dp))
-                Text("Disconnect", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text("Disconnect", maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.Medium)
             }
         }
     }
@@ -337,7 +332,7 @@ private fun SettingsPairingCard(
                 )
             }
 
-            if (pairing.transportCandidates.size > 1) {
+        if (pairing.transportCandidates.size > 1 && isActive) {
                 val selectedTransport = pairing.transportCandidates.firstOrNull {
                     it.url == (pairing.preferredTransportUrl ?: pairing.lastSuccessfulTransportUrl)
                 } ?: pairing.transportCandidates.first()
@@ -436,17 +431,18 @@ fun SettingsNotificationsCard() {
 @Composable
 fun SettingsArchivedChatsCard(
     threads: List<ThreadSummary>,
-    onUnarchiveThread: (String) -> Unit,
+    onOpenArchivedChats: () -> Unit,
 ) {
-    val archivedThreads = remember(threads) {
-        threads.filter { it.syncState == com.coderover.android.data.model.ThreadSyncState.ARCHIVED_LOCAL }
-            .sortedByDescending { it.updatedAt ?: it.createdAt ?: 0L }
+    val archivedCount = remember(threads) {
+        threads.count { it.syncState == com.coderover.android.data.model.ThreadSyncState.ARCHIVED_LOCAL }
     }
-    var expanded by rememberSaveable { mutableStateOf(false) }
 
     SettingsCard(title = "Archived chats") {
         Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { onOpenArchivedChats() }
+                .padding(vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
@@ -457,56 +453,23 @@ fun SettingsArchivedChatsCard(
                 androidx.compose.material3.Icon(Icons.Outlined.Archive, contentDescription = null)
                 Text("Archived Chats", style = MaterialTheme.typography.bodyLarge)
             }
-            Text(
-                text = archivedThreads.size.toString(),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-
-        if (archivedThreads.isEmpty()) {
-            Text(
-                text = "No archived conversations yet.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        } else {
-            TextButton(onClick = { expanded = !expanded }) {
-                Text(if (expanded) "Hide archived chats" else "Show archived chats")
-            }
-            if (expanded) {
-                archivedThreads.forEach { thread ->
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth(0.72f)
-                                .padding(end = 8.dp),
-                        ) {
-                            Text(
-                                text = thread.displayTitle,
-                                style = MaterialTheme.typography.bodyLarge,
-                            )
-                            val subtitle = listOfNotNull(
-                                thread.projectDisplayName.takeIf { it.isNotBlank() },
-                                relativeTimeLabel(thread.updatedAt ?: thread.createdAt),
-                            ).joinToString(" • ")
-                            if (subtitle.isNotBlank()) {
-                                Text(
-                                    text = subtitle,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                        }
-                        TextButton(onClick = { onUnarchiveThread(thread.id) }) {
-                            Text("Unarchive")
-                        }
-                    }
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                if (archivedCount > 0) {
+                    Text(
+                        text = archivedCount.toString(),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
+                androidx.compose.material3.Icon(
+                    imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                    contentDescription = null,
+                    modifier = Modifier.size(20.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                )
             }
         }
     }
@@ -553,29 +516,9 @@ fun SettingsPairAnotherMacCard(
 fun SettingsAboutCard() {
     SettingsCard(title = "About") {
         Text(
-            text = "Chats are end-to-end encrypted between your Android phone and Mac. Local or tailnet transports only see encrypted traffic and connection metadata.",
+            text = "Chats are end-to-end encrypted between your Android phone and Mac. Local and tailnet transports only carry the encrypted wire stream and connection metadata.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        Row(
-            modifier = Modifier.horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            SettingsInfoPill(
-                label = "Runtime",
-                value = "Mac-hosted",
-                accent = MaterialTheme.colorScheme.primary,
-            )
-            SettingsInfoPill(
-                label = "Bridge",
-                value = "Local",
-                accent = CommandAccent,
-            )
-            SettingsInfoPill(
-                label = "Transport",
-                value = "QR pairing",
-                accent = MaterialTheme.colorScheme.tertiary,
-            )
-        }
     }
 }
