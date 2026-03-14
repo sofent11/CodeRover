@@ -62,7 +62,25 @@ class ContentViewModelTest {
     }
 
     @Test
-    fun maybeDismissPairingEntryClosesPairingAfterConnectionPhaseChanges() {
+    fun maybeDismissPairingEntryStaysVisibleUntilConnectionSucceeds() {
+        val viewModel = ContentViewModel()
+        viewModel.startPairingFlow(ConnectionPhase.OFFLINE)
+        viewModel.markPairingSubmission()
+
+        val shouldStayVisible = viewModel.maybeDismissPairingEntry(
+            appState(
+                pairings = listOf(pairingRecord()),
+                activePairingMacDeviceId = "mac-1",
+                connectionPhase = ConnectionPhase.CONNECTING,
+            ),
+        )
+
+        assertFalse(shouldStayVisible)
+        assertEquals(AppShellContent.PAIRING, viewModel.shellContent(appState()))
+    }
+
+    @Test
+    fun maybeDismissPairingEntryClosesPairingAfterConnectionSucceeds() {
         val viewModel = ContentViewModel()
         viewModel.startPairingFlow(ConnectionPhase.OFFLINE)
         viewModel.markPairingSubmission()
@@ -71,7 +89,7 @@ class ContentViewModelTest {
             appState(
                 pairings = listOf(pairingRecord()),
                 activePairingMacDeviceId = "mac-1",
-                connectionPhase = ConnectionPhase.CONNECTING,
+                connectionPhase = ConnectionPhase.CONNECTED,
             ),
         )
 

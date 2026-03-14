@@ -427,29 +427,19 @@ class CodeRoverRepository(context: Context) {
 
     fun disconnect() {
         scope.launch {
-            connectionEpoch.incrementAndGet()
-            clientMutex.withLock {
-                client?.disconnect()
-                client = null
-            }
-            updateState {
-                copy(
-                    connectionPhase = ConnectionPhase.OFFLINE,
-                    runningThreadIds = emptySet(),
-                    activeTurnIdByThread = emptyMap(),
-                    pendingRealtimeSeededTurnIdByThread = emptyMap(),
-                )
-            }
+            disconnectCurrentClient(resetThreadSession = false)
         }
     }
 
     fun removePairing(macDeviceId: String) {
         scope.launch {
-            val remaining = state.value.pairings.filterNot { it.macDeviceId == macDeviceId }
-            val activeMacDeviceId = state.value.activePairingMacDeviceId.takeUnless { it == macDeviceId }
+            val currentState = state.value
+            val removingActivePairing = currentState.activePairingMacDeviceId == macDeviceId
+            val remaining = currentState.pairings.filterNot { it.macDeviceId == macDeviceId }
+            val activeMacDeviceId = currentState.activePairingMacDeviceId.takeUnless { it == macDeviceId }
                 ?: remaining.maxByOrNull(PairingRecord::lastPairedAt)?.macDeviceId
-            val trustedRegistry = state.value.trustedMacRegistry.copy(
-                records = state.value.trustedMacRegistry.records - macDeviceId,
+            val trustedRegistry = currentState.trustedMacRegistry.copy(
+                records = currentState.trustedMacRegistry.records - macDeviceId,
             )
             store.savePairings(remaining)
             store.saveActivePairingMacDeviceId(activeMacDeviceId)
@@ -469,8 +459,8 @@ class CodeRoverRepository(context: Context) {
                 )
             }
 
-            if (remaining.isEmpty()) {
-                disconnect()
+            if (removingActivePairing || remaining.isEmpty()) {
+                disconnectCurrentClient(resetThreadSession = true)
             }
         }
     }
@@ -508,7 +498,14 @@ class CodeRoverRepository(context: Context) {
             syncRuntimeSelectionContext(thread?.provider ?: state.value.selectedProviderId, refreshModels = state.value.isConnected)
         }
         scope.launch {
-            refreshThreadHistory(threadId, reason = "select-thread")
+            if (!state.value.isConnected) {
+                return@launch
+            }
+            runCatching {
+                refreshThreadHistory(threadId, reason = "select-thread")
+            }.onFailure { failure ->
+                Log.w(TAG, "thread/read refresh failed reason=select-thread threadId=$threadId", failure)
+            }
         }
         scope.launch {
             refreshContextWindowUsage(threadId)
@@ -4200,6 +4197,44 @@ class CodeRoverRepository(context: Context) {
     private suspend fun isThreadHistoryRefreshBusy(threadId: String): Boolean {
         return threadHistoryRefreshMutex.withLock {
             threadHistoryRefreshInFlight.contains(threadId)
+        }
+    }
+
+    private suspend fun disconnectCurrentClient(resetThreadSession: Boolean) {
+        connectionEpoch.incrementAndGet()
+        clientMutex.withLock {
+            client?.disconnect()
+            client = null
+        }
+        if (resetThreadSession) {
+            activeThreadListNextCursor = JsonNull
+            activeThreadListHasMore = false
+            store.saveCachedThreads(emptyList())
+            store.saveCachedSelectedThreadId(null)
+            store.saveCachedMessagesByThread(emptyMap())
+            store.saveCachedHistoryStateByThread(emptyMap())
+        }
+        updateState {
+            copy(
+                connectionPhase = ConnectionPhase.OFFLINE,
+                threads = if (resetThreadSession) emptyList() else threads,
+                selectedThreadId = if (resetThreadSession) null else selectedThreadId,
+                messagesByThread = if (resetThreadSession) emptyMap() else messagesByThread,
+                historyStateByThread = if (resetThreadSession) emptyMap() else historyStateByThread,
+                runningThreadIds = emptySet(),
+                activeTurnIdByThread = emptyMap(),
+                pendingRealtimeSeededTurnIdByThread = emptyMap(),
+                readyThreadIds = if (resetThreadSession) emptySet() else readyThreadIds,
+                failedThreadIds = if (resetThreadSession) emptySet() else failedThreadIds,
+                pendingApproval = null,
+                gitRepoSyncByThread = if (resetThreadSession) emptyMap() else gitRepoSyncByThread,
+                gitBranchTargetsByThread = if (resetThreadSession) emptyMap() else gitBranchTargetsByThread,
+                selectedGitBaseBranchByThread = if (resetThreadSession) emptyMap() else selectedGitBaseBranchByThread,
+                contextWindowUsageByThread = if (resetThreadSession) emptyMap() else contextWindowUsageByThread,
+                assistantRevertPresentationByMessageId = if (resetThreadSession) emptyMap() else assistantRevertPresentationByMessageId,
+                queuedTurnDraftsByThread = if (resetThreadSession) emptyMap() else queuedTurnDraftsByThread,
+                queuePauseMessageByThread = if (resetThreadSession) emptyMap() else queuePauseMessageByThread,
+            )
         }
     }
 

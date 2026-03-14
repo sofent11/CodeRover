@@ -149,7 +149,7 @@ internal class ContentViewModel {
         if (state.pendingTransportSelectionMacDeviceId != null) {
             return false
         }
-        if (state.connectionPhase != pairingEntryBaselinePhase || state.activePairingMacDeviceId != null) {
+        if (state.isConnected) {
             showPairingEntry = false
             pendingPairingDismiss = false
             return true
