@@ -80,13 +80,11 @@ fun CodeRoverApp(
 
     if (state.pairings.isEmpty() || state.pendingTransportSelectionPairing != null) {
         PairingEntryScreen(
-            importText = state.importText,
             errorMessage = state.lastErrorMessage,
             pendingTransportSelectionPairing = state.pendingTransportSelectionPairing,
-            onImportTextChanged = viewModel::updateImportText,
-            onImport = { viewModel.importPairingPayload(state.importText) },
             onScannedPayload = viewModel::importPairingPayload,
             onSelectTransport = viewModel::confirmPendingPairingTransport,
+            onErrorDismissed = viewModel::clearLastErrorMessage,
         )
         return
     }
@@ -336,19 +334,14 @@ private fun CodeRoverAppShell(
                         )
 
                         AppShellContent.PAIRING -> PairingEntryScreen(
-                            importText = state.importText,
                             errorMessage = state.lastErrorMessage,
                             pendingTransportSelectionPairing = state.pendingTransportSelectionPairing,
-                            onImportTextChanged = viewModel::updateImportText,
-                            onImport = {
-                                contentViewModel.markPairingSubmission()
-                                viewModel.importPairingPayload(state.importText)
-                            },
                             onScannedPayload = { payload ->
                                 contentViewModel.markPairingSubmission()
                                 viewModel.importPairingPayload(payload)
                             },
                             onSelectTransport = viewModel::confirmPendingPairingTransport,
+                            onErrorDismissed = viewModel::clearLastErrorMessage,
                         )
 
                         AppShellContent.THREAD -> TurnScreen(

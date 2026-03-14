@@ -45,20 +45,24 @@ import com.coderover.android.ui.components.PairingScannerView
 import com.coderover.android.ui.shared.GlassCard
 import com.coderover.android.ui.theme.Danger
 
+import androidx.compose.material3.AlertDialog
+import com.coderover.android.ui.shared.HapticFeedback
+import android.content.Intent
+import android.provider.Settings
+import androidx.compose.ui.platform.LocalContext
+
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
 fun PairingEntryScreen(
-    importText: String,
     errorMessage: String?,
     pendingTransportSelectionPairing: PairingRecord?,
-    onImportTextChanged: (String) -> Unit,
-    onImport: () -> Unit,
     onScannedPayload: (String) -> Unit,
     onSelectTransport: (String, String) -> Unit,
+    onErrorDismissed: () -> Unit,
 ) {
-    var scannerMode by rememberSaveable { mutableStateOf(true) }
     val transportSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    val clipboardManager = LocalClipboardManager.current
+    val haptic = HapticFeedback.rememberHapticFeedback()
+    val context = LocalContext.current
 
     Box(
         modifier = Modifier
@@ -71,159 +75,96 @@ fun PairingEntryScreen(
                 .statusBarsPadding()
                 .navigationBarsPadding()
                 .padding(24.dp),
-            verticalArrangement = Arrangement.SpaceBetween,
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Spacer(Modifier.height(12.dp))
 
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Surface(
-                    shape = RoundedCornerShape(28.dp),
-                    color = Color.White.copy(alpha = 0.07f),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(alpha = 0.16f)),
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
+            PairingScannerView(
+                modifier = Modifier.fillMaxSize(),
+                onCodeScanned = {
+                    haptic.triggerImpactFeedback()
+                    onScannedPayload(it)
+                },
+                permissionDeniedContent = {
                     Column(
-                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 20.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center,
+                        modifier = Modifier.fillMaxSize()
                     ) {
-                        if (scannerMode) {
-                            PairingScannerView(
-                                modifier = Modifier.size(280.dp),
-                                onCodeScanned = onScannedPayload,
-                                permissionDeniedContent = {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(250.dp)
-                                            .border(2.dp, Color.White.copy(alpha = 0.65f), RoundedCornerShape(20.dp)),
-                                        contentAlignment = Alignment.Center,
-                                    ) {
-                                        Text(
-                                            "Camera access needed",
-                                            color = Color.White,
-                                            style = MaterialTheme.typography.labelLarge,
-                                        )
-                                    }
-                                },
-                            )
-                        } else {
-                            Box(
-                                modifier = Modifier
-                                    .size(250.dp)
-                                    .border(2.dp, Color.White.copy(alpha = 0.65f), RoundedCornerShape(20.dp)),
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                androidx.compose.material3.Icon(
-                                    Icons.Outlined.QrCodeScanner,
-                                    contentDescription = null,
-                                    tint = Color.White.copy(alpha = 0.8f),
-                                    modifier = Modifier.size(44.dp),
-                                )
+                        androidx.compose.material3.Icon(
+                            imageVector = Icons.Outlined.QrCodeScanner, // Equivalent to "camera.fill" roughly or we can use Icons.Outlined.CameraAlt
+                            contentDescription = null,
+                            tint = Color.White.copy(alpha = 0.6f),
+                            modifier = Modifier.size(48.dp)
+                        )
+                        Spacer(Modifier.height(20.dp))
+                        Text(
+                            "Camera access needed",
+                            color = Color.White,
+                            style = MaterialTheme.typography.titleLarge,
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            "Open Settings and allow camera access to scan the pairing QR code.",
+                            color = Color.White.copy(alpha = 0.6f),
+                            style = MaterialTheme.typography.bodyMedium,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.padding(horizontal = 40.dp)
+                        )
+                        Spacer(Modifier.height(20.dp))
+                        Button(
+                            onClick = {
+                                val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                                    data = android.net.Uri.fromParts("package", context.packageName, null)
+                                }
+                                context.startActivity(intent)
                             }
+                        ) {
+                            Text("Open Settings")
                         }
+                    }
+                },
+                overlayContent = {
+                    Column(
+                        modifier = Modifier.fillMaxSize(),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Spacer(Modifier.weight(1f))
+
+                        Box(
+                            modifier = Modifier
+                                .size(250.dp)
+                                .border(2.dp, Color.White.copy(alpha = 0.6f), RoundedCornerShape(20.dp)),
+                        )
 
                         Spacer(Modifier.height(24.dp))
 
                         Text(
-                            text = if (scannerMode) {
-                                "Scan QR code from CodeRover CLI"
-                            } else {
-                                "Paste pairing payload from CodeRover CLI"
-                            },
+                            text = "Scan QR code from CodeRover CLI",
                             color = Color.White,
                             style = MaterialTheme.typography.titleMedium,
-                            textAlign = TextAlign.Center,
                         )
 
-                        Spacer(Modifier.height(10.dp))
-
-                        Text(
-                            text = if (scannerMode) {
-                                "Use the QR code generated by your local bridge."
-                            } else {
-                                "Paste the secure pairing JSON if scanning is not convenient."
-                            },
-                            color = Color.White.copy(alpha = 0.74f),
-                            style = MaterialTheme.typography.bodyMedium,
-                            textAlign = TextAlign.Center,
-                        )
-
-                        Spacer(Modifier.height(16.dp))
-
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            FilterChip(
-                                selected = scannerMode,
-                                onClick = { scannerMode = true },
-                                label = { Text("Scan") },
-                            )
-                            FilterChip(
-                                selected = !scannerMode,
-                                onClick = { scannerMode = false },
-                                label = { Text("Paste") },
-                            )
-                        }
+                        Spacer(Modifier.weight(1f))
                     }
                 }
-            }
-
-            GlassCard(cornerRadius = 24.dp) {
-                Text(
-                    text = if (scannerMode) {
-                        "Point your camera at the pairing QR from your Mac bridge."
-                    } else {
-                        "Paste the secure pairing payload."
-                    },
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-
-                if (!scannerMode) {
-                    Spacer(Modifier.height(14.dp))
-                    OutlinedTextField(
-                        value = importText,
-                        onValueChange = onImportTextChanged,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(180.dp),
-                        label = { Text("Pairing payload") },
-                        shape = RoundedCornerShape(20.dp),
-                    )
-                    Spacer(Modifier.height(16.dp))
-                    TextButton(
-                        onClick = {
-                            val clipboardText = clipboardManager.getText()?.text
-                                ?.takeIf { it.isNotBlank() }
-                                ?: return@TextButton
-                            onImportTextChanged(clipboardText)
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Text("Paste from Clipboard")
-                    }
-                    Spacer(Modifier.height(8.dp))
-                    Button(
-                        onClick = onImport,
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(18.dp),
-                    ) {
-                        Text("Connect to Mac Bridge")
-                    }
-                }
-
-                if (!errorMessage.isNullOrBlank()) {
-                    if (!scannerMode) {
-                        Spacer(Modifier.height(12.dp))
-                    }
-                    Text(
-                        text = errorMessage,
-                        color = Danger,
-                        style = MaterialTheme.typography.labelLarge,
-                    )
-                }
-            }
+            )
         }
+    }
+
+    if (!errorMessage.isNullOrBlank()) {
+        AlertDialog(
+            onDismissRequest = onErrorDismissed,
+            title = { Text("Scan Error") },
+            text = { Text(errorMessage) },
+            confirmButton = {},
+            dismissButton = {
+                TextButton(onClick = onErrorDismissed) {
+                    Text("OK")
+                }
+            }
+        )
     }
 
     pendingTransportSelectionPairing?.takeIf { it.transportCandidates.size > 1 }?.let { pairing ->

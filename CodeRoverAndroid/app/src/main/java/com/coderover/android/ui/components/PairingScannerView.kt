@@ -46,6 +46,7 @@ fun PairingScannerView(
     modifier: Modifier = Modifier,
     onCodeScanned: (String) -> Unit,
     permissionDeniedContent: @Composable (() -> Unit)? = null,
+    overlayContent: @Composable (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
     var hasCameraPermission by remember {
@@ -78,10 +79,15 @@ fun PairingScannerView(
         return
     }
 
-    CameraPreview(
-        modifier = modifier,
-        onCodeScanned = onCodeScanned,
-    )
+    Box(modifier = modifier) {
+        CameraPreview(
+            modifier = Modifier.fillMaxSize(),
+            onCodeScanned = onCodeScanned,
+        )
+        if (overlayContent != null) {
+            overlayContent()
+        }
+    }
 }
 
 @SuppressLint("UnsafeOptInUsageError")
@@ -144,13 +150,6 @@ private fun CameraPreview(
             },
         )
 
-        Box(
-            modifier = Modifier
-                .align(Alignment.Center)
-                .size(250.dp)
-                .border(2.dp, Color.White.copy(alpha = 0.65f), RoundedCornerShape(20.dp))
-                .background(Color.Transparent),
-        )
     }
 }
 

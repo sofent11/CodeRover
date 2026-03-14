@@ -204,6 +204,10 @@ class CodeRoverRepository(context: Context) {
         updateState { copy(importText = value) }
     }
 
+    fun clearLastErrorMessage() {
+        updateState { copy(lastErrorMessage = null) }
+    }
+
     fun importPairingPayload(rawText: String) {
         scope.launch {
             val payload = runCatching {

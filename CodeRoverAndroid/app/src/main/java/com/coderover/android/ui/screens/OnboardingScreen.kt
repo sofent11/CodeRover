@@ -55,11 +55,15 @@ fun OnboardingScreen(onContinue: () -> Unit) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(80.dp)
+                    .height(120.dp)
                     .align(Alignment.BottomCenter)
                     .background(
                         Brush.verticalGradient(
-                            colors = listOf(Color.Transparent, MaterialTheme.colorScheme.background)
+                            colors = listOf(
+                                Color.Transparent,
+                                MaterialTheme.colorScheme.background.copy(alpha = 0.7f),
+                                MaterialTheme.colorScheme.background
+                            )
                         )
                     )
             )
@@ -93,7 +97,7 @@ fun OnboardingScreen(onContinue: () -> Unit) {
             
             Column(
                 modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
+                verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
                 OnboardingStep(number = "1", title = "Install the package", command = "npm install -g coderover")
                 OnboardingStep(number = "2", title = "Start the bridge", command = "coderover up")
@@ -155,40 +159,40 @@ private fun OnboardingStep(
     ) {
         Box(
             modifier = Modifier
-                .padding(top = 2.dp)
-                .size(24.dp)
+                .padding(top = 1.dp)
+                .size(20.dp)
                 .background(Color.Black, CircleShape),
             contentAlignment = Alignment.Center,
         ) {
             Text(number, color = Color.White, style = MaterialTheme.typography.labelSmall)
         }
-        Spacer(Modifier.width(16.dp))
+        Spacer(Modifier.width(10.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(title, style = MaterialTheme.typography.bodyLarge)
             command?.let { cmd ->
-                Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.height(6.dp))
                 Surface(
-                    shape = RoundedCornerShape(12.dp),
+                    shape = RoundedCornerShape(8.dp),
                     color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Row(
-                        modifier = Modifier.padding(start = 12.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
+                        modifier = Modifier.padding(start = 10.dp, end = 0.dp, top = 0.dp, bottom = 0.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Text(
                             text = cmd,
-                            style = MaterialTheme.typography.bodyMedium.copy(fontFamily = monoFamily),
-                            modifier = Modifier.weight(1f)
+                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = monoFamily),
+                            modifier = Modifier.weight(1f).padding(vertical = 8.dp)
                         )
                         IconButton(
                             onClick = { clipboardManager.setText(AnnotatedString(cmd)) },
-                            modifier = Modifier.size(36.dp)
+                            modifier = Modifier.size(32.dp)
                         ) {
                             Icon(
                                 Icons.Outlined.ContentCopy,
                                 contentDescription = "Copy",
-                                modifier = Modifier.size(18.dp),
+                                modifier = Modifier.size(14.dp),
                                 tint = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
