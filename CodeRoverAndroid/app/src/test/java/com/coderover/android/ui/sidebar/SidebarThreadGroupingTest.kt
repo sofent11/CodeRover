@@ -84,6 +84,45 @@ class SidebarThreadGroupingTest {
         assertEquals(listOf("newer", "older"), groups.first().threads.map { it.id })
     }
 
+    @Test
+    fun buildSidebarThreadGroupsShowsOnlyTenThreadsPerProjectByDefault() {
+        val groups = buildSidebarThreadGroups(
+            threads = (1..12).map { index ->
+                thread(
+                    id = "thread-$index",
+                    cwd = "/tmp/project-a",
+                    updatedAt = (1_000L - index),
+                )
+            },
+            query = "",
+        )
+
+        assertEquals(1, groups.size)
+        assertEquals(10, groups.first().threads.size)
+        assertEquals(12, groups.first().totalThreadCount)
+        assertTrue(groups.first().hasMoreThreads)
+    }
+
+    @Test
+    fun buildSidebarThreadGroupsRespectsExpandedVisibleCountForProject() {
+        val groups = buildSidebarThreadGroups(
+            threads = (1..12).map { index ->
+                thread(
+                    id = "thread-$index",
+                    cwd = "/tmp/project-a",
+                    updatedAt = (1_000L - index),
+                )
+            },
+            query = "",
+            visibleCountByProjectId = mapOf("project:/tmp/project-a" to 20),
+        )
+
+        assertEquals(1, groups.size)
+        assertEquals(12, groups.first().threads.size)
+        assertEquals(12, groups.first().totalThreadCount)
+        assertTrue(!groups.first().hasMoreThreads)
+    }
+
     private fun thread(
         id: String,
         title: String = id,

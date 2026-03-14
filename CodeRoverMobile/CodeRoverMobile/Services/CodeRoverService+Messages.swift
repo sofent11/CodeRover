@@ -204,7 +204,7 @@ extension CodeRoverService {
         clearRunningThreadWatch(normalizedNext)
     }
 
-    // Loads thread/read(includeTurns=true) once per thread to backfill old messages.
+    // Loads the latest thread/read history window once per thread and keeps older ranges lazy.
     func loadThreadHistoryIfNeeded(threadId: String, forceRefresh: Bool = false) async throws {
         if !forceRefresh, hydratedThreadIDs.contains(threadId) {
             return
@@ -214,20 +214,25 @@ extension CodeRoverService {
             return
         }
 
+        historyStateByThread[threadId, default: ThreadHistoryState()].isTailRefreshing = true
         loadingThreadIDs.insert(threadId)
-        defer { loadingThreadIDs.remove(threadId) }
-
-        // First try with includeTurns to get full history.
-        // Falls back without includeTurns if the thread has no messages yet
-        // (server returns -32600 "not materialized yet").
-        let paramsWithTurns: JSONValue = .object([
-            "threadId": .string(threadId),
-            "includeTurns": .bool(true),
-        ])
+        defer {
+            loadingThreadIDs.remove(threadId)
+            historyStateByThread[threadId, default: ThreadHistoryState()].isTailRefreshing = false
+        }
 
         var response: RPCMessage
         do {
-            response = try await sendRequest(method: "thread/read", params: paramsWithTurns)
+            response = try await sendRequest(
+                method: "thread/read",
+                params: .object([
+                    "threadId": .string(threadId),
+                    "history": .object([
+                        "mode": .string("tail"),
+                        "limit": .integer(50),
+                    ]),
+                ])
+            )
         } catch let error as CodeRoverServiceError {
             if case .rpcError(let rpcError) = error, rpcError.code == -32600 {
                 // Thread not materialized yet — mark as hydrated and return silently.
@@ -256,6 +261,7 @@ extension CodeRoverService {
         extractContextWindowUsageIfAvailable(threadId: threadId, threadObject: threadObject)
 
         let historyMessages = decodeMessagesFromThreadRead(threadId: threadId, threadObject: threadObject)
+        let historyWindow = decodeHistoryWindow(from: resultObject, fallbackMessages: historyMessages, mode: .tail)
         if !historyMessages.isEmpty {
             let existingMessages = messagesByThread[threadId] ?? []
             let activeThreadIDs = Set(activeTurnIdByThread.keys)
@@ -271,8 +277,129 @@ extension CodeRoverService {
             persistMessages()
         }
 
+        mergeHistoryWindow(
+            threadId: threadId,
+            mode: .tail,
+            historyMessages: historyMessages,
+            oldestAnchor: historyWindow.oldestAnchor,
+            newestAnchor: historyWindow.newestAnchor,
+            hasOlder: historyWindow.hasOlder,
+            hasNewer: historyWindow.hasNewer
+        )
+
         hydratedThreadIDs.insert(threadId)
         updateCurrentOutput(for: threadId)
+    }
+
+    func loadOlderThreadHistoryIfNeeded(threadId: String) async throws {
+        guard isConnected, isInitialized else { return }
+        guard !loadingThreadIDs.contains(threadId) else { return }
+
+        buildLegacyHistoryStateIfNeeded(threadId: threadId)
+        guard let requestAnchor = nextOlderHistoryAnchor(for: threadId) else { return }
+
+        historyStateByThread[threadId, default: ThreadHistoryState()].isLoadingOlder = true
+        loadingThreadIDs.insert(threadId)
+        defer {
+            loadingThreadIDs.remove(threadId)
+            historyStateByThread[threadId, default: ThreadHistoryState()].isLoadingOlder = false
+        }
+
+        let response = try await sendRequest(
+            method: "thread/read",
+            params: .object([
+                "threadId": .string(threadId),
+                "history": .object([
+                    "mode": .string("before"),
+                    "limit": .integer(50),
+                    "anchor": encodeHistoryAnchor(requestAnchor),
+                ]),
+            ])
+        )
+
+        guard let resultObject = response.result?.objectValue,
+              let threadObject = resultObject["thread"]?.objectValue else {
+            throw CodeRoverServiceError.invalidResponse("thread/read response missing thread payload")
+        }
+
+        applyTerminalStatesFromThreadRead(threadId: threadId, threadObject: threadObject)
+        let historyMessages = decodeMessagesFromThreadRead(threadId: threadId, threadObject: threadObject)
+        let historyWindow = decodeHistoryWindow(from: resultObject, fallbackMessages: historyMessages, mode: .before)
+
+        if !historyMessages.isEmpty {
+            let existingMessages = messagesByThread[threadId] ?? []
+            let activeThreadIDs = Set(activeTurnIdByThread.keys)
+            let runningIDs = runningThreadIDs
+            let merged = await Task.detached {
+                Self.mergeHistoryMessages(existingMessages, historyMessages, activeThreadIDs: activeThreadIDs, runningThreadIDs: runningIDs)
+            }.value
+            messagesByThread[threadId] = merged
+            persistMessages()
+            updateCurrentOutput(for: threadId)
+        }
+
+        mergeHistoryWindow(
+            threadId: threadId,
+            mode: .before,
+            historyMessages: historyMessages,
+            oldestAnchor: historyWindow.oldestAnchor,
+            newestAnchor: historyWindow.newestAnchor,
+            hasOlder: historyWindow.hasOlder,
+            hasNewer: historyWindow.hasNewer
+        )
+    }
+
+    func nextOlderHistoryAnchor(for threadId: String) -> ThreadHistoryAnchor? {
+        let state = historyStateByThread[threadId]
+        if let newestSegment = state?.segments.last, (state?.gaps.isEmpty == false) {
+            return newestSegment.oldestAnchor
+        }
+        if state?.hasOlderOnServer == true {
+            return state?.segments.first?.oldestAnchor
+        }
+        return nil
+    }
+
+    func encodeHistoryAnchor(_ anchor: ThreadHistoryAnchor) -> JSONValue {
+        var object: RPCObject = [
+            "createdAt": .string(iso8601HistoryAnchorFormatter.string(from: anchor.createdAt)),
+        ]
+        if let itemId = anchor.itemId, !itemId.isEmpty {
+            object["itemId"] = .string(itemId)
+        }
+        if let turnId = anchor.turnId, !turnId.isEmpty {
+            object["turnId"] = .string(turnId)
+        }
+        return .object(object)
+    }
+
+    func decodeHistoryWindow(
+        from resultObject: RPCObject,
+        fallbackMessages: [ChatMessage],
+        mode: ThreadHistoryWindowMode
+    ) -> (
+        oldestAnchor: ThreadHistoryAnchor?,
+        newestAnchor: ThreadHistoryAnchor?,
+        hasOlder: Bool,
+        hasNewer: Bool
+    ) {
+        let historyWindowObject = resultObject["historyWindow"]?.objectValue
+            ?? resultObject["history_window"]?.objectValue
+        if let historyWindowObject {
+            return (
+                decodeHistoryAnchor(from: historyWindowObject["oldestAnchor"]?.objectValue ?? historyWindowObject["oldest_anchor"]?.objectValue),
+                decodeHistoryAnchor(from: historyWindowObject["newestAnchor"]?.objectValue ?? historyWindowObject["newest_anchor"]?.objectValue),
+                historyWindowObject["hasOlder"]?.boolValue ?? historyWindowObject["has_older"]?.boolValue ?? false,
+                historyWindowObject["hasNewer"]?.boolValue ?? historyWindowObject["has_newer"]?.boolValue ?? false
+            )
+        }
+
+        return (
+            fallbackMessages.first.map(messageHistoryAnchor(for:)),
+            fallbackMessages.last.map(messageHistoryAnchor(for:)),
+            mode != .after && !fallbackMessages.isEmpty,
+            mode != .before && !fallbackMessages.isEmpty
+        )
     }
 
     func applyTerminalStatesFromThreadRead(threadId: String, threadObject: [String: JSONValue]) {
@@ -1956,3 +2083,9 @@ private extension CodeRoverService {
     }
 
 }
+
+private let iso8601HistoryAnchorFormatter: ISO8601DateFormatter = {
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return formatter
+}()

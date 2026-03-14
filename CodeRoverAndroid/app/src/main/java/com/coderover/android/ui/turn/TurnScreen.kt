@@ -35,6 +35,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -55,6 +56,7 @@ import com.coderover.android.data.model.ChatMessage
 import com.coderover.android.ui.theme.monoFamily
 import androidx.compose.animation.core.*
 import androidx.compose.ui.graphics.graphicsLayer
+import kotlinx.coroutines.launch
 
 @Composable
 internal fun PulsingDot(color: Color) {
@@ -95,6 +97,7 @@ fun TurnScreen(
 ) {
     val thread = state.selectedThread ?: return
     val turnViewModel = rememberTurnViewModel(thread.id)
+    val coroutineScope = rememberCoroutineScope()
     var isShowingStatusSheet by remember(thread.id) { mutableStateOf(false) }
     val messages = remember(state.messagesByThread, thread.id) {
         projectTimelineMessages(
@@ -107,6 +110,7 @@ fun TurnScreen(
     }
     val renderItems = remember(visibleMessages) { buildTimelineRenderItems(visibleMessages) }
     val isRunning = state.runningThreadIds.contains(thread.id)
+    val historyState = state.historyStateByThread[thread.id]
     val pendingApproval = state.pendingApproval?.takeIf { approval ->
         approval.threadId == null || approval.threadId == thread.id
     }
@@ -117,6 +121,13 @@ fun TurnScreen(
         renderItems = renderItems,
         hasEarlierMessages = turnViewModel.visibleTailCount < messages.size,
         onLoadEarlierMessages = { turnViewModel.loadEarlierMessages(messages.size) },
+        hasOlderHistory = !(historyState?.gaps.isNullOrEmpty()) || (historyState?.hasOlderOnServer == true),
+        isLoadingOlderHistory = historyState?.isLoadingOlder == true,
+        onLoadOlderHistory = {
+            coroutineScope.launch {
+                viewModel.loadOlderThreadHistory(thread.id)
+            }
+        },
         isRunning = isRunning,
         activeTurnId = state.activeTurnIdByThread[thread.id],
         assistantRevertPresentationByMessageId = state.assistantRevertPresentationByMessageId,

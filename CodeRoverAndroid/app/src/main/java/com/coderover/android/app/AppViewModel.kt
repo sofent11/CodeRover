@@ -65,6 +65,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun refreshThreadsIfConnected() = repository.refreshThreadsIfConnected()
 
+    suspend fun loadMoreThreadsForProject(projectKey: String, minimumVisibleCount: Int) =
+        repository.loadMoreThreadsForProject(projectKey, minimumVisibleCount)
+
     fun removeQueuedDraft(threadId: String, draftId: String) = repository.removeQueuedDraft(threadId, draftId)
 
     fun resumeQueuedDrafts(threadId: String) = repository.resumeQueuedDrafts(threadId)
@@ -89,6 +92,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun refreshRateLimits() = repository.refreshRateLimits()
 
     fun interruptActiveTurn() = repository.interruptActiveTurn()
+
+    suspend fun loadOlderThreadHistory(threadId: String) = repository.loadOlderThreadHistory(threadId)
 
     fun approvePendingRequest(approve: Boolean) = repository.approvePendingRequest(approve)
 

@@ -33,6 +33,8 @@ struct TurnView: View {
         let stoppedTurnIDs = coderover.stoppedTurnIDs(for: thread.id)
         let rawMessages = coderover.messages(for: thread.id)
         let timelineChangeToken = coderover.messageRevision(for: thread.id)
+        let historyState = coderover.historyStateByThread[thread.id]
+        let hasOlderHistory = !(historyState?.gaps.isEmpty ?? true) || (historyState?.hasOlderOnServer ?? false)
         let projectedMessages: [ChatMessage] = {
             viewModel.updateProjectedTimeline(
                 threadID: thread.id,
@@ -62,6 +64,8 @@ struct TurnView: View {
             stoppedTurnIDs: stoppedTurnIDs,
             assistantRevertStatesByMessageID: assistantRevertStatesByMessageID,
             errorMessage: timelineErrorMessage,
+            hasOlderHistory: hasOlderHistory,
+            isLoadingOlderHistory: historyState?.isLoadingOlder ?? false,
             shouldAnchorToAssistantResponse: shouldAnchorToAssistantResponseBinding,
             isScrolledToBottom: isScrolledToBottomBinding,
             emptyState: AnyView(emptyState),
@@ -127,6 +131,11 @@ struct TurnView: View {
                 guard isInputFocused else { return }
                 isInputFocused = false
                 viewModel.clearComposerAutocomplete()
+            },
+            onLoadOlderHistory: {
+                Task {
+                    try? await coderover.loadOlderThreadHistoryIfNeeded(threadId: thread.id)
+                }
             }
         )
         .environment(\.inlineCommitAndPushAction, showsGitControls ? {

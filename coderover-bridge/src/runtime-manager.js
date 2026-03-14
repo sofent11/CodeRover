@@ -21,6 +21,10 @@ const ERROR_INVALID_PARAMS = -32602;
 const ERROR_INTERNAL = -32603;
 const ERROR_THREAD_NOT_FOUND = -32004;
 const EXTERNAL_SYNC_INTERVAL_MS = 10_000;
+const DEFAULT_HISTORY_WINDOW_LIMIT = 50;
+const DEFAULT_THREAD_LIST_PAGE_SIZE = 60;
+const CODEX_HISTORY_CACHE_THREAD_LIMIT = 20;
+const CODEX_HISTORY_CACHE_MESSAGE_LIMIT = 50;
 
 function createRuntimeManager({
   sendApplicationMessage,
@@ -38,6 +42,7 @@ function createRuntimeManager({
   const store = providedStore || createRuntimeStore({ baseDir: storeBaseDir });
   const pendingClientRequests = new Map();
   const activeRunsByThread = new Map();
+  const codexHistoryCache = new Map();
 
   let codexWarm = false;
   let codexWarmPromise = null;
@@ -226,7 +231,13 @@ function createRuntimeManager({
             const threadMeta = await requireThreadMeta(params.threadId || params.thread_id);
             if (threadMeta.provider === "codex") {
               await ensureCodexWarm();
-              return codexAdapter.startTurn(stripProviderField(params));
+              const result = await codexAdapter.startTurn(stripProviderField(params));
+              seedCodexHistoryCacheWithUserInput(
+                threadMeta.id,
+                normalizeOptionalString(result?.turnId || result?.turn_id),
+                params
+              );
+              return result;
             }
 
             if (activeRunsByThread.has(threadMeta.id)) {
@@ -346,16 +357,19 @@ function createRuntimeManager({
   function attachCodexTransport(transport) {
     codexWarm = false;
     codexWarmPromise = null;
+    codexHistoryCache.clear();
     codexAdapter.attachTransport(transport);
   }
 
   function handleCodexTransportMessage(rawMessage) {
     codexAdapter.handleIncomingRaw(rawMessage);
+    handleCodexHistoryCacheEvent(rawMessage);
   }
 
   function handleCodexTransportClosed(reason) {
     codexWarm = false;
     codexWarmPromise = null;
+    codexHistoryCache.clear();
     codexAdapter.handleTransportClosed(reason);
   }
 
@@ -453,24 +467,40 @@ function createRuntimeManager({
 
   async function listThreads(params) {
     const archived = Boolean(params?.archived);
-    const coderoverThreads = await listConversationThreads(params, archived);
+    const coderoverPage = await listConversationThreads(params, archived);
     const managedThreads = store.listThreadMetas()
       .filter((entry) => entry.provider !== "codex")
       .filter((entry) => Boolean(entry.archived) === archived)
       .map((entry) => buildManagedThreadObject(entry));
 
-    return mergeThreadLists([...coderoverThreads, ...managedThreads]);
+    return {
+      threads: mergeThreadLists([...coderoverPage.threads, ...managedThreads]),
+      nextCursor: coderoverPage.nextCursor,
+      hasMore: coderoverPage.hasMore,
+      pageSize: coderoverPage.pageSize,
+    };
   }
 
   async function listConversationThreads(params, archived) {
     if (!codexAdapter.isAvailable()) {
-      return [];
+      return {
+        threads: [],
+        nextCursor: null,
+        hasMore: false,
+        pageSize: normalizePositiveInteger(params?.limit) || DEFAULT_THREAD_LIST_PAGE_SIZE,
+      };
     }
 
     await ensureCodexWarm();
-    const result = await codexAdapter.listThreads(stripProviderField(params || {}));
+    const normalizedParams = {
+      ...stripProviderField(params || {}),
+    };
+    if (normalizePositiveInteger(normalizedParams.limit) == null) {
+      normalizedParams.limit = DEFAULT_THREAD_LIST_PAGE_SIZE;
+    }
+    const result = await codexAdapter.listThreads(normalizedParams);
     const threads = extractThreadArray(result).map((thread) => decorateConversationThread(thread));
-    return threads.filter((thread) => {
+    const filteredThreads = threads.filter((thread) => {
       const overlay = store.getThreadMeta(thread.id);
       const overlayArchived = overlay?.archived;
       if (overlayArchived != null) {
@@ -478,6 +508,13 @@ function createRuntimeManager({
       }
       return archived === Boolean(params?.archived);
     });
+    const nextCursor = extractThreadListCursor(result);
+    return {
+      threads: filteredThreads,
+      nextCursor,
+      hasMore: nextCursor != null,
+      pageSize: threads.length,
+    };
   }
 
   async function readThread(params) {
@@ -485,18 +522,7 @@ function createRuntimeManager({
     const threadMeta = await requireThreadMeta(threadId);
 
     if (threadMeta.provider === "codex") {
-      await ensureCodexWarm();
-      const result = await codexAdapter.readThread(params);
-      const threadObject = extractThreadFromResult(result);
-      if (!threadObject) {
-        throw createRuntimeError(ERROR_THREAD_NOT_FOUND, `Thread not found: ${threadId}`);
-      }
-
-      const decoratedThread = decorateConversationThread(threadObject);
-      upsertOverlayFromThread(decoratedThread);
-      return {
-        thread: decoratedThread,
-      };
+      return readCodexThread(threadId, params);
     }
 
     await getManagedProviderAdapter(threadMeta.provider).hydrateThread(threadMeta);
@@ -558,6 +584,472 @@ function createRuntimeManager({
       return geminiAdapter;
     }
     throw createMethodError(`Managed adapter unavailable for provider: ${provider}`);
+  }
+
+  async function readCodexThread(threadId, params) {
+    await ensureCodexWarm();
+    const historyRequest = normalizeHistoryRequest(params?.history);
+
+    if (!historyRequest) {
+      const result = await codexAdapter.readThread(stripProviderField(params));
+      const threadObject = extractThreadFromResult(result);
+      if (!threadObject) {
+        throw createRuntimeError(ERROR_THREAD_NOT_FOUND, `Thread not found: ${threadId}`);
+      }
+
+      const decoratedThread = decorateConversationThread(threadObject);
+      upsertOverlayFromThread(decoratedThread);
+      primeCodexHistoryCache(threadId, decoratedThread);
+      return {
+        thread: decoratedThread,
+      };
+    }
+
+    const cachedWindow = readCodexHistoryWindowFromCache(threadId, historyRequest);
+    if (cachedWindow) {
+      return cachedWindow;
+    }
+
+    const fullSnapshot = await fetchFullCodexThreadSnapshot(threadId, params);
+    return buildCodexHistoryWindowResponse(fullSnapshot, historyRequest, false);
+  }
+
+  async function fetchFullCodexThreadSnapshot(threadId, params) {
+    const upstreamParams = {
+      ...stripProviderField(params || {}),
+      threadId,
+      includeTurns: true,
+    };
+    delete upstreamParams.history;
+
+    const result = await codexAdapter.readThread(upstreamParams);
+    const threadObject = extractThreadFromResult(result);
+    if (!threadObject) {
+      throw createRuntimeError(ERROR_THREAD_NOT_FOUND, `Thread not found: ${threadId}`);
+    }
+
+    const decoratedThread = decorateConversationThread(threadObject);
+    upsertOverlayFromThread(decoratedThread);
+    primeCodexHistoryCache(threadId, decoratedThread);
+    return createHistorySnapshotFromThread(decoratedThread);
+  }
+
+  function readCodexHistoryWindowFromCache(threadId, historyRequest) {
+    const cacheEntry = touchCodexHistoryCache(threadId);
+    if (!cacheEntry) {
+      return null;
+    }
+    const anchorIndex = historyRequest.anchor
+      ? findHistoryRecordIndexByAnchor(cacheEntry.records, historyRequest.anchor)
+      : -1;
+    const canServe = historyRequest.mode === "tail"
+      || (
+        historyRequest.mode === "before"
+          ? anchorIndex >= 0 && (anchorIndex > 0 || cacheEntry.hasOlder === false)
+          : anchorIndex >= 0 && (anchorIndex < (cacheEntry.records.length - 1) || cacheEntry.hasNewer === false)
+      );
+    if (!canServe) {
+      return null;
+    }
+    return buildCodexHistoryWindowResponse(cacheEntry, historyRequest, true);
+  }
+
+  function buildCodexHistoryWindowResponse(snapshot, historyRequest, servedFromCache) {
+    const records = [...snapshot.records].sort(compareHistoryRecord);
+    const limit = historyRequest.limit;
+    let selected = [];
+
+    if (historyRequest.mode === "tail") {
+      selected = records.slice(Math.max(records.length - limit, 0));
+    } else {
+      const anchorIndex = findHistoryRecordIndexByAnchor(records, historyRequest.anchor);
+      if (anchorIndex < 0) {
+        throw createRuntimeError(ERROR_INVALID_PARAMS, "history.anchor did not match any cached message");
+      }
+      if (historyRequest.mode === "before") {
+        selected = records.slice(Math.max(anchorIndex - limit, 0), anchorIndex);
+      } else {
+        selected = records.slice(anchorIndex + 1, anchorIndex + 1 + limit);
+      }
+    }
+
+    const hasOlder = selected.length > 0
+      ? findHistoryRecordIndexByAnchor(records, historyRecordAnchor(selected[0])) > 0
+      : records.length > 0
+        ? historyRequest.mode !== "tail" || snapshot.hasOlder
+        : false;
+    const hasNewer = selected.length > 0
+      ? findHistoryRecordIndexByAnchor(records, historyRecordAnchor(selected[selected.length - 1])) < (records.length - 1)
+      : false;
+    const thread = rebuildThreadFromHistoryRecords(snapshot.threadBase, selected);
+
+    return {
+      thread,
+      historyWindow: {
+        mode: historyRequest.mode,
+        oldestAnchor: selected.length > 0 ? historyRecordAnchor(selected[0]) : null,
+        newestAnchor: selected.length > 0 ? historyRecordAnchor(selected[selected.length - 1]) : null,
+        hasOlder: hasOlder || (selected.length === 0 && snapshot.hasOlder),
+        hasNewer: hasNewer || (selected.length === 0 && snapshot.hasNewer),
+        isPartial: selected.length !== records.length || snapshot.hasOlder || snapshot.hasNewer,
+        servedFromCache,
+      },
+    };
+  }
+
+  function primeCodexHistoryCache(threadId, threadObject) {
+    const snapshot = createHistorySnapshotFromThread(threadObject);
+    writeCodexHistoryCache(threadId, {
+      ...snapshot,
+      records: snapshot.records.slice(-CODEX_HISTORY_CACHE_MESSAGE_LIMIT),
+      hasOlder: snapshot.records.length > CODEX_HISTORY_CACHE_MESSAGE_LIMIT,
+      hasNewer: false,
+    });
+  }
+
+  function createHistorySnapshotFromThread(threadObject) {
+    const threadBase = cloneThreadBase(threadObject);
+    const records = flattenThreadHistory(threadObject);
+    return {
+      threadId: threadObject.id,
+      threadBase,
+      records,
+      hasOlder: false,
+      hasNewer: false,
+    };
+  }
+
+  function touchCodexHistoryCache(threadId) {
+    const normalizedThreadId = normalizeOptionalString(threadId);
+    if (!normalizedThreadId) {
+      return null;
+    }
+    const entry = codexHistoryCache.get(normalizedThreadId) || null;
+    if (!entry) {
+      return null;
+    }
+    codexHistoryCache.delete(normalizedThreadId);
+    codexHistoryCache.set(normalizedThreadId, entry);
+    return entry;
+  }
+
+  function writeCodexHistoryCache(threadId, entry) {
+    const normalizedThreadId = normalizeOptionalString(threadId);
+    if (!normalizedThreadId) {
+      return;
+    }
+    codexHistoryCache.delete(normalizedThreadId);
+    codexHistoryCache.set(normalizedThreadId, {
+      ...entry,
+      threadId: normalizedThreadId,
+      records: [...entry.records]
+        .sort(compareHistoryRecord)
+        .slice(-CODEX_HISTORY_CACHE_MESSAGE_LIMIT),
+    });
+    while (codexHistoryCache.size > CODEX_HISTORY_CACHE_THREAD_LIMIT) {
+      const oldestKey = codexHistoryCache.keys().next().value;
+      codexHistoryCache.delete(oldestKey);
+    }
+  }
+
+  function seedCodexHistoryCacheWithUserInput(threadId, turnId, params) {
+    const normalizedThreadId = normalizeOptionalString(threadId);
+    const normalizedTurnId = normalizeOptionalString(turnId);
+    if (!normalizedThreadId || !normalizedTurnId) {
+      return;
+    }
+
+    const inputItems = normalizeInputItems(params?.input);
+    if (inputItems.length === 0) {
+      return;
+    }
+
+    const nowIso = new Date().toISOString();
+    const entry = touchCodexHistoryCache(normalizedThreadId) || {
+      threadId: normalizedThreadId,
+      threadBase: {
+        id: normalizedThreadId,
+        provider: "codex",
+        providerSessionId: normalizedThreadId,
+        metadata: buildProviderMetadata("codex"),
+      },
+      records: [],
+      hasOlder: false,
+      hasNewer: false,
+    };
+    entry.threadBase = {
+      ...entry.threadBase,
+      updatedAt: nowIso,
+      preview: inputItems
+        .filter((item) => item.type === "text" && normalizeOptionalString(item.text))
+        .map((item) => item.text)
+        .join("\n")
+        .trim() || entry.threadBase.preview || null,
+    };
+    entry.records.push({
+      turnId: normalizedTurnId,
+      turnMeta: {
+        id: normalizedTurnId,
+        createdAt: nowIso,
+        status: "running",
+      },
+      itemObject: {
+        id: `local:${normalizedTurnId}:user`,
+        type: "user_message",
+        role: "user",
+        content: inputItems,
+        text: inputItems
+          .filter((item) => item.type === "text" && normalizeOptionalString(item.text))
+          .map((item) => item.text)
+          .join("\n")
+          .trim() || null,
+        createdAt: nowIso,
+      },
+      ordinal: nextHistoryOrdinal(entry.records),
+    });
+    writeCodexHistoryCache(normalizedThreadId, entry);
+  }
+
+  function handleCodexHistoryCacheEvent(rawMessage) {
+    let parsed = null;
+    try {
+      parsed = JSON.parse(rawMessage);
+    } catch {
+      return;
+    }
+
+    const method = normalizeOptionalString(parsed?.method);
+    const params = asObject(parsed?.params);
+    if (!method) {
+      return;
+    }
+
+    if (method === "thread/started" && params.thread && typeof params.thread === "object") {
+      const decoratedThread = decorateConversationThread(params.thread);
+      primeCodexHistoryCache(decoratedThread.id, decoratedThread);
+      return;
+    }
+
+    const threadId = normalizeOptionalString(
+      params.threadId || params.thread_id || params.conversationId
+    );
+    if (!threadId) {
+      return;
+    }
+    const entry = touchCodexHistoryCache(threadId);
+    if (!entry) {
+      return;
+    }
+
+    if (method === "turn/started") {
+      const turnId = normalizeOptionalString(params.turnId || params.turn_id);
+      if (turnId) {
+        ensureHistoryTurn(entry, turnId, {
+          id: turnId,
+          createdAt: new Date().toISOString(),
+          status: "running",
+        });
+        entry.threadBase.updatedAt = new Date().toISOString();
+        writeCodexHistoryCache(threadId, entry);
+      }
+      return;
+    }
+
+    if (method === "turn/completed") {
+      const turnId = normalizeOptionalString(params.turnId || params.turn_id);
+      if (turnId) {
+        updateHistoryTurnStatus(entry, turnId, normalizeOptionalString(params.status) || "completed");
+        entry.threadBase.updatedAt = new Date().toISOString();
+        writeCodexHistoryCache(threadId, entry);
+      }
+      return;
+    }
+
+    if (method === "item/agentMessage/delta") {
+      upsertHistoryCacheTextItem(entry, {
+        turnId: params.turnId || params.turn_id,
+        itemId: params.itemId || params.item_id,
+        type: "agent_message",
+        role: "assistant",
+        delta: params.delta,
+      });
+      writeCodexHistoryCache(threadId, entry);
+      return;
+    }
+
+    if (method === "item/reasoning/textDelta" || method === "item/reasoning/summaryTextDelta") {
+      upsertHistoryCacheTextItem(entry, {
+        turnId: params.turnId || params.turn_id,
+        itemId: params.itemId || params.item_id,
+        type: "reasoning",
+        delta: params.delta,
+      });
+      writeCodexHistoryCache(threadId, entry);
+      return;
+    }
+
+    if (method === "item/toolCall/outputDelta" || method === "item/toolCall/completed") {
+      upsertHistoryCacheTextItem(entry, {
+        turnId: params.turnId || params.turn_id,
+        itemId: params.itemId || params.item_id,
+        type: "tool_call",
+        delta: params.delta,
+        metadata: normalizeOptionalString(params.toolName) ? { toolName: params.toolName } : null,
+        changes: Array.isArray(params.changes) ? params.changes : [],
+      });
+      writeCodexHistoryCache(threadId, entry);
+      return;
+    }
+
+    if (method === "item/commandExecution/outputDelta") {
+      const turnId = normalizeOptionalString(params.turnId || params.turn_id);
+      const itemId = normalizeOptionalString(params.itemId || params.item_id) || `local:${turnId}:command`;
+      const item = ensureHistoryRecord(entry, {
+        turnId,
+        itemId,
+        type: "command_execution",
+        defaults: {
+          command: normalizeOptionalString(params.command),
+          cwd: normalizeOptionalString(params.cwd),
+          status: normalizeOptionalString(params.status) || "running",
+          exitCode: typeof params.exitCode === "number" ? params.exitCode : null,
+          durationMs: typeof params.durationMs === "number" ? params.durationMs : null,
+          text: normalizeOptionalString(params.delta) || "",
+        },
+      });
+      item.itemObject.command = normalizeOptionalString(params.command) || item.itemObject.command || null;
+      item.itemObject.cwd = normalizeOptionalString(params.cwd) || item.itemObject.cwd || null;
+      item.itemObject.status = normalizeOptionalString(params.status) || item.itemObject.status || "running";
+      if (typeof params.exitCode === "number") {
+        item.itemObject.exitCode = params.exitCode;
+      }
+      if (typeof params.durationMs === "number") {
+        item.itemObject.durationMs = params.durationMs;
+      }
+      item.itemObject.text = normalizeOptionalString(params.delta) || item.itemObject.text || "";
+      writeCodexHistoryCache(threadId, entry);
+      return;
+    }
+
+    if (method === "turn/plan/updated") {
+      const turnId = normalizeOptionalString(params.turnId || params.turn_id);
+      const itemId = normalizeOptionalString(params.itemId || params.item_id) || `local:${turnId}:plan`;
+      const item = ensureHistoryRecord(entry, {
+        turnId,
+        itemId,
+        type: "plan",
+        defaults: {
+          text: normalizeOptionalString(params.delta) || normalizeOptionalString(params.explanation) || "Planning...",
+          explanation: normalizeOptionalString(params.explanation),
+          summary: normalizeOptionalString(params.summary),
+          plan: Array.isArray(params.plan) ? params.plan : [],
+        },
+      });
+      item.itemObject.text = normalizeOptionalString(params.delta) || item.itemObject.text || "";
+      item.itemObject.explanation = normalizeOptionalString(params.explanation) || item.itemObject.explanation || null;
+      item.itemObject.summary = normalizeOptionalString(params.summary) || item.itemObject.summary || null;
+      if (Array.isArray(params.plan)) {
+        item.itemObject.plan = params.plan;
+      }
+      writeCodexHistoryCache(threadId, entry);
+    }
+  }
+
+  function ensureHistoryTurn(entry, turnId, turnMeta) {
+    const normalizedTurnId = normalizeOptionalString(turnId);
+    if (!normalizedTurnId) {
+      return null;
+    }
+    const existing = entry.records.find((record) => record.turnId === normalizedTurnId);
+    if (existing) {
+      existing.turnMeta = {
+        ...existing.turnMeta,
+        ...turnMeta,
+      };
+      return existing.turnMeta;
+    }
+    return {
+      ...turnMeta,
+      id: normalizedTurnId,
+      createdAt: turnMeta.createdAt || new Date().toISOString(),
+    };
+  }
+
+  function updateHistoryTurnStatus(entry, turnId, status) {
+    const normalizedTurnId = normalizeOptionalString(turnId);
+    if (!normalizedTurnId) {
+      return;
+    }
+    entry.records.forEach((record) => {
+      if (record.turnId === normalizedTurnId) {
+        record.turnMeta = {
+          ...record.turnMeta,
+          status,
+        };
+      }
+    });
+  }
+
+  function upsertHistoryCacheTextItem(entry, { turnId, itemId, type, role = null, delta, metadata = null, changes = null }) {
+    const record = ensureHistoryRecord(entry, {
+      turnId,
+      itemId,
+      type,
+      role,
+      defaults: type === "agent_message"
+        ? { content: [{ type: "text", text: "" }], text: "" }
+        : { text: "" },
+    });
+    const normalizedDelta = normalizeOptionalString(delta);
+    if (normalizedDelta) {
+      if (Array.isArray(record.itemObject.content)) {
+        const firstText = record.itemObject.content.find((contentItem) => contentItem.type === "text");
+        if (firstText) {
+          firstText.text = `${firstText.text || ""}${normalizedDelta}`;
+        } else {
+          record.itemObject.content.push({ type: "text", text: normalizedDelta });
+        }
+      }
+      record.itemObject.text = `${record.itemObject.text || ""}${normalizedDelta}`;
+    }
+    if (metadata) {
+      record.itemObject.metadata = {
+        ...(record.itemObject.metadata || {}),
+        ...metadata,
+      };
+    }
+    if (changes) {
+      record.itemObject.changes = changes;
+    }
+  }
+
+  function ensureHistoryRecord(entry, { turnId, itemId, type, role = null, defaults = {} }) {
+    const normalizedTurnId = normalizeOptionalString(turnId) || "unknown-turn";
+    const normalizedItemId = normalizeOptionalString(itemId) || `local:${normalizedTurnId}:${type}`;
+    const existing = entry.records.find((record) => normalizeOptionalString(record.itemObject.id) === normalizedItemId);
+    if (existing) {
+      return existing;
+    }
+    const nowIso = new Date().toISOString();
+    const turnMeta = ensureHistoryTurn(entry, normalizedTurnId, {
+      id: normalizedTurnId,
+      createdAt: nowIso,
+      status: "running",
+    });
+    const record = {
+      turnId: normalizedTurnId,
+      turnMeta,
+      itemObject: {
+        id: normalizedItemId,
+        type,
+        ...(role ? { role } : {}),
+        createdAt: nowIso,
+        ...defaults,
+      },
+      ordinal: nextHistoryOrdinal(entry.records),
+    };
+    entry.records.push(record);
+    return record;
   }
 
   function createManagedTurnContext(threadMeta, params) {
@@ -992,11 +1484,19 @@ function createRuntimeManager({
     };
   }
 
-  function buildThreadListResult(threads) {
+  function buildThreadListResult(payload) {
+    const threads = Array.isArray(payload) ? payload : payload?.threads || [];
     return {
       data: threads,
       items: threads,
       threads,
+      ...(Array.isArray(payload)
+        ? {}
+        : {
+          nextCursor: payload?.nextCursor ?? null,
+          hasMore: Boolean(payload?.hasMore),
+          pageSize: normalizePositiveInteger(payload?.pageSize) || threads.length,
+        }),
     };
   }
 
@@ -1135,6 +1635,211 @@ function mergeThreadLists(threads) {
     }
     return String(left.id).localeCompare(String(right.id));
   });
+}
+
+function extractThreadListCursor(result) {
+  const cursor = result?.nextCursor ?? result?.next_cursor ?? null;
+  if (cursor == null) {
+    return null;
+  }
+  if (typeof cursor === "string") {
+    const normalized = normalizeOptionalString(cursor);
+    return normalized || null;
+  }
+  return cursor;
+}
+
+function normalizeHistoryRequest(history) {
+  if (!history || typeof history !== "object" || Array.isArray(history)) {
+    return null;
+  }
+  const mode = normalizeOptionalString(history.mode)?.toLowerCase();
+  if (mode !== "tail" && mode !== "before" && mode !== "after") {
+    return null;
+  }
+  const limit = normalizePositiveInteger(history.limit) || DEFAULT_HISTORY_WINDOW_LIMIT;
+  const anchor = history.anchor && typeof history.anchor === "object"
+    ? normalizeHistoryAnchor(history.anchor)
+    : null;
+  if ((mode === "before" || mode === "after") && !anchor) {
+    throw createRuntimeError(ERROR_INVALID_PARAMS, "history.anchor is required for before/after windows");
+  }
+  return {
+    mode,
+    limit,
+    anchor,
+  };
+}
+
+function normalizeHistoryAnchor(anchor) {
+  const createdAt = normalizeTimestampString(anchor.createdAt || anchor.created_at);
+  const itemId = normalizeOptionalString(anchor.itemId || anchor.item_id);
+  const turnId = normalizeOptionalString(anchor.turnId || anchor.turn_id);
+  if (!createdAt) {
+    return null;
+  }
+  return {
+    ...(itemId ? { itemId } : {}),
+    createdAt,
+    ...(turnId ? { turnId } : {}),
+  };
+}
+
+function normalizeTimestampString(value) {
+  if (value == null) {
+    return null;
+  }
+  if (typeof value === "number") {
+    return new Date(value > 10_000_000_000 ? value : value * 1000).toISOString();
+  }
+  if (typeof value !== "string") {
+    return null;
+  }
+  const normalized = value.trim();
+  if (!normalized) {
+    return null;
+  }
+  const asNumber = Number(normalized);
+  if (Number.isFinite(asNumber)) {
+    return normalizeTimestampString(asNumber);
+  }
+  const parsed = Date.parse(normalized);
+  if (Number.isNaN(parsed)) {
+    return null;
+  }
+  return new Date(parsed).toISOString();
+}
+
+function normalizePositiveInteger(value) {
+  const numeric = Number(value);
+  if (!Number.isInteger(numeric) || numeric <= 0) {
+    return null;
+  }
+  return numeric;
+}
+
+function cloneThreadBase(threadObject) {
+  const clone = JSON.parse(JSON.stringify(threadObject || {}));
+  delete clone.turns;
+  return clone;
+}
+
+function flattenThreadHistory(threadObject) {
+  const threadBase = cloneThreadBase(threadObject);
+  const turns = Array.isArray(threadObject?.turns) ? threadObject.turns : [];
+  const records = [];
+  let ordinal = 0;
+
+  turns.forEach((turnObject, turnIndex) => {
+    if (!turnObject || typeof turnObject !== "object") {
+      return;
+    }
+    const turnId = normalizeOptionalString(turnObject.id)
+      || normalizeOptionalString(turnObject.turnId)
+      || normalizeOptionalString(turnObject.turn_id)
+      || `turn-${turnIndex}`;
+    const turnMeta = cloneTurnMeta(turnObject, turnId);
+    const items = Array.isArray(turnObject.items) ? turnObject.items : [];
+    items.forEach((itemObject, itemIndex) => {
+      if (!itemObject || typeof itemObject !== "object") {
+        return;
+      }
+      const itemClone = JSON.parse(JSON.stringify(itemObject));
+      const createdAt = normalizeTimestampString(itemClone.createdAt || itemClone.created_at || turnMeta.createdAt || threadBase.createdAt || new Date().toISOString())
+        || new Date().toISOString();
+      itemClone.createdAt = createdAt;
+      records.push({
+        turnId,
+        turnMeta,
+        itemObject: itemClone,
+        createdAt,
+        createdAtMs: Date.parse(createdAt) || 0,
+        ordinal,
+        turnIndex,
+        itemIndex,
+      });
+      ordinal += 1;
+    });
+  });
+
+  return records.sort(compareHistoryRecord);
+}
+
+function cloneTurnMeta(turnObject, turnId) {
+  const clone = JSON.parse(JSON.stringify(turnObject || {}));
+  delete clone.items;
+  clone.id = turnId;
+  clone.createdAt = normalizeTimestampString(clone.createdAt || clone.created_at || new Date().toISOString()) || new Date().toISOString();
+  return clone;
+}
+
+function compareHistoryRecord(left, right) {
+  const leftTimestamp = Number.isFinite(left?.createdAtMs) ? left.createdAtMs : (Date.parse(left?.createdAt || 0) || 0);
+  const rightTimestamp = Number.isFinite(right?.createdAtMs) ? right.createdAtMs : (Date.parse(right?.createdAt || 0) || 0);
+  if (leftTimestamp !== rightTimestamp) {
+    return leftTimestamp - rightTimestamp;
+  }
+  return (left?.ordinal || 0) - (right?.ordinal || 0);
+}
+
+function historyRecordAnchor(record) {
+  return {
+    ...(normalizeOptionalString(record?.itemObject?.id) ? { itemId: normalizeOptionalString(record.itemObject.id) } : {}),
+    createdAt: record?.createdAt || normalizeTimestampString(record?.itemObject?.createdAt) || new Date().toISOString(),
+    ...(normalizeOptionalString(record?.turnId) ? { turnId: normalizeOptionalString(record.turnId) } : {}),
+  };
+}
+
+function historyAnchorMatchesRecord(record, anchor) {
+  if (!record || !anchor) {
+    return false;
+  }
+  const recordCreatedAt = normalizeTimestampString(record.createdAt || record.itemObject?.createdAt);
+  if (recordCreatedAt !== anchor.createdAt) {
+    return false;
+  }
+  const recordItemId = normalizeOptionalString(record.itemObject?.id);
+  if (anchor.itemId && recordItemId) {
+    return anchor.itemId === recordItemId;
+  }
+  const recordTurnId = normalizeOptionalString(record.turnId);
+  return Boolean(anchor.turnId && recordTurnId && anchor.turnId === recordTurnId);
+}
+
+function findHistoryRecordIndexByAnchor(records, anchor) {
+  if (!anchor) {
+    return -1;
+  }
+  return records.findIndex((record) => historyAnchorMatchesRecord(record, anchor));
+}
+
+function rebuildThreadFromHistoryRecords(threadBase, records) {
+  const normalizedRecords = [...records].sort(compareHistoryRecord);
+  const turnsById = new Map();
+  const turnOrder = [];
+
+  normalizedRecords.forEach((record) => {
+    const turnId = normalizeOptionalString(record.turnId) || "unknown-turn";
+    if (!turnsById.has(turnId)) {
+      turnsById.set(turnId, {
+        ...JSON.parse(JSON.stringify(record.turnMeta || { id: turnId })),
+        id: turnId,
+        createdAt: normalizeTimestampString(record.turnMeta?.createdAt || record.createdAt) || record.createdAt,
+        items: [],
+      });
+      turnOrder.push(turnId);
+    }
+    turnsById.get(turnId).items.push(JSON.parse(JSON.stringify(record.itemObject)));
+  });
+
+  return {
+    ...JSON.parse(JSON.stringify(threadBase || {})),
+    turns: turnOrder.map((turnId) => turnsById.get(turnId)),
+  };
+}
+
+function nextHistoryOrdinal(records) {
+  return records.reduce((maxValue, record) => Math.max(maxValue, Number(record?.ordinal) || 0), -1) + 1;
 }
 
 function normalizeInputItems(input) {

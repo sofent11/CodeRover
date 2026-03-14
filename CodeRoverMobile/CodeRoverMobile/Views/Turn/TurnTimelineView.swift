@@ -23,6 +23,8 @@ struct TurnTimelineView<EmptyState: View, Composer: View>: View {
     let assistantRevertStatesByMessageID: [String: AssistantRevertPresentation]
     let isRetryAvailable: Bool
     let errorMessage: String?
+    let hasOlderHistory: Bool
+    let isLoadingOlderHistory: Bool
 
     @Binding var shouldAnchorToAssistantResponse: Bool
     @Binding var isScrolledToBottom: Bool
@@ -30,6 +32,7 @@ struct TurnTimelineView<EmptyState: View, Composer: View>: View {
     let onRetryUserMessage: (String) -> Void
     let onTapAssistantRevert: (ChatMessage) -> Void
     let onTapOutsideComposer: () -> Void
+    let onLoadOlderHistory: () -> Void
     @ViewBuilder let emptyState: () -> EmptyState
     @ViewBuilder let composer: () -> Composer
 
@@ -84,6 +87,25 @@ struct TurnTimelineView<EmptyState: View, Composer: View>: View {
                 ScrollView {
                     VStack(spacing: 0) {
                         LazyVStack(spacing: 20) {
+                            if hasOlderHistory || isLoadingOlderHistory {
+                                VStack(spacing: 8) {
+                                    if isLoadingOlderHistory {
+                                        ProgressView()
+                                            .controlSize(.small)
+                                    } else {
+                                        Text("Loading earlier messages…")
+                                            .font(AppFont.caption())
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 8)
+                                .onAppear {
+                                    guard hasOlderHistory, !isLoadingOlderHistory else { return }
+                                    onLoadOlderHistory()
+                                }
+                            }
+
                             if hasEarlierMessages {
                                 Button {
                                     withAnimation(.easeOut(duration: 0.15)) {

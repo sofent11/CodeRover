@@ -14,11 +14,16 @@ data class SidebarThreadGroup(
     val projectPath: String? = null,
     val kind: SidebarThreadGroupKind,
     val threads: List<ThreadSummary>,
+    val totalThreadCount: Int,
 )
+
+val SidebarThreadGroup.hasMoreThreads: Boolean
+    get() = kind == SidebarThreadGroupKind.PROJECT && threads.size < totalThreadCount
 
 fun buildSidebarThreadGroups(
     threads: List<ThreadSummary>,
     query: String,
+    visibleCountByProjectId: Map<String, Int> = emptyMap(),
 ): List<SidebarThreadGroup> {
     val normalizedQuery = query.trim()
     val filteredThreads = if (normalizedQuery.isEmpty()) {
@@ -41,7 +46,10 @@ fun buildSidebarThreadGroups(
                 label = representative.projectDisplayName,
                 projectPath = representative.normalizedProjectPath,
                 kind = SidebarThreadGroupKind.PROJECT,
-                threads = groupThreads.sortedByDescending { it.updatedAt ?: it.createdAt ?: 0L },
+                threads = groupThreads
+                    .sortedByDescending { it.updatedAt ?: it.createdAt ?: 0L }
+                    .take((visibleCountByProjectId["project:$projectKey"] ?: 10).coerceAtLeast(10)),
+                totalThreadCount = groupThreads.size,
             )
         }
         .sortedWith(
@@ -63,6 +71,7 @@ fun buildSidebarThreadGroups(
                     label = "Archived",
                     kind = SidebarThreadGroupKind.ARCHIVED,
                     threads = archivedThreads,
+                    totalThreadCount = archivedThreads.size,
                 ),
             )
         }

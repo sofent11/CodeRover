@@ -257,6 +257,7 @@ private fun CodeRoverAppShell(
                     viewModel.createThread(projectPath, providerId)
                     isSidebarOpen = false
                 },
+                onLoadMoreThreadsForProject = viewModel::loadMoreThreadsForProject,
                 onSelectProvider = { providerId ->
                     viewModel.setSelectedProviderId(providerId)
                 },

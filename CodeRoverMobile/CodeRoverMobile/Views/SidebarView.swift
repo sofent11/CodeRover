@@ -19,6 +19,7 @@ struct SidebarView: View {
     @State private var searchText = ""
     @State private var isCreatingThread = false
     @State private var groupedThreads: [SidebarThreadGroup] = []
+    @State private var visibleCountByProjectID: [String: Int] = [:]
     @State private var isShowingNewChatProjectPicker = false
     @State private var projectGroupPendingArchive: SidebarThreadGroup? = nil
     @State private var threadPendingDeletion: ConversationThread? = nil
@@ -159,6 +160,11 @@ struct SidebarView: View {
             },
             onDeleteThread: { thread in
                 threadPendingDeletion = thread
+            },
+            onLoadMoreProjectGroup: { group in
+                Task {
+                    await loadMoreThreads(for: group)
+                }
             }
         )
         .refreshable {
@@ -302,7 +308,28 @@ struct SidebarView: View {
                 || $0.projectDisplayName.localizedCaseInsensitiveContains(query)
             }
         }
-        groupedThreads = SidebarThreadGrouping.makeGroups(from: source)
+        groupedThreads = SidebarThreadGrouping.makeGroups(
+            from: source,
+            visibleCountByProjectID: visibleCountByProjectID
+        )
+    }
+
+    private func loadMoreThreads(for group: SidebarThreadGroup) async {
+        guard group.kind == .project else { return }
+        let nextVisibleCount = max(visibleCountByProjectID[group.id] ?? 10, 10) + 10
+        visibleCountByProjectID[group.id] = nextVisibleCount
+        rebuildGroupedThreads()
+
+        let projectKey = group.projectPath ?? "__no_project__"
+        do {
+            try await coderover.loadMoreThreadsForProject(
+                projectKey: projectKey,
+                minimumVisibleCount: nextVisibleCount
+            )
+        } catch {
+            return
+        }
+        rebuildGroupedThreads()
     }
 
     private var runBadgeStateByThreadID: [String: ConversationThreadRunBadgeState] {

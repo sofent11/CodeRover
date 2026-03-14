@@ -17,6 +17,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.launch
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -38,6 +40,7 @@ import com.coderover.android.ui.turn.TurnSessionDiffSummaryCalculator
 fun SidebarScreen(
     state: AppState,
     onCreateThread: (String?, String) -> Unit,
+    onLoadMoreThreadsForProject: suspend (String, Int) -> Unit,
     onSelectProvider: (String) -> Unit,
     onSelectThread: (String) -> Unit,
     onOpenSettings: () -> Unit,
@@ -51,12 +54,14 @@ fun SidebarScreen(
     var query by rememberSaveable { mutableStateOf("") }
     var isSearchActive by rememberSaveable { mutableStateOf(false) }
     var showProjectPicker by rememberSaveable { mutableStateOf(false) }
+    var visibleCountByProjectId by rememberSaveable { mutableStateOf<Map<String, Int>>(emptyMap()) }
     var threadPendingRename by remember { mutableStateOf<ThreadSummary?>(null) }
     var threadPendingDeletion by remember { mutableStateOf<ThreadSummary?>(null) }
     var threadPendingArchiveToggle by remember { mutableStateOf<ThreadSummary?>(null) }
 
-    val groups = remember(state.threads, query) {
-        buildSidebarThreadGroups(state.threads, query)
+    val sidebarScope = rememberCoroutineScope()
+    val groups = remember(state.threads, query, visibleCountByProjectId) {
+        buildSidebarThreadGroups(state.threads, query, visibleCountByProjectId)
     }
     val projectPaths = remember(state.threads) {
         state.threads
@@ -131,6 +136,13 @@ fun SidebarScreen(
                 onRequestDeleteThread = { threadPendingDeletion = it },
                 onArchiveToggleThread = { thread ->
                     threadPendingArchiveToggle = thread
+                },
+                onLoadMoreProjectGroup = { group ->
+                    val nextVisibleCount = (visibleCountByProjectId[group.id] ?: 10).coerceAtLeast(10) + 10
+                    visibleCountByProjectId = visibleCountByProjectId + (group.id to nextVisibleCount)
+                    sidebarScope.launch {
+                        onLoadMoreThreadsForProject(group.projectPath ?: "__no_project__", nextVisibleCount)
+                    }
                 },
                 isFiltering = query.isNotBlank(),
                 isConnected = state.isConnected,

@@ -16,6 +16,8 @@ struct TurnConversationContainerView: View {
     let stoppedTurnIDs: Set<String>
     let assistantRevertStatesByMessageID: [String: AssistantRevertPresentation]
     let errorMessage: String?
+    let hasOlderHistory: Bool
+    let isLoadingOlderHistory: Bool
     let shouldAnchorToAssistantResponse: Binding<Bool>
     let isScrolledToBottom: Binding<Bool>
     let emptyState: AnyView
@@ -26,6 +28,7 @@ struct TurnConversationContainerView: View {
     let onRetryUserMessage: (String) -> Void
     let onTapAssistantRevert: (ChatMessage) -> Void
     let onTapOutsideComposer: () -> Void
+    let onLoadOlderHistory: () -> Void
 
     // ─── ENTRY POINT ─────────────────────────────────────────────
     var body: some View {
@@ -42,11 +45,14 @@ struct TurnConversationContainerView: View {
                     assistantRevertStatesByMessageID: assistantRevertStatesByMessageID,
                     isRetryAvailable: !isThreadRunning,
                     errorMessage: errorMessage,
+                    hasOlderHistory: hasOlderHistory,
+                    isLoadingOlderHistory: isLoadingOlderHistory,
                     shouldAnchorToAssistantResponse: shouldAnchorToAssistantResponse,
                     isScrolledToBottom: isScrolledToBottom,
                     onRetryUserMessage: onRetryUserMessage,
                     onTapAssistantRevert: onTapAssistantRevert,
-                    onTapOutsideComposer: onTapOutsideComposer
+                    onTapOutsideComposer: onTapOutsideComposer,
+                    onLoadOlderHistory: onLoadOlderHistory
                 ) {
                     emptyState
                 } composer: {

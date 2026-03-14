@@ -7,6 +7,13 @@
 import Foundation
 
 extension CodeRoverService {
+    struct ThreadListPage {
+        let threads: [ConversationThread]
+        let nextCursor: JSONValue
+        let hasMore: Bool
+        let pageSize: Int
+    }
+
     private struct ReviewStartRequest {
         let promptText: String
         let target: CodeRoverReviewTarget
@@ -15,14 +22,17 @@ extension CodeRoverService {
 
     // Keeps sidebar/project loading focused on recent conversations without hiding
     // other active project groups when the latest chats all belong to one repo.
-    var recentThreadListLimit: Int { 40 }
+    var recentThreadListLimit: Int { 60 }
 
     func listThreads(limit: Int? = nil) async throws {
         isLoadingThreads = true
         defer { isLoadingThreads = false }
 
         let effectiveLimit = limit ?? recentThreadListLimit
-        let activeThreads = try await fetchServerThreads(limit: effectiveLimit)
+        let activePage = try await fetchServerThreadPage(limit: effectiveLimit)
+        let activeThreads = activePage.threads
+        activeThreadListNextCursor = activePage.nextCursor
+        activeThreadListHasMore = activePage.hasMore
 
         var archivedThreads: [ConversationThread] = []
         do {
@@ -844,41 +854,54 @@ enum ConversationThreadStartProjectBinding {
 }
 
 extension CodeRoverService {
+    func fetchServerThreadPage(
+        limit: Int? = nil,
+        archived: Bool = false,
+        cursor: JSONValue = .null
+    ) async throws -> ThreadListPage {
+        var params: RPCObject = [
+            "sourceKinds": .array(threadListSourceKinds.map(JSONValue.string)),
+            "cursor": cursor,
+        ]
+        if let limit {
+            params["limit"] = .integer(limit)
+        }
+        if archived {
+            params["archived"] = .bool(true)
+        }
+
+        let response = try await sendRequest(method: "thread/list", params: .object(params))
+
+        guard let resultObject = response.result?.objectValue else {
+            throw CodeRoverServiceError.invalidResponse("thread/list response missing payload")
+        }
+
+        let page =
+            resultObject["data"]?.arrayValue
+            ?? resultObject["items"]?.arrayValue
+            ?? resultObject["threads"]?.arrayValue
+        guard let page else {
+            throw CodeRoverServiceError.invalidResponse("thread/list response missing data array")
+        }
+
+        let nextCursor = nextThreadListCursor(from: resultObject)
+        return ThreadListPage(
+            threads: page.compactMap { decodeModel(ConversationThread.self, from: $0) },
+            nextCursor: nextCursor,
+            hasMore: threadListCursorExists(nextCursor),
+            pageSize: page.count
+        )
+    }
+
     func fetchServerThreads(limit: Int? = nil, archived: Bool = false) async throws -> [ConversationThread] {
         var allThreads: [ConversationThread] = []
         var nextCursor: JSONValue = .null
         var hasRequestedFirstPage = false
 
         repeat {
-            var params: RPCObject = [
-                // Avoid the server's narrower default sourceKinds so multi-project history
-                // includes threads started from the app-server flow as well.
-                "sourceKinds": .array(threadListSourceKinds.map(JSONValue.string)),
-                "cursor": nextCursor,
-            ]
-            if let limit {
-                params["limit"] = .integer(limit)
-            }
-            if archived {
-                params["archived"] = .bool(true)
-            }
-
-            let response = try await sendRequest(method: "thread/list", params: .object(params))
-
-            guard let resultObject = response.result?.objectValue else {
-                throw CodeRoverServiceError.invalidResponse("thread/list response missing payload")
-            }
-
-            let page =
-                resultObject["data"]?.arrayValue
-                ?? resultObject["items"]?.arrayValue
-                ?? resultObject["threads"]?.arrayValue
-            guard let page else {
-                throw CodeRoverServiceError.invalidResponse("thread/list response missing data array")
-            }
-
-            allThreads.append(contentsOf: page.compactMap { decodeModel(ConversationThread.self, from: $0) })
-            nextCursor = nextThreadListCursor(from: resultObject)
+            let page = try await fetchServerThreadPage(limit: limit, archived: archived, cursor: nextCursor)
+            allThreads.append(contentsOf: page.threads)
+            nextCursor = page.nextCursor
             hasRequestedFirstPage = true
         } while shouldContinueThreadListPagination(
             nextCursor: nextCursor,
@@ -909,6 +932,30 @@ extension CodeRoverService {
             return nextCursor
         }
         return .null
+    }
+
+    func threadListCursorExists(_ cursor: JSONValue) -> Bool {
+        switch cursor {
+        case .null:
+            return false
+        case let .string(value):
+            return !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        default:
+            return true
+        }
+    }
+
+    func loadMoreThreadsForProject(projectKey: String, minimumVisibleCount: Int) async throws {
+        guard activeThreadListHasMore else { return }
+
+        var currentProjectCount = threads.filter { $0.syncState != .archivedLocal && $0.projectKey == projectKey }.count
+        while currentProjectCount < minimumVisibleCount, activeThreadListHasMore {
+            let nextPage = try await fetchServerThreadPage(limit: recentThreadListLimit, cursor: activeThreadListNextCursor)
+            activeThreadListNextCursor = nextPage.nextCursor
+            activeThreadListHasMore = nextPage.hasMore
+            reconcileLocalThreadsWithServer(nextPage.threads)
+            currentProjectCount = threads.filter { $0.syncState != .archivedLocal && $0.projectKey == projectKey }.count
+        }
     }
 
     // Paginates until the server reports no cursor or the caller requested a capped page.

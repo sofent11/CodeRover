@@ -24,6 +24,11 @@ struct SidebarThreadGroup: Identifiable {
     let sortDate: Date
     let projectPath: String?
     let threads: [ConversationThread]
+    let totalThreadCount: Int
+
+    var hasMoreThreads: Bool {
+        kind == .project && threads.count < totalThreadCount
+    }
 
     func contains(_ thread: ConversationThread) -> Bool {
         threads.contains(where: { $0.id == thread.id })
@@ -33,6 +38,7 @@ struct SidebarThreadGroup: Identifiable {
 enum SidebarThreadGrouping {
     static func makeGroups(
         from threads: [ConversationThread],
+        visibleCountByProjectID: [String: Int] = [:],
         now _: Date = Date(),
         calendar _: Calendar = .current
     ) -> [SidebarThreadGroup] {
@@ -44,7 +50,7 @@ enum SidebarThreadGrouping {
             }
         }
 
-        var groups = makeProjectGroups(from: threads)
+        var groups = makeProjectGroups(from: threads, visibleCountByProjectID: visibleCountByProjectID)
 
         let sortedArchived = sortThreadsByRecentActivity(archivedThreads)
         if let firstArchived = sortedArchived.first {
@@ -55,7 +61,8 @@ enum SidebarThreadGrouping {
                     kind: .archived,
                     sortDate: firstArchived.updatedAt ?? firstArchived.createdAt ?? .distantPast,
                     projectPath: nil,
-                    threads: sortedArchived
+                    threads: sortedArchived,
+                    totalThreadCount: sortedArchived.count
                 )
             )
         }
@@ -65,7 +72,7 @@ enum SidebarThreadGrouping {
 
     // Reuses the sidebar project grouping rules for places like the New Chat chooser.
     static func makeProjectChoices(from threads: [ConversationThread]) -> [SidebarProjectChoice] {
-        makeProjectGroups(from: threads).compactMap { group in
+        makeProjectGroups(from: threads, visibleCountByProjectID: [:]).compactMap { group in
             guard let projectPath = group.projectPath else {
                 return nil
             }
@@ -92,7 +99,11 @@ enum SidebarThreadGrouping {
         ).map(\.id)
     }
 
-    private static func makeProjectGroup(projectKey: String, threads: [ConversationThread]) -> SidebarThreadGroup {
+    private static func makeProjectGroup(
+        projectKey: String,
+        threads: [ConversationThread],
+        visibleCount: Int
+    ) -> SidebarThreadGroup {
         let sortedThreads = sortThreadsByRecentActivity(threads)
         let representativeThread = sortedThreads.first
         let sortDate = representativeThread?.updatedAt ?? representativeThread?.createdAt ?? .distantPast
@@ -102,12 +113,16 @@ enum SidebarThreadGrouping {
             kind: .project,
             sortDate: sortDate,
             projectPath: representativeThread?.normalizedProjectPath,
-            threads: sortedThreads
+            threads: Array(sortedThreads.prefix(visibleCount)),
+            totalThreadCount: sortedThreads.count
         )
     }
 
     // Keeps project-derived UI consistent by centralizing the live-thread → project bucket mapping.
-    private static func makeProjectGroups(from threads: [ConversationThread]) -> [SidebarThreadGroup] {
+    private static func makeProjectGroups(
+        from threads: [ConversationThread],
+        visibleCountByProjectID: [String: Int]
+    ) -> [SidebarThreadGroup] {
         var liveThreadsByProject: [String: [ConversationThread]] = [:]
 
         for thread in threads where thread.syncState != .archivedLocal {
@@ -115,7 +130,9 @@ enum SidebarThreadGrouping {
         }
 
         return liveThreadsByProject.map { projectKey, projectThreads in
-            makeProjectGroup(projectKey: projectKey, threads: projectThreads)
+            let groupID = "project:\(projectKey)"
+            let visibleCount = max(visibleCountByProjectID[groupID] ?? 10, 10)
+            return makeProjectGroup(projectKey: projectKey, threads: projectThreads, visibleCount: visibleCount)
         }
         .sorted { lhs, rhs in
             if lhs.sortDate != rhs.sortDate {

@@ -50,6 +50,9 @@ internal fun TurnTimeline(
     renderItems: List<TimelineRenderItem>,
     hasEarlierMessages: Boolean,
     onLoadEarlierMessages: () -> Unit,
+    hasOlderHistory: Boolean,
+    isLoadingOlderHistory: Boolean,
+    onLoadOlderHistory: () -> Unit,
     isRunning: Boolean,
     activeTurnId: String?,
     assistantRevertPresentationByMessageId: Map<String, AssistantRevertPresentation>,
@@ -91,6 +94,12 @@ internal fun TurnTimeline(
     LaunchedEffect(listState.isScrollInProgress, isNearBottom) {
         if (listState.isScrollInProgress && !isNearBottom) {
             autoScrollMode = TurnAutoScrollMode.MANUAL
+        }
+    }
+
+    LaunchedEffect(listState.firstVisibleItemIndex, hasOlderHistory, isLoadingOlderHistory) {
+        if (listState.firstVisibleItemIndex == 0 && hasOlderHistory && !isLoadingOlderHistory) {
+            onLoadOlderHistory()
         }
     }
 
@@ -144,6 +153,17 @@ internal fun TurnTimeline(
                             text = "Load earlier messages",
                             style = MaterialTheme.typography.labelLarge,
                             color = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                }
+            }
+            if (hasOlderHistory || isLoadingOlderHistory) {
+                item(key = "load-older-history") {
+                    Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                        Text(
+                            text = if (isLoadingOlderHistory) "Loading earlier messages…" else "Earlier messages",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                 }

@@ -122,7 +122,10 @@ extension CodeRoverService {
         }
 
         do {
-            let activeThreads = try await fetchServerThreads(limit: recentThreadListLimit)
+            let activePage = try await fetchServerThreadPage(limit: recentThreadListLimit)
+            let activeThreads = activePage.threads
+            activeThreadListNextCursor = activePage.nextCursor
+            activeThreadListHasMore = activePage.hasMore
 
             // Also fetch server-archived threads so they survive app restarts.
             var archivedThreads: [ConversationThread] = []

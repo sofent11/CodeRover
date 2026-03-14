@@ -29,6 +29,7 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -70,6 +71,7 @@ fun SidebarThreadListView(
     onRequestRenameThread: (ThreadSummary) -> Unit,
     onRequestDeleteThread: (ThreadSummary) -> Unit,
     onArchiveToggleThread: (ThreadSummary) -> Unit,
+    onLoadMoreProjectGroup: (SidebarThreadGroup) -> Unit,
     isFiltering: Boolean,
     isConnected: Boolean,
     isSearchActive: Boolean,
@@ -144,6 +146,16 @@ fun SidebarThreadListView(
                                         onRequestDeleteThread(thread)
                                     },
                                 )
+                            }
+                            if (group.hasMoreThreads) {
+                                TextButton(
+                                    onClick = { onLoadMoreProjectGroup(group) },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(start = 8.dp, end = 8.dp, bottom = 6.dp),
+                                ) {
+                                    Text("More")
+                                }
                             }
                         }
                     }

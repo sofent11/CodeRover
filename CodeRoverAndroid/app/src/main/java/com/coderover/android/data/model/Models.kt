@@ -517,6 +517,7 @@ data class AppState(
     val threads: List<ThreadSummary> = emptyList(),
     val selectedThreadId: String? = null,
     val messagesByThread: Map<String, List<ChatMessage>> = emptyMap(),
+    val historyStateByThread: Map<String, ThreadHistoryState> = emptyMap(),
     val activeTurnIdByThread: Map<String, String> = emptyMap(),
     val runningThreadIds: Set<String> = emptySet(),
     val readyThreadIds: Set<String> = emptySet(),
@@ -578,6 +579,33 @@ data class AppState(
     val activeRuntimeCapabilities: RuntimeCapabilities
         get() = selectedThread?.capabilities ?: activeRuntimeProvider.supports
 }
+
+data class ThreadHistoryAnchor(
+    val itemId: String? = null,
+    val createdAt: Long,
+    val turnId: String? = null,
+)
+
+data class ThreadHistorySegment(
+    val oldestAnchor: ThreadHistoryAnchor,
+    val newestAnchor: ThreadHistoryAnchor,
+)
+
+data class ThreadHistoryGap(
+    val olderAnchor: ThreadHistoryAnchor,
+    val newerAnchor: ThreadHistoryAnchor,
+)
+
+data class ThreadHistoryState(
+    val segments: List<ThreadHistorySegment> = emptyList(),
+    val gaps: List<ThreadHistoryGap> = emptyList(),
+    val oldestLoadedAnchor: ThreadHistoryAnchor? = null,
+    val newestLoadedAnchor: ThreadHistoryAnchor? = null,
+    val hasOlderOnServer: Boolean = false,
+    val hasNewerOnServer: Boolean = false,
+    val isLoadingOlder: Boolean = false,
+    val isTailRefreshing: Boolean = false,
+)
 
 fun JsonObject.string(key: String): String? = this[key].stringOrNull()
 

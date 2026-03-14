@@ -22,6 +22,7 @@ struct SidebarThreadListView: View {
     var onRenameThread: ((ConversationThread, String) -> Void)? = nil
     var onArchiveToggleThread: ((ConversationThread) -> Void)? = nil
     var onDeleteThread: ((ConversationThread) -> Void)? = nil
+    var onLoadMoreProjectGroup: ((SidebarThreadGroup) -> Void)? = nil
     @AppStorage("sidebar.collapsedProjectGroupIDs") private var collapsedProjectGroupIDsStorage = ""
     @State private var expandedProjectGroupIDs: Set<String> = []
     @State private var knownProjectGroupIDs: Set<String> = []
@@ -84,6 +85,20 @@ struct SidebarThreadListView: View {
                 VStack(spacing: 4) {
                     ForEach(group.threads) { thread in
                         threadRow(thread)
+                    }
+                    if group.hasMoreThreads, let onLoadMoreProjectGroup {
+                        Button {
+                            HapticFeedback.shared.triggerImpactFeedback(style: .light)
+                            onLoadMoreProjectGroup(group)
+                        } label: {
+                            Text("More")
+                                .font(AppFont.subheadline())
+                                .foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 18)
+                                .padding(.vertical, 8)
+                        }
+                        .buttonStyle(.plain)
                     }
                 }
                 .padding(.bottom, 14)

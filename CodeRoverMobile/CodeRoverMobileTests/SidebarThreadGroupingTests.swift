@@ -61,6 +61,46 @@ final class SidebarThreadGroupingTests: XCTestCase {
         XCTAssertEqual(groups[1].threads.map(\.id), ["archived-thread"])
     }
 
+    func testMakeGroupsLimitsProjectThreadsToTenByDefault() {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let threads = (0..<12).map { offset in
+            makeThread(
+                id: "thread-\(offset)",
+                updatedAt: now.addingTimeInterval(TimeInterval(-offset)),
+                cwd: "/Users/me/work/app"
+            )
+        }
+
+        let groups = SidebarThreadGrouping.makeGroups(from: threads, now: now)
+
+        XCTAssertEqual(groups.count, 1)
+        XCTAssertEqual(groups[0].threads.count, 10)
+        XCTAssertEqual(groups[0].totalThreadCount, 12)
+        XCTAssertTrue(groups[0].hasMoreThreads)
+    }
+
+    func testMakeGroupsExpandsProjectThreadsWhenVisibleCountOverridesDefault() {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let threads = (0..<12).map { offset in
+            makeThread(
+                id: "thread-\(offset)",
+                updatedAt: now.addingTimeInterval(TimeInterval(-offset)),
+                cwd: "/Users/me/work/app"
+            )
+        }
+
+        let groups = SidebarThreadGrouping.makeGroups(
+            from: threads,
+            visibleCountByProjectID: ["project:/Users/me/work/app": 20],
+            now: now
+        )
+
+        XCTAssertEqual(groups.count, 1)
+        XCTAssertEqual(groups[0].threads.count, 12)
+        XCTAssertEqual(groups[0].totalThreadCount, 12)
+        XCTAssertFalse(groups[0].hasMoreThreads)
+    }
+
     func testMakeProjectChoicesReusesLiveProjectBucketsAndSkipsNoProject() {
         let now = Date(timeIntervalSince1970: 1_700_000_000)
         let threads = [
@@ -94,7 +134,8 @@ final class SidebarThreadGroupingTests: XCTestCase {
             kind: .project,
             sortDate: now,
             projectPath: "/Users/me/work/app",
-            threads: [allThreads[0]]
+            threads: [allThreads[0]],
+            totalThreadCount: 2
         )
 
         let threadIDs = SidebarThreadGrouping.liveThreadIDsForProjectGroup(filteredGroup, in: allThreads)
@@ -115,7 +156,8 @@ final class SidebarThreadGroupingTests: XCTestCase {
             kind: .project,
             sortDate: now,
             projectPath: nil,
-            threads: [allThreads[0]]
+            threads: [allThreads[0]],
+            totalThreadCount: 2
         )
 
         let threadIDs = SidebarThreadGrouping.liveThreadIDsForProjectGroup(noProjectGroup, in: allThreads)
@@ -253,7 +295,8 @@ final class SidebarThreadGroupingTests: XCTestCase {
                 kind: .project,
                 sortDate: selectedThread.updatedAt ?? .distantPast,
                 projectPath: "/Users/me/work/app",
-                threads: [selectedThread]
+                threads: [selectedThread],
+                totalThreadCount: 1
             ),
             makeProjectGroup(id: "project:/Users/me/work/site"),
         ]
@@ -308,7 +351,8 @@ final class SidebarThreadGroupingTests: XCTestCase {
             kind: .project,
             sortDate: .distantPast,
             projectPath: id.replacingOccurrences(of: "project:", with: ""),
-            threads: []
+            threads: [],
+            totalThreadCount: 0
         )
     }
 }

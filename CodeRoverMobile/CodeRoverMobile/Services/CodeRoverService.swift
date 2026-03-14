@@ -240,6 +240,9 @@ final class CodeRoverService {
     var messagesByThread: [String: [ChatMessage]] = [:]
     // Monotonic per-thread revision so views can react to message mutations without hashing full transcripts.
     var messageRevisionByThread: [String: Int] = [:]
+    var historyStateByThread: [String: ThreadHistoryState] = [:]
+    var activeThreadListNextCursor: JSONValue = .null
+    var activeThreadListHasMore = false
     var syncRealtimeEnabled = true
     var availableProviders: [RuntimeProvider] = [.codexDefault]
     var selectedProviderID: String = "codex" {

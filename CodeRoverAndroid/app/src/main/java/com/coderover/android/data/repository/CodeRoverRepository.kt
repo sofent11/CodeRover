@@ -35,6 +35,10 @@ import com.coderover.android.data.model.SkillMetadata
 import com.coderover.android.data.model.StructuredUserInputOption
 import com.coderover.android.data.model.StructuredUserInputQuestion
 import com.coderover.android.data.model.StructuredUserInputRequest
+import com.coderover.android.data.model.ThreadHistoryAnchor
+import com.coderover.android.data.model.ThreadHistoryGap
+import com.coderover.android.data.model.ThreadHistorySegment
+import com.coderover.android.data.model.ThreadHistoryState
 import com.coderover.android.data.model.ThreadSummary
 import com.coderover.android.data.model.ThreadSyncState
 import com.coderover.android.data.model.TrustedMacRecord
@@ -84,6 +88,12 @@ class CodeRoverRepository(context: Context) {
         const val TAG = "CodeRoverRepo"
     }
 
+    private data class ThreadListPage(
+        val threads: List<ThreadSummary>,
+        val nextCursor: JsonElement?,
+        val hasMore: Boolean,
+    )
+
     private val json = Json {
         ignoreUnknownKeys = true
         explicitNulls = false
@@ -96,6 +106,8 @@ class CodeRoverRepository(context: Context) {
     private val connectionEpoch = AtomicLong(0)
     private val isConnectInFlight = AtomicBoolean(false)
     private val streamingMessageIdsByKey = mutableMapOf<String, String>()
+    private var activeThreadListNextCursor: JsonElement? = JsonNull
+    private var activeThreadListHasMore = false
     private var client: SecureBridgeClient? = null
     private val queueCoordinator by lazy {
         TurnQueueCoordinator(
@@ -1331,7 +1343,10 @@ class CodeRoverRepository(context: Context) {
         if (updatePhase) {
             updateState { copy(connectionPhase = ConnectionPhase.LOADING_CHATS) }
         }
-        val activeThreads = fetchThreads(archived = false)
+        val activePage = fetchThreadsPage(archived = false)
+        val activeThreads = activePage.threads
+        activeThreadListNextCursor = activePage.nextCursor
+        activeThreadListHasMore = activePage.hasMore
         applyThreadListSnapshot(
             activeThreads = activeThreads,
             archivedThreads = null,
@@ -1358,10 +1373,13 @@ class CodeRoverRepository(context: Context) {
         }
     }
 
-    private suspend fun fetchThreads(archived: Boolean): List<ThreadSummary> {
+    private suspend fun fetchThreadsPage(
+        archived: Boolean,
+        cursor: JsonElement? = JsonNull,
+    ): ThreadListPage {
         val params = buildJsonObject(
-            "cursor" to JsonNull,
-            "limit" to JsonPrimitive(40),
+            "cursor" to (cursor ?: JsonNull),
+            "limit" to JsonPrimitive(60),
             "archived" to if (archived) JsonPrimitive(true) else null,
             "sourceKinds" to JsonArray(
                 listOf(
@@ -1373,12 +1391,16 @@ class CodeRoverRepository(context: Context) {
                 ),
             ),
         )
-        val result = activeClient().sendRequest("thread/list", params)?.jsonObjectOrNull() ?: return emptyList()
+        val result = activeClient().sendRequest("thread/list", params)?.jsonObjectOrNull() ?: return ThreadListPage(
+            threads = emptyList(),
+            nextCursor = JsonNull,
+            hasMore = false,
+        )
         val items = result["data"]?.jsonArrayOrNull()
             ?: result["items"]?.jsonArrayOrNull()
             ?: result["threads"]?.jsonArrayOrNull()
             ?: JsonArray(emptyList())
-        return items
+        val threads = items
             .mapNotNull { it.jsonObjectOrNull()?.let(ThreadSummary::fromJson) }
             .map { thread ->
                 if (archived) {
@@ -1387,6 +1409,40 @@ class CodeRoverRepository(context: Context) {
                     thread.copy(syncState = ThreadSyncState.LIVE)
                 }
             }
+        val nextCursor = result["nextCursor"] ?: result["next_cursor"] ?: JsonNull
+        return ThreadListPage(
+            threads = threads,
+            nextCursor = nextCursor,
+            hasMore = !nextCursor.isNullLike(),
+        )
+    }
+
+    private suspend fun fetchThreads(archived: Boolean): List<ThreadSummary> {
+        return fetchThreadsPage(archived = archived).threads
+    }
+
+    suspend fun loadMoreThreadsForProject(projectKey: String, minimumVisibleCount: Int) {
+        if (!activeThreadListHasMore) {
+            return
+        }
+
+        var currentCount = state.value.threads
+            .filter { it.syncState == ThreadSyncState.LIVE && (it.normalizedProjectPath ?: "__no_project__") == projectKey }
+            .size
+        while (currentCount < minimumVisibleCount && activeThreadListHasMore) {
+            val page = fetchThreadsPage(archived = false, cursor = activeThreadListNextCursor)
+            activeThreadListNextCursor = page.nextCursor
+            activeThreadListHasMore = page.hasMore
+            applyThreadListSnapshot(
+                activeThreads = page.threads,
+                archivedThreads = null,
+                updatePhase = false,
+                preserveExistingArchivedThreads = true,
+            )
+            currentCount = state.value.threads
+                .filter { it.syncState == ThreadSyncState.LIVE && (it.normalizedProjectPath ?: "__no_project__") == projectKey }
+                .size
+        }
     }
 
     private fun applyThreadListSnapshot(
@@ -1436,15 +1492,21 @@ class CodeRoverRepository(context: Context) {
             )?.jsonObjectOrNull()
             resumeResult?.threadPayload()
         }.getOrNull()
-        val threadObject = resumedThreadObject ?: activeClient().sendRequest(
-            method = "thread/read",
-            params = JsonObject(
-                mapOf(
+        val historyResult = if (resumedThreadObject == null) {
+            activeClient().sendRequest(
+                method = "thread/read",
+                params = buildJsonObject(
                     "threadId" to JsonPrimitive(threadId),
-                    "includeTurns" to JsonPrimitive(true),
+                    "history" to buildJsonObject(
+                        "mode" to JsonPrimitive("tail"),
+                        "limit" to JsonPrimitive(50),
+                    ),
                 ),
-            ),
-        )?.jsonObjectOrNull()?.threadPayload() ?: return
+            )?.jsonObjectOrNull()
+        } else {
+            null
+        }
+        val threadObject = resumedThreadObject ?: historyResult?.threadPayload() ?: return
         ThreadSummary.fromJson(threadObject)?.let { thread ->
             updateState {
                 copy(threads = upsertThread(threads, thread.copy(syncState = ThreadSyncState.LIVE)))
@@ -1452,11 +1514,22 @@ class CodeRoverRepository(context: Context) {
         }
         extractContextWindowUsageIfAvailable(threadId, threadObject)
         val history = decodeMessagesFromThreadRead(threadId, threadObject)
+        val historyWindow = historyResult?.get("historyWindow")?.jsonObjectOrNull()
         val activeTurnId = resolveActiveTurnId(threadObject)
         if (history.isNotEmpty()) {
+            val existingMessages = state.value.messagesByThread[threadId].orEmpty()
+            val mergedHistory = mergeHistoryMessages(existingMessages, history)
             updateState {
                 copy(
-                    messagesByThread = messagesByThread + (threadId to history),
+                    messagesByThread = messagesByThread + (threadId to mergedHistory),
+                    historyStateByThread = historyStateByThread + (threadId to mergeHistoryState(
+                        threadId = threadId,
+                        existingMessages = existingMessages,
+                        currentState = historyStateByThread[threadId],
+                        historyWindow = historyWindow,
+                        mode = "tail",
+                        mergedMessages = mergedHistory,
+                    )),
                     activeTurnIdByThread = if (activeTurnId == null) {
                         activeTurnIdByThread
                     } else {
@@ -1474,10 +1547,83 @@ class CodeRoverRepository(context: Context) {
         } else if (activeTurnId != null) {
             updateState {
                 copy(
+                    historyStateByThread = historyStateByThread + (threadId to mergeHistoryState(
+                        threadId = threadId,
+                        existingMessages = messagesByThread[threadId].orEmpty(),
+                        currentState = historyStateByThread[threadId],
+                        historyWindow = historyWindow,
+                        mode = "tail",
+                        mergedMessages = messagesByThread[threadId].orEmpty(),
+                    )),
                     activeTurnIdByThread = activeTurnIdByThread + (threadId to activeTurnId),
                     runningThreadIds = runningThreadIds + threadId,
                     readyThreadIds = readyThreadIds - threadId,
                     failedThreadIds = failedThreadIds - threadId,
+                )
+            }
+        }
+    }
+
+    suspend fun loadOlderThreadHistory(threadId: String) {
+        val currentState = state.value
+        val historyState = currentState.historyStateByThread[threadId]
+        val requestAnchor = when {
+            historyState == null -> currentState.messagesByThread[threadId].orEmpty().firstOrNull()?.toHistoryAnchor()
+            historyState.gaps.isNotEmpty() -> historyState.segments.lastOrNull()?.oldestAnchor
+            historyState.hasOlderOnServer -> historyState.segments.firstOrNull()?.oldestAnchor
+            else -> null
+        } ?: return
+
+        updateState {
+            copy(
+                historyStateByThread = historyStateByThread + (
+                    threadId to (historyState ?: ThreadHistoryState()).copy(isLoadingOlder = true)
+                ),
+            )
+        }
+
+        runCatching {
+            activeClient().sendRequest(
+                method = "thread/read",
+                params = buildJsonObject(
+                    "threadId" to JsonPrimitive(threadId),
+                    "history" to buildJsonObject(
+                        "mode" to JsonPrimitive("before"),
+                        "limit" to JsonPrimitive(50),
+                        "anchor" to buildJsonObject(
+                            "createdAt" to JsonPrimitive(requestAnchor.createdAt),
+                            "itemId" to requestAnchor.itemId?.let(::JsonPrimitive),
+                            "turnId" to requestAnchor.turnId?.let(::JsonPrimitive),
+                        ),
+                    ),
+                ),
+            )?.jsonObjectOrNull()
+        }.onSuccess { result ->
+            val threadObject = result?.threadPayload() ?: return@onSuccess
+            val history = decodeMessagesFromThreadRead(threadId, threadObject)
+            val historyWindow = result["historyWindow"]?.jsonObjectOrNull()
+            val existingMessages = state.value.messagesByThread[threadId].orEmpty()
+            val mergedHistory = mergeHistoryMessages(existingMessages, history)
+            updateState {
+                copy(
+                    messagesByThread = messagesByThread + (threadId to mergedHistory),
+                    historyStateByThread = historyStateByThread + (threadId to mergeHistoryState(
+                        threadId = threadId,
+                        existingMessages = existingMessages,
+                        currentState = historyStateByThread[threadId],
+                        historyWindow = historyWindow,
+                        mode = "before",
+                        mergedMessages = mergedHistory,
+                    )),
+                    threads = threads.refreshThreadSummaryFromMessages(threadId, mergedHistory),
+                )
+            }
+        }.onFailure {
+            updateState {
+                copy(
+                    historyStateByThread = historyStateByThread + (
+                        threadId to ((historyStateByThread[threadId] ?: ThreadHistoryState()).copy(isLoadingOlder = false))
+                    ),
                 )
             }
         }
@@ -1842,7 +1988,11 @@ class CodeRoverRepository(context: Context) {
                     structuredUserInputRequest = request,
                 )
             }
-            copy(messagesByThread = messagesByThread + (threadId to existingMessages))
+            val updatedMessagesByThread = messagesByThread + (threadId to existingMessages)
+            copy(
+                messagesByThread = updatedMessagesByThread,
+                threads = threads.refreshThreadSummaryFromMessages(threadId, existingMessages),
+            )
         }
     }
 
@@ -2200,7 +2350,11 @@ class CodeRoverRepository(context: Context) {
     private fun appendLocalMessage(message: ChatMessage) {
         updateState {
             val existing = messagesByThread[message.threadId].orEmpty()
-            copy(messagesByThread = messagesByThread + (message.threadId to (existing + message)))
+            val updatedMessages = existing + message
+            copy(
+                messagesByThread = messagesByThread + (message.threadId to updatedMessages),
+                threads = threads.refreshThreadSummaryFromMessages(message.threadId, updatedMessages),
+            )
         }
     }
 
@@ -2219,7 +2373,10 @@ class CodeRoverRepository(context: Context) {
             if (index >= 0) {
                 existing.removeAt(index)
             }
-            copy(messagesByThread = messagesByThread + (threadId to existing))
+            copy(
+                messagesByThread = messagesByThread + (threadId to existing),
+                threads = threads.refreshThreadSummaryFromMessages(threadId, existing),
+            )
         }
     }
 
@@ -2280,7 +2437,10 @@ class CodeRoverRepository(context: Context) {
                 streamingMessageIdsByKey[streamKey] = message.id
                 existingMessages += message
             }
-            copy(messagesByThread = messagesByThread + (threadId to existingMessages))
+            copy(
+                messagesByThread = messagesByThread + (threadId to existingMessages),
+                threads = threads.refreshThreadSummaryFromMessages(threadId, existingMessages),
+            )
         }
         if (completed) {
             streamingMessageIdsByKey.remove(streamKey)
@@ -3541,32 +3701,272 @@ private fun JsonObject.threadPayload(): JsonObject? {
         ?: this["result"]?.jsonObjectOrNull()?.get("thread")?.jsonObjectOrNull()
 }
 
-private fun JsonObject?.resolveThreadId(): String? {
-    if (this == null) {
-        return null
-    }
-    return string("threadId")
-        ?: this["thread"]?.jsonObjectOrNull()?.string("id")
-        ?: this["turn"]?.jsonObjectOrNull()?.string("threadId")
+internal fun JsonObject?.resolveThreadId(): String? {
+    val payload = this ?: return null
+    val envelopeEvent = payload.envelopeEventObject()
+    val nestedEvent = payload["event"]?.jsonObjectOrNull()
+    return firstNonBlank(
+        payload.normalizedIdentifier("threadId"),
+        payload.normalizedIdentifier("thread_id"),
+        payload.normalizedIdentifier("conversationId"),
+        payload.normalizedIdentifier("conversation_id"),
+        payload["thread"]?.jsonObjectOrNull()?.normalizedIdentifier("id"),
+        payload["turn"]?.jsonObjectOrNull()?.normalizedIdentifier("threadId"),
+        payload["turn"]?.jsonObjectOrNull()?.normalizedIdentifier("thread_id"),
+        payload["item"]?.jsonObjectOrNull()?.normalizedIdentifier("threadId"),
+        payload["item"]?.jsonObjectOrNull()?.normalizedIdentifier("thread_id"),
+        envelopeEvent?.normalizedIdentifier("threadId"),
+        envelopeEvent?.normalizedIdentifier("thread_id"),
+        envelopeEvent?.normalizedIdentifier("conversationId"),
+        envelopeEvent?.normalizedIdentifier("conversation_id"),
+        envelopeEvent?.get("thread")?.jsonObjectOrNull()?.normalizedIdentifier("id"),
+        envelopeEvent?.get("turn")?.jsonObjectOrNull()?.normalizedIdentifier("threadId"),
+        envelopeEvent?.get("turn")?.jsonObjectOrNull()?.normalizedIdentifier("thread_id"),
+        envelopeEvent?.get("item")?.jsonObjectOrNull()?.normalizedIdentifier("threadId"),
+        envelopeEvent?.get("item")?.jsonObjectOrNull()?.normalizedIdentifier("thread_id"),
+        nestedEvent?.normalizedIdentifier("threadId"),
+        nestedEvent?.normalizedIdentifier("thread_id"),
+        nestedEvent?.normalizedIdentifier("conversationId"),
+        nestedEvent?.normalizedIdentifier("conversation_id"),
+        nestedEvent?.get("thread")?.jsonObjectOrNull()?.normalizedIdentifier("id"),
+        nestedEvent?.get("turn")?.jsonObjectOrNull()?.normalizedIdentifier("threadId"),
+        nestedEvent?.get("turn")?.jsonObjectOrNull()?.normalizedIdentifier("thread_id"),
+    )
 }
 
-private fun JsonObject?.resolveTurnId(): String? {
-    if (this == null) {
-        return null
-    }
-    return string("turnId")
-        ?: this["turn"]?.jsonObjectOrNull()?.string("id")
+internal fun JsonObject?.resolveTurnId(): String? {
+    val payload = this ?: return null
+    val envelopeEvent = payload.envelopeEventObject()
+    val nestedEvent = payload["event"]?.jsonObjectOrNull()
+    return firstNonBlank(
+        payload["turn"]?.jsonObjectOrNull()?.normalizedIdentifier("id"),
+        payload.normalizedIdentifier("turnId"),
+        payload.normalizedIdentifier("turn_id"),
+        payload["item"]?.jsonObjectOrNull()?.normalizedIdentifier("turnId"),
+        payload["item"]?.jsonObjectOrNull()?.normalizedIdentifier("turn_id"),
+        envelopeEvent?.normalizedIdentifier("turnId"),
+        envelopeEvent?.normalizedIdentifier("turn_id"),
+        envelopeEvent?.get("turn")?.jsonObjectOrNull()?.normalizedIdentifier("id"),
+        envelopeEvent?.get("item")?.jsonObjectOrNull()?.normalizedIdentifier("turnId"),
+        envelopeEvent?.get("item")?.jsonObjectOrNull()?.normalizedIdentifier("turn_id"),
+        nestedEvent?.normalizedIdentifier("turnId"),
+        nestedEvent?.normalizedIdentifier("turn_id"),
+        nestedEvent?.get("turn")?.jsonObjectOrNull()?.normalizedIdentifier("id"),
+    )
 }
 
-private fun JsonObject?.resolveItemId(): String? {
-    if (this == null) {
-        return null
+internal fun JsonObject?.resolveItemId(): String? {
+    val payload = this ?: return null
+    val envelopeEvent = payload.envelopeEventObject()
+    val nestedEvent = payload["event"]?.jsonObjectOrNull()
+    return firstNonBlank(
+        payload.normalizedIdentifier("itemId"),
+        payload.normalizedIdentifier("item_id"),
+        payload.normalizedIdentifier("id"),
+        payload["item"]?.jsonObjectOrNull()?.normalizedIdentifier("id"),
+        envelopeEvent?.normalizedIdentifier("itemId"),
+        envelopeEvent?.normalizedIdentifier("item_id"),
+        envelopeEvent?.normalizedIdentifier("id"),
+        envelopeEvent?.get("item")?.jsonObjectOrNull()?.normalizedIdentifier("id"),
+        nestedEvent?.normalizedIdentifier("itemId"),
+        nestedEvent?.normalizedIdentifier("item_id"),
+        nestedEvent?.normalizedIdentifier("id"),
+        nestedEvent?.get("item")?.jsonObjectOrNull()?.normalizedIdentifier("id"),
+    )
+}
+
+internal fun JsonObject.envelopeEventObject(): JsonObject? {
+    return this["msg"]?.jsonObjectOrNull() ?: this["event"]?.jsonObjectOrNull()
+}
+
+internal fun JsonObject.normalizedIdentifier(key: String): String? {
+    return string(key)?.trim()?.takeIf(String::isNotEmpty)
+}
+
+internal fun List<ThreadSummary>.refreshThreadSummaryFromMessages(
+    threadId: String,
+    messages: List<ChatMessage>,
+): List<ThreadSummary> {
+    val existingThread = firstOrNull { it.id == threadId }
+    val latestTimestamp = messages.maxOfOrNull(ChatMessage::createdAt) ?: System.currentTimeMillis()
+    val latestPreview = messages.sidebarPreviewText()
+    val nextThread = if (existingThread != null) {
+        val nextUpdatedAt = maxOf(existingThread.updatedAt ?: 0L, latestTimestamp)
+        val nextPreview = latestPreview ?: existingThread.preview
+        if (nextUpdatedAt == existingThread.updatedAt &&
+            nextPreview == existingThread.preview &&
+            existingThread.syncState == ThreadSyncState.LIVE
+        ) {
+            return this
+        }
+        existingThread.copy(
+            preview = nextPreview,
+            updatedAt = nextUpdatedAt,
+            syncState = ThreadSyncState.LIVE,
+        )
+    } else {
+        ThreadSummary(
+            id = threadId,
+            preview = latestPreview,
+            createdAt = latestTimestamp,
+            updatedAt = latestTimestamp,
+            syncState = ThreadSyncState.LIVE,
+        )
     }
-    return string("itemId")
-        ?: string("item_id")
-        ?: string("id")
-        ?: this["item"]?.jsonObjectOrNull()?.string("id")
-        ?: this["event"]?.jsonObjectOrNull()?.string("id")
+    return (filterNot { it.id == threadId } + nextThread)
+        .sortedByDescending { it.updatedAt ?: it.createdAt ?: 0L }
+}
+
+internal fun List<ChatMessage>.sidebarPreviewText(maxLength: Int = 160): String? {
+    val preferredMessage = asReversed().firstOrNull { message ->
+        message.role != MessageRole.SYSTEM &&
+            message.kind != MessageKind.THINKING &&
+            message.text.isNotBlank()
+    } ?: asReversed().firstOrNull { message ->
+        message.kind != MessageKind.THINKING && message.text.isNotBlank()
+    }
+    val preview = preferredMessage
+        ?.text
+        ?.replace('\n', ' ')
+        ?.replace(Regex("""\s+"""), " ")
+        ?.trim()
+        ?.takeIf(String::isNotEmpty)
+        ?: return null
+    return if (preview.length <= maxLength) {
+        preview
+    } else {
+        preview.take(maxLength - 1) + "…"
+    }
+}
+
+private fun JsonElement?.isNullLike(): Boolean {
+    return this == null || this is JsonNull || (this as? JsonPrimitive)?.contentOrNull?.isBlank() == true
+}
+
+private fun ChatMessage.toHistoryAnchor(): ThreadHistoryAnchor {
+    return ThreadHistoryAnchor(
+        itemId = itemId,
+        createdAt = createdAt,
+        turnId = turnId,
+    )
+}
+
+private fun parseHistoryAnchor(json: JsonObject?): ThreadHistoryAnchor? {
+    val payload = json ?: return null
+    val createdAt = payload.timestamp("createdAt", "created_at")
+        ?: payload.string("createdAt")?.let(::parseTimestamp)
+        ?: payload.string("created_at")?.let(::parseTimestamp)
+        ?: return null
+    return ThreadHistoryAnchor(
+        itemId = payload.string("itemId") ?: payload.string("item_id"),
+        createdAt = createdAt,
+        turnId = payload.string("turnId") ?: payload.string("turn_id"),
+    )
+}
+
+private fun mergeHistoryMessages(existing: List<ChatMessage>, history: List<ChatMessage>): List<ChatMessage> {
+    val mergedByKey = linkedMapOf<String, ChatMessage>()
+    (existing + history)
+        .sortedWith(compareBy<ChatMessage>({ it.createdAt }, { it.orderIndex }, { it.id }))
+        .forEach { message ->
+        val key = historyMessageSyncKey(message)
+        val previous = mergedByKey[key]
+        mergedByKey[key] = when {
+            previous == null -> message
+            previous.isStreaming && !message.isStreaming -> message
+            previous.attachments.isEmpty() && message.attachments.isNotEmpty() -> message
+            previous.fileChanges.isEmpty() && message.fileChanges.isNotEmpty() -> message
+            previous.commandState == null && message.commandState != null -> message
+            previous.planState == null && message.planState != null -> message
+            previous.structuredUserInputRequest == null && message.structuredUserInputRequest != null -> message
+            previous.text.length < message.text.length -> message
+            else -> previous
+        }
+    }
+    return mergedByKey.values
+        .sortedWith(compareBy<ChatMessage>({ it.createdAt }, { it.orderIndex }, { it.id }))
+        .mapIndexed { index, message -> message.copy(orderIndex = index) }
+}
+
+private fun historyMessageSyncKey(message: ChatMessage): String {
+    val primaryItemId = message.itemId?.trim().orEmpty()
+    if (primaryItemId.isNotEmpty()) {
+        return "item|$primaryItemId|${message.createdAt}"
+    }
+    val turnId = message.turnId?.trim().orEmpty()
+    if (turnId.isNotEmpty()) {
+        return "turn|$turnId|${message.kind.name}|${message.createdAt}"
+    }
+    return "fallback|${message.role.name}|${message.kind.name}|${message.createdAt}|${message.text.trim()}"
+}
+
+private fun mergeHistoryState(
+    threadId: String,
+    existingMessages: List<ChatMessage>,
+    currentState: ThreadHistoryState?,
+    historyWindow: JsonObject?,
+    mode: String,
+    mergedMessages: List<ChatMessage>,
+): ThreadHistoryState {
+    val baseState = currentState ?: if (existingMessages.isNotEmpty()) {
+        ThreadHistoryState(
+            segments = listOf(
+                ThreadHistorySegment(
+                    oldestAnchor = existingMessages.first().toHistoryAnchor(),
+                    newestAnchor = existingMessages.last().toHistoryAnchor(),
+                ),
+            ),
+            oldestLoadedAnchor = existingMessages.first().toHistoryAnchor(),
+            newestLoadedAnchor = existingMessages.last().toHistoryAnchor(),
+        )
+    } else {
+        ThreadHistoryState()
+    }
+
+    val oldestAnchor = parseHistoryAnchor(historyWindow?.get("oldestAnchor")?.jsonObjectOrNull() ?: historyWindow?.get("oldest_anchor")?.jsonObjectOrNull())
+        ?: mergedMessages.firstOrNull()?.toHistoryAnchor()
+    val newestAnchor = parseHistoryAnchor(historyWindow?.get("newestAnchor")?.jsonObjectOrNull() ?: historyWindow?.get("newest_anchor")?.jsonObjectOrNull())
+        ?: mergedMessages.lastOrNull()?.toHistoryAnchor()
+
+    if (oldestAnchor == null || newestAnchor == null) {
+        return baseState.copy(isLoadingOlder = false, isTailRefreshing = false)
+    }
+
+    val incomingSegment = ThreadHistorySegment(oldestAnchor = oldestAnchor, newestAnchor = newestAnchor)
+    val mergedSegments = (baseState.segments + incomingSegment)
+        .sortedBy { it.oldestAnchor.createdAt }
+        .fold(mutableListOf<ThreadHistorySegment>()) { acc, segment ->
+            val last = acc.lastOrNull()
+            if (last == null || segment.oldestAnchor.createdAt > last.newestAnchor.createdAt) {
+                acc += segment
+            } else {
+                acc[acc.lastIndex] = ThreadHistorySegment(
+                    oldestAnchor = last.oldestAnchor,
+                    newestAnchor = if (segment.newestAnchor.createdAt > last.newestAnchor.createdAt) segment.newestAnchor else last.newestAnchor,
+                )
+            }
+            acc
+        }
+
+    return ThreadHistoryState(
+        segments = mergedSegments,
+        gaps = mergedSegments.zip(mergedSegments.drop(1)).map { (older, newer) ->
+            ThreadHistoryGap(olderAnchor = older.newestAnchor, newerAnchor = newer.oldestAnchor)
+        },
+        oldestLoadedAnchor = mergedSegments.firstOrNull()?.oldestAnchor,
+        newestLoadedAnchor = mergedSegments.lastOrNull()?.newestAnchor,
+        hasOlderOnServer = when (mode) {
+            "tail" -> (historyWindow?.bool("hasOlder") ?: historyWindow?.bool("has_older") ?: false) || mergedSegments.size > 1
+            "before" -> historyWindow?.bool("hasOlder") ?: historyWindow?.bool("has_older") ?: false
+            else -> baseState.hasOlderOnServer
+        },
+        hasNewerOnServer = when (mode) {
+            "tail", "after" -> historyWindow?.bool("hasNewer") ?: historyWindow?.bool("has_newer") ?: false
+            else -> baseState.hasNewerOnServer
+        },
+        isLoadingOlder = false,
+        isTailRefreshing = false,
+    )
 }
 
 private fun JsonObject?.resolveMessageKind(): MessageKind {
