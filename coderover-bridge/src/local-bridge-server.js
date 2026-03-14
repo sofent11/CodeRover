@@ -12,6 +12,10 @@ const CLOSE_CODE_INVALID_ROUTE = 4000;
 const CLOSE_CODE_IPHONE_REPLACED = 4003;
 const CLOSE_CODE_UPSTREAM_RESTARTING = 4004;
 const HEARTBEAT_INTERVAL_MS = 30_000;
+const STALE_PAIRING_CLOSE_DELAY_MS = 200;
+const BRIDGE_PATH_PREFIX = "/bridge/";
+const STALE_PAIRING_ERROR_MESSAGE =
+  "This bridge pairing is no longer valid. Scan a new QR code to pair again.";
 
 function startLocalBridgeServer({
   bridgeId,
@@ -58,6 +62,41 @@ function startLocalBridgeServer({
   }, HEARTBEAT_INTERVAL_MS);
 
   server.on("upgrade", (req, socket, head) => {
+    if (req.url !== routePath && isBridgeRoutePath(req.url)) {
+      wss.handleUpgrade(req, socket, head, (ws) => {
+        console.warn(
+          `${logPrefix} rejected stale bridge route ${req.url}; expected ${routePath}`
+        );
+        try {
+          ws.send(
+            JSON.stringify({
+              kind: "secureError",
+              code: "pairing_expired",
+              message: STALE_PAIRING_ERROR_MESSAGE,
+            })
+          );
+          setTimeout(() => {
+            try {
+              ws.close(CLOSE_CODE_INVALID_ROUTE, "Bridge pairing expired");
+            } catch {
+              try {
+                ws.terminate();
+              } catch {
+                // Best-effort only.
+              }
+            }
+          }, STALE_PAIRING_CLOSE_DELAY_MS);
+        } catch {
+          try {
+            ws.terminate();
+          } catch {
+            // Best-effort only.
+          }
+        }
+      });
+      return;
+    }
+
     if (req.url !== routePath) {
       socket.write("HTTP/1.1 404 Not Found\r\n\r\n");
       socket.destroy();
@@ -237,6 +276,10 @@ function listReachableLocalIPv4Addresses() {
 
 function listReachableTailnetIPv4Addresses() {
   return listReachableIPv4Addresses(isReachableTailnetIPv4);
+}
+
+function isBridgeRoutePath(pathname) {
+  return typeof pathname === "string" && pathname.startsWith(BRIDGE_PATH_PREFIX);
 }
 
 function listReachableIPv4Addresses(addressFilter) {

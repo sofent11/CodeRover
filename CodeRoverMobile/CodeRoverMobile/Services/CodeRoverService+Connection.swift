@@ -195,9 +195,13 @@ extension CodeRoverService {
             }
             return UIApplication.shared.applicationState == .active
         }()
+        let blocksAutomaticReconnect = secureConnectionState.blocksAutomaticReconnect
         let isBenignDisconnect = isBenignBackgroundDisconnect(error)
-        let shouldSuppressMessage = isBenignDisconnect && (!isAppInForeground || !appIsActive)
-        let shouldAttemptAutoRecovery = isRecoverableTransientConnectionError(error) || isBenignDisconnect
+        let shouldSuppressMessage = !blocksAutomaticReconnect
+            && isBenignDisconnect
+            && (!isAppInForeground || !appIsActive)
+        let shouldAttemptAutoRecovery = !blocksAutomaticReconnect
+            && (isRecoverableTransientConnectionError(error) || isBenignDisconnect)
         isConnected = false
         isInitialized = false
         shouldAutoReconnectOnForeground = shouldSuppressMessage || shouldAttemptAutoRecovery
@@ -211,7 +215,11 @@ extension CodeRoverService {
         } else {
             connectionRecoveryState = .idle
         }
-        if !shouldSuppressMessage && !shouldAttemptAutoRecovery {
+        if blocksAutomaticReconnect {
+            if lastErrorMessage?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true {
+                lastErrorMessage = error.localizedDescription
+            }
+        } else if !shouldSuppressMessage && !shouldAttemptAutoRecovery {
             lastErrorMessage = error.localizedDescription
         }
         finalizeAllStreamingState()
@@ -458,6 +466,13 @@ extension CodeRoverService {
         }
 
         lastErrorMessage = message
+        if let inferredSecureState = inferredSecureConnectionState(from: message) {
+            secureConnectionState = inferredSecureState
+            if inferredSecureState.blocksAutomaticReconnect {
+                shouldAutoReconnectOnForeground = false
+                connectionRecoveryState = .idle
+            }
+        }
     }
 
     func recoveryStatusMessage(for error: Error) -> String {
@@ -496,6 +511,35 @@ extension CodeRoverService {
 #else
         false
 #endif
+    }
+
+    var requiresManualRePair: Bool {
+        secureConnectionState == .rePairRequired
+            || inferredSecureConnectionState(from: lastErrorMessage) == .rePairRequired
+    }
+
+    func inferredSecureConnectionState(from message: String?) -> CodeRoverSecureConnectionState? {
+        let normalized = message?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() ?? ""
+        guard !normalized.isEmpty else {
+            return nil
+        }
+
+        if normalized.contains("update required") {
+            return .updateRequired
+        }
+
+        if normalized.contains("scan a fresh qr code to pair again")
+            || normalized.contains("scan a new qr code")
+            || normalized.contains("not trusted by the current bridge session")
+            || normalized.contains("trusted iphone identity does not match")
+            || normalized.contains("pairing qr code has expired")
+            || normalized.contains("pair again") {
+            return .rePairRequired
+        }
+
+        return nil
     }
 
     func isLoopbackHost(_ host: String?) -> Bool {

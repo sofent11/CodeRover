@@ -255,3 +255,35 @@ test("startLocalBridgeServer keeps multiple clients connected at the same time",
   secondClient.terminate();
   server.stop();
 });
+
+test("startLocalBridgeServer reports stale bridge routes as pairing_expired", async () => {
+  const server = startLocalBridgeServer({
+    bridgeId: "bridge-current",
+    host: "127.0.0.1",
+    port: 0,
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 25));
+
+  const result = await new Promise((resolve, reject) => {
+    const client = new WebSocket(
+      `ws://127.0.0.1:${server.resolvedPort()}/bridge/bridge-old`
+    );
+
+    client.once("message", (data) => {
+      const payload = JSON.parse(data.toString("utf8"));
+      resolve(payload);
+      client.terminate();
+    });
+
+    client.once("error", reject);
+  });
+
+  server.stop();
+
+  assert.deepEqual(result, {
+    kind: "secureError",
+    code: "pairing_expired",
+    message: "This bridge pairing is no longer valid. Scan a new QR code to pair again.",
+  });
+});

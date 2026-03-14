@@ -47,10 +47,12 @@ final class ContentViewModel {
             if let preferredTransportURL = preferredTransportURL?
                 .trimmingCharacters(in: .whitespacesAndNewlines),
                !preferredTransportURL.isEmpty {
+                debugConnectLog("manual connect requested transport=\(preferredTransportURL)")
                 try await connectWithAutoRecovery(
                     coderover: coderover,
                     serverURL: preferredTransportURL,
-                    performAutoRetry: true
+                    performAutoRetry: true,
+                    transportLabel: "manual:\(preferredTransportURL)"
                 )
                 coderover.rememberSuccessfulTransportURL(preferredTransportURL)
             } else {
@@ -66,6 +68,12 @@ final class ContentViewModel {
     // Connects or disconnects the paired bridge.
     func toggleConnection(coderover: CodeRoverService) async {
         guard !coderover.isConnecting, !isRunningForegroundReconnectLoop else {
+            return
+        }
+
+        guard !coderover.requiresManualRePair else {
+            coderover.shouldAutoReconnectOnForeground = false
+            coderover.connectionRecoveryState = .idle
             return
         }
 
@@ -171,6 +179,12 @@ final class ContentViewModel {
         }
         hasAttemptedInitialAutoConnect = true
 
+        guard !coderover.secureConnectionState.blocksAutomaticReconnect else {
+            coderover.shouldAutoReconnectOnForeground = false
+            coderover.connectionRecoveryState = .idle
+            return
+        }
+
         guard !coderover.isConnected, !coderover.isConnecting else {
             return
         }
@@ -191,6 +205,11 @@ final class ContentViewModel {
         guard coderover.shouldAutoReconnectOnForeground, !isRunningForegroundReconnectLoop else {
             return
         }
+        guard !coderover.secureConnectionState.blocksAutomaticReconnect else {
+            coderover.shouldAutoReconnectOnForeground = false
+            coderover.connectionRecoveryState = .idle
+            return
+        }
 
         isRunningForegroundReconnectLoop = true
         defer { isRunningForegroundReconnectLoop = false }
@@ -201,6 +220,12 @@ final class ContentViewModel {
         // Keep trying while the bridge pairing is still valid.
         // This lets network changes recover on their own instead of dropping back to a manual reconnect button.
         while coderover.shouldAutoReconnectOnForeground, attempt < maxAttempts {
+            if coderover.secureConnectionState.blocksAutomaticReconnect {
+                coderover.shouldAutoReconnectOnForeground = false
+                coderover.connectionRecoveryState = .idle
+                return
+            }
+
             guard coderover.hasSavedBridgePairing else {
                 coderover.shouldAutoReconnectOnForeground = false
                 coderover.connectionRecoveryState = .idle
@@ -236,7 +261,7 @@ final class ContentViewModel {
                 guard isRetryable else {
                     coderover.connectionRecoveryState = .idle
                     coderover.shouldAutoReconnectOnForeground = false
-                    coderover.lastErrorMessage = coderover.userFacingConnectFailureMessage(error)
+                    coderover.presentConnectionErrorIfNeeded(error)
                     return
                 }
 
@@ -272,23 +297,37 @@ extension ContentViewModel {
         coderover: CodeRoverService,
         performAutoRetry: Bool
     ) async throws {
-        let candidateURLs = coderover.orderedTransportCandidateURLs
-        guard !candidateURLs.isEmpty else {
+        let orderedCandidates = coderover.orderedTransportCandidates
+        guard !orderedCandidates.isEmpty else {
             throw CodeRoverServiceError.invalidInput("No saved bridge transport is available.")
         }
 
+        debugConnectLog(
+            "ordered transports="
+                + orderedCandidates.map(transportLogLabel).joined(separator: ", ")
+                + " preferred=\(coderover.preferredTransportURL ?? "nil")"
+                + " lastSuccessful=\(coderover.lastSuccessfulTransportURL ?? "nil")"
+        )
+
         var lastError: Error?
-        for candidateURL in candidateURLs {
+        let shouldRetrySingleCandidate = performAutoRetry && orderedCandidates.count == 1
+        if performAutoRetry && orderedCandidates.count > 1 {
+            debugConnectLog("multiple saved transports detected; trying each candidate once before surfacing a timeout")
+        }
+
+        for candidate in orderedCandidates {
             do {
                 try await connectWithAutoRecovery(
                     coderover: coderover,
-                    serverURL: candidateURL,
-                    performAutoRetry: performAutoRetry
+                    serverURL: candidate.url,
+                    performAutoRetry: shouldRetrySingleCandidate,
+                    transportLabel: transportLogLabel(candidate)
                 )
-                coderover.rememberSuccessfulTransportURL(candidateURL)
+                coderover.rememberSuccessfulTransportURL(candidate.url)
                 return
             } catch {
                 lastError = error
+                debugConnectLog("candidate failed transport=\(transportLogLabel(candidate)) error=\(error.localizedDescription)")
                 if shouldStopTryingOtherCandidates(for: error) {
                     throw error
                 }
@@ -318,7 +357,8 @@ extension ContentViewModel {
     func connectWithAutoRecovery(
         coderover: CodeRoverService,
         serverURL: String,
-        performAutoRetry: Bool
+        performAutoRetry: Bool,
+        transportLabel: String
     ) async throws {
         let maxAttemptIndex = performAutoRetry ? autoReconnectBackoffNanoseconds.count : 0
         var lastError: Error?
@@ -331,8 +371,15 @@ extension ContentViewModel {
                 )
             }
 
+            let attemptStartedAt = Date()
+            debugConnectLog(
+                "connecting transport=\(transportLabel) url=\(serverURL) attempt=\(attemptIndex + 1)/\(maxAttemptIndex + 1)"
+            )
             do {
                 try await connect(coderover: coderover, serverURL: serverURL)
+                debugConnectLog(
+                    "connected transport=\(transportLabel) elapsed=\(elapsedString(since: attemptStartedAt))"
+                )
                 coderover.connectionRecoveryState = .idle
                 coderover.lastErrorMessage = nil
                 coderover.shouldAutoReconnectOnForeground = false
@@ -341,13 +388,17 @@ extension ContentViewModel {
                 lastError = error
                 let isRetryable = coderover.isRecoverableTransientConnectionError(error)
                     || coderover.isBenignBackgroundDisconnect(error)
+                debugConnectLog(
+                    "connect failed transport=\(transportLabel) retryable=\(isRetryable) "
+                        + "elapsed=\(elapsedString(since: attemptStartedAt)) error=\(error.localizedDescription)"
+                )
 
                 guard performAutoRetry,
                       isRetryable,
                       attemptIndex < autoReconnectBackoffNanoseconds.count else {
                     coderover.connectionRecoveryState = .idle
                     coderover.shouldAutoReconnectOnForeground = false
-                    coderover.lastErrorMessage = coderover.userFacingConnectFailureMessage(error)
+                    coderover.presentConnectionErrorIfNeeded(error)
                     throw error
                 }
 
@@ -363,8 +414,21 @@ extension ContentViewModel {
         if let lastError {
             coderover.connectionRecoveryState = .idle
             coderover.shouldAutoReconnectOnForeground = false
-            coderover.lastErrorMessage = coderover.userFacingConnectFailureMessage(lastError)
+            coderover.presentConnectionErrorIfNeeded(lastError)
             throw lastError
         }
+    }
+
+    private func debugConnectLog(_ message: String) {
+        print("[CodeRoverConnect] \(message)")
+    }
+
+    private func transportLogLabel(_ candidate: CodeRoverTransportCandidate) -> String {
+        let host = URL(string: candidate.url)?.host ?? candidate.url
+        return "\(candidate.kind):\(host)"
+    }
+
+    private func elapsedString(since startedAt: Date) -> String {
+        String(format: "%.2fs", Date().timeIntervalSince(startedAt))
     }
 }

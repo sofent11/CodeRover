@@ -9,6 +9,7 @@ import SwiftUI
 struct HomeEmptyStateView<AuthSection: View>: View {
     let connectionPhase: CodeRoverConnectionPhase
     let securityLabel: String?
+    let errorMessage: String?
     let onToggleConnection: () -> Void
     @ViewBuilder let authSection: () -> AuthSection
 
@@ -59,6 +60,14 @@ struct HomeEmptyStateView<AuthSection: View>: View {
                     Text(securityLabel)
                         .font(AppFont.caption())
                         .foregroundStyle(.secondary)
+                }
+
+                if let errorMessage, !errorMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Text(errorMessage)
+                        .font(AppFont.caption())
+                        .foregroundStyle(.red)
+                        .multilineTextAlignment(.center)
+                        .padding(.top, 4)
                 }
 
                 // Keeps the remembered bridge pairing actionable after app relaunch or stale reconnects.

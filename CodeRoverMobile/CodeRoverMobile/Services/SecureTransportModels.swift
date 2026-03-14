@@ -187,6 +187,15 @@ enum CodeRoverSecureTransportError: LocalizedError {
 }
 
 extension CodeRoverSecureConnectionState {
+    var blocksAutomaticReconnect: Bool {
+        switch self {
+        case .rePairRequired, .updateRequired:
+            return true
+        case .notPaired, .trustedMac, .handshaking, .encrypted, .reconnecting:
+            return false
+        }
+    }
+
     var statusLabel: String {
         switch self {
         case .notPaired:

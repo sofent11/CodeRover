@@ -88,6 +88,9 @@ enum class SecureConnectionState(val statusLabel: String) {
     UPDATE_REQUIRED("Update required"),
 }
 
+val SecureConnectionState.blocksAutomaticReconnect: Boolean
+    get() = this == SecureConnectionState.RE_PAIR_REQUIRED || this == SecureConnectionState.UPDATE_REQUIRED
+
 enum class ConnectionPhase {
     OFFLINE,
     CONNECTING,

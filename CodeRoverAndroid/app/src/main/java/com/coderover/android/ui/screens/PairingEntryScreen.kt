@@ -156,7 +156,7 @@ fun PairingEntryScreen(
     if (!errorMessage.isNullOrBlank()) {
         AlertDialog(
             onDismissRequest = onErrorDismissed,
-            title = { Text("Scan Error") },
+            title = { Text("Connection Error") },
             text = { Text(errorMessage) },
             confirmButton = {},
             dismissButton = {

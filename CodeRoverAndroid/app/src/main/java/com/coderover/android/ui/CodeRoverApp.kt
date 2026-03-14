@@ -171,6 +171,13 @@ private fun CodeRoverAppShell(
         contentViewModel.maybeDismissPairingEntry(state)
     }
 
+    LaunchedEffect(state.secureConnectionState) {
+        if (contentViewModel.syncSecureRouting(state)) {
+            isSidebarOpen = false
+            isSidebarSearchActive = false
+        }
+    }
+
     LaunchedEffect(isSidebarOpen, state.isConnected) {
         if (isSidebarOpen && contentViewModel.shouldRequestSidebarFreshSync(state.isConnected)) {
             viewModel.refreshThreadsIfConnected()

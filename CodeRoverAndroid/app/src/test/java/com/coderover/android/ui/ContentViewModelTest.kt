@@ -6,6 +6,7 @@ import com.coderover.android.data.model.AppState
 import com.coderover.android.data.model.ConnectionPhase
 import com.coderover.android.data.model.PairingRecord
 import com.coderover.android.data.model.PhoneIdentityState
+import com.coderover.android.data.model.SecureConnectionState
 import com.coderover.android.data.model.ThreadSummary
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -55,6 +56,34 @@ class ContentViewModelTest {
         val state = appState(
             pairings = listOf(pairingRecord()),
             pendingTransportSelectionMacDeviceId = "mac-1",
+        )
+
+        assertFalse(viewModel.shouldAttemptAutoConnect(state))
+        assertFalse(viewModel.shouldAttemptForegroundReconnect(state))
+    }
+
+    @Test
+    fun shouldForcePairingScreenWhenSecureStateRequiresRePair() {
+        val viewModel = ContentViewModel()
+        val state = appState(
+            pairings = listOf(pairingRecord()),
+            selectedThreadId = "thread-1",
+            threads = listOf(threadSummary("thread-1")),
+            secureConnectionState = SecureConnectionState.RE_PAIR_REQUIRED,
+        )
+
+        assertFalse(viewModel.shouldAttemptAutoConnect(state))
+        assertFalse(viewModel.shouldAttemptForegroundReconnect(state))
+        assertTrue(viewModel.syncSecureRouting(state))
+        assertEquals(AppShellContent.PAIRING, viewModel.shellContent(state))
+    }
+
+    @Test
+    fun shouldNotAutoReconnectWhenUpdateIsRequired() {
+        val viewModel = ContentViewModel()
+        val state = appState(
+            pairings = listOf(pairingRecord()),
+            secureConnectionState = SecureConnectionState.UPDATE_REQUIRED,
         )
 
         assertFalse(viewModel.shouldAttemptAutoConnect(state))
@@ -134,6 +163,7 @@ class ContentViewModelTest {
         pairings: List<PairingRecord> = emptyList(),
         activePairingMacDeviceId: String? = null,
         connectionPhase: ConnectionPhase = ConnectionPhase.OFFLINE,
+        secureConnectionState: SecureConnectionState = SecureConnectionState.NOT_PAIRED,
         selectedThreadId: String? = null,
         threads: List<ThreadSummary> = emptyList(),
         pendingTransportSelectionMacDeviceId: String? = null,
@@ -150,6 +180,7 @@ class ContentViewModelTest {
                 phoneIdentityPublicKey = "public",
             ),
             connectionPhase = connectionPhase,
+            secureConnectionState = secureConnectionState,
             threads = threads,
             selectedThreadId = selectedThreadId,
             pendingTransportSelectionMacDeviceId = pendingTransportSelectionMacDeviceId,

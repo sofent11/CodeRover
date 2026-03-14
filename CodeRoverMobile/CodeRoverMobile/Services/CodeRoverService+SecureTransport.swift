@@ -283,6 +283,9 @@ extension CodeRoverService {
             }
         }
 
+        guard !secureConnectionState.blocksAutomaticReconnect else {
+            return
+        }
         updateSecureConnectionStateForSelectedPairing()
     }
 }

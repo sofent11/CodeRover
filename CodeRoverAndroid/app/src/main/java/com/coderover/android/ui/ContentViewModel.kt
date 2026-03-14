@@ -6,6 +6,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.coderover.android.data.model.AppState
 import com.coderover.android.data.model.ConnectionPhase
+import com.coderover.android.data.model.SecureConnectionState
+import com.coderover.android.data.model.blocksAutomaticReconnect
 
 internal enum class AppShellContent {
     SETTINGS,
@@ -37,6 +39,7 @@ internal class ContentViewModel {
 
     fun shellContent(state: AppState): AppShellContent {
         return when {
+            shouldForcePairingEntry(state) -> AppShellContent.PAIRING
             showArchivedChats -> AppShellContent.ARCHIVED_CHATS
             showSettings -> AppShellContent.SETTINGS
             showPairingEntry -> AppShellContent.PAIRING
@@ -49,7 +52,9 @@ internal class ContentViewModel {
         if (hasAttemptedInitialAutoConnect ||
             state.pairings.isEmpty() ||
             state.isConnected ||
-            state.pendingTransportSelectionMacDeviceId != null
+            state.pendingTransportSelectionMacDeviceId != null ||
+            state.secureConnectionState.blocksAutomaticReconnect ||
+            shouldForcePairingEntry(state)
         ) {
             return false
         }
@@ -62,7 +67,9 @@ internal class ContentViewModel {
             !state.isConnected &&
             state.pendingTransportSelectionMacDeviceId == null &&
             !showSettings &&
-            !showPairingEntry
+            !showPairingEntry &&
+            !state.secureConnectionState.blocksAutomaticReconnect &&
+            !shouldForcePairingEntry(state)
     }
 
     fun shouldReconnectOnForegroundResume(state: AppState): Boolean {
@@ -131,6 +138,18 @@ internal class ContentViewModel {
         showPairingEntry = false
     }
 
+    fun syncSecureRouting(state: AppState): Boolean {
+        if (!shouldForcePairingEntry(state)) {
+            return false
+        }
+
+        showSettings = false
+        showArchivedChats = false
+        showPairingEntry = true
+        pendingPairingDismiss = false
+        return true
+    }
+
     fun selectThread() {
         showSettings = false
         showArchivedChats = false
@@ -139,6 +158,11 @@ internal class ContentViewModel {
     }
 
     fun maybeDismissPairingEntry(state: AppState): Boolean {
+        if (shouldForcePairingEntry(state)) {
+            showPairingEntry = true
+            pendingPairingDismiss = false
+            return false
+        }
         if (!showPairingEntry || !pendingPairingDismiss) {
             return false
         }
@@ -155,5 +179,9 @@ internal class ContentViewModel {
             return true
         }
         return false
+    }
+
+    private fun shouldForcePairingEntry(state: AppState): Boolean {
+        return state.secureConnectionState == SecureConnectionState.RE_PAIR_REQUIRED
     }
 }

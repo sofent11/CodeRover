@@ -366,6 +366,7 @@ class CodeRoverRepository(context: Context) {
                 }
 
                 var lastFailure: Throwable? = null
+                var finalSecureState = currentState.secureConnectionState
                 for (url in orderedUrls) {
                     try {
                         Log.d(TAG, "connectActivePairing epoch=$epoch url=$url mac=${pairing.macDeviceId}")
@@ -410,12 +411,18 @@ class CodeRoverRepository(context: Context) {
                     } catch (failure: Throwable) {
                         Log.e(TAG, "connectActivePairing failed epoch=$epoch url=$url", failure)
                         lastFailure = failure
+                        val resolution = resolveConnectionFailure(failure, finalSecureState)
+                        finalSecureState = resolution.secureConnectionState
+                        if (resolution.shouldStopTryingOtherTransports) {
+                            break
+                        }
                     }
                 }
 
                 updateState {
                     copy(
                         connectionPhase = ConnectionPhase.OFFLINE,
+                        secureConnectionState = finalSecureState,
                         lastErrorMessage = lastFailure?.message ?: "Could not connect to the CodeRover bridge.",
                     )
                 }

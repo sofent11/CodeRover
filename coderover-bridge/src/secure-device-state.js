@@ -86,16 +86,16 @@ function readBridgeDeviceState() {
 
 function writeBridgeDeviceState(state) {
   const serialized = JSON.stringify(state, null, 2);
-  if (process.platform === "darwin" && writeKeychainStateString(serialized)) {
-    return;
-  }
-
   fs.mkdirSync(STORE_DIR, { recursive: true });
   fs.writeFileSync(STORE_FILE, serialized, { mode: 0o600 });
   try {
     fs.chmodSync(STORE_FILE, 0o600);
   } catch {
     // Best-effort only on filesystems that support POSIX modes.
+  }
+
+  if (process.platform === "darwin") {
+    writeKeychainStateString(serialized);
   }
 }
 

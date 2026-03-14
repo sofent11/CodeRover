@@ -102,6 +102,18 @@ struct ContentView: View {
                 }
                 isShowingManualScanner = false
             }
+            .onChange(of: coderover.secureConnectionState) { _, secureState in
+                guard secureState == .rePairRequired else {
+                    return
+                }
+                forceManualRePairUI()
+            }
+            .onChange(of: coderover.lastErrorMessage) { _, _ in
+                guard coderover.requiresManualRePair else {
+                    return
+                }
+                forceManualRePairUI()
+            }
             .sheet(item: $pendingTransportSelection) { selection in
                 TransportSelectionView(
                     pairingPayload: selection.pairingPayload,
@@ -140,29 +152,53 @@ struct ContentView: View {
     }
 
     private var qrScannerBody: some View {
-        QRScannerView { pairingPayload in
-            let usableCandidates = pairingPayload.transportCandidates.filter { candidate in
-                !candidate.url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            }
-            let preferredCandidate = coderover.orderedTransportCandidates(
-                from: usableCandidates,
-                preferredTransportURL: nil,
-                lastSuccessfulTransportURL: nil
-            ).first
+        ZStack(alignment: .top) {
+            QRScannerView { pairingPayload in
+                let usableCandidates = pairingPayload.transportCandidates.filter { candidate in
+                    !candidate.url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                }
+                let preferredCandidate = coderover.orderedTransportCandidates(
+                    from: usableCandidates,
+                    preferredTransportURL: nil,
+                    lastSuccessfulTransportURL: nil
+                ).first
 
-            if usableCandidates.count > 1, preferredCandidate == nil {
-                pendingTransportSelection = PendingTransportSelection(pairingPayload: pairingPayload)
-                return
+                if usableCandidates.count > 1, preferredCandidate == nil {
+                    pendingTransportSelection = PendingTransportSelection(pairingPayload: pairingPayload)
+                    return
+                }
+
+                Task {
+                    isShowingManualScanner = false
+                    pendingTransportSelection = nil
+                    await viewModel.connectToBridge(
+                        pairingPayload: pairingPayload,
+                        coderover: coderover,
+                        preferredTransportURL: preferredCandidate?.url ?? usableCandidates.first?.url
+                    )
+                }
             }
 
-            Task {
-                isShowingManualScanner = false
-                pendingTransportSelection = nil
-                await viewModel.connectToBridge(
-                    pairingPayload: pairingPayload,
-                    coderover: coderover,
-                    preferredTransportURL: preferredCandidate?.url ?? usableCandidates.first?.url
+            if let rePairMessage {
+                VStack(spacing: 10) {
+                    Text("Pairing expired")
+                        .font(AppFont.subheadline(weight: .semibold))
+                        .foregroundStyle(.white)
+                    Text(rePairMessage)
+                        .font(AppFont.caption())
+                        .foregroundStyle(Color.white.opacity(0.84))
+                        .multilineTextAlignment(.center)
+                }
+                .padding(.horizontal, 18)
+                .padding(.vertical, 14)
+                .frame(maxWidth: 360)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 20, style: .continuous)
+                        .stroke(Color.white.opacity(0.16), lineWidth: 1)
                 )
+                .padding(.horizontal, 20)
+                .padding(.top, 24)
             }
         }
     }
@@ -245,9 +281,15 @@ struct ContentView: View {
             HomeEmptyStateView(
                 connectionPhase: homeConnectionPhase,
                 securityLabel: coderover.secureConnectionState.statusLabel,
+                errorMessage: coderover.lastErrorMessage,
                 onToggleConnection: {
                     Task {
-                        await viewModel.toggleConnection(coderover: coderover)
+                        if coderover.requiresManualRePair {
+                            await viewModel.stopAutoReconnectForManualScan(coderover: coderover)
+                            forceManualRePairUI()
+                        } else {
+                            await viewModel.toggleConnection(coderover: coderover)
+                        }
                     }
                 }
             ) {
@@ -361,15 +403,36 @@ struct ContentView: View {
 
     // Shows the remembered pairing shell after app relaunch so the user can reconnect without rescanning.
     private var shouldShowReconnectShell: Bool {
-        coderover.hasSavedBridgePairing && !isShowingManualScanner
+        coderover.hasSavedBridgePairing && !isShowingManualScanner && !shouldForceRePairScanner
     }
 
     private var shouldPresentManualScanner: Bool {
-        isShowingManualScanner && !coderover.isConnected && !viewModel.isAttemptingAutoReconnect
+        shouldForceRePairScanner
+            || (isShowingManualScanner && !coderover.isConnected && !viewModel.isAttemptingAutoReconnect)
+    }
+
+    private var shouldForceRePairScanner: Bool {
+        coderover.requiresManualRePair
+    }
+
+    private var rePairMessage: String? {
+        guard shouldForceRePairScanner else {
+            return nil
+        }
+
+        let message = coderover.lastErrorMessage?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !message.isEmpty {
+            return message
+        }
+        return "This iPhone is no longer trusted by the Mac bridge. Scan a new QR code to pair again."
     }
 
     // Keeps home status honest during reconnect loops while letting post-connect sync show separately.
     private var homeConnectionPhase: CodeRoverConnectionPhase {
+        if coderover.requiresManualRePair {
+            return .offline
+        }
         if viewModel.isAttemptingAutoReconnect && !coderover.isConnected {
             return .connecting
         }
@@ -382,6 +445,19 @@ struct ContentView: View {
             isSidebarOpen = open
             sidebarDragOffset = 0
         }
+    }
+
+    private func forceManualRePairUI() {
+        coderover.shouldAutoReconnectOnForeground = false
+        coderover.connectionRecoveryState = .idle
+        isShowingManualScanner = true
+        isSidebarOpen = false
+        sidebarDragOffset = 0
+        showSettings = false
+        pendingTransportSelection = nil
+        navigationPath = NavigationPath()
+        selectedThread = nil
+        coderover.activeThreadId = nil
     }
 
     private func returnToHomeAfterManualDisconnect() {
