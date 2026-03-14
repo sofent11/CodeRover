@@ -11,16 +11,24 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.QrCodeScanner
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextAlign
@@ -55,11 +63,15 @@ fun OnboardingScreen(onContinue: () -> Unit) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(80.dp)
+                    .height(120.dp)
                     .align(Alignment.BottomCenter)
                     .background(
                         Brush.verticalGradient(
-                            colors = listOf(Color.Transparent, MaterialTheme.colorScheme.background)
+                            colors = listOf(
+                                Color.Transparent,
+                                MaterialTheme.colorScheme.background.copy(alpha = 0.7f),
+                                MaterialTheme.colorScheme.background
+                            )
                         )
                     )
             )
@@ -69,7 +81,7 @@ fun OnboardingScreen(onContinue: () -> Unit) {
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 24.dp)
-                .padding(bottom = 32.dp),
+                .padding(bottom = 40.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Image(
@@ -93,7 +105,7 @@ fun OnboardingScreen(onContinue: () -> Unit) {
             
             Column(
                 modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
+                verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
                 OnboardingStep(number = "1", title = "Install the package", command = "npm install -g coderover")
                 OnboardingStep(number = "2", title = "Start the bridge", command = "coderover up")
@@ -106,7 +118,7 @@ fun OnboardingScreen(onContinue: () -> Unit) {
                 onClick = onContinue,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(56.dp),
+                    .padding(vertical = 15.dp),
                 shape = RoundedCornerShape(18.dp),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = Color.Black,
@@ -147,8 +159,6 @@ private fun OnboardingStep(
     title: String,
     command: String? = null,
 ) {
-    val clipboardManager = LocalClipboardManager.current
-
     Row(
         verticalAlignment = Alignment.Top,
         modifier = Modifier.fillMaxWidth(),
@@ -156,43 +166,72 @@ private fun OnboardingStep(
         Box(
             modifier = Modifier
                 .padding(top = 2.dp)
-                .size(24.dp)
+                .size(20.dp)
                 .background(Color.Black, CircleShape),
             contentAlignment = Alignment.Center,
         ) {
             Text(number, color = Color.White, style = MaterialTheme.typography.labelSmall)
         }
-        Spacer(Modifier.width(16.dp))
+        Spacer(Modifier.width(10.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(title, style = MaterialTheme.typography.bodyLarge)
             command?.let { cmd ->
                 Spacer(Modifier.height(8.dp))
-                Surface(
-                    shape = RoundedCornerShape(12.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Row(
-                        modifier = Modifier.padding(start = 12.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            text = cmd,
-                            style = MaterialTheme.typography.bodyMedium.copy(fontFamily = monoFamily),
-                            modifier = Modifier.weight(1f)
-                        )
-                        IconButton(
-                            onClick = { clipboardManager.setText(AnnotatedString(cmd)) },
-                            modifier = Modifier.size(36.dp)
-                        ) {
-                            Icon(
-                                Icons.Outlined.ContentCopy,
-                                contentDescription = "Copy",
-                                modifier = Modifier.size(18.dp),
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
+                OnboardingCommandRow(cmd)
+            }
+        }
+    }
+}
+
+@Composable
+private fun OnboardingCommandRow(command: String) {
+    val clipboardManager = LocalClipboardManager.current
+    val hapticFeedback = LocalHapticFeedback.current
+    var copied by remember { mutableStateOf(false) }
+
+    LaunchedEffect(copied) {
+        if (copied) {
+            kotlinx.coroutines.delay(1500)
+            copied = false
+        }
+    }
+
+    Surface(
+        shape = RoundedCornerShape(8.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.2f),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier.padding(start = 12.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = command,
+                style = MaterialTheme.typography.bodyMedium.copy(fontFamily = monoFamily),
+                modifier = Modifier.weight(1f)
+            )
+            IconButton(
+                onClick = {
+                    clipboardManager.setText(AnnotatedString(command))
+                    hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+                    copied = true
+                },
+                modifier = Modifier.size(36.dp)
+            ) {
+                if (copied) {
+                    Icon(
+                        Icons.Filled.Check,
+                        contentDescription = "Copied",
+                        modifier = Modifier.size(18.dp),
+                        tint = Color(0xFF34C759) // iOS green equivalent
+                    )
+                } else {
+                    Icon(
+                        Icons.Outlined.ContentCopy,
+                        contentDescription = "Copy",
+                        modifier = Modifier.size(18.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
             }
         }
