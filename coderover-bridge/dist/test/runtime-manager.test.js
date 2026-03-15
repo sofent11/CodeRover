@@ -558,6 +558,96 @@ function createDefaultCodexTransportFixture(manager, { threadRef, } = {}) {
         fixture.cleanup();
     }
 });
+(0, node_test_1.test)("thread/read history windows strip oversized inline image payloads from Codex items", async () => {
+    const largeInlineImage = `data:image/png;base64,${"A".repeat(200_000)}`;
+    const thread = buildCodexThread({
+        threadId: "codex-thread-inline-image",
+        messageCount: 4,
+    });
+    thread.turns[0].items[0] = {
+        id: "item-1",
+        type: "user_message",
+        role: "user",
+        text: "message-1",
+        content: [
+            { type: "text", text: "message-1" },
+            { type: "image", url: largeInlineImage },
+        ],
+        createdAt: thread.turns[0].items[0].createdAt,
+    };
+    const codexFixture = createCodexAdapterFixture({ threads: [thread] });
+    const fixture = createManagerFixtureWithOptions({
+        codexAdapter: codexFixture.adapter,
+    });
+    try {
+        const tailMessages = await request(fixture, "thread-read-inline-image", "thread/read", {
+            threadId: thread.id,
+            history: {
+                mode: "tail",
+                limit: 4,
+            },
+        });
+        const tailResponse = responseById(tailMessages, "thread-read-inline-image");
+        node_assert_1.strict.ok(tailResponse);
+        const firstItem = tailResponse.result.thread.turns[0].items[0];
+        node_assert_1.strict.equal(firstItem.id, "item-1");
+        node_assert_1.strict.equal(firstItem.content[1].type, "image");
+        node_assert_1.strict.equal(firstItem.content[1].url, undefined);
+        node_assert_1.strict.equal(firstItem.content[1].omittedLargeInlineImage, true);
+    }
+    finally {
+        fixture.cleanup();
+    }
+});
+(0, node_test_1.test)("thread/resume strips oversized inline image payloads from Codex items", async () => {
+    const largeInlineImage = `data:image/png;base64,${"A".repeat(200_000)}`;
+    const thread = buildCodexThread({
+        threadId: "codex-thread-resume-inline-image",
+        messageCount: 2,
+    });
+    thread.turns[0].items[0] = {
+        id: "item-1",
+        type: "user_message",
+        role: "user",
+        text: "message-1",
+        content: [
+            { type: "text", text: "message-1" },
+            { type: "image", url: largeInlineImage },
+        ],
+        createdAt: thread.turns[0].items[0].createdAt,
+    };
+    const codexAdapter = createCodexAdapterStub({
+        async request(method) {
+            if (method === "initialize") {
+                return { ok: true };
+            }
+            throw new Error(`unexpected request: ${method}`);
+        },
+        async listThreads() {
+            return { threads: [thread] };
+        },
+        async readThread() {
+            return { thread };
+        },
+        async resumeThread() {
+            return { thread };
+        },
+    });
+    const fixture = createManagerFixtureWithOptions({ codexAdapter });
+    try {
+        const messages = await request(fixture, "codex-thread-resume", "thread/resume", {
+            threadId: thread.id,
+        });
+        const response = responseById(messages, "codex-thread-resume");
+        node_assert_1.strict.ok(response);
+        const firstItem = response.result.thread.turns[0].items[0];
+        node_assert_1.strict.equal(firstItem.content[1].url, undefined);
+        node_assert_1.strict.equal(firstItem.content[1].omittedLargeInlineImage, true);
+    }
+    finally {
+        fixture.cleanup();
+    }
+});
 (0, node_test_1.test)("forwarded Codex item delta notifications include cursor metadata when cache context exists", async () => {
     const fixture = createManagerFixtureWithOptions({
         useDefaultCodexAdapter: true,

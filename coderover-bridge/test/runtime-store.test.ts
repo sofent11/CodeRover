@@ -95,3 +95,69 @@ test("runtime store keeps archive and name overlays in the thread index", () => 
     fixture.cleanup();
   }
 });
+
+test("runtime store loads legacy snake_case thread metadata and history items", () => {
+  const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "coderover-runtime-store-legacy-"));
+
+  try {
+    fs.mkdirSync(path.join(baseDir, "threads"), { recursive: true });
+    fs.writeFileSync(path.join(baseDir, "index.json"), JSON.stringify({
+      version: 1,
+      threads: {
+        "claude:legacy-thread": {
+          id: "claude:legacy-thread",
+          provider: "claude",
+          provider_session_id: "session-legacy",
+          title: "Legacy Claude thread",
+          first_prompt: "Initial prompt",
+          cwd: "/tmp/legacy-project",
+          created_at: "2026-03-10T00:00:00.000Z",
+          updated_at: "2026-03-11T00:00:00.000Z",
+          archived: false,
+        },
+      },
+      providerSessions: {},
+    }, null, 2));
+    fs.writeFileSync(path.join(baseDir, "threads", "claude:legacy-thread.json"), JSON.stringify({
+      thread_id: "claude:legacy-thread",
+      turns: [
+        {
+          turn_id: "turn-legacy",
+          created_at: "2026-03-11T01:00:00.000Z",
+          status: "completed",
+          items: [
+            {
+              item_id: "item-legacy",
+              type: "agent_message",
+              role: "assistant",
+              text: "legacy hello",
+              content: [{ type: "text", text: "legacy hello" }],
+              explanation: "keep me",
+              file_changes: [{ path: "README.md" }],
+            },
+          ],
+        },
+      ],
+    }, null, 2));
+
+    const store = createRuntimeStore({ baseDir });
+    try {
+      const thread = store.getThreadMeta("claude:legacy-thread");
+      assert.equal(thread?.providerSessionId, "session-legacy");
+      assert.equal(thread?.preview, "Initial prompt");
+      assert.equal(store.findThreadIdByProviderSession("claude", "session-legacy"), "claude:legacy-thread");
+
+      const history = store.getThreadHistory("claude:legacy-thread");
+      assert.equal(history?.threadId, "claude:legacy-thread");
+      assert.equal(history?.turns?.[0]?.id, "turn-legacy");
+      assert.equal(history?.turns?.[0]?.items?.[0]?.id, "item-legacy");
+      assert.equal(history?.turns?.[0]?.items?.[0]?.text, "legacy hello");
+      assert.equal(history?.turns?.[0]?.items?.[0]?.explanation, "keep me");
+      assert.deepEqual(history?.turns?.[0]?.items?.[0]?.fileChanges, [{ path: "README.md" }]);
+    } finally {
+      store.shutdown();
+    }
+  } finally {
+    fs.rmSync(baseDir, { recursive: true, force: true });
+  }
+});

@@ -10,10 +10,9 @@ import Network
 
 @MainActor
 final class CodeRoverServiceConnectionErrorTests: XCTestCase {
-    func testBenignBackgroundAbortIsSuppressedFromUserFacingErrors() {
+    func testBenignAbortIsSuppressedFromUserFacingErrors() {
         let service = CodeRoverService()
         let error = NWError.posix(.ECONNABORTED)
-        service.isAppInForeground = false
 
         XCTAssertTrue(service.isBenignBackgroundDisconnect(error))
         XCTAssertTrue(service.shouldSuppressUserFacingConnectionError(error))

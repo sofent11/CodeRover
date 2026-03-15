@@ -244,7 +244,7 @@ function normalizeIndex(input) {
             normalized.providerSessions[normalizedKey] = normalizedThreadId;
         }
     }
-    else {
+    if (Object.keys(normalized.providerSessions).length === 0) {
         for (const entry of Object.values(normalized.threads)) {
             const key = providerSessionKey(entry.provider, entry.providerSessionId);
             if (key) {
@@ -263,24 +263,47 @@ function normalizeThreadMeta(input) {
     return {
         id: normalizedId,
         provider: normalizedProvider,
-        providerSessionId: normalizeNonEmptyString(record.providerSessionId) || null,
-        title: normalizeOptionalString(record.title),
+        providerSessionId: firstNonEmptyString([
+            record.providerSessionId,
+            record.provider_session_id,
+            record.sessionId,
+            record.session_id,
+        ]),
+        title: firstNonEmptyString([
+            record.title,
+            record.customTitle,
+            record.custom_title,
+            record.summary,
+        ]),
         name: normalizeOptionalString(record.name),
-        preview: normalizeOptionalString(record.preview),
-        cwd: normalizeOptionalPath(record.cwd),
+        preview: firstNonEmptyString([
+            record.preview,
+            record.firstPrompt,
+            record.first_prompt,
+            record.summary,
+        ]),
+        cwd: firstNonEmptyPath([
+            record.cwd,
+            record.current_working_directory,
+            record.working_directory,
+        ]),
         model: normalizeOptionalString(record.model),
         metadata,
         capabilities,
-        createdAt: toIsoDateString(record.createdAt || Date.now()),
-        updatedAt: toIsoDateString(record.updatedAt || record.createdAt || Date.now()),
+        createdAt: toIsoDateString(record.createdAt || record.created_at || record.lastModified || record.last_modified || Date.now()),
+        updatedAt: toIsoDateString(record.updatedAt || record.updated_at || record.lastModified || record.last_modified || record.createdAt || record.created_at || Date.now()),
         archived: Boolean(record.archived),
     };
 }
 function normalizeThreadHistory(input, threadId) {
     const record = input && typeof input === "object" ? input : {};
-    const turns = Array.isArray(record.turns) ? record.turns : [];
+    const turns = Array.isArray(record.turns)
+        ? record.turns
+        : Array.isArray(record.history)
+            ? record.history
+            : [];
     return {
-        threadId,
+        threadId: normalizeNonEmptyString(record.threadId || record.thread_id) || threadId,
         turns: turns
             .filter((entry) => Boolean(entry) && typeof entry === "object")
             .map((entry) => normalizeTurn(entry)),
@@ -288,8 +311,9 @@ function normalizeThreadHistory(input, threadId) {
 }
 function normalizeTurn(input) {
     return {
-        id: normalizeNonEmptyString(input.id) || (0, crypto_1.randomUUID)(),
-        createdAt: toIsoDateString(input.createdAt || Date.now()),
+        ...input,
+        id: normalizeNonEmptyString(input.id || input.turnId || input.turn_id) || (0, crypto_1.randomUUID)(),
+        createdAt: toIsoDateString(input.createdAt || input.created_at || Date.now()),
         status: normalizeOptionalString(input.status),
         items: Array.isArray(input.items)
             ? input.items
@@ -299,14 +323,19 @@ function normalizeTurn(input) {
     };
 }
 function normalizeItem(input) {
-    return {
-        id: normalizeNonEmptyString(input.id) || (0, crypto_1.randomUUID)(),
+    const normalizedItem = {
+        ...input,
+        id: normalizeNonEmptyString(input.id || input.itemId || input.item_id) || (0, crypto_1.randomUUID)(),
         type: normalizeNonEmptyString(input.type) || "message",
         role: normalizeOptionalString(input.role),
-        content: Array.isArray(input.content) ? input.content.map((entry) => normalizeContent(entry)) : [],
+        content: Array.isArray(input.content)
+            ? input.content.map((entry) => normalizeContent(entry))
+            : Array.isArray(input.contents)
+                ? input.contents.map((entry) => normalizeContent(entry))
+                : [],
         text: normalizeOptionalString(input.text),
         message: normalizeOptionalString(input.message),
-        createdAt: toIsoDateString(input.createdAt || Date.now()),
+        createdAt: toIsoDateString(input.createdAt || input.created_at || Date.now()),
         status: normalizeOptionalString(input.status),
         command: normalizeOptionalString(input.command),
         metadata: normalizeObject(input.metadata),
@@ -314,10 +343,12 @@ function normalizeItem(input) {
             ? input.plan.map((entry) => normalizeObject(entry) || {})
             : normalizeObject(input.plan),
         summary: normalizeOptionalString(input.summary),
-        fileChanges: Array.isArray(input.fileChanges)
-            ? input.fileChanges.map((entry) => normalizeObject(entry) || {})
-            : [],
+        fileChanges: normalizeObjectArray(input.fileChanges || input.file_changes || input.changes),
     };
+    if (normalizedItem.fileChanges.length === 0 && Array.isArray(input.changes)) {
+        normalizedItem.fileChanges = normalizeObjectArray(input.changes);
+    }
+    return normalizedItem;
 }
 function normalizeContent(input) {
     if (!input || typeof input !== "object") {
@@ -383,9 +414,33 @@ function normalizeObject(value) {
     }
     return { ...value };
 }
+function normalizeObjectArray(value) {
+    if (!Array.isArray(value)) {
+        return [];
+    }
+    return value.map((entry) => normalizeObject(entry) || {});
+}
 function normalizeOptionalString(value) {
     const normalized = normalizeNonEmptyString(value);
     return normalized || null;
+}
+function firstNonEmptyString(values) {
+    for (const value of values) {
+        const normalized = normalizeOptionalString(value);
+        if (normalized) {
+            return normalized;
+        }
+    }
+    return null;
+}
+function firstNonEmptyPath(values) {
+    for (const value of values) {
+        const normalized = normalizeOptionalPath(value);
+        if (normalized) {
+            return normalized;
+        }
+    }
+    return null;
 }
 function normalizeOptionalPath(value) {
     const normalized = normalizeOptionalString(value);

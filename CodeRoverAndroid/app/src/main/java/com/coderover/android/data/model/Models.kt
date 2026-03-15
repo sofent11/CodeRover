@@ -29,7 +29,95 @@ data class TransportCandidate(
     val kind: String,
     val url: String,
     val label: String? = null,
-)
+) {
+    fun transportHost(): String? {
+        val urlText = url.trim()
+        return runCatching {
+            java.net.URI(urlText).host?.trim()?.takeIf(String::isNotEmpty)
+        }.getOrNull()
+    }
+
+    fun isUsableCandidate(): Boolean {
+        val host = transportHost() ?: return false
+        if (kind == "local_ipv4" && host.startsWith("169.254.")) {
+            return false
+        }
+        return true
+    }
+
+    fun reconnectNetworkPriority(localIpv4Addresses: Set<String>): Int {
+        val host = transportHost().orEmpty()
+        val ipv4 = host.normalizedIpv4Address()
+        if (ipv4 != null) {
+            if (localIpv4Addresses.any { it.isSameIpv4Subnet(ipv4) }) {
+                return 0
+            }
+            if (ipv4.isPublicIpv4Address()) {
+                return 1
+            }
+            return 4
+        }
+
+        if (kind == "tailnet_ipv4" || kind == "tailnet" || host.endsWith(".ts.net")) {
+            return 2
+        }
+
+        if (kind == "local_hostname" || host.endsWith(".local")) {
+            return 3
+        }
+
+        return 1
+    }
+
+    fun reconnectKindPriority(): Int {
+        return when (kind) {
+            "local_ipv4" -> 0
+            "tailnet_ipv4", "tailnet" -> 1
+            "local_hostname" -> 2
+            else -> 3
+        }
+    }
+}
+
+private fun String.normalizedIpv4Address(): String? {
+    val octets = split(".")
+    if (octets.size != 4) {
+        return null
+    }
+    val normalized = octets.map { it.toIntOrNull() ?: return null }
+    if (normalized.any { it !in 0..255 }) {
+        return null
+    }
+    return normalized.joinToString(".")
+}
+
+private fun String.isSameIpv4Subnet(other: String): Boolean {
+    val lhs = normalizedIpv4Address()?.split(".") ?: return false
+    val rhs = other.normalizedIpv4Address()?.split(".") ?: return false
+    return lhs[0] == rhs[0] && lhs[1] == rhs[1] && lhs[2] == rhs[2]
+}
+
+private fun String.isPublicIpv4Address(): Boolean {
+    val octets = normalizedIpv4Address()?.split(".")?.mapNotNull(String::toIntOrNull) ?: return false
+    val first = octets[0]
+    val second = octets[1]
+    if (first == 10 || first == 127 || first == 0) {
+        return false
+    }
+    if (first == 169 && second == 254) {
+        return false
+    }
+    if (first == 172 && second in 16..31) {
+        return false
+    }
+    if (first == 192 && second == 168) {
+        return false
+    }
+    if (first >= 224) {
+        return false
+    }
+    return true
+}
 
 @Serializable
 data class PairingPayload(

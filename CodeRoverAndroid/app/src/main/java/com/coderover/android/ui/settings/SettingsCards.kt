@@ -119,6 +119,11 @@ fun SettingsAppearanceCard(
             displayValue = { if (it == AppFontStyle.SYSTEM) "System" else "Geist" },
             onValueSelected = onFontStyleSelected,
         )
+        Text(
+            text = if (fontStyle == AppFontStyle.SYSTEM) "Use the native Android font for regular text. Code stays monospaced." else "Use Geist for regular text. Code stays monospaced.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 
@@ -137,16 +142,6 @@ fun SettingsRuntimeDefaultsCard(
             options = state.availableProviders,
             displayValue = RuntimeProvider::title,
             onValueSelected = { onProviderSelected(it.id) },
-        )
-
-        SettingsPickerRow(
-            label = "Access",
-            selectedValue = state.accessMode,
-            options = AccessMode.entries.filter { mode ->
-                state.selectedProvider.accessModes.any { it.id == mode.rawValue }
-            }.ifEmpty { AccessMode.entries },
-            displayValue = { it.displayName },
-            onValueSelected = onAccessModeSelected,
         )
 
         if (state.availableModels.isNotEmpty()) {
@@ -173,6 +168,16 @@ fun SettingsRuntimeDefaultsCard(
                 )
             }
         }
+
+        SettingsPickerRow(
+            label = "Access",
+            selectedValue = state.accessMode,
+            options = AccessMode.entries.filter { mode ->
+                state.selectedProvider.accessModes.any { it.id == mode.rawValue }
+            }.ifEmpty { AccessMode.entries },
+            displayValue = { it.displayName },
+            onValueSelected = onAccessModeSelected,
+        )
     }
 }
 
@@ -193,6 +198,11 @@ fun SettingsConnectionCard(
         com.coderover.android.data.model.ConnectionPhase.CONNECTED,
         com.coderover.android.data.model.ConnectionPhase.OFFLINE -> false
     }
+
+    val activePairing = state.activePairing
+    val availableTransportCandidates = activePairing?.transportCandidates?.filter { it.isUsableCandidate() } ?: emptyList()
+    val transportAutoValue = "__AUTO_TRANSPORT__"
+
     SettingsCard(title = "Connection") {
         Text(
             text = "Status: ${connectionStatusLabel(state.connectionPhase)}",
@@ -203,7 +213,7 @@ fun SettingsConnectionCard(
         Text(
             text = "Security: ${state.secureConnectionState.statusLabel}",
             style = MaterialTheme.typography.bodySmall,
-            color = if (state.secureConnectionState.statusLabel.contains("encrypted", ignoreCase = true)) {
+            color = if (state.secureConnectionState == com.coderover.android.data.model.SecureConnectionState.ENCRYPTED) {
                 CommandAccent
             } else {
                 MaterialTheme.colorScheme.onSurfaceVariant
@@ -224,67 +234,100 @@ fun SettingsConnectionCard(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                state.pairings.forEach { pairing ->
+                    SettingsPairingCard(
+                        pairing = pairing,
+                        isActive = pairing.macDeviceId == state.activePairingMacDeviceId,
+                        isConnected = state.isConnected && pairing.macDeviceId == state.activePairingMacDeviceId,
+                        isBusy = connectionActionInFlight,
+                        onSelectPairing = { onSelectPairing(pairing.macDeviceId) },
+                        onRemovePairing = { onRemovePairing(pairing.macDeviceId) },
+                    )
+                }
+            }
         }
 
-        state.pairings.forEach { pairing ->
-            SettingsPairingCard(
-                pairing = pairing,
-                isActive = pairing.macDeviceId == state.activePairingMacDeviceId,
-                isConnected = state.isConnected && pairing.macDeviceId == state.activePairingMacDeviceId,
-                isBusy = connectionActionInFlight,
-                onSelectPairing = { onSelectPairing(pairing.macDeviceId) },
-                onRemovePairing = { onRemovePairing(pairing.macDeviceId) },
-                onPreferredTransportSelected = { url ->
-                    onPreferredTransportSelected(pairing.macDeviceId, url)
+        if (activePairing != null && availableTransportCandidates.size > 1) {
+            val selectedPreferredTransportCandidate = activePairing.transportCandidates.firstOrNull {
+                it.url == activePairing.preferredTransportUrl
+            }
+
+            SettingsPickerRow(
+                label = "Transport",
+                selectedValue = selectedPreferredTransportCandidate,
+                options = listOf(null) + availableTransportCandidates,
+                displayValue = { candidate ->
+                    candidate?.label ?: candidate?.url ?: "Auto"
                 },
+                onValueSelected = { candidate ->
+                    if (!connectionActionInFlight) {
+                        onPreferredTransportSelected(activePairing.macDeviceId, candidate?.url ?: "")
+                    }
+                },
+            )
+
+            Text(
+                text = if (selectedPreferredTransportCandidate == null) {
+                    "Current preference: Auto"
+                } else {
+                    "Current preference: ${selectedPreferredTransportCandidate.label ?: selectedPreferredTransportCandidate.url}"
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
 
-        when (state.connectionPhase) {
-            com.coderover.android.data.model.ConnectionPhase.CONNECTING -> {
-                Text(
-                    text = "Connecting to bridge...",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            com.coderover.android.data.model.ConnectionPhase.LOADING_CHATS -> {
-                Text(
-                    text = "Loading chats...",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            com.coderover.android.data.model.ConnectionPhase.SYNCING -> {
-                Text(
-                    text = "Syncing workspace...",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
+        val connectionPhaseShowsProgress = when (state.connectionPhase) {
+            com.coderover.android.data.model.ConnectionPhase.CONNECTING,
+            com.coderover.android.data.model.ConnectionPhase.LOADING_CHATS,
+            com.coderover.android.data.model.ConnectionPhase.SYNCING -> true
             com.coderover.android.data.model.ConnectionPhase.CONNECTED,
-            com.coderover.android.data.model.ConnectionPhase.OFFLINE -> Unit
+            com.coderover.android.data.model.ConnectionPhase.OFFLINE -> false
+        }
+
+        if (connectionPhaseShowsProgress) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                androidx.compose.material3.CircularProgressIndicator(
+                    modifier = Modifier.size(16.dp),
+                    strokeWidth = 2.dp,
+                )
+                val progressLabel = when (state.connectionPhase) {
+                    com.coderover.android.data.model.ConnectionPhase.CONNECTING -> "Connecting to bridge..."
+                    com.coderover.android.data.model.ConnectionPhase.LOADING_CHATS -> "Loading chats..."
+                    com.coderover.android.data.model.ConnectionPhase.SYNCING -> "Syncing workspace..."
+                    else -> ""
+                }
+                Text(
+                    text = progressLabel,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+
+        state.lastErrorMessage?.takeIf { it.isNotBlank() }?.let { errorMessage ->
+            Text(
+                text = errorMessage,
+                style = MaterialTheme.typography.bodySmall,
+                color = Danger,
+            )
         }
 
         if (state.isConnected) {
-            Button(
+            SettingsButton(
+                title = "Disconnect",
+                isDestructive = true,
+                enabled = !connectionActionInFlight,
                 onClick = {
                     haptic.triggerImpactFeedback(com.coderover.android.ui.shared.HapticFeedback.Style.MEDIUM)
                     onDisconnect()
                 },
-                enabled = !connectionActionInFlight,
-                modifier = Modifier.fillMaxWidth(),
-                colors = androidx.compose.material3.ButtonDefaults.buttonColors(
-                    containerColor = Danger.copy(alpha = 0.08f),
-                    contentColor = Danger,
-                    disabledContainerColor = Danger.copy(alpha = 0.04f),
-                    disabledContentColor = Danger.copy(alpha = 0.5f),
-                ),
-                shape = RoundedCornerShape(10.dp),
-                contentPadding = PaddingValues(vertical = 10.dp)
-            ) {
-                Text("Disconnect", maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.Medium)
-            }
+            )
         }
     }
 }
@@ -297,90 +340,84 @@ private fun SettingsPairingCard(
     isBusy: Boolean,
     onSelectPairing: () -> Unit,
     onRemovePairing: () -> Unit,
-    onPreferredTransportSelected: (String) -> Unit,
 ) {
-    Surface(
-        shape = RoundedCornerShape(20.dp),
-        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.7f),
+    Column(
+        modifier = Modifier.padding(vertical = 2.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Column(
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 14.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                Text(
-                    text = pairing.transportCandidates.firstOrNull()?.label ?: pairing.macDeviceId,
-                    fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier
-                        .fillMaxWidth(0.72f)
-                        .padding(end = 8.dp),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                StatusTag(
-                    text = when {
-                        isConnected -> "Connected"
-                        isActive -> "Selected"
-                        else -> "Saved"
-                    },
-                    containerColor = if (isActive) CommandAccent.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surfaceVariant,
-                    contentColor = if (isActive) CommandAccent else MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-
-        if (pairing.transportCandidates.size > 1 && isActive) {
-                val selectedTransport = pairing.transportCandidates.firstOrNull {
-                    it.url == (pairing.preferredTransportUrl ?: pairing.lastSuccessfulTransportUrl)
-                } ?: pairing.transportCandidates.first()
-                SettingsPickerRow(
-                    label = "Transport",
-                    selectedValue = selectedTransport,
-                    options = pairing.transportCandidates,
-                    displayValue = { it.label ?: it.url },
-                    onValueSelected = {
-                        if (!isBusy) {
-                            onPreferredTransportSelected(it.url)
-                        }
-                    },
-                )
-                Text(
-                    text = if (pairing.preferredTransportUrl.isNullOrBlank()) {
-                        "Current preference: Auto"
-                    } else {
-                        "Current preference: ${selectedTransport.label ?: selectedTransport.url}"
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-
             Text(
-                text = "${pairing.transportCandidates.size} saved transport(s)",
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                text = pairing.transportCandidates.firstOrNull()?.label ?: pairing.macDeviceId,
+                fontWeight = FontWeight.SemiBold,
+                style = MaterialTheme.typography.titleSmall,
+                modifier = Modifier.weight(1f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
-
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (!isActive) {
-                    OutlinedButton(
-                        onClick = onSelectPairing,
-                        enabled = !isBusy,
-                    ) {
-                        Text(if (isConnected) "Switch to This Mac" else "Use This Mac")
-                    }
-                }
-                TextButton(
-                    onClick = onRemovePairing,
-                    enabled = !isBusy,
-                ) {
-                    Text("Remove", color = Danger)
-                }
-            }
+            Text(
+                text = when {
+                    isConnected -> "Connected"
+                    isActive -> "Selected"
+                    else -> "Saved"
+                },
+                fontWeight = FontWeight.SemiBold,
+                style = MaterialTheme.typography.labelSmall,
+                color = if (isConnected) CommandAccent else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
+
+        Text(
+            text = "${pairing.transportCandidates.size} saved transport${if (pairing.transportCandidates.size == 1) "" else "s"}",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        if (!isActive) {
+            SettingsButton(
+                title = if (isConnected) "Switch to This Mac" else "Use This Mac",
+                enabled = !isBusy,
+                onClick = onSelectPairing,
+            )
+        }
+
+        SettingsButton(
+            title = if (isActive) "Remove This Mac" else "Remove",
+            isDestructive = true,
+            enabled = !isBusy,
+            onClick = onRemovePairing,
+        )
+    }
+}
+
+@Composable
+private fun SettingsButton(
+    title: String,
+    isDestructive: Boolean = false,
+    enabled: Boolean = true,
+    onClick: () -> Unit,
+) {
+    androidx.compose.material3.Button(
+        onClick = onClick,
+        enabled = enabled,
+        modifier = Modifier.fillMaxWidth(),
+        colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+            containerColor = if (isDestructive) Danger.copy(alpha = 0.08f) else MaterialTheme.colorScheme.primary.copy(alpha = 0.08f),
+            contentColor = if (isDestructive) Danger else MaterialTheme.colorScheme.primary,
+            disabledContainerColor = if (isDestructive) Danger.copy(alpha = 0.04f) else MaterialTheme.colorScheme.primary.copy(alpha = 0.04f),
+            disabledContentColor = if (isDestructive) Danger.copy(alpha = 0.5f) else MaterialTheme.colorScheme.primary.copy(alpha = 0.5f),
+        ),
+        shape = RoundedCornerShape(10.dp),
+        contentPadding = PaddingValues(vertical = 10.dp)
+    ) {
+        Text(
+            title,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            fontWeight = FontWeight.Medium,
+        )
     }
 }
 
@@ -405,7 +442,7 @@ fun SettingsNotificationsCard() {
                 Text("Status", style = MaterialTheme.typography.bodyLarge)
             }
             Text(
-                text = if (notificationsEnabled) "Enabled" else "Disabled",
+                text = if (notificationsEnabled) "Authorized" else "Denied",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -415,15 +452,18 @@ fun SettingsNotificationsCard() {
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        OutlinedButton(
-            onClick = {
-                val intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
-                    putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
-                }
-                context.startActivity(intent)
-            },
-        ) {
-            Text("Open Android notification settings")
+        val haptic = com.coderover.android.ui.shared.HapticFeedback.rememberHapticFeedback()
+        if (!notificationsEnabled) {
+            SettingsButton(
+                title = "Open Android Settings",
+                onClick = {
+                    haptic.triggerImpactFeedback(com.coderover.android.ui.shared.HapticFeedback.Style.LIGHT)
+                    val intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                        putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+                    }
+                    context.startActivity(intent)
+                },
+            )
         }
     }
 }
@@ -437,7 +477,7 @@ fun SettingsArchivedChatsCard(
         threads.count { it.syncState == com.coderover.android.data.model.ThreadSyncState.ARCHIVED_LOCAL }
     }
 
-    SettingsCard(title = "Archived chats") {
+    SettingsCard(title = "Archived Chats") {
         Row(
             modifier = Modifier
                 .fillMaxWidth()

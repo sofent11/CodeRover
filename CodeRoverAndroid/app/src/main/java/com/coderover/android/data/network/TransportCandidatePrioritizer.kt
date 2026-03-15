@@ -6,7 +6,7 @@ import java.net.Inet4Address
 import java.net.NetworkInterface
 import java.util.Collections
 
-internal object TransportCandidatePrioritizer {
+object TransportCandidatePrioritizer {
     fun orderedTransportUrls(
         pairingRecord: PairingRecord,
         localIpv4Addresses: Set<String> = currentLocalIpv4Addresses(),
@@ -29,7 +29,7 @@ internal object TransportCandidatePrioritizer {
         val lastSuccessful = lastSuccessfulTransportUrl?.trim().orEmpty().ifEmpty { null }
         return candidates
             .mapIndexedNotNull { index, candidate ->
-                if (candidate.isUsableReconnectCandidate()) {
+                if (candidate.isUsableCandidate()) {
                     IndexedCandidate(index, candidate)
                 } else {
                     null
@@ -63,7 +63,7 @@ internal object TransportCandidatePrioritizer {
                 .flatMap { Collections.list(it.inetAddresses).asSequence() }
                 .filterIsInstance<Inet4Address>()
                 .map { it.hostAddress.orEmpty() }
-                .mapNotNull(String::normalizedIpv4Address)
+                .mapNotNull { it.normalizedIpv4Address() }
                 .filterNot { it.startsWith("127.") || it.startsWith("169.254.") }
                 .toSet()
         }.getOrDefault(emptySet())
@@ -73,54 +73,6 @@ internal object TransportCandidatePrioritizer {
         val index: Int,
         val candidate: TransportCandidate,
     )
-}
-
-private fun TransportCandidate.isUsableReconnectCandidate(): Boolean {
-    val host = transportHost() ?: return false
-    if (kind == "local_ipv4" && host.startsWith("169.254.")) {
-        return false
-    }
-    return true
-}
-
-private fun TransportCandidate.reconnectNetworkPriority(localIpv4Addresses: Set<String>): Int {
-    val host = transportHost().orEmpty()
-    val ipv4 = host.normalizedIpv4Address()
-    if (ipv4 != null) {
-        if (localIpv4Addresses.any { it.isSameIpv4Subnet(ipv4) }) {
-            return 0
-        }
-        if (ipv4.isPublicIpv4Address()) {
-            return 1
-        }
-        return 4
-    }
-
-    if (kind == "tailnet_ipv4" || kind == "tailnet" || host.endsWith(".ts.net")) {
-        return 2
-    }
-
-    if (kind == "local_hostname" || host.endsWith(".local")) {
-        return 3
-    }
-
-    return 1
-}
-
-private fun TransportCandidate.reconnectKindPriority(): Int {
-    return when (kind) {
-        "local_ipv4" -> 0
-        "tailnet_ipv4", "tailnet" -> 1
-        "local_hostname" -> 2
-        else -> 3
-    }
-}
-
-private fun TransportCandidate.transportHost(): String? {
-    val urlText = url.trim()
-    return runCatching {
-        java.net.URI(urlText).host?.trim()?.takeIf(String::isNotEmpty)
-    }.getOrNull()
 }
 
 private fun String.normalizedIpv4Address(): String? {

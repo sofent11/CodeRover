@@ -65,7 +65,21 @@ function createBridgeDeviceState() {
     };
 }
 function readBridgeDeviceState() {
-    const rawState = decodeStoredDeviceStateString(readStoredDeviceStateString());
+    const keychainState = readBridgeDeviceStateRecord(readKeychainStoredDeviceStateString());
+    if (keychainState) {
+        return keychainState;
+    }
+    const fileState = readBridgeDeviceStateRecord(readFileStoredDeviceStateString());
+    if (fileState) {
+        if (process.platform === "darwin") {
+            writeKeychainStateString(JSON.stringify(stripMigrationMarker(fileState), null, 2));
+        }
+        return fileState;
+    }
+    return null;
+}
+function readBridgeDeviceStateRecord(storedState) {
+    const rawState = decodeStoredDeviceStateString(storedState);
     if (!rawState) {
         return null;
     }
@@ -90,13 +104,13 @@ function writeBridgeDeviceState(state) {
         writeKeychainStateString(serialized);
     }
 }
-function readStoredDeviceStateString() {
-    if (process.platform === "darwin") {
-        const keychainValue = readKeychainStateString();
-        if (keychainValue) {
-            return keychainValue;
-        }
+function readKeychainStoredDeviceStateString() {
+    if (process.platform !== "darwin") {
+        return null;
     }
+    return readKeychainStateString();
+}
+function readFileStoredDeviceStateString() {
     if (!fs.existsSync(STORE_FILE)) {
         return null;
     }

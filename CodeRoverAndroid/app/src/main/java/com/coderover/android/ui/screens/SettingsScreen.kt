@@ -29,7 +29,7 @@ fun SettingsScreen(
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
+        verticalArrangement = Arrangement.spacedBy(24.dp),
     ) {
         item {
             SettingsArchivedChatsCard(
@@ -68,16 +68,6 @@ fun SettingsScreen(
                 onRemovePairing = viewModel::removePairing,
                 onPreferredTransportSelected = viewModel::setPreferredTransport,
             )
-        }
-
-        state.lastErrorMessage?.takeIf { it.isNotBlank() }?.let { errorMessage ->
-            item {
-                Text(
-                    text = errorMessage,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.error,
-                )
-            }
         }
 
         item {

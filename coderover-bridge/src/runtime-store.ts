@@ -23,6 +23,7 @@ export interface RuntimeStoreItem {
   plan: UnknownRecord[] | UnknownRecord | null;
   summary: string | null;
   fileChanges: UnknownRecord[];
+  [key: string]: unknown;
 }
 
 export interface RuntimeStoreTurn {
@@ -395,7 +396,9 @@ function normalizeIndex(input: unknown): RuntimeStoreIndex {
       }
       normalized.providerSessions[normalizedKey] = normalizedThreadId;
     }
-  } else {
+  }
+
+  if (Object.keys(normalized.providerSessions).length === 0) {
     for (const entry of Object.values(normalized.threads)) {
       const key = providerSessionKey(entry.provider, entry.providerSessionId);
       if (key) {
@@ -417,25 +420,50 @@ function normalizeThreadMeta(input: unknown): RuntimeThreadMeta {
   return {
     id: normalizedId,
     provider: normalizedProvider,
-    providerSessionId: normalizeNonEmptyString(record.providerSessionId) || null,
-    title: normalizeOptionalString(record.title),
+    providerSessionId: firstNonEmptyString([
+      record.providerSessionId,
+      record.provider_session_id,
+      record.sessionId,
+      record.session_id,
+    ]),
+    title: firstNonEmptyString([
+      record.title,
+      record.customTitle,
+      record.custom_title,
+      record.summary,
+    ]),
     name: normalizeOptionalString(record.name),
-    preview: normalizeOptionalString(record.preview),
-    cwd: normalizeOptionalPath(record.cwd),
+    preview: firstNonEmptyString([
+      record.preview,
+      record.firstPrompt,
+      record.first_prompt,
+      record.summary,
+    ]),
+    cwd: firstNonEmptyPath([
+      record.cwd,
+      record.current_working_directory,
+      record.working_directory,
+    ]),
     model: normalizeOptionalString(record.model),
     metadata,
     capabilities,
-    createdAt: toIsoDateString(record.createdAt || Date.now()),
-    updatedAt: toIsoDateString(record.updatedAt || record.createdAt || Date.now()),
+    createdAt: toIsoDateString(record.createdAt || record.created_at || record.lastModified || record.last_modified || Date.now()),
+    updatedAt: toIsoDateString(
+      record.updatedAt || record.updated_at || record.lastModified || record.last_modified || record.createdAt || record.created_at || Date.now()
+    ),
     archived: Boolean(record.archived),
   };
 }
 
 function normalizeThreadHistory(input: unknown, threadId: string): RuntimeThreadHistory {
   const record = input && typeof input === "object" ? (input as UnknownRecord) : {};
-  const turns = Array.isArray(record.turns) ? record.turns : [];
+  const turns = Array.isArray(record.turns)
+    ? record.turns
+    : Array.isArray(record.history)
+      ? record.history
+      : [];
   return {
-    threadId,
+    threadId: normalizeNonEmptyString(record.threadId || record.thread_id) || threadId,
     turns: turns
       .filter((entry): entry is UnknownRecord => Boolean(entry) && typeof entry === "object")
       .map((entry) => normalizeTurn(entry)),
@@ -444,8 +472,9 @@ function normalizeThreadHistory(input: unknown, threadId: string): RuntimeThread
 
 function normalizeTurn(input: UnknownRecord): RuntimeStoreTurn {
   return {
-    id: normalizeNonEmptyString(input.id) || randomUUID(),
-    createdAt: toIsoDateString(input.createdAt || Date.now()),
+    ...(input as UnknownRecord),
+    id: normalizeNonEmptyString(input.id || input.turnId || input.turn_id) || randomUUID(),
+    createdAt: toIsoDateString(input.createdAt || input.created_at || Date.now()),
     status: normalizeOptionalString(input.status),
     items: Array.isArray(input.items)
       ? input.items
@@ -456,14 +485,19 @@ function normalizeTurn(input: UnknownRecord): RuntimeStoreTurn {
 }
 
 function normalizeItem(input: UnknownRecord): RuntimeStoreItem {
-  return {
-    id: normalizeNonEmptyString(input.id) || randomUUID(),
+  const normalizedItem = {
+    ...(input as UnknownRecord),
+    id: normalizeNonEmptyString(input.id || input.itemId || input.item_id) || randomUUID(),
     type: normalizeNonEmptyString(input.type) || "message",
     role: normalizeOptionalString(input.role),
-    content: Array.isArray(input.content) ? input.content.map((entry) => normalizeContent(entry)) : [],
+    content: Array.isArray(input.content)
+      ? input.content.map((entry) => normalizeContent(entry))
+      : Array.isArray(input.contents)
+        ? input.contents.map((entry) => normalizeContent(entry))
+        : [],
     text: normalizeOptionalString(input.text),
     message: normalizeOptionalString(input.message),
-    createdAt: toIsoDateString(input.createdAt || Date.now()),
+    createdAt: toIsoDateString(input.createdAt || input.created_at || Date.now()),
     status: normalizeOptionalString(input.status),
     command: normalizeOptionalString(input.command),
     metadata: normalizeObject(input.metadata),
@@ -471,10 +505,14 @@ function normalizeItem(input: UnknownRecord): RuntimeStoreItem {
       ? input.plan.map((entry) => normalizeObject(entry) || {})
       : normalizeObject(input.plan),
     summary: normalizeOptionalString(input.summary),
-    fileChanges: Array.isArray(input.fileChanges)
-      ? input.fileChanges.map((entry) => normalizeObject(entry) || {})
-      : [],
-  };
+    fileChanges: normalizeObjectArray(input.fileChanges || input.file_changes || input.changes),
+  } as RuntimeStoreItem & UnknownRecord;
+
+  if (normalizedItem.fileChanges.length === 0 && Array.isArray(input.changes)) {
+    normalizedItem.fileChanges = normalizeObjectArray(input.changes);
+  }
+
+  return normalizedItem;
 }
 
 function normalizeContent(input: unknown): UnknownRecord {
@@ -555,9 +593,36 @@ function normalizeObject(value: unknown): UnknownRecord | null {
   return { ...(value as UnknownRecord) };
 }
 
+function normalizeObjectArray(value: unknown): UnknownRecord[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.map((entry) => normalizeObject(entry) || {});
+}
+
 function normalizeOptionalString(value: unknown): string | null {
   const normalized = normalizeNonEmptyString(value);
   return normalized || null;
+}
+
+function firstNonEmptyString(values: unknown[]): string | null {
+  for (const value of values) {
+    const normalized = normalizeOptionalString(value);
+    if (normalized) {
+      return normalized;
+    }
+  }
+  return null;
+}
+
+function firstNonEmptyPath(values: unknown[]): string | null {
+  for (const value of values) {
+    const normalized = normalizeOptionalPath(value);
+    if (normalized) {
+      return normalized;
+    }
+  }
+  return null;
 }
 
 function normalizeOptionalPath(value: unknown): string | null {

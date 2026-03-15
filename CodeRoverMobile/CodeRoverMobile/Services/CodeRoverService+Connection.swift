@@ -433,9 +433,9 @@ extension CodeRoverService {
             && nsError.code == Int(POSIXErrorCode.ETIMEDOUT.rawValue)
     }
 
-    // Suppresses only background disconnect noise; foreground timeouts should still tell the user why sync stopped.
+    // Suppresses benign socket abort/cancel noise even when foreground request tasks surface the disconnect later.
     func shouldSuppressUserFacingConnectionError(_ error: Error) -> Bool {
-        isBenignBackgroundDisconnect(error) && !isAppInForeground
+        isBenignBackgroundDisconnect(error)
     }
 
     // Surfaces only meaningful connection failures to the UI and keeps reconnect noise silent.

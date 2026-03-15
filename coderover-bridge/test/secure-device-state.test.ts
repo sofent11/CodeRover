@@ -56,3 +56,56 @@ test("bridge device state persists trusted phones across reloads", () => {
     fs.rmSync(tempHome, { recursive: true, force: true });
   }
 });
+
+test("bridge device state falls back to file when keychain payload is invalid", () => {
+  const originalHome = process.env.HOME;
+  const originalPlatform = process.platform;
+  const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "coderover-secure-state-"));
+  const modulePath = runtimeRequire.resolve("../src/secure-device-state");
+  const childProcessModule = runtimeRequire("node:child_process") as typeof import("node:child_process");
+  const originalExecFileSync = childProcessModule.execFileSync;
+  const stableState = {
+    version: 1,
+    bridgeId: "5c6d0bc5-0b98-4390-bd15-3dfd3a839da5",
+    macDeviceId: "23babf51-9e1f-4215-bced-ddfb7d62ca31",
+    macIdentityPublicKey: "public-key",
+    macIdentityPrivateKey: "private-key",
+    trustedPhones: {},
+  };
+
+  try {
+    process.env.HOME = tempHome;
+    fs.mkdirSync(path.join(tempHome, ".coderover"), { recursive: true });
+    fs.writeFileSync(
+      path.join(tempHome, ".coderover", "device-state.json"),
+      JSON.stringify(stableState, null, 2)
+    );
+
+    Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
+    childProcessModule.execFileSync = ((command: string, args?: readonly string[]) => {
+      if (command !== "security") {
+        throw new Error(`Unexpected command: ${command}`);
+      }
+      if (args?.[0] === "find-generic-password") {
+        return "not-json";
+      }
+      if (args?.[0] === "add-generic-password") {
+        return "";
+      }
+      throw new Error(`Unexpected security args: ${String(args)}`);
+    }) as typeof childProcessModule.execFileSync;
+
+    delete runtimeRequire.cache[modulePath];
+    const secureDeviceState = runtimeRequire("../src/secure-device-state") as typeof import("../src/secure-device-state");
+    const loaded = secureDeviceState.loadOrCreateBridgeDeviceState();
+
+    assert.equal(loaded.bridgeId, stableState.bridgeId);
+    assert.equal(loaded.macDeviceId, stableState.macDeviceId);
+  } finally {
+    delete runtimeRequire.cache[modulePath];
+    Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
+    childProcessModule.execFileSync = originalExecFileSync;
+    process.env.HOME = originalHome;
+    fs.rmSync(tempHome, { recursive: true, force: true });
+  }
+});

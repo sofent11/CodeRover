@@ -737,6 +737,16 @@ function extractClaudeMessageText(message: unknown): string {
     return "";
   }
 
+  const directContent = normalizeOptionalString(messageObject.content);
+  if (directContent) {
+    return directContent;
+  }
+
+  const directText = normalizeOptionalString(messageObject.text);
+  if (directText) {
+    return directText;
+  }
+
   const content = Array.isArray(messageObject.content) ? messageObject.content : [];
   const textParts = content
     .map((block) => {
@@ -749,6 +759,9 @@ function extractClaudeMessageText(message: unknown): string {
       }
       if (contentBlock.type === "thinking") {
         return normalizeOptionalString(contentBlock.thinking) || "";
+      }
+      if (contentBlock.type === "tool_result") {
+        return normalizeOptionalString(contentBlock.content) || "";
       }
       return "";
     })

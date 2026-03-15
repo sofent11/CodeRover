@@ -94,11 +94,29 @@ function createBridgeDeviceState(): BridgeDeviceState {
 }
 
 function readBridgeDeviceState(): BridgeDeviceStateWithMigrationFlag | null {
-  const rawState = decodeStoredDeviceStateString(readStoredDeviceStateString());
+  const keychainState = readBridgeDeviceStateRecord(readKeychainStoredDeviceStateString());
+  if (keychainState) {
+    return keychainState;
+  }
+
+  const fileState = readBridgeDeviceStateRecord(readFileStoredDeviceStateString());
+  if (fileState) {
+    if (process.platform === "darwin") {
+      writeKeychainStateString(JSON.stringify(stripMigrationMarker(fileState), null, 2));
+    }
+    return fileState;
+  }
+
+  return null;
+}
+
+function readBridgeDeviceStateRecord(
+  storedState: string | null
+): BridgeDeviceStateWithMigrationFlag | null {
+  const rawState = decodeStoredDeviceStateString(storedState);
   if (!rawState) {
     return null;
   }
-
   try {
     return normalizeBridgeDeviceState(JSON.parse(rawState));
   } catch {
@@ -121,14 +139,15 @@ function writeBridgeDeviceState(state: BridgeDeviceState): void {
   }
 }
 
-function readStoredDeviceStateString(): string | null {
-  if (process.platform === "darwin") {
-    const keychainValue = readKeychainStateString();
-    if (keychainValue) {
-      return keychainValue;
-    }
+function readKeychainStoredDeviceStateString(): string | null {
+  if (process.platform !== "darwin") {
+    return null;
   }
 
+  return readKeychainStateString();
+}
+
+function readFileStoredDeviceStateString(): string | null {
   if (!fs.existsSync(STORE_FILE)) {
     return null;
   }

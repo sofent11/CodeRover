@@ -29,6 +29,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.coderover.android.ui.theme.CommandAccent
 
 @Composable
 fun SettingsCard(
@@ -38,7 +39,7 @@ fun SettingsCard(
     Column {
         Text(
             text = title.uppercase(),
-            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = 4.dp),
         )
@@ -48,8 +49,8 @@ fun SettingsCard(
             color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
         ) {
             Column(
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 16.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 content()
             }
@@ -118,7 +119,7 @@ fun <T> SettingsPickerRow(
                 imageVector = Icons.Default.KeyboardArrowDown,
                 contentDescription = null,
                 modifier = Modifier.size(20.dp),
-                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                tint = CommandAccent,
             )
 
             DropdownMenu(

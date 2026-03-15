@@ -20,6 +20,7 @@ const observerHelpers = require("./codex-observer");
 const managedRuntimeHelpers = require("./managed-provider-runtime");
 const normalizerHelpers = require("./normalizers");
 const types_1 = require("./types");
+const MAX_HISTORY_INLINE_IMAGE_URL_BYTES = 128 * 1024;
 function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]", storeBaseDir, store: providedStore = null, codexAdapter: providedCodexAdapter = null, claudeAdapter: providedClaudeAdapter = null, geminiAdapter: providedGeminiAdapter = null, codexObservedThreadPollIntervalMs = types_1.CODEX_OBSERVED_THREAD_POLL_INTERVAL_MS, codexObservedThreadIdleTtlMs = types_1.CODEX_OBSERVED_THREAD_IDLE_TTL_MS, codexObservedThreadErrorBackoffMs = types_1.CODEX_OBSERVED_THREAD_ERROR_BACKOFF_MS, codexObservedThreadLimit = types_1.CODEX_OBSERVED_THREAD_LIMIT, }) {
     if (typeof sendApplicationMessage !== "function") {
         throw new Error("createRuntimeManager requires sendApplicationMessage");
@@ -151,7 +152,7 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
                             await ensureCodexWarm();
                             const result = await codexAdapter.resumeThread(stripProviderField(params));
                             observeCodexThread(threadMeta.id, { immediate: false, reason: "thread-resume" });
-                            return result;
+                            return sanitizeCodexThreadResult(result);
                         }
                         return {
                             threadId: threadMeta.id,
@@ -705,7 +706,7 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
             upsertOverlayFromThread(decoratedThread);
             primeCodexHistoryCache(threadId, decoratedThread);
             return {
-                thread: decoratedThread,
+                thread: sanitizeThreadHistoryForTransport(decoratedThread),
             };
         }
         const cachedWindow = readCodexHistoryWindowFromCache(threadId, historyRequest);
@@ -2376,7 +2377,7 @@ function buildUpstreamCodexHistoryParams(params, historyRequest) {
     return historyHelpers.buildUpstreamCodexHistoryParams(params, historyRequest, stripProviderField);
 }
 function buildUpstreamHistoryWindowResponse(snapshot, historyRequest, upstreamHistoryWindow, thread) {
-    return historyHelpers.buildUpstreamHistoryWindowResponse(snapshot, historyRequest, upstreamHistoryWindow, thread, {
+    return historyHelpers.buildUpstreamHistoryWindowResponse(snapshot, historyRequest, upstreamHistoryWindow, sanitizeThreadHistoryForTransport(thread), {
         compareHistoryRecord,
         historyCursorForRecord,
         historyRecordAnchor(record) {
@@ -2386,6 +2387,36 @@ function buildUpstreamHistoryWindowResponse(snapshot, historyRequest, upstreamHi
             };
         },
     });
+}
+function sanitizeThreadHistoryForTransport(thread) {
+    if (!thread) {
+        return null;
+    }
+    const clone = JSON.parse(JSON.stringify(thread));
+    if (!Array.isArray(clone.turns)) {
+        return clone;
+    }
+    clone.turns = clone.turns.map((turn) => {
+        if (!turn || typeof turn !== "object" || !Array.isArray(turn.items)) {
+            return turn;
+        }
+        return {
+            ...turn,
+            items: turn.items.map((item) => sanitizeHistoryItemForTransport(item)),
+        };
+    });
+    return clone;
+}
+function sanitizeCodexThreadResult(result) {
+    const record = asObject(result);
+    const thread = extractThreadFromResult(record);
+    if (!thread) {
+        return result;
+    }
+    return {
+        ...record,
+        thread: sanitizeThreadHistoryForTransport(thread),
+    };
 }
 function extractArray(value, candidatePaths) {
     return historyHelpers.extractArray(value, candidatePaths, readPath);
@@ -2636,12 +2667,38 @@ function rebuildThreadFromHistoryRecords(threadBase, records) {
             });
             turnOrder.push(turnId);
         }
-        turnsById.get(turnId).items.push(JSON.parse(JSON.stringify(record.itemObject)));
+        turnsById.get(turnId).items.push(sanitizeHistoryItemForTransport(record.itemObject));
     });
     return {
         ...JSON.parse(JSON.stringify(threadBase || {})),
         turns: turnOrder.map((turnId) => turnsById.get(turnId)),
     };
+}
+function sanitizeHistoryItemForTransport(itemObject) {
+    const clone = JSON.parse(JSON.stringify(itemObject || {}));
+    if (!Array.isArray(clone.content)) {
+        return clone;
+    }
+    clone.content = clone.content.map((entry) => sanitizeHistoryContentEntryForTransport(entry));
+    return clone;
+}
+function sanitizeHistoryContentEntryForTransport(entry) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+        return entry;
+    }
+    const clone = JSON.parse(JSON.stringify(entry));
+    for (const key of ["url", "image_url"]) {
+        const value = clone[key];
+        if (typeof value !== "string" || !value.startsWith("data:image")) {
+            continue;
+        }
+        if (Buffer.byteLength(value, "utf8") <= MAX_HISTORY_INLINE_IMAGE_URL_BYTES) {
+            continue;
+        }
+        delete clone[key];
+        clone.omittedLargeInlineImage = true;
+    }
+    return clone;
 }
 function nextHistoryOrdinal(records) {
     return records.reduce((maxValue, record) => Math.max(maxValue, Number(record?.ordinal) || 0), -1) + 1;

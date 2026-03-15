@@ -146,6 +146,8 @@ interface EnsureHistoryRecordOptions {
 type InterruptHandler = (() => void | Promise<void>) | null;
 type SnapshotReader = (threadId: string) => CodexHistorySnapshot | null;
 
+const MAX_HISTORY_INLINE_IMAGE_URL_BYTES = 128 * 1024;
+
 type ManagedHistoryItem = RuntimeStoreItem & {
   cwd?: string | null;
   exitCode?: number | null;
@@ -347,7 +349,7 @@ export function createRuntimeManager({
               await ensureCodexWarm();
               const result = await codexAdapter.resumeThread(stripProviderField(params));
               observeCodexThread(threadMeta.id, { immediate: false, reason: "thread-resume" });
-              return result;
+              return sanitizeCodexThreadResult(result);
             }
             return {
               threadId: threadMeta.id,
@@ -1010,7 +1012,7 @@ export function createRuntimeManager({
       upsertOverlayFromThread(decoratedThread);
       primeCodexHistoryCache(threadId, decoratedThread);
       return {
-        thread: decoratedThread,
+        thread: sanitizeThreadHistoryForTransport(decoratedThread),
       };
     }
 
@@ -2952,7 +2954,7 @@ function buildUpstreamHistoryWindowResponse(
     snapshot,
     historyRequest,
     upstreamHistoryWindow,
-    thread,
+    sanitizeThreadHistoryForTransport(thread),
     {
       compareHistoryRecord,
       historyCursorForRecord,
@@ -2964,6 +2966,38 @@ function buildUpstreamHistoryWindowResponse(
       },
     }
   );
+}
+
+function sanitizeThreadHistoryForTransport(thread: RuntimeThreadShape | null): RuntimeThreadShape | null {
+  if (!thread) {
+    return null;
+  }
+  const clone = JSON.parse(JSON.stringify(thread)) as RuntimeThreadShape;
+  if (!Array.isArray(clone.turns)) {
+    return clone;
+  }
+  clone.turns = clone.turns.map((turn) => {
+    if (!turn || typeof turn !== "object" || !Array.isArray(turn.items)) {
+      return turn;
+    }
+    return {
+      ...turn,
+      items: turn.items.map((item) => sanitizeHistoryItemForTransport(item)),
+    };
+  });
+  return clone;
+}
+
+function sanitizeCodexThreadResult(result: unknown): unknown {
+  const record = asObject(result);
+  const thread = extractThreadFromResult(record);
+  if (!thread) {
+    return result;
+  }
+  return {
+    ...record,
+    thread: sanitizeThreadHistoryForTransport(thread),
+  };
 }
 
 function extractArray(value: unknown, candidatePaths: string[]): unknown[] {
@@ -3255,13 +3289,43 @@ function rebuildThreadFromHistoryRecords(
       });
       turnOrder.push(turnId);
     }
-    turnsById.get(turnId)!.items.push(JSON.parse(JSON.stringify(record.itemObject)));
+    turnsById.get(turnId)!.items.push(sanitizeHistoryItemForTransport(record.itemObject));
   });
 
   return {
     ...JSON.parse(JSON.stringify(threadBase || {})),
     turns: turnOrder.map((turnId) => turnsById.get(turnId)),
   };
+}
+
+function sanitizeHistoryItemForTransport(itemObject: RuntimeItemShape): RuntimeItemShape {
+  const clone = JSON.parse(JSON.stringify(itemObject || {})) as RuntimeItemShape & Record<string, unknown>;
+  if (!Array.isArray(clone.content)) {
+    return clone;
+  }
+
+  clone.content = clone.content.map((entry) => sanitizeHistoryContentEntryForTransport(entry));
+  return clone;
+}
+
+function sanitizeHistoryContentEntryForTransport(entry: unknown): unknown {
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+    return entry;
+  }
+
+  const clone = JSON.parse(JSON.stringify(entry)) as Record<string, unknown>;
+  for (const key of ["url", "image_url"]) {
+    const value = clone[key];
+    if (typeof value !== "string" || !value.startsWith("data:image")) {
+      continue;
+    }
+    if (Buffer.byteLength(value, "utf8") <= MAX_HISTORY_INLINE_IMAGE_URL_BYTES) {
+      continue;
+    }
+    delete clone[key];
+    clone.omittedLargeInlineImage = true;
+  }
+  return clone;
 }
 
 function nextHistoryOrdinal(records: RuntimeHistoryRecord[]): number {

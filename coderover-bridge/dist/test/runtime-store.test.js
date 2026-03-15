@@ -85,3 +85,67 @@ function createTempStore() {
         fixture.cleanup();
     }
 });
+(0, node_test_1.test)("runtime store loads legacy snake_case thread metadata and history items", () => {
+    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "coderover-runtime-store-legacy-"));
+    try {
+        fs.mkdirSync(path.join(baseDir, "threads"), { recursive: true });
+        fs.writeFileSync(path.join(baseDir, "index.json"), JSON.stringify({
+            version: 1,
+            threads: {
+                "claude:legacy-thread": {
+                    id: "claude:legacy-thread",
+                    provider: "claude",
+                    provider_session_id: "session-legacy",
+                    title: "Legacy Claude thread",
+                    first_prompt: "Initial prompt",
+                    cwd: "/tmp/legacy-project",
+                    created_at: "2026-03-10T00:00:00.000Z",
+                    updated_at: "2026-03-11T00:00:00.000Z",
+                    archived: false,
+                },
+            },
+            providerSessions: {},
+        }, null, 2));
+        fs.writeFileSync(path.join(baseDir, "threads", "claude:legacy-thread.json"), JSON.stringify({
+            thread_id: "claude:legacy-thread",
+            turns: [
+                {
+                    turn_id: "turn-legacy",
+                    created_at: "2026-03-11T01:00:00.000Z",
+                    status: "completed",
+                    items: [
+                        {
+                            item_id: "item-legacy",
+                            type: "agent_message",
+                            role: "assistant",
+                            text: "legacy hello",
+                            content: [{ type: "text", text: "legacy hello" }],
+                            explanation: "keep me",
+                            file_changes: [{ path: "README.md" }],
+                        },
+                    ],
+                },
+            ],
+        }, null, 2));
+        const store = (0, runtime_store_1.createRuntimeStore)({ baseDir });
+        try {
+            const thread = store.getThreadMeta("claude:legacy-thread");
+            node_assert_1.strict.equal(thread?.providerSessionId, "session-legacy");
+            node_assert_1.strict.equal(thread?.preview, "Initial prompt");
+            node_assert_1.strict.equal(store.findThreadIdByProviderSession("claude", "session-legacy"), "claude:legacy-thread");
+            const history = store.getThreadHistory("claude:legacy-thread");
+            node_assert_1.strict.equal(history?.threadId, "claude:legacy-thread");
+            node_assert_1.strict.equal(history?.turns?.[0]?.id, "turn-legacy");
+            node_assert_1.strict.equal(history?.turns?.[0]?.items?.[0]?.id, "item-legacy");
+            node_assert_1.strict.equal(history?.turns?.[0]?.items?.[0]?.text, "legacy hello");
+            node_assert_1.strict.equal(history?.turns?.[0]?.items?.[0]?.explanation, "keep me");
+            node_assert_1.strict.deepEqual(history?.turns?.[0]?.items?.[0]?.fileChanges, [{ path: "README.md" }]);
+        }
+        finally {
+            store.shutdown();
+        }
+    }
+    finally {
+        fs.rmSync(baseDir, { recursive: true, force: true });
+    }
+});
