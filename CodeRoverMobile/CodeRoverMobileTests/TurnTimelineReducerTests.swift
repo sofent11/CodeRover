@@ -203,6 +203,35 @@ final class TurnTimelineReducerTests: XCTestCase {
         XCTAssertEqual(deduped.map(\.id), ["assistant-1", "assistant-2"])
     }
 
+    func testRemoveDuplicateAssistantMessagesReplacesGhostTurnRowWithConcreteItem() {
+        let now = Date()
+        let messages = [
+            makeMessage(
+                id: "assistant-ghost",
+                threadID: "thread",
+                role: .assistant,
+                kind: .chat,
+                text: "same",
+                createdAt: now,
+                turnID: "turn-1"
+            ),
+            makeMessage(
+                id: "assistant-concrete",
+                threadID: "thread",
+                role: .assistant,
+                kind: .chat,
+                text: "same",
+                createdAt: now.addingTimeInterval(0.2),
+                turnID: "turn-1",
+                itemID: "item-1"
+            ),
+        ]
+
+        let deduped = TurnTimelineReducer.removeDuplicateAssistantMessages(in: messages)
+        XCTAssertEqual(deduped.map(\.id), ["assistant-concrete"])
+        XCTAssertEqual(deduped.first?.itemId, "item-1")
+    }
+
     func testProjectFiltersHiddenPushResetMarker() {
         let now = Date()
         let messages = [

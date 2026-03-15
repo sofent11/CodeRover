@@ -251,6 +251,7 @@ enum TurnTimelineReducer {
     // Hides duplicated assistant rows caused by mixed completion/history payloads.
     static func removeDuplicateAssistantMessages(in messages: [ChatMessage]) -> [ChatMessage] {
         var seenKeys: Set<String> = []
+        var firstIndexByTurnTextWithoutConcreteItem: [String: Int] = [:]
         var seenNoTurnByText: [String: Date] = [:]
         var result: [ChatMessage] = []
         result.reserveCapacity(messages.count)
@@ -268,11 +269,26 @@ enum TurnTimelineReducer {
             }
 
             if let turnId = message.turnId, !turnId.isEmpty {
-                let dedupeScope = message.itemId?.trimmingCharacters(in: .whitespacesAndNewlines)
+                let dedupeScope = normalizedIdentifier(message.itemId)
                 let key = "\(turnId)|\(dedupeScope ?? "no-item")|\(normalizedText)"
                 if seenKeys.contains(key) {
                     continue
                 }
+
+                let turnTextKey = "\(turnId)|\(normalizedText)"
+                if let dedupeScope {
+                    if let existingIndex = firstIndexByTurnTextWithoutConcreteItem[turnTextKey] {
+                        result[existingIndex] = message
+                        seenKeys.insert(key)
+                        firstIndexByTurnTextWithoutConcreteItem.removeValue(forKey: turnTextKey)
+                        continue
+                    }
+                } else if seenKeys.contains("\(turnId)|no-item|\(normalizedText)") {
+                    continue
+                } else {
+                    firstIndexByTurnTextWithoutConcreteItem[turnTextKey] = result.count
+                }
+
                 seenKeys.insert(key)
                 result.append(message)
                 continue

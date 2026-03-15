@@ -45,3 +45,4 @@ build/
 
 # VS Code
 .vscode/
+.deriveddata-device/
