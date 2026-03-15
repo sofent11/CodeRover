@@ -135,6 +135,10 @@ class CodeRoverRepository(context: Context) {
     private var activeThreadListNextCursor: JsonElement? = JsonNull
     private var activeThreadListHasMore = false
     private var client: SecureBridgeClient? = null
+
+    // For suppressing duplicate scan errors
+    private var lastRejectedCode: String? = null
+    private var lastRejectedMessage: String? = null
     private val queueCoordinator by lazy {
         TurnQueueCoordinator(
             scope = scope,
@@ -254,29 +258,67 @@ class CodeRoverRepository(context: Context) {
         updateState { copy(lastErrorMessage = null) }
     }
 
-    fun importPairingPayload(rawText: String) {
+    fun importPairingPayload(rawText: String, resetScanLock: (() -> Unit)? = null) {
         scope.launch {
+            // Validate text encoding first (iOS does this check)
+            if (rawText.toByteArray(Charsets.UTF_8).toString(Charsets.UTF_8) != rawText) {
+                rejectScan(
+                    code = rawText,
+                    message = "QR code contains invalid text encoding.",
+                    resetScanLock = resetScanLock
+                )
+                return@launch
+            }
+
             val payload = runCatching {
                 json.decodeFromString(PairingPayload.serializer(), rawText.trim())
             }.getOrElse {
-                updateError("Not a valid CodeRover pairing code.")
+                rejectScan(
+                    code = rawText,
+                    message = "Not a valid secure pairing code. Make sure you're scanning a QR from the latest CodeRover bridge.",
+                    resetScanLock = resetScanLock
+                )
                 return@launch
             }
 
             when {
                 payload.v != PAIRING_QR_VERSION -> {
-                    updateError("This pairing QR uses an unsupported format.")
+                    rejectScan(
+                        code = rawText,
+                        message = "This QR code uses an unsupported pairing format. Update the Android app or the Mac bridge and try again.",
+                        resetScanLock = resetScanLock
+                    )
                     return@launch
                 }
-                payload.bridgeId.isBlank() || payload.macDeviceId.isBlank() || payload.transportCandidates.isEmpty() -> {
-                    updateError("The pairing QR is missing required bridge metadata.")
+                payload.bridgeId.isBlank() -> {
+                    rejectScan(
+                        code = rawText,
+                        message = "QR code is missing the bridge ID. Re-generate the code from the bridge.",
+                        resetScanLock = resetScanLock
+                    )
+                    return@launch
+                }
+                payload.transportCandidates.isEmpty() -> {
+                    rejectScan(
+                        code = rawText,
+                        message = "QR code is missing bridge transports. Re-generate the code from the bridge.",
+                        resetScanLock = resetScanLock
+                    )
                     return@launch
                 }
                 payload.expiresAt + CLOCK_SKEW_TOLERANCE_MS < System.currentTimeMillis() -> {
-                    updateError("This pairing QR has expired. Generate a new one from the bridge.")
+                    rejectScan(
+                        code = rawText,
+                        message = "This pairing QR code has expired. Generate a new one from the Mac bridge.",
+                        resetScanLock = resetScanLock
+                    )
                     return@launch
                 }
             }
+
+            // Clear rejection tracking on successful scan
+            lastRejectedCode = null
+            lastRejectedMessage = null
 
             val existing = state.value.pairings.filterNot { it.macDeviceId == payload.macDeviceId }
             val updatedTrustedRegistry = state.value.trustedMacRegistry.copy(
@@ -4241,6 +4283,16 @@ class CodeRoverRepository(context: Context) {
 
     private fun updateError(message: String) {
         updateState { copy(lastErrorMessage = message) }
+    }
+
+    private fun rejectScan(code: String, message: String, resetScanLock: (() -> Unit)?) {
+        val isDuplicateRejection = lastRejectedCode == code && lastRejectedMessage == message
+        lastRejectedCode = code
+        lastRejectedMessage = message
+        if (!isDuplicateRejection) {
+            updateError(message)
+        }
+        resetScanLock?.invoke()
     }
 
     private fun persistConversationCache(previous: AppState, updated: AppState) {

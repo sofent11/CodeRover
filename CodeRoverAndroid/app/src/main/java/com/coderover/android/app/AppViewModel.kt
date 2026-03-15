@@ -33,7 +33,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun clearLastErrorMessage() = repository.clearLastErrorMessage()
 
-    fun importPairingPayload(rawText: String) = repository.importPairingPayload(rawText)
+    fun importPairingPayload(rawText: String, resetScanLock: (() -> Unit)? = null) =
+        repository.importPairingPayload(rawText, resetScanLock)
 
     fun confirmPendingPairingTransport(macDeviceId: String, url: String) =
         repository.confirmPendingPairingTransport(macDeviceId, url)

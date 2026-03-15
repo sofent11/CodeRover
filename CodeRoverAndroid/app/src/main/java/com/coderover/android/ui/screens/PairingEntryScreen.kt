@@ -16,7 +16,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.QrCodeScanner
+import androidx.compose.material.icons.outlined.PhotoCamera
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.ModalBottomSheet
@@ -56,7 +56,7 @@ import androidx.compose.ui.platform.LocalContext
 fun PairingEntryScreen(
     errorMessage: String?,
     pendingTransportSelectionPairing: PairingRecord?,
-    onScannedPayload: (String) -> Unit,
+    onScannedPayload: (String, resetScanLock: () -> Unit) -> Unit,
     onSelectTransport: (String, String) -> Unit,
     onErrorDismissed: () -> Unit,
 ) {
@@ -64,99 +64,82 @@ fun PairingEntryScreen(
     val haptic = HapticFeedback.rememberHapticFeedback()
     val context = LocalContext.current
 
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color.Black),
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .statusBarsPadding()
-                .navigationBarsPadding()
-                .padding(24.dp),
-            verticalArrangement = Arrangement.Center,
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-
-            PairingScannerView(
-                modifier = Modifier.fillMaxSize(),
-                onCodeScanned = {
-                    haptic.triggerImpactFeedback()
-                    onScannedPayload(it)
-                },
-                permissionDeniedContent = {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.Center,
-                        modifier = Modifier.fillMaxSize()
-                    ) {
-                        androidx.compose.material3.Icon(
-                            imageVector = Icons.Outlined.QrCodeScanner, // Equivalent to "camera.fill" roughly or we can use Icons.Outlined.CameraAlt
-                            contentDescription = null,
-                            tint = Color.White.copy(alpha = 0.6f),
-                            modifier = Modifier.size(48.dp)
-                        )
-                        Spacer(Modifier.height(20.dp))
-                        Text(
-                            "Camera access needed",
-                            color = Color.White,
-                            style = MaterialTheme.typography.titleLarge,
-                        )
-                        Spacer(Modifier.height(8.dp))
-                        Text(
-                            "Open Settings and allow camera access to scan the pairing QR code.",
-                            color = Color.White.copy(alpha = 0.6f),
-                            style = MaterialTheme.typography.bodyMedium,
-                            textAlign = TextAlign.Center,
-                            modifier = Modifier.padding(horizontal = 40.dp)
-                        )
-                        Spacer(Modifier.height(20.dp))
-                        Button(
-                            onClick = {
-                                val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-                                    data = android.net.Uri.fromParts("package", context.packageName, null)
-                                }
-                                context.startActivity(intent)
-                            }
-                        ) {
-                            Text("Open Settings")
+    PairingScannerView(
+        modifier = Modifier.fillMaxSize(),
+        onCodeScanned = { code, resetScanLock ->
+            haptic.triggerImpactFeedback()
+            onScannedPayload(code, resetScanLock)
+        },
+        permissionDeniedContent = {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center,
+                modifier = Modifier.fillMaxSize()
+            ) {
+                androidx.compose.material3.Icon(
+                    imageVector = Icons.Outlined.PhotoCamera,
+                    contentDescription = null,
+                    tint = Color.White.copy(alpha = 0.6f),
+                    modifier = Modifier.size(48.dp)
+                )
+                Spacer(Modifier.height(20.dp))
+                Text(
+                    "Camera access needed",
+                    color = Color.White,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Open Settings and allow camera access to scan the pairing QR code.",
+                    color = Color.White.copy(alpha = 0.6f),
+                    style = MaterialTheme.typography.bodyMedium,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(horizontal = 40.dp)
+                )
+                Spacer(Modifier.height(20.dp))
+                Button(
+                    onClick = {
+                        val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                            data = android.net.Uri.fromParts("package", context.packageName, null)
                         }
+                        context.startActivity(intent)
                     }
-                },
-                overlayContent = {
-                    Column(
-                        modifier = Modifier.fillMaxSize(),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Spacer(Modifier.weight(1f))
-
-                        Box(
-                            modifier = Modifier
-                                .size(250.dp)
-                                .border(2.dp, Color.White.copy(alpha = 0.6f), RoundedCornerShape(20.dp)),
-                        )
-
-                        Spacer(Modifier.height(24.dp))
-
-                        Text(
-                            text = "Scan QR code from CodeRover CLI",
-                            color = Color.White,
-                            style = MaterialTheme.typography.titleMedium,
-                        )
-
-                        Spacer(Modifier.weight(1f))
-                    }
+                ) {
+                    Text("Open Settings")
                 }
-            )
+            }
+        },
+        overlayContent = {
+            Column(
+                modifier = Modifier.fillMaxSize(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(24.dp),
+            ) {
+                Spacer(modifier = Modifier.weight(1f))
+
+                Box(
+                    modifier = Modifier
+                        .size(250.dp)
+                        .border(2.dp, Color.White.copy(alpha = 0.6f), RoundedCornerShape(20.dp)),
+                )
+
+                Text(
+                    text = "Scan QR code from CodeRover CLI",
+                    color = Color.White,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = androidx.compose.ui.text.font.FontWeight.Medium,
+                )
+
+                Spacer(modifier = Modifier.weight(1f))
+            }
         }
-    }
+    )
 
     if (!errorMessage.isNullOrBlank()) {
         AlertDialog(
             onDismissRequest = onErrorDismissed,
-            title = { Text("Connection Error") },
+            title = { Text("Scan Error") },
             text = { Text(errorMessage) },
             confirmButton = {},
             dismissButton = {

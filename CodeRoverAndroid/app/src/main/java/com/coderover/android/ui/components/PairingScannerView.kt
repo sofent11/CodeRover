@@ -12,12 +12,10 @@ import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -30,7 +28,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -44,11 +41,12 @@ import java.util.concurrent.atomic.AtomicBoolean
 @Composable
 fun PairingScannerView(
     modifier: Modifier = Modifier,
-    onCodeScanned: (String) -> Unit,
+    onCodeScanned: (String, resetScanLock: () -> Unit) -> Unit,
     permissionDeniedContent: @Composable (() -> Unit)? = null,
     overlayContent: @Composable (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
+    var isCheckingPermission by remember { mutableStateOf(true) }
     var hasCameraPermission by remember {
         mutableStateOf(
             ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED,
@@ -58,34 +56,56 @@ fun PairingScannerView(
         contract = ActivityResultContracts.RequestPermission(),
     ) { granted ->
         hasCameraPermission = granted
+        isCheckingPermission = false
     }
 
     LaunchedEffect(Unit) {
         if (!hasCameraPermission) {
             permissionLauncher.launch(Manifest.permission.CAMERA)
+        } else {
+            isCheckingPermission = false
         }
     }
 
-    if (!hasCameraPermission) {
-        if (permissionDeniedContent != null) {
-            permissionDeniedContent()
-        } else {
-            Box(modifier = modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Button(onClick = { permissionLauncher.launch(Manifest.permission.CAMERA) }) {
-                    Text("Allow Camera")
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .background(Color.Black),
+    ) {
+        when {
+            isCheckingPermission -> {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    CircularProgressIndicator(
+                        color = Color.White,
+                    )
                 }
             }
-        }
-        return
-    }
-
-    Box(modifier = modifier) {
-        CameraPreview(
-            modifier = Modifier.fillMaxSize(),
-            onCodeScanned = onCodeScanned,
-        )
-        if (overlayContent != null) {
-            overlayContent()
+            hasCameraPermission -> {
+                CameraPreview(
+                    modifier = Modifier.fillMaxSize(),
+                    onCodeScanned = onCodeScanned,
+                )
+                if (overlayContent != null) {
+                    overlayContent()
+                }
+            }
+            else -> {
+                if (permissionDeniedContent != null) {
+                    permissionDeniedContent()
+                } else {
+                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Button(onClick = {
+                            isCheckingPermission = true
+                            permissionLauncher.launch(Manifest.permission.CAMERA)
+                        }) {
+                            Text("Allow Camera")
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -94,12 +114,16 @@ fun PairingScannerView(
 @Composable
 private fun CameraPreview(
     modifier: Modifier,
-    onCodeScanned: (String) -> Unit,
+    onCodeScanned: (String, resetScanLock: () -> Unit) -> Unit,
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val cameraExecutor = remember { Executors.newSingleThreadExecutor() }
     val didScan = remember { AtomicBoolean(false) }
+
+    val resetScanLock: () -> Unit = {
+        didScan.set(false)
+    }
 
     DisposableEffect(cameraExecutor) {
         onDispose {
@@ -128,7 +152,7 @@ private fun CameraPreview(
                                     QrCodeAnalyzer(
                                         onCodeScanned = { code ->
                                             if (didScan.compareAndSet(false, true)) {
-                                                onCodeScanned(code)
+                                                onCodeScanned(code, resetScanLock)
                                             }
                                         },
                                     ),
@@ -149,7 +173,6 @@ private fun CameraPreview(
                 previewView
             },
         )
-
     }
 }
 

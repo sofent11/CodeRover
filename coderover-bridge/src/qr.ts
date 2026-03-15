@@ -1,7 +1,7 @@
 // FILE: qr.ts
 // Purpose: Prints the pairing QR payload that the iPhone scanner expects.
 
-import { generate } from "qrcode-terminal";
+import qrcodeTerminal = require("qrcode-terminal");
 
 import type { TransportCandidateShape } from "./bridge-types";
 
@@ -17,7 +17,7 @@ export function printQR(pairingPayload: PairingPayloadShape): void {
   const payload = JSON.stringify(pairingPayload);
 
   console.log("\nScan this QR with the iPhone:\n");
-  generate(payload, { small: true });
+  qrcodeTerminal.generate(payload, { small: true });
   console.log(`\nBridge ID: ${pairingPayload.bridgeId}`);
   console.log(`Device ID: ${pairingPayload.macDeviceId}`);
   for (const candidate of pairingPayload.transportCandidates || []) {

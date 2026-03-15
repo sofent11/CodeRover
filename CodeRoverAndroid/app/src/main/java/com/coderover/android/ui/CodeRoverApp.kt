@@ -92,7 +92,9 @@ fun CodeRoverApp(
         PairingEntryScreen(
             errorMessage = state.lastErrorMessage,
             pendingTransportSelectionPairing = state.pendingTransportSelectionPairing,
-            onScannedPayload = viewModel::importPairingPayload,
+            onScannedPayload = { payload, resetScanLock ->
+                viewModel.importPairingPayload(payload, resetScanLock)
+            },
             onSelectTransport = viewModel::confirmPendingPairingTransport,
             onErrorDismissed = viewModel::clearLastErrorMessage,
         )
@@ -431,9 +433,9 @@ private fun CodeRoverAppShell(
                             AppShellContent.PAIRING -> PairingEntryScreen(
                                 errorMessage = state.lastErrorMessage,
                                 pendingTransportSelectionPairing = state.pendingTransportSelectionPairing,
-                                onScannedPayload = { payload ->
+                                onScannedPayload = { payload, resetScanLock ->
                                     contentViewModel.markPairingSubmission()
-                                    viewModel.importPairingPayload(payload)
+                                    viewModel.importPairingPayload(payload, resetScanLock)
                                 },
                                 onSelectTransport = viewModel::confirmPendingPairingTransport,
                                 onErrorDismissed = viewModel::clearLastErrorMessage,
