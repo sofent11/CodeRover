@@ -4,21 +4,23 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.coderover.android.app.AppViewModel
 import com.coderover.android.data.model.AccessMode
@@ -28,6 +30,8 @@ import com.coderover.android.data.model.ImageAttachment
 import com.coderover.android.data.model.TurnSkillMention
 import com.coderover.android.data.model.ModelOption
 import com.coderover.android.ui.shared.GlassCard
+import com.coderover.android.ui.shared.StatusTag
+import com.coderover.android.ui.theme.PlanAccent
 import kotlinx.coroutines.launch
 
 @Composable
@@ -90,6 +94,71 @@ internal fun TurnComposerView(
             )
         }
 
+        // Panels outside the main card: File, Skill, Slash Command autocomplete
+        if (turnViewModel.autocompleteFiles.isNotEmpty()) {
+            FileAutocompletePanel(
+                files = turnViewModel.autocompleteFiles,
+                onSelect = { file ->
+                    onInputChanged(turnViewModel.addMentionedFile(input, file))
+                },
+            )
+        }
+
+        if (turnViewModel.autocompleteSkills.isNotEmpty()) {
+            SkillAutocompletePanel(
+                skills = turnViewModel.autocompleteSkills,
+                onSelect = { skill ->
+                    onInputChanged(turnViewModel.addMentionedSkill(input, skill))
+                },
+            )
+        }
+
+        if (isCodexThread && turnViewModel.slashCommandPanelState !is TurnComposerSlashCommandPanelState.Hidden) {
+            SlashCommandAutocompletePanel(
+                state = turnViewModel.slashCommandPanelState,
+                hasComposerContentConflictingWithReview = turnViewModel.hasComposerContentConflictingWithReview,
+                showsGitBranchSelector = state.gitBranchTargets != null,
+                isLoadingGitBranchTargets = false,
+                selectedGitBaseBranch = turnViewModel.reviewBaseBranchName(state).orEmpty(),
+                gitDefaultBranch = state.gitBranchTargets?.defaultBranch.orEmpty(),
+                onSelectCommand = { command ->
+                    val updatedInput = turnViewModel.onSelectSlashCommand(input, command)
+                    onInputChanged(updatedInput)
+                    if (command == TurnComposerSlashCommand.STATUS) {
+                        onShowStatus()
+                    }
+                },
+                onSelectReviewTarget = { target ->
+                    onInputChanged(turnViewModel.onSelectCodeReviewTarget(input, target))
+                },
+                onClose = turnViewModel::clearComposerReviewSelection,
+            )
+        }
+
+        // Queued Drafts Panel (outside main card with special styling)
+        if (queuedDrafts.isNotEmpty()) {
+            QueuedDraftsPanel(
+                drafts = queuedDrafts,
+                canSteerDrafts = isRunning && queuePresentation.canSteerDrafts && supportsTurnSteer,
+                steeringDraftId = turnViewModel.steeringDraftId,
+                onSteerDraft = { draftId ->
+                    if (threadIdForQueue != null) {
+                        coroutineScope.launch {
+                            turnViewModel.requestAssistantResponseAnchor()
+                            turnViewModel.performDraftSteer(draftId) {
+                                viewModel.steerQueuedDraft(threadIdForQueue, draftId)
+                            }
+                        }
+                    }
+                },
+                onRemoveDraft = { draftId ->
+                    if (threadIdForQueue != null) {
+                        viewModel.removeQueuedDraft(threadIdForQueue, draftId)
+                    }
+                },
+            )
+        }
+
         GlassCard(
             modifier = Modifier.fillMaxWidth(),
             cornerRadius = 28.dp,
@@ -98,44 +167,64 @@ internal fun TurnComposerView(
                 modifier = Modifier.fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(0.dp),
             ) {
-                ComposerTopPanels(
-                    turnViewModel = turnViewModel,
-                    queuedDrafts = queuedDrafts,
-                    canSteerDrafts = isRunning && queuePresentation.canSteerDrafts && supportsTurnSteer,
-                    showsPlanMode = supportsPlanMode,
-                    isCodexThread = isCodexThread,
-                    onSteerDraft = { draftId ->
-                        if (threadIdForQueue != null) {
-                            coroutineScope.launch {
-                                turnViewModel.requestAssistantResponseAnchor()
-                                turnViewModel.performDraftSteer(draftId) {
-                                    viewModel.steerQueuedDraft(threadIdForQueue, draftId)
-                                }
+                // Notice and Plan mode (inside the card now)
+                AnimatedVisibility(
+                    visible = turnViewModel.composerNoticeMessage != null ||
+                        (turnViewModel.isPlanModeArmed && supportsPlanMode),
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        turnViewModel.composerNoticeMessage?.let { notice ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 4.dp, vertical = 4.dp),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                StatusTag(
+                                    text = "Images",
+                                    containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                                    contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                                Text(
+                                    text = notice,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
                             }
                         }
-                    },
-                    onFileSelected = { file ->
-                        onInputChanged(turnViewModel.addMentionedFile(input, file))
-                    },
-                    onSkillSelected = { skill ->
-                        onInputChanged(turnViewModel.addMentionedSkill(input, skill))
-                    },
-                    onSelectSlashCommand = { command ->
-                        val updatedInput = turnViewModel.onSelectSlashCommand(input, command)
-                        onInputChanged(updatedInput)
-                        if (command == TurnComposerSlashCommand.STATUS) {
-                            onShowStatus()
+
+                        if (turnViewModel.isPlanModeArmed && supportsPlanMode) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 4.dp, vertical = 4.dp),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                StatusTag(
+                                    text = "Plan mode",
+                                    containerColor = PlanAccent.copy(alpha = 0.14f),
+                                    contentColor = PlanAccent,
+                                )
+                                Text(
+                                    text = "Structured plan before execution.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
                         }
-                    },
-                    onSelectCodeReviewTarget = { target ->
-                        onInputChanged(turnViewModel.onSelectCodeReviewTarget(input, target))
-                    },
-                    onRemoveDraft = { draftId ->
-                        if (threadIdForQueue != null) {
-                            viewModel.removeQueuedDraft(threadIdForQueue, draftId)
-                        }
-                    },
-                )
+                    }
+                }
 
                 if (turnViewModel.composerAttachments.isNotEmpty()) {
                     ComposerAttachmentsPreview(

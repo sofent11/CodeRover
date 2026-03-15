@@ -498,6 +498,30 @@ class TurnViewModel {
         }
     }
 
+    // These are called from TurnComposerHost which handles the coroutine scope
+    // The actual async refresh happens via refreshAutocomplete in LaunchedEffect
+    fun onInputChangedForFileAutocomplete(input: String, appViewModel: AppViewModel, selectedThreadId: String?) {
+        val lastWordStartIndex = input.lastIndexOfAny(charArrayOf(' ', '\n')) + 1
+        val currentWord = input.substring(lastWordStartIndex)
+        if (!currentWord.startsWith("@")) {
+            if (autocompleteFiles.isNotEmpty()) {
+                autocompleteFiles = emptyList()
+            }
+        }
+        // The actual async refresh is handled by TurnComposerHost's LaunchedEffect
+    }
+
+    fun onInputChangedForSkillAutocomplete(input: String, appViewModel: AppViewModel) {
+        val lastWordStartIndex = input.lastIndexOfAny(charArrayOf(' ', '\n')) + 1
+        val currentWord = input.substring(lastWordStartIndex)
+        if (!currentWord.startsWith("#") && !currentWord.startsWith("$")) {
+            if (autocompleteSkills.isNotEmpty()) {
+                autocompleteSkills = emptyList()
+            }
+        }
+        // The actual async refresh is handled by TurnComposerHost's LaunchedEffect
+    }
+
     fun onSelectSlashCommand(input: String, command: TurnComposerSlashCommand): String {
         val updatedInput = removingTrailingSlashCommandToken(input) ?: input
         when (command) {

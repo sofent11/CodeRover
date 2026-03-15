@@ -121,6 +121,7 @@ internal fun TurnComposerHost(
         }
     }
 
+
     LaunchedEffect(state.selectedThreadId, state.isConnected, isCodexThread) {
         if (!state.isConnected || !isCodexThread) return@LaunchedEffect
         val threadId = state.selectedThreadId ?: return@LaunchedEffect
@@ -128,6 +129,8 @@ internal fun TurnComposerHost(
     }
 
     fun applyInputChange(value: String) {
+        turnViewModel.onInputChangedForFileAutocomplete(value, viewModel, state.selectedThreadId)
+        turnViewModel.onInputChangedForSkillAutocomplete(value, viewModel)
         turnViewModel.onInputChangedForSlashCommandAutocomplete(value, isEnabled = isCodexThread)
         onInputChanged(value)
     }

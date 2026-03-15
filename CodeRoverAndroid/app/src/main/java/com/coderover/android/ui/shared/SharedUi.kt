@@ -78,6 +78,45 @@ fun GlassCard(
     }
 }
 
+@Composable
+fun GlassCard(
+    modifier: Modifier = Modifier,
+    cornerRadiusTopStart: Dp = 20.dp,
+    cornerRadiusTopEnd: Dp = 20.dp,
+    cornerRadiusBottomStart: Dp = 20.dp,
+    cornerRadiusBottomEnd: Dp = 20.dp,
+    padding: Dp = 16.dp,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(
+            topStart = cornerRadiusTopStart,
+            topEnd = cornerRadiusTopEnd,
+            bottomStart = cornerRadiusBottomStart,
+            bottomEnd = cornerRadiusBottomEnd,
+        ),
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.82f),
+        border = BorderStroke(1.dp, Border),
+        tonalElevation = 1.dp,
+        shadowElevation = 2.dp,
+    ) {
+        Column(
+            modifier = Modifier
+                .background(
+                    brush = Brush.verticalGradient(
+                        colors = listOf(
+                            MaterialTheme.colorScheme.surface.copy(alpha = 0.98f),
+                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                        ),
+                    ),
+                )
+                .padding(padding),
+            content = content,
+        )
+    }
+}
+
 fun connectionStatusLabel(phase: ConnectionPhase): String {
     return when (phase) {
         ConnectionPhase.CONNECTING -> "Connecting"
