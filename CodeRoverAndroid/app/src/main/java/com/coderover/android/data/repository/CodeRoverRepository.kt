@@ -76,6 +76,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.yield
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -118,6 +119,7 @@ class CodeRoverRepository(context: Context) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val clientMutex = Mutex()
     private val threadHistoryRefreshMutex = Mutex()
+    private val olderHistoryBackfillMutex = Mutex()
     private val realtimeHistoryCatchUpMutex = Mutex()
     private val orderCounter = AtomicInteger(0)
     private val connectionEpoch = AtomicLong(0)
@@ -127,6 +129,7 @@ class CodeRoverRepository(context: Context) {
     private val threadHistoryRefreshPending = mutableSetOf<String>()
     private val pendingRealtimeHistoryCatchUpThreadIds = mutableSetOf<String>()
     private val realtimeHistoryCatchUpTaskByThread = mutableMapOf<String, Job>()
+    private val olderHistoryBackfillTaskByThread = mutableMapOf<String, Job>()
     private val pendingHistoryChangedRefreshThreadIds = mutableSetOf<String>()
     private val historyChangedRefreshTaskByThread = mutableMapOf<String, Job>()
     private var activeThreadListNextCursor: JsonElement? = JsonNull
@@ -1565,6 +1568,7 @@ class CodeRoverRepository(context: Context) {
                 threadId = threadId,
                 replaceLocalHistory = hasLocalMessages && newestCursor == null,
                 fallbackThreadObject = null,
+                prefetchOlderInBackground = !hasLocalMessages,
             )
         }
     }
@@ -1573,6 +1577,7 @@ class CodeRoverRepository(context: Context) {
         threadId: String,
         replaceLocalHistory: Boolean,
         fallbackThreadObject: JsonObject?,
+        prefetchOlderInBackground: Boolean = false,
     ) {
         val historyResult = try {
             activeClient().sendRequest(
@@ -1600,7 +1605,11 @@ class CodeRoverRepository(context: Context) {
             }
         }
         extractContextWindowUsageIfAvailable(threadId, threadObject)
-        val history = decodeMessagesFromThreadRead(threadId, threadObject)
+        val history = decodeMessagesFromThreadRead(
+            threadId = threadId,
+            threadObject = threadObject,
+            latestLimit = 50,
+        )
         val historyWindow = decodeHistoryWindow(historyResult, history)
         val activeTurnId = resolveActiveTurnId(summaryThreadObject)
         applyHistoryWindow(
@@ -1612,6 +1621,9 @@ class CodeRoverRepository(context: Context) {
             activeTurnId = activeTurnId,
             replaceRunningState = true,
         )
+        if (prefetchOlderInBackground && historyWindow.hasOlder) {
+            scheduleOlderHistoryBackfill(threadId)
+        }
     }
 
     private suspend fun loadNewerThreadHistoryIfNeeded(
@@ -2262,80 +2274,108 @@ class CodeRoverRepository(context: Context) {
             || lowered.contains("unknown")
     }
 
-    private fun decodeMessagesFromThreadRead(threadId: String, threadObject: JsonObject): List<ChatMessage> {
+    private fun decodeMessagesFromThreadRead(
+        threadId: String,
+        threadObject: JsonObject,
+        latestLimit: Int? = null,
+    ): List<ChatMessage> {
         val turns = threadObject["turns"]?.jsonArrayOrNull().orEmpty()
         val baseTimestamp = threadObject.timestamp("createdAt", "created_at")
             ?: threadObject.timestamp("updatedAt", "updated_at")
             ?: 0L
         val messages = mutableListOf<ChatMessage>()
         var offset = 0L
-        turns.forEach { turnElement ->
-            val turn = turnElement.jsonObjectOrNull() ?: return@forEach
+
+        fun decodeMessage(turn: JsonObject, item: JsonObject): ChatMessage? {
+            val type = item.string("type")?.lowercase()?.replace("_", "") ?: return null
             val turnId = turn.string("id")
             val turnTimestamp = turn.timestamp("createdAt", "created_at", "updatedAt", "updated_at")
+            val timestamp = item.timestamp("createdAt", "created_at")
+                ?: turnTimestamp
+                ?: (baseTimestamp + offset)
+            offset += 1
+            val role = when (type) {
+                "usermessage" -> MessageRole.USER
+                "agentmessage", "assistantmessage" -> MessageRole.ASSISTANT
+                "message" -> if (item.string("role")?.contains("user", ignoreCase = true) == true) {
+                    MessageRole.USER
+                } else {
+                    MessageRole.ASSISTANT
+                }
+
+                else -> MessageRole.SYSTEM
+            }
+            val kind = when (type) {
+                "reasoning" -> MessageKind.THINKING
+                "filechange", "toolcall", "diff" -> MessageKind.FILE_CHANGE
+                "commandexecution" -> MessageKind.COMMAND_EXECUTION
+                "plan" -> MessageKind.PLAN
+                else -> MessageKind.CHAT
+            }
+            val fileChanges = if (kind == MessageKind.FILE_CHANGE) {
+                decodeFileChangeEntries(item)
+            } else {
+                emptyList()
+            }
+            val commandState = if (kind == MessageKind.COMMAND_EXECUTION) {
+                decodeCommandState(item, completedFallback = true)
+            } else {
+                null
+            }
+            val planState = if (kind == MessageKind.PLAN) {
+                decodePlanState(item)
+            } else {
+                null
+            }
+            val text = when (kind) {
+                MessageKind.FILE_CHANGE -> decodeFileChangeText(item, fileChanges)
+                MessageKind.COMMAND_EXECUTION -> decodeCommandExecutionText(item, commandState)
+                MessageKind.PLAN -> decodePlanText(item, planState)
+                else -> decodeItemText(item)
+            }
+            if (text.isBlank()) {
+                return null
+            }
+            return ChatMessage(
+                threadId = threadId,
+                role = role,
+                kind = kind,
+                text = text,
+                createdAt = timestamp,
+                turnId = turnId,
+                itemId = item.string("id"),
+                orderIndex = nextOrderIndex(),
+                fileChanges = fileChanges,
+                commandState = commandState,
+                planState = planState,
+            )
+        }
+
+        if (latestLimit != null && latestLimit > 0) {
+            loop@ for (turnIndex in turns.lastIndex downTo 0) {
+                val turn = turns[turnIndex].jsonObjectOrNull() ?: continue
+                val items = turn["items"]?.jsonArrayOrNull().orEmpty()
+                for (itemIndex in items.lastIndex downTo 0) {
+                    val item = items[itemIndex].jsonObjectOrNull() ?: continue
+                    val decoded = decodeMessage(turn, item) ?: continue
+                    messages += decoded
+                    if (messages.size >= latestLimit) {
+                        break@loop
+                    }
+                }
+            }
+            return messages
+                .asReversed()
+                .sortedBy(ChatMessage::createdAt)
+                .mapIndexed { index, message -> message.copy(orderIndex = index) }
+        }
+
+        turns.forEach { turnElement ->
+            val turn = turnElement.jsonObjectOrNull() ?: return@forEach
             val items = turn["items"]?.jsonArrayOrNull().orEmpty()
             items.forEach { itemElement ->
                 val item = itemElement.jsonObjectOrNull() ?: return@forEach
-                val type = item.string("type")?.lowercase()?.replace("_", "") ?: return@forEach
-                val timestamp = item.timestamp("createdAt", "created_at")
-                    ?: turnTimestamp
-                    ?: (baseTimestamp + offset)
-                offset += 1
-                val role = when (type) {
-                    "usermessage" -> MessageRole.USER
-                    "agentmessage", "assistantmessage" -> MessageRole.ASSISTANT
-                    "message" -> if (item.string("role")?.contains("user", ignoreCase = true) == true) {
-                        MessageRole.USER
-                    } else {
-                        MessageRole.ASSISTANT
-                    }
-
-                    else -> MessageRole.SYSTEM
-                }
-                val kind = when (type) {
-                    "reasoning" -> MessageKind.THINKING
-                    "filechange", "toolcall", "diff" -> MessageKind.FILE_CHANGE
-                    "commandexecution" -> MessageKind.COMMAND_EXECUTION
-                    "plan" -> MessageKind.PLAN
-                    else -> MessageKind.CHAT
-                }
-                val fileChanges = if (kind == MessageKind.FILE_CHANGE) {
-                    decodeFileChangeEntries(item)
-                } else {
-                    emptyList()
-                }
-                val commandState = if (kind == MessageKind.COMMAND_EXECUTION) {
-                    decodeCommandState(item, completedFallback = true)
-                } else {
-                    null
-                }
-                val planState = if (kind == MessageKind.PLAN) {
-                    decodePlanState(item)
-                } else {
-                    null
-                }
-                val text = when (kind) {
-                    MessageKind.FILE_CHANGE -> decodeFileChangeText(item, fileChanges)
-                    MessageKind.COMMAND_EXECUTION -> decodeCommandExecutionText(item, commandState)
-                    MessageKind.PLAN -> decodePlanText(item, planState)
-                    else -> decodeItemText(item)
-                }
-                if (text.isBlank()) {
-                    return@forEach
-                }
-                messages += ChatMessage(
-                    threadId = threadId,
-                    role = role,
-                    kind = kind,
-                    text = text,
-                    createdAt = timestamp,
-                    turnId = turnId,
-                    itemId = item.string("id"),
-                    orderIndex = nextOrderIndex(),
-                    fileChanges = fileChanges,
-                    commandState = commandState,
-                    planState = planState,
-                )
+                decodeMessage(turn, item)?.let(messages::add)
             }
         }
         return messages.sortedBy(ChatMessage::createdAt)
@@ -4324,6 +4364,62 @@ class CodeRoverRepository(context: Context) {
     private suspend fun isThreadHistoryRefreshBusy(threadId: String): Boolean {
         return threadHistoryRefreshMutex.withLock {
             threadHistoryRefreshInFlight.contains(threadId)
+        }
+    }
+
+    private fun scheduleOlderHistoryBackfill(threadId: String) {
+        scope.launch {
+            val currentJob = kotlinx.coroutines.currentCoroutineContext()[Job]
+            val shouldStart = olderHistoryBackfillMutex.withLock {
+                val existingTask = olderHistoryBackfillTaskByThread[threadId]
+                if (existingTask?.isActive == true) {
+                    false
+                } else {
+                    if (currentJob != null) {
+                        olderHistoryBackfillTaskByThread[threadId] = currentJob
+                    }
+                    true
+                }
+            }
+            if (!shouldStart) {
+                return@launch
+            }
+
+            try {
+                var pageCount = 0
+                while (pageCount < 200) {
+                    val currentState = state.value
+                    val historyState = currentState.historyStateByThread[threadId] ?: break
+                    if (!currentState.isConnected || currentState.selectedThreadId != threadId) {
+                        break
+                    }
+                    if (!historyState.hasOlderOnServer) {
+                        break
+                    }
+                    if (historyState.isLoadingOlder || historyState.isTailRefreshing) {
+                        delay(120)
+                        continue
+                    }
+                    val requestCursor = nextOlderHistoryCursor(historyState) ?: break
+                    val didLoad = runCatching {
+                        loadOlderThreadHistory(threadId)
+                    }.onFailure { failure ->
+                        Log.w(TAG, "background older history backfill failed threadId=$threadId cursor=$requestCursor", failure)
+                    }
+                    if (didLoad.isFailure) {
+                        break
+                    }
+                    pageCount += 1
+                    yield()
+                }
+            } finally {
+                olderHistoryBackfillMutex.withLock {
+                    val existingTask = olderHistoryBackfillTaskByThread[threadId]
+                    if (existingTask === currentJob || existingTask?.isActive != true) {
+                        olderHistoryBackfillTaskByThread.remove(threadId)
+                    }
+                }
+            }
         }
     }
 

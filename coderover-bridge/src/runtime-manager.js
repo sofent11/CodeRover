@@ -814,6 +814,30 @@ function createRuntimeManager({
       return cachedWindow;
     }
 
+    const upstreamHistoryResult = await codexAdapter.readThread(
+      buildUpstreamCodexHistoryParams(params, historyRequest)
+    );
+    const upstreamThreadObject = extractThreadFromResult(upstreamHistoryResult);
+    if (upstreamThreadObject) {
+      const decoratedThread = decorateConversationThread(upstreamThreadObject);
+      upsertOverlayFromThread(decoratedThread);
+      const historyWindow = extractHistoryWindowFromResult(upstreamHistoryResult);
+      if (historyWindow) {
+        const partialSnapshot = {
+          ...createHistorySnapshotFromThread(decoratedThread),
+          hasOlder: Boolean(historyWindow.hasOlder),
+          hasNewer: Boolean(historyWindow.hasNewer),
+        };
+        writeCodexHistoryCache(threadId, partialSnapshot);
+        return buildUpstreamHistoryWindowResponse(
+          partialSnapshot,
+          historyRequest,
+          historyWindow,
+          decoratedThread
+        );
+      }
+    }
+
     const fullSnapshot = await fetchFullCodexThreadSnapshot(threadId, params);
     return buildHistoryWindowResponse(fullSnapshot, historyRequest, false);
   }
@@ -2583,6 +2607,56 @@ function extractThreadFromResult(result) {
     return result.thread;
   }
   return null;
+}
+
+function extractHistoryWindowFromResult(result) {
+  if (!result || typeof result !== "object") {
+    return null;
+  }
+  const windowObject = result.historyWindow || result.history_window;
+  if (!windowObject || typeof windowObject !== "object" || Array.isArray(windowObject)) {
+    return null;
+  }
+  return windowObject;
+}
+
+function buildUpstreamCodexHistoryParams(params, historyRequest) {
+  const upstreamParams = {
+    ...stripProviderField(params || {}),
+  };
+  if (!historyRequest) {
+    return upstreamParams;
+  }
+  upstreamParams.history = {
+    mode: historyRequest.mode,
+    limit: historyRequest.limit,
+  };
+  if (historyRequest.mode !== "tail" && historyRequest.cursor) {
+    upstreamParams.history.anchor = historyRequest.cursor;
+    delete upstreamParams.history.cursor;
+  }
+  return upstreamParams;
+}
+
+function buildUpstreamHistoryWindowResponse(snapshot, historyRequest, upstreamHistoryWindow, thread) {
+  const records = [...(snapshot?.records || [])].sort(compareHistoryRecord);
+  const oldestRecord = records.length > 0 ? records[0] : null;
+  const newestRecord = records.length > 0 ? records[records.length - 1] : null;
+  return {
+    thread,
+    historyWindow: {
+      mode: historyRequest.mode,
+      olderCursor: oldestRecord ? historyCursorForRecord(snapshot.threadId, oldestRecord) : null,
+      newerCursor: newestRecord ? historyCursorForRecord(snapshot.threadId, newestRecord) : null,
+      oldestAnchor: oldestRecord ? historyRecordAnchor(oldestRecord) : null,
+      newestAnchor: newestRecord ? historyRecordAnchor(newestRecord) : null,
+      hasOlder: Boolean(upstreamHistoryWindow?.hasOlder),
+      hasNewer: Boolean(upstreamHistoryWindow?.hasNewer),
+      isPartial: true,
+      servedFromCache: false,
+      pageSize: records.length,
+    },
+  };
 }
 
 function extractArray(value, candidatePaths) {

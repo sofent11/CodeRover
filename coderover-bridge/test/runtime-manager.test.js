@@ -226,6 +226,14 @@ function createCodexAdapterFixture({
         if (!thread) {
           return {};
         }
+        if (params.includeTurns === false) {
+          const metaThread = JSON.parse(JSON.stringify(thread));
+          delete metaThread.turns;
+          return { thread: metaThread };
+        }
+        if (params.history) {
+          return buildCodexHistoryResult(thread, params.history);
+        }
         return {
           thread: JSON.parse(JSON.stringify(thread)),
         };
@@ -276,6 +284,68 @@ function buildCodexThread({
   };
 }
 
+function buildCodexHistoryResult(thread, history) {
+  const snapshot = JSON.parse(JSON.stringify(thread));
+  const turns = Array.isArray(snapshot.turns) ? snapshot.turns : [];
+  const turn = turns[0] || { items: [] };
+  const items = Array.isArray(turn.items) ? turn.items : [];
+  const mode = history?.mode || "tail";
+  const limit = Math.max(Number(history?.limit) || items.length || 0, 1);
+  const anchorItemId = history?.anchor?.itemId || history?.anchor?.item_id || history?.cursor || null;
+  const anchorCreatedAt = history?.anchor?.createdAt || history?.anchor?.created_at || null;
+  let startIndex = 0;
+  let endIndexExclusive = 0;
+
+  if (mode === "tail") {
+    startIndex = Math.max(items.length - limit, 0);
+    endIndexExclusive = items.length;
+  } else {
+    const anchorIndex = items.findIndex((item) => (
+      (anchorItemId && item.id === anchorItemId)
+      || (!anchorItemId && anchorCreatedAt && item.createdAt === anchorCreatedAt)
+    ));
+    if (anchorIndex < 0) {
+      return {
+        thread: {
+          ...snapshot,
+          turns: [{ ...turn, items: [] }],
+        },
+        historyWindow: {
+          mode,
+          olderCursor: null,
+          newerCursor: null,
+          hasOlder: false,
+          hasNewer: false,
+          pageSize: 0,
+        },
+      };
+    }
+    if (mode === "before") {
+      startIndex = Math.max(anchorIndex - limit, 0);
+      endIndexExclusive = anchorIndex;
+    } else {
+      startIndex = anchorIndex + 1;
+      endIndexExclusive = Math.min(anchorIndex + 1 + limit, items.length);
+    }
+  }
+
+  const selected = items.slice(startIndex, endIndexExclusive);
+  return {
+    thread: {
+      ...snapshot,
+      turns: [{ ...turn, items: selected }],
+    },
+    historyWindow: {
+      mode,
+      olderCursor: selected[0]?.id || null,
+      newerCursor: selected.at(-1)?.id || null,
+      hasOlder: startIndex > 0,
+      hasNewer: endIndexExclusive < items.length,
+      pageSize: selected.length,
+    },
+  };
+}
+
 function createDefaultCodexTransportFixture(manager, {
   threadRef,
 } = {}) {
@@ -303,10 +373,21 @@ function createDefaultCodexTransportFixture(manager, {
           const thread = threadRef.current && threadRef.current.id === threadId
             ? JSON.parse(JSON.stringify(threadRef.current))
             : null;
+          let result = {};
+          if (thread) {
+            if (parsed.params?.includeTurns === false) {
+              delete thread.turns;
+              result = { thread };
+            } else if (parsed.params?.history) {
+              result = buildCodexHistoryResult(thread, parsed.params.history);
+            } else {
+              result = { thread };
+            }
+          }
           manager.handleCodexTransportMessage(JSON.stringify({
             jsonrpc: "2.0",
             id: parsed.id,
-            result: thread ? { thread } : {},
+            result,
           }));
           return;
         }
@@ -397,6 +478,101 @@ test("thread/read history tail and after windows reuse the Codex cache", async (
     assert.equal(afterResponse.result.historyWindow.servedFromCache, true);
     assert.equal(afterResponse.result.thread.turns[0].items.length, 5);
     assert.equal(afterResponse.result.thread.turns[0].items[0].id, "item-132");
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("thread/read forwards uncached Codex history windows upstream before falling back to full snapshots", async () => {
+  const thread = buildCodexThread({
+    threadId: "codex-thread-upstream-history",
+    messageCount: 5,
+  });
+  const readParams = [];
+  const codexAdapter = {
+    attachTransport() {},
+    handleIncomingRaw() {},
+    handleTransportClosed() {},
+    isAvailable() {
+      return true;
+    },
+    async request(method) {
+      if (method === "initialize") {
+        return { ok: true };
+      }
+      throw new Error(`unexpected request: ${method}`);
+    },
+    notify() {},
+    sendRaw() {},
+    async listThreads() {
+      return {
+        threads: [{
+          id: thread.id,
+          title: thread.title,
+          preview: thread.preview,
+          createdAt: thread.createdAt,
+          updatedAt: thread.updatedAt,
+          cwd: thread.cwd,
+        }],
+      };
+    },
+    async readThread(params) {
+      readParams.push(JSON.parse(JSON.stringify(params)));
+      if (params.includeTurns === false) {
+        const metaThread = JSON.parse(JSON.stringify(thread));
+        delete metaThread.turns;
+        return { thread: metaThread };
+      }
+      if (!params.history) {
+        throw new Error("expected upstream history request on uncached Codex read");
+      }
+      const partialThread = JSON.parse(JSON.stringify(thread));
+      partialThread.turns[0].items = partialThread.turns[0].items.slice(-3);
+      return {
+        thread: partialThread,
+        historyWindow: {
+          mode: "tail",
+          olderCursor: "cursor-item-3",
+          newerCursor: "cursor-item-5",
+          hasOlder: true,
+          hasNewer: false,
+          pageSize: 3,
+        },
+      };
+    },
+    async startTurn(params) {
+      return {
+        threadId: params.threadId,
+        turnId: "turn-started",
+      };
+    },
+  };
+  const fixture = createManagerFixtureWithOptions({ codexAdapter });
+
+  try {
+    const tailMessages = await request(fixture, "thread-read-upstream-tail", "thread/read", {
+      threadId: thread.id,
+      history: {
+        mode: "tail",
+        limit: 3,
+      },
+    });
+    const tailResponse = responseById(tailMessages, "thread-read-upstream-tail");
+    assert.ok(tailResponse);
+    assert.equal(tailResponse.result.historyWindow.mode, "tail");
+    assert.equal(tailResponse.result.historyWindow.pageSize, 3);
+    assert.equal(tailResponse.result.thread.turns[0].items.length, 3);
+    assert.deepEqual(
+      tailResponse.result.thread.turns[0].items.map((item) => item.id),
+      ["item-3", "item-4", "item-5"]
+    );
+    assert.equal(readParams.length, 2);
+    assert.equal(readParams[0].includeTurns, false);
+    assert.deepEqual(readParams[1].history, {
+      mode: "tail",
+      limit: 3,
+    });
+    assert.equal(readParams[1].includeTurns, undefined);
   } finally {
     fixture.cleanup();
   }
