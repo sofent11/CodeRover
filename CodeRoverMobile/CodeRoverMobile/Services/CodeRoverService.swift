@@ -393,6 +393,7 @@ final class CodeRoverService {
     var resumedThreadIDs: Set<String> = []
     var pendingRealtimeHistoryCatchUpThreadIDs: Set<String> = []
     var realtimeHistoryCatchUpTaskByThread: [String: Task<Void, Never>] = [:]
+    var olderHistoryBackfillTaskByThread: [String: Task<Void, Never>] = [:]
     var pendingHistoryChangedRefreshThreadIDs: Set<String> = []
     var historyChangedRefreshTaskByThread: [String: Task<Void, Never>] = [:]
     var isAppInForeground = true

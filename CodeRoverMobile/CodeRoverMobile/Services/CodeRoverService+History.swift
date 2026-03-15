@@ -9,7 +9,11 @@ import UIKit
 
 extension CodeRoverService {
     // Decodes thread/read(includeTurns=true) payload into chronological message timeline.
-    func decodeMessagesFromThreadRead(threadId: String, threadObject: [String: JSONValue]) -> [ChatMessage] {
+    func decodeMessagesFromThreadRead(
+        threadId: String,
+        threadObject: [String: JSONValue],
+        latestLimit: Int? = nil
+    ) -> [ChatMessage] {
         let baseDate = decodeHistoryBaseDate(from: threadObject)
         let turns = threadObject["turns"]?.arrayValue ?? []
 
@@ -17,135 +21,165 @@ extension CodeRoverService {
         var result: [ChatMessage] = []
         var itemTypeCounts: [String: Int] = [:]
 
-        for turnValue in turns {
-            guard let turnObject = turnValue.objectValue else { continue }
+        func decodeHistoryMessage(
+            turnObject: [String: JSONValue],
+            itemObject: [String: JSONValue]
+        ) -> ChatMessage? {
+            guard let itemType = itemObject["type"]?.stringValue else {
+                return nil
+            }
             let turnID = turnObject["id"]?.stringValue
             let turnTimestamp = decodeHistoryTimestamp(from: turnObject)
-            let items = turnObject["items"]?.arrayValue ?? []
+            let syntheticTimestamp = (turnTimestamp ?? baseDate).addingTimeInterval(offset)
+            let timestamp = decodeHistoryTimestamp(from: itemObject) ?? syntheticTimestamp
+            offset += 0.001
+            let itemID = itemObject["id"]?.stringValue
+            let decodedText = decodeItemText(from: itemObject)
+            let imageAttachments = decodeImageAttachments(from: itemObject)
+            let normalizedType = normalizedItemType(itemType)
+            itemTypeCounts[normalizedType, default: 0] += 1
 
-            for itemValue in items {
-                guard let itemObject = itemValue.objectValue,
-                      let itemType = itemObject["type"]?.stringValue else {
-                    continue
+            switch normalizedType {
+            case "usermessage":
+                return makeHistoryMessage(
+                    role: .user,
+                    text: decodedText,
+                    threadId: threadId,
+                    turnId: turnID,
+                    itemId: itemID,
+                    createdAt: timestamp,
+                    attachments: imageAttachments
+                )
+
+            case "agentmessage", "assistantmessage":
+                return makeHistoryMessage(
+                    role: .assistant,
+                    kind: .chat,
+                    text: decodedText,
+                    threadId: threadId,
+                    turnId: turnID,
+                    itemId: itemID,
+                    createdAt: timestamp,
+                    attachments: imageAttachments
+                )
+
+            case "message":
+                let role = itemObject["role"]?.stringValue?.lowercased() ?? ""
+                let mappedRole: ChatMessageRole = role.contains("user") ? .user : .assistant
+                return makeHistoryMessage(
+                    role: mappedRole,
+                    kind: .chat,
+                    text: decodedText,
+                    threadId: threadId,
+                    turnId: turnID,
+                    itemId: itemID,
+                    createdAt: timestamp,
+                    attachments: imageAttachments
+                )
+
+            case "reasoning":
+                return makeHistoryMessage(
+                    role: .system,
+                    kind: .thinking,
+                    text: decodeReasoningItemText(from: itemObject),
+                    threadId: threadId,
+                    turnId: turnID,
+                    itemId: itemID,
+                    createdAt: timestamp
+                )
+
+            case "filechange":
+                return makeHistoryMessage(
+                    role: .system,
+                    kind: .fileChange,
+                    text: decodeFileChangeItemText(from: itemObject),
+                    threadId: threadId,
+                    turnId: turnID,
+                    itemId: itemID,
+                    createdAt: timestamp
+                )
+
+            case "toolcall", "diff":
+                guard let decodedFileChangeText = decodeHistoryToolCallOrDiffItemText(from: itemObject) else {
+                    return nil
                 }
+                return makeHistoryMessage(
+                    role: .system,
+                    kind: .fileChange,
+                    text: decodedFileChangeText,
+                    threadId: threadId,
+                    turnId: turnID,
+                    itemId: itemID,
+                    createdAt: timestamp
+                )
 
-                let syntheticTimestamp = (turnTimestamp ?? baseDate).addingTimeInterval(offset)
-                let timestamp = decodeHistoryTimestamp(from: itemObject) ?? syntheticTimestamp
-                offset += 0.001
-                let itemID = itemObject["id"]?.stringValue
-                let decodedText = decodeItemText(from: itemObject)
-                let imageAttachments = decodeImageAttachments(from: itemObject)
-                let normalizedType = normalizedItemType(itemType)
-                itemTypeCounts[normalizedType, default: 0] += 1
+            case "commandexecution":
+                return makeHistoryMessage(
+                    role: .system,
+                    kind: .commandExecution,
+                    text: decodeCommandExecutionItemText(from: itemObject),
+                    threadId: threadId,
+                    turnId: turnID,
+                    itemId: itemID,
+                    createdAt: timestamp
+                )
 
-                switch normalizedType {
-                case "usermessage":
-                    appendHistoryMessage(
-                        to: &result,
-                        role: .user,
-                        text: decodedText,
-                        threadId: threadId,
-                        turnId: turnID,
-                        itemId: itemID,
-                        createdAt: timestamp,
-                        attachments: imageAttachments
-                    )
+            case "plan":
+                return makeHistoryMessage(
+                    role: .system,
+                    kind: .plan,
+                    text: decodePlanItemText(from: itemObject),
+                    threadId: threadId,
+                    turnId: turnID,
+                    itemId: itemID,
+                    createdAt: timestamp,
+                    planState: decodeHistoryPlanState(from: itemObject)
+                )
 
-                case "agentmessage", "assistantmessage":
-                    appendHistoryMessage(
-                        to: &result,
-                        role: .assistant,
-                        kind: .chat,
-                        text: decodedText,
-                        threadId: threadId,
-                        turnId: turnID,
-                        itemId: itemID,
-                        createdAt: timestamp,
-                        attachments: imageAttachments
-                    )
+            default:
+                return nil
+            }
+        }
 
-                case "message":
-                    let role = itemObject["role"]?.stringValue?.lowercased() ?? ""
-                    let mappedRole: ChatMessageRole = role.contains("user") ? .user : .assistant
-
-                    appendHistoryMessage(
-                        to: &result,
-                        role: mappedRole,
-                        kind: .chat,
-                        text: decodedText,
-                        threadId: threadId,
-                        turnId: turnID,
-                        itemId: itemID,
-                        createdAt: timestamp,
-                        attachments: imageAttachments
-                    )
-
-                case "reasoning":
-                    appendHistoryMessage(
-                        to: &result,
-                        role: .system,
-                        kind: .thinking,
-                        text: decodeReasoningItemText(from: itemObject),
-                        threadId: threadId,
-                        turnId: turnID,
-                        itemId: itemID,
-                        createdAt: timestamp
-                    )
-
-                case "filechange":
-                    appendHistoryMessage(
-                        to: &result,
-                        role: .system,
-                        kind: .fileChange,
-                        text: decodeFileChangeItemText(from: itemObject),
-                        threadId: threadId,
-                        turnId: turnID,
-                        itemId: itemID,
-                        createdAt: timestamp
-                    )
-
-                case "toolcall", "diff":
-                    guard let decodedFileChangeText = decodeHistoryToolCallOrDiffItemText(from: itemObject) else {
+        if let latestLimit, latestLimit > 0 {
+            outer: for turnValue in turns.reversed() {
+                guard let turnObject = turnValue.objectValue else { continue }
+                let items = turnObject["items"]?.arrayValue ?? []
+                for itemValue in items.reversed() {
+                    guard let itemObject = itemValue.objectValue,
+                          let message = decodeHistoryMessage(turnObject: turnObject, itemObject: itemObject) else {
                         continue
                     }
-                    appendHistoryMessage(
-                        to: &result,
-                        role: .system,
-                        kind: .fileChange,
-                        text: decodedFileChangeText,
-                        threadId: threadId,
-                        turnId: turnID,
-                        itemId: itemID,
-                        createdAt: timestamp
-                    )
+                    result.append(message)
+                    if result.count >= latestLimit {
+                        break outer
+                    }
+                }
+            }
+            result = result
+                .reversed()
+                .sorted { lhs, rhs in
+                    if lhs.createdAt == rhs.createdAt {
+                        return lhs.orderIndex < rhs.orderIndex
+                    }
+                    return lhs.createdAt < rhs.createdAt
+                }
+                .map { message in
+                    var copy = message
+                    copy.orderIndex = MessageOrderCounter.next()
+                    return copy
+                }
+        } else {
+            for turnValue in turns {
+                guard let turnObject = turnValue.objectValue else { continue }
+                let items = turnObject["items"]?.arrayValue ?? []
 
-                case "commandexecution":
-                    appendHistoryMessage(
-                        to: &result,
-                        role: .system,
-                        kind: .commandExecution,
-                        text: decodeCommandExecutionItemText(from: itemObject),
-                        threadId: threadId,
-                        turnId: turnID,
-                        itemId: itemID,
-                        createdAt: timestamp
-                    )
-
-                case "plan":
-                    appendHistoryMessage(
-                        to: &result,
-                        role: .system,
-                        kind: .plan,
-                        text: decodePlanItemText(from: itemObject),
-                        threadId: threadId,
-                        turnId: turnID,
-                        itemId: itemID,
-                        createdAt: timestamp,
-                        planState: decodeHistoryPlanState(from: itemObject)
-                    )
-
-                default:
-                    continue
+                for itemValue in items {
+                    guard let itemObject = itemValue.objectValue,
+                          let message = decodeHistoryMessage(turnObject: turnObject, itemObject: itemObject) else {
+                        continue
+                    }
+                    result.append(message)
                 }
             }
         }
@@ -166,6 +200,36 @@ extension CodeRoverService {
         )
 
         return result
+    }
+
+    func makeHistoryMessage(
+        role: ChatMessageRole,
+        kind: ChatMessageKind = .chat,
+        text: String,
+        threadId: String,
+        turnId: String?,
+        itemId: String?,
+        createdAt: Date,
+        attachments: [ImageAttachment] = [],
+        planState: CodeRoverPlanState? = nil
+    ) -> ChatMessage? {
+        guard !text.isEmpty || !attachments.isEmpty else {
+            return nil
+        }
+
+        return ChatMessage(
+            threadId: threadId,
+            role: role,
+            kind: kind,
+            text: text,
+            createdAt: createdAt,
+            turnId: turnId,
+            itemId: itemId,
+            isStreaming: false,
+            deliveryState: .confirmed,
+            attachments: attachments,
+            planState: planState
+        )
     }
 
     func decodeHistoryBaseDate(from threadObject: [String: JSONValue]) -> Date {
@@ -761,25 +825,20 @@ extension CodeRoverService {
         attachments: [ImageAttachment] = [],
         planState: CodeRoverPlanState? = nil
     ) {
-        guard !text.isEmpty || !attachments.isEmpty else {
+        guard let message = makeHistoryMessage(
+            role: role,
+            kind: kind,
+            text: text,
+            threadId: threadId,
+            turnId: turnId,
+            itemId: itemId,
+            createdAt: createdAt,
+            attachments: attachments,
+            planState: planState
+        ) else {
             return
         }
-
-        result.append(
-            ChatMessage(
-                threadId: threadId,
-                role: role,
-                kind: kind,
-                text: text,
-                createdAt: createdAt,
-                turnId: turnId,
-                itemId: itemId,
-                isStreaming: false,
-                deliveryState: .confirmed,
-                attachments: attachments,
-                planState: planState
-            )
-        )
+        result.append(message)
     }
 
     // Parses `data:image/...;base64,...` payloads into raw image bytes.

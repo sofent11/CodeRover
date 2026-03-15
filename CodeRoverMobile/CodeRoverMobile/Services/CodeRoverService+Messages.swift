@@ -244,7 +244,8 @@ extension CodeRoverService {
             } else {
                 try await loadTailThreadHistory(
                     threadId: threadId,
-                    replaceLocalHistory: hasLocalMessages && !hasNewestCursor
+                    replaceLocalHistory: hasLocalMessages && !hasNewestCursor,
+                    prefetchOlderInBackground: !hasLocalMessages
                 )
             }
         } catch let error as CodeRoverServiceError {
@@ -482,6 +483,44 @@ extension CodeRoverService {
         }
     }
 
+    private func scheduleOlderHistoryBackfill(threadId: String) {
+        guard olderHistoryBackfillTaskByThread[threadId] == nil else { return }
+
+        olderHistoryBackfillTaskByThread[threadId] = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer {
+                self.olderHistoryBackfillTaskByThread.removeValue(forKey: threadId)
+            }
+
+            var pageCount = 0
+            while !Task.isCancelled, pageCount < 200 {
+                guard self.isConnected, self.isInitialized, self.activeThreadId == threadId else {
+                    break
+                }
+                guard let historyState = self.historyStateByThread[threadId],
+                      historyState.hasOlderOnServer else {
+                    break
+                }
+                if historyState.isLoadingOlder || historyState.isTailRefreshing || self.loadingThreadIDs.contains(threadId) {
+                    try? await Task.sleep(nanoseconds: 120_000_000)
+                    continue
+                }
+
+                do {
+                    try await self.loadOlderThreadHistoryIfNeeded(threadId: threadId)
+                    pageCount += 1
+                } catch {
+                    self.debugRuntimeLog(
+                        "background older history backfill failed thread=\(threadId): \(error.localizedDescription)"
+                    )
+                    break
+                }
+
+                await Task.yield()
+            }
+        }
+    }
+
     func catchUpRealtimeHistoryToLatest(threadId: String) async throws {
         guard isConnected, isInitialized else { return }
         guard activeThreadId == threadId else { return }
@@ -706,7 +745,8 @@ extension CodeRoverService {
 
     func loadTailThreadHistory(
         threadId: String,
-        replaceLocalHistory: Bool
+        replaceLocalHistory: Bool,
+        prefetchOlderInBackground: Bool = false
     ) async throws {
         debugRuntimeLog("thread/read tail request thread=\(threadId) replaceLocal=\(replaceLocalHistory)")
         let response = try await sendRequest(
@@ -728,7 +768,11 @@ extension CodeRoverService {
         applyTerminalStatesFromThreadRead(threadId: threadId, threadObject: threadObject)
         extractContextWindowUsageIfAvailable(threadId: threadId, threadObject: threadObject)
 
-        let historyMessages = decodeMessagesFromThreadRead(threadId: threadId, threadObject: threadObject)
+        let historyMessages = decodeMessagesFromThreadRead(
+            threadId: threadId,
+            threadObject: threadObject,
+            latestLimit: 50
+        )
         let historyWindow = decodeHistoryWindow(from: resultObject, fallbackMessages: historyMessages, mode: .tail)
         debugRuntimeLog(
             "thread/read tail response thread=\(threadId) decoded=\(historyMessages.count) "
@@ -745,6 +789,9 @@ extension CodeRoverService {
             hasNewer: historyWindow.hasNewer,
             replaceLocalHistory: replaceLocalHistory
         )
+        if prefetchOlderInBackground, historyWindow.hasOlder {
+            scheduleOlderHistoryBackfill(threadId: threadId)
+        }
     }
 
     func applyHistoryWindow(
