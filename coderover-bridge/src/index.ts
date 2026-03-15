@@ -1,14 +1,14 @@
-// @ts-nocheck
-export {};
-
-// FILE: index.js
+// FILE: index.ts
 // Purpose: Small entrypoint wrapper for the bridge runtime.
-// Layer: CLI entry
-// Exports: startBridge, openLastActiveThread, watchThreadRollout
-// Depends on: ./bridge, ./session-state, ./rollout-watch
 
-const { startBridge } = require("./bridge");
-const { openLastActiveThread } = require("./session-state");
-const { watchThreadRollout } = require("./rollout-watch");
+const bridgeModule = require("./bridge") as { startBridge: () => void };
+const sessionStateModule = require("./session-state") as {
+  openLastActiveThread: (...args: unknown[]) => unknown;
+};
+const rolloutWatchModule = require("./rollout-watch") as {
+  watchThreadRollout: (...args: unknown[]) => void;
+};
 
-module.exports = { startBridge, openLastActiveThread, watchThreadRollout };
+export const startBridge = bridgeModule.startBridge;
+export const openLastActiveThread = sessionStateModule.openLastActiveThread;
+export const watchThreadRollout = rolloutWatchModule.watchThreadRollout;

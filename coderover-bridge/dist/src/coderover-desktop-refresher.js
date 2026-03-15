@@ -1,13 +1,12 @@
 "use strict";
-Object.defineProperty(exports, "__esModule", { value: true });
-// FILE: coderover-desktop-refresher.js
+// FILE: coderover-desktop-refresher.ts
 // Purpose: Debounced Mac desktop refresh controller for CodeRover.app after phone-authored conversation changes.
-// Layer: CLI helper
-// Exports: CodeRoverDesktopRefresher, readBridgeConfig
-// Depends on: child_process, path, ./rollout-watch
-const { execFile } = require("child_process");
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.CodeRoverDesktopRefresher = void 0;
+exports.readBridgeConfig = readBridgeConfig;
+const child_process_1 = require("child_process");
 const path = require("path");
-const { createThreadRolloutActivityWatcher } = require("./rollout-watch");
+const rollout_watch_1 = require("./rollout-watch");
 const DEFAULT_BUNDLE_ID = "com.sofent.CodeRover";
 const DEFAULT_APP_PATH = "/Applications/CodeRover.app";
 const DEFAULT_DEBOUNCE_MS = 1200;
@@ -19,7 +18,46 @@ const DEFAULT_CUSTOM_REFRESH_FAILURE_THRESHOLD = 3;
 const REFRESH_SCRIPT_PATH = path.join(__dirname, "scripts", "coderover-refresh.applescript");
 const NEW_THREAD_DEEP_LINK = "coderover://threads/new";
 class CodeRoverDesktopRefresher {
-    constructor({ enabled = true, debounceMs = DEFAULT_DEBOUNCE_MS, refreshCommand = "", bundleId = DEFAULT_BUNDLE_ID, appPath = DEFAULT_APP_PATH, logPrefix = "[coderover]", fallbackNewThreadMs = DEFAULT_FALLBACK_NEW_THREAD_MS, midRunRefreshThrottleMs = DEFAULT_MID_RUN_REFRESH_THROTTLE_MS, rolloutLookupTimeoutMs = DEFAULT_ROLLOUT_LOOKUP_TIMEOUT_MS, rolloutIdleTimeoutMs = DEFAULT_ROLLOUT_IDLE_TIMEOUT_MS, now = () => Date.now(), refreshExecutor = null, watchThreadRolloutFactory = createThreadRolloutActivityWatcher, refreshBackend = null, customRefreshFailureThreshold = DEFAULT_CUSTOM_REFRESH_FAILURE_THRESHOLD, } = {}) {
+    enabled;
+    debounceMs;
+    refreshCommand;
+    bundleId;
+    appPath;
+    logPrefix;
+    fallbackNewThreadMs;
+    midRunRefreshThrottleMs;
+    rolloutLookupTimeoutMs;
+    rolloutIdleTimeoutMs;
+    now;
+    refreshExecutor;
+    watchThreadRolloutFactory;
+    refreshBackend;
+    customRefreshFailureThreshold;
+    mode = "idle";
+    pendingNewThread = false;
+    pendingRefreshKinds = new Set();
+    pendingCompletionRefresh = false;
+    pendingCompletionTurnId = null;
+    pendingCompletionTargetUrl = "";
+    pendingCompletionTargetThreadId = "";
+    pendingTargetUrl = "";
+    pendingTargetThreadId = "";
+    lastRefreshAt = 0;
+    lastRefreshSignature = "";
+    lastTurnIdRefreshed = null;
+    lastMidRunRefreshAt = 0;
+    refreshTimer = null;
+    refreshRunning = false;
+    fallbackTimer = null;
+    activeWatcher = null;
+    activeWatchedThreadId = null;
+    watchStartAt = 0;
+    lastRolloutSize = null;
+    stopWatcherAfterRefreshThreadId = null;
+    runtimeRefreshAvailable;
+    consecutiveRefreshFailures = 0;
+    unavailableLogged = false;
+    constructor({ enabled = true, debounceMs = DEFAULT_DEBOUNCE_MS, refreshCommand = "", bundleId = DEFAULT_BUNDLE_ID, appPath = DEFAULT_APP_PATH, logPrefix = "[coderover]", fallbackNewThreadMs = DEFAULT_FALLBACK_NEW_THREAD_MS, midRunRefreshThrottleMs = DEFAULT_MID_RUN_REFRESH_THROTTLE_MS, rolloutLookupTimeoutMs = DEFAULT_ROLLOUT_LOOKUP_TIMEOUT_MS, rolloutIdleTimeoutMs = DEFAULT_ROLLOUT_IDLE_TIMEOUT_MS, now = () => Date.now(), refreshExecutor = null, watchThreadRolloutFactory = rollout_watch_1.createThreadRolloutActivityWatcher, refreshBackend = null, customRefreshFailureThreshold = DEFAULT_CUSTOM_REFRESH_FAILURE_THRESHOLD, } = {}) {
         this.enabled = enabled;
         this.debounceMs = debounceMs;
         this.refreshCommand = refreshCommand;
@@ -33,40 +71,17 @@ class CodeRoverDesktopRefresher {
         this.now = now;
         this.refreshExecutor = refreshExecutor;
         this.watchThreadRolloutFactory = watchThreadRolloutFactory;
-        this.refreshBackend = refreshBackend
-            || (this.refreshCommand ? "command" : (this.refreshExecutor ? "command" : "applescript"));
+        this.refreshBackend =
+            refreshBackend || (this.refreshCommand || this.refreshExecutor ? "command" : "applescript");
         this.customRefreshFailureThreshold = customRefreshFailureThreshold;
-        this.mode = "idle";
-        this.pendingNewThread = false;
-        this.pendingRefreshKinds = new Set();
-        this.pendingCompletionRefresh = false;
-        this.pendingCompletionTurnId = null;
-        this.pendingCompletionTargetUrl = "";
-        this.pendingCompletionTargetThreadId = "";
-        this.pendingTargetUrl = "";
-        this.pendingTargetThreadId = "";
-        this.lastRefreshAt = 0;
-        this.lastRefreshSignature = "";
-        this.lastTurnIdRefreshed = null;
-        this.lastMidRunRefreshAt = 0;
-        this.refreshTimer = null;
-        this.refreshRunning = false;
-        this.fallbackTimer = null;
-        this.activeWatcher = null;
-        this.activeWatchedThreadId = null;
-        this.watchStartAt = 0;
-        this.lastRolloutSize = null;
-        this.stopWatcherAfterRefreshThreadId = null;
         this.runtimeRefreshAvailable = enabled;
-        this.consecutiveRefreshFailures = 0;
-        this.unavailableLogged = false;
     }
     handleInbound(rawMessage) {
         const parsed = safeParseJSON(rawMessage);
         if (!parsed) {
             return;
         }
-        const method = parsed.method;
+        const method = normalizeOptionalString(parsed.method);
         if (method === "thread/start") {
             const target = resolveInboundTarget(method, parsed);
             if (target?.threadId) {
@@ -96,7 +111,7 @@ class CodeRoverDesktopRefresher {
         if (!parsed) {
             return;
         }
-        const method = parsed.method;
+        const method = normalizeOptionalString(parsed.method);
         if (method === "turn/completed") {
             this.clearFallbackTimer();
             const turnId = extractTurnId(parsed);
@@ -104,8 +119,7 @@ class CodeRoverDesktopRefresher {
                 this.log(`refresh skipped (debounced): completion already refreshed for ${turnId}`);
                 return;
             }
-            const target = resolveOutboundTarget(method, parsed);
-            this.queueCompletionRefresh(target, turnId, `coderover ${method}`);
+            this.queueCompletionRefresh(resolveOutboundTarget(method, parsed), turnId, `coderover ${method}`);
             return;
         }
         if (method === "thread/started") {
@@ -119,7 +133,6 @@ class CodeRoverDesktopRefresher {
             }
         }
     }
-    // Stops volatile watcher/fallback state when transport drops or bridge exits.
     handleTransportReset() {
         this.clearRefreshTimer();
         this.clearPendingState();
@@ -192,17 +205,11 @@ class CodeRoverDesktopRefresher {
             return;
         }
         const isCompletionRun = this.pendingCompletionRefresh;
-        const pendingRefreshKinds = isCompletionRun
-            ? new Set(["completion"])
-            : new Set(this.pendingRefreshKinds);
+        const pendingRefreshKinds = isCompletionRun ? new Set(["completion"]) : new Set(this.pendingRefreshKinds);
         const completionTurnId = this.pendingCompletionTurnId;
         const targetUrl = isCompletionRun ? this.pendingCompletionTargetUrl : this.pendingTargetUrl;
-        const targetThreadId = isCompletionRun
-            ? this.pendingCompletionTargetThreadId
-            : this.pendingTargetThreadId;
-        const stopWatcherAfterRefreshThreadId = isCompletionRun
-            ? this.stopWatcherAfterRefreshThreadId
-            : null;
+        const targetThreadId = isCompletionRun ? this.pendingCompletionTargetThreadId : this.pendingTargetThreadId;
+        const stopWatcherAfterRefreshThreadId = isCompletionRun ? this.stopWatcherAfterRefreshThreadId : null;
         const shouldForceCompletionRefresh = isCompletionRun;
         if (isCompletionRun) {
             this.pendingCompletionRefresh = false;
@@ -246,8 +253,6 @@ class CodeRoverDesktopRefresher {
                 this.stopWatcher();
                 this.mode = this.pendingNewThread ? "pending_new_thread" : "idle";
             }
-            // A completion refresh can queue while another refresh is still running,
-            // so retry whenever either queue still has work.
             if (this.hasPendingRefreshWork()) {
                 this.scheduleRefresh("pending follow-up refresh");
             }
@@ -277,18 +282,13 @@ class CodeRoverDesktopRefresher {
         this.stopWatcherAfterRefreshThreadId = null;
     }
     clearRefreshTimer() {
-        if (!this.refreshTimer) {
-            return;
+        if (this.refreshTimer) {
+            clearTimeout(this.refreshTimer);
+            this.refreshTimer = null;
         }
-        clearTimeout(this.refreshTimer);
-        this.refreshTimer = null;
     }
-    // Schedules a single low-cost fallback when a brand new thread id is still unknown.
     scheduleNewThreadFallback() {
-        if (!this.canRefresh()) {
-            return;
-        }
-        if (this.fallbackTimer) {
+        if (!this.canRefresh() || this.fallbackTimer) {
             return;
         }
         this.fallbackTimer = setTimeout(() => {
@@ -302,13 +302,11 @@ class CodeRoverDesktopRefresher {
         }, this.fallbackNewThreadMs);
     }
     clearFallbackTimer() {
-        if (!this.fallbackTimer) {
-            return;
+        if (this.fallbackTimer) {
+            clearTimeout(this.fallbackTimer);
+            this.fallbackTimer = null;
         }
-        clearTimeout(this.fallbackTimer);
-        this.fallbackTimer = null;
     }
-    // Keeps one lightweight rollout watcher alive for the current CodeRover-controlled thread.
     ensureWatcher(threadId) {
         if (!this.canRefresh() || !threadId) {
             return;
@@ -356,9 +354,8 @@ class CodeRoverDesktopRefresher {
         this.watchStartAt = 0;
         this.lastRolloutSize = null;
     }
-    // Converts rollout growth into occasional refreshes without spamming the desktop.
     handleWatcherEvent(event) {
-        if (!event?.threadId || event.threadId !== this.activeWatchedThreadId) {
+        if (!event.threadId || event.threadId !== this.activeWatchedThreadId) {
             return;
         }
         const previousSize = this.lastRolloutSize;
@@ -429,55 +426,48 @@ class CodeRoverDesktopRefresher {
     canRefresh() {
         return this.enabled && this.runtimeRefreshAvailable;
     }
-    // Tells the debounce loop whether any phone/completion refresh is still waiting to run.
     hasPendingRefreshWork() {
         return this.pendingCompletionRefresh || this.pendingRefreshKinds.size > 0;
     }
 }
-function readBridgeConfig({ env = process.env, platform = process.platform } = {}) {
-    const coderoverEndpoint = readFirstDefinedEnv(["CODEROVER_ENDPOINT", "CODEROVER_ENDPOINT"], "", env);
-    const refreshCommand = readFirstDefinedEnv(["CODEROVER_REFRESH_COMMAND"], "", env);
-    const explicitRefreshEnabled = readOptionalBooleanEnv(["CODEROVER_REFRESH_ENABLED"], env);
-    // Desktop refresh is opt-in for now because CodeRover.app still lacks true live updates.
+exports.CodeRoverDesktopRefresher = CodeRoverDesktopRefresher;
+function readBridgeConfig({ env = process.env } = {}) {
+    const environment = env;
+    const coderoverEndpoint = readFirstDefinedEnv(["CODEROVER_ENDPOINT", "CODEROVER_ENDPOINT"], "", environment);
+    const refreshCommand = readFirstDefinedEnv(["CODEROVER_REFRESH_COMMAND"], "", environment);
+    const explicitRefreshEnabled = readOptionalBooleanEnv(["CODEROVER_REFRESH_ENABLED"], environment);
     const defaultRefreshEnabled = false;
     return {
-        localHost: readFirstDefinedEnv(["CODEROVER_LOCAL_HOST"], "0.0.0.0", env),
-        localPort: parseIntegerEnv(readFirstDefinedEnv(["CODEROVER_LOCAL_PORT"], "8765", env), 8765),
-        tailnetUrl: readFirstDefinedEnv(["CODEROVER_TAILNET_URL"], "", env),
-        relayUrls: readListEnv(["CODEROVER_RELAY_URLS", "CODEROVER_RELAY_URL"], env),
-        refreshEnabled: explicitRefreshEnabled == null
-            ? defaultRefreshEnabled
-            : explicitRefreshEnabled,
-        refreshDebounceMs: parseIntegerEnv(readFirstDefinedEnv(["CODEROVER_REFRESH_DEBOUNCE_MS"], String(DEFAULT_DEBOUNCE_MS), env), DEFAULT_DEBOUNCE_MS),
+        localHost: readFirstDefinedEnv(["CODEROVER_LOCAL_HOST"], "0.0.0.0", environment),
+        localPort: parseIntegerEnv(readFirstDefinedEnv(["CODEROVER_LOCAL_PORT"], "8765", environment), 8765),
+        tailnetUrl: readFirstDefinedEnv(["CODEROVER_TAILNET_URL"], "", environment),
+        relayUrls: readListEnv(["CODEROVER_RELAY_URLS", "CODEROVER_RELAY_URL"], environment),
+        refreshEnabled: explicitRefreshEnabled == null ? defaultRefreshEnabled : explicitRefreshEnabled,
+        refreshDebounceMs: parseIntegerEnv(readFirstDefinedEnv(["CODEROVER_REFRESH_DEBOUNCE_MS"], String(DEFAULT_DEBOUNCE_MS), environment), DEFAULT_DEBOUNCE_MS),
         coderoverEndpoint,
         refreshCommand,
-        coderoverBundleId: readFirstDefinedEnv(["CODEROVER_BUNDLE_ID"], DEFAULT_BUNDLE_ID, env),
+        coderoverBundleId: readFirstDefinedEnv(["CODEROVER_BUNDLE_ID"], DEFAULT_BUNDLE_ID, environment),
         coderoverAppPath: DEFAULT_APP_PATH,
     };
 }
 function readListEnv(keys, env) {
     for (const key of keys) {
-        if (!Object.prototype.hasOwnProperty.call(env, key)) {
-            continue;
-        }
         const rawValue = env[key];
         if (typeof rawValue !== "string") {
             continue;
         }
-        return rawValue
-            .split(/[,\n]/)
-            .map((value) => value.trim())
-            .filter(Boolean);
+        return rawValue.split(/[,\n]/).map((value) => value.trim()).filter(Boolean);
     }
     return [];
 }
 function execFilePromise(command, args) {
     return new Promise((resolve, reject) => {
-        execFile(command, args, (error, stdout, stderr) => {
+        (0, child_process_1.execFile)(command, args, (error, stdout, stderr) => {
             if (error) {
-                error.stdout = stdout;
-                error.stderr = stderr;
-                reject(error);
+                const execError = error;
+                execError.stdout = stdout;
+                execError.stderr = stderr;
+                reject(execError);
                 return;
             }
             resolve({ stdout, stderr });
@@ -486,37 +476,43 @@ function execFilePromise(command, args) {
 }
 function safeParseJSON(value) {
     try {
-        return JSON.parse(value);
+        const parsed = JSON.parse(value);
+        return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+            ? parsed
+            : null;
     }
     catch {
         return null;
     }
 }
 function extractTurnId(message) {
-    const params = message?.params;
-    if (!params || typeof params !== "object") {
+    const params = asRecord(message.params);
+    if (!params) {
         return null;
     }
     if (typeof params.turnId === "string" && params.turnId) {
         return params.turnId;
     }
-    if (params.turn && typeof params.turn === "object" && typeof params.turn.id === "string") {
-        return params.turn.id;
+    const turn = asRecord(params.turn);
+    if (typeof turn?.id === "string" && turn.id) {
+        return turn.id;
     }
     return null;
 }
 function extractThreadId(message) {
-    const params = message?.params;
-    if (!params || typeof params !== "object") {
+    const params = asRecord(message.params);
+    if (!params) {
         return null;
     }
+    const thread = asRecord(params.thread);
+    const turn = asRecord(params.turn);
     const candidates = [
         params.threadId,
         params.conversationId,
-        params.thread?.id,
-        params.thread?.threadId,
-        params.turn?.threadId,
-        params.turn?.conversationId,
+        thread?.id,
+        thread?.threadId,
+        turn?.threadId,
+        turn?.conversationId,
     ];
     for (const candidate of candidates) {
         if (typeof candidate === "string" && candidate) {
@@ -575,10 +571,23 @@ function parseIntegerEnv(value, fallback) {
     return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 }
 function extractErrorMessage(error) {
-    return (error?.stderr?.toString("utf8")
-        || error?.stdout?.toString("utf8")
-        || error?.message
-        || "unknown refresh error").trim();
+    if (error && typeof error === "object") {
+        const execError = error;
+        return (readBufferish(execError.stderr)
+            || readBufferish(execError.stdout)
+            || error.message
+            || "unknown refresh error").trim();
+    }
+    return String(error || "unknown refresh error").trim();
+}
+function readBufferish(value) {
+    if (typeof value === "string") {
+        return value;
+    }
+    if (Buffer.isBuffer(value)) {
+        return value.toString("utf8");
+    }
+    return "";
 }
 function isDesktopUnavailableError(message) {
     const normalized = String(message).toLowerCase();
@@ -594,7 +603,11 @@ function isDesktopUnavailableError(message) {
         "could not find application",
     ].some((snippet) => normalized.includes(snippet));
 }
-module.exports = {
-    CodeRoverDesktopRefresher,
-    readBridgeConfig,
-};
+function normalizeOptionalString(value) {
+    return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+function asRecord(value) {
+    return value && typeof value === "object" && !Array.isArray(value)
+        ? value
+        : null;
+}

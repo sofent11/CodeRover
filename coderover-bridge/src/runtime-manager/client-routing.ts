@@ -1,10 +1,10 @@
-// @ts-nocheck
-export {};
-
 // FILE: runtime-manager/client-routing.ts
-// Purpose: Shared helpers for runtime-manager request/response plumbing.
+// Purpose: Typed request/response plumbing helpers for runtime-manager.
 
-function defaultInitializeParams() {
+import type { JsonRpcId } from "../bridge-types";
+import type { RuntimeErrorShape, RuntimeInitializeParams } from "./types";
+
+export function defaultInitializeParams(): RuntimeInitializeParams {
   return {
     clientInfo: {
       name: "coderover_bridge",
@@ -17,26 +17,19 @@ function defaultInitializeParams() {
   };
 }
 
-function createRuntimeError(code, message) {
-  const error = new Error(message);
+export function createRuntimeError(code: number, message: string): RuntimeErrorShape {
+  const error = new Error(message) as RuntimeErrorShape;
   error.code = code;
   return error;
 }
 
-function createMethodError(code, message) {
+export function createMethodError(code: number, message: string): RuntimeErrorShape {
   return createRuntimeError(code, message);
 }
 
-function encodeRequestId(value) {
+export function encodeRequestId(value: JsonRpcId | undefined): string {
   if (value == null) {
     return "";
   }
   return JSON.stringify(value);
 }
-
-module.exports = {
-  createMethodError,
-  createRuntimeError,
-  defaultInitializeParams,
-  encodeRequestId,
-};

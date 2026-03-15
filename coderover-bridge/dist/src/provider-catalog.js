@@ -1,10 +1,11 @@
 "use strict";
-Object.defineProperty(exports, "__esModule", { value: true });
-// // FILE: provider-catalog.js
+// FILE: provider-catalog.ts
 // Purpose: Shared provider capability and static model catalog for multi-runtime support.
-// Layer: CLI helper
-// Exports: listRuntimeProviders, getRuntimeProvider, listStaticModelsForProvider
-// Depends on: none
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.listRuntimeProviders = listRuntimeProviders;
+exports.getRuntimeProvider = getRuntimeProvider;
+exports.listStaticModelsForProvider = listStaticModelsForProvider;
+exports.normalizeProvider = normalizeProvider;
 const ACCESS_MODE_ON_REQUEST = {
     id: "on-request",
     title: "On-Request",
@@ -18,7 +19,7 @@ const SHARED_ACCESS_MODES = [
     ACCESS_MODE_FULL_ACCESS,
 ];
 const PROVIDERS = {
-    coderover: {
+    codex: {
         id: "codex",
         title: "Codex",
         defaultModelId: null,
@@ -147,27 +148,18 @@ const STATIC_MODELS = {
     ],
 };
 function listRuntimeProviders() {
-    return Object.values(PROVIDERS).map((provider) => ({
-        ...provider,
-        supports: { ...provider.supports },
-        accessModes: provider.accessModes.map((entry) => ({ ...entry })),
-    }));
+    return Object.values(PROVIDERS).map(cloneProvider);
 }
 function getRuntimeProvider(providerId) {
     const normalizedProvider = normalizeProvider(providerId);
-    const entry = PROVIDERS[normalizedProvider] || PROVIDERS.coderover;
-    return {
-        ...entry,
-        supports: { ...entry.supports },
-        accessModes: entry.accessModes.map((item) => ({ ...item })),
-    };
+    return cloneProvider(PROVIDERS[normalizedProvider]);
 }
 function listStaticModelsForProvider(providerId) {
     const normalizedProvider = normalizeProvider(providerId);
-    const models = STATIC_MODELS[normalizedProvider] || [];
+    const models = normalizedProvider === "codex" ? [] : STATIC_MODELS[normalizedProvider];
     return models.map((entry) => ({
         ...entry,
-        supportedReasoningEfforts: entry.supportedReasoningEfforts.map((effort) => ({ ...effort })),
+        supportedReasoningEfforts: entry.supportedReasoningEfforts.map(cloneReasoningEffort),
     }));
 }
 function normalizeProvider(value) {
@@ -176,6 +168,16 @@ function normalizeProvider(value) {
         return normalized;
     }
     return "codex";
+}
+function cloneProvider(provider) {
+    return {
+        ...provider,
+        supports: { ...provider.supports },
+        accessModes: provider.accessModes.map((entry) => ({ ...entry })),
+    };
+}
+function cloneReasoningEffort(entry) {
+    return { ...entry };
 }
 function buildModel({ id, model = id, title, description = "", isDefault = false, efforts = [], defaultReasoningEffort = null, }) {
     return {
@@ -192,8 +194,3 @@ function buildModel({ id, model = id, title, description = "", isDefault = false
         defaultReasoningEffort,
     };
 }
-module.exports = {
-    getRuntimeProvider,
-    listRuntimeProviders,
-    listStaticModelsForProvider,
-};

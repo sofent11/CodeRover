@@ -1,22 +1,16 @@
-// @ts-nocheck
-export {};
-
-// FILE: coderover-desktop-refresher.test.js
+// FILE: coderover-desktop-refresher.test.ts
 // Purpose: Verifies desktop refresh defaults, failure hardening, and rollout-based throttling.
-// Layer: Unit test
-// Exports: node:test suite
-// Depends on: node:test, node:assert/strict, ../src/coderover-desktop-refresher, ../src/rollout-watch
 
-const test = require("node:test");
-const assert = require("node:assert/strict");
+import test = require("node:test");
+import assert = require("node:assert/strict");
 
-const {
+import {
   CodeRoverDesktopRefresher,
   readBridgeConfig,
-} = require("../src/coderover-desktop-refresher");
-const { createThreadRolloutActivityWatcher } = require("../src/rollout-watch");
+} from "../src/coderover-desktop-refresher";
+import { createThreadRolloutActivityWatcher } from "../src/rollout-watch";
 
-function wait(ms) {
+function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
@@ -65,7 +59,7 @@ test("readBridgeConfig keeps safe defaults and explicit overrides", () => {
 });
 
 test("thread/start falls back once to the new-thread route when thread id is still unknown", async () => {
-  const refreshCalls = [];
+  const refreshCalls: string[] = [];
   const refresher = new CodeRoverDesktopRefresher({
     enabled: true,
     debounceMs: 0,
@@ -87,8 +81,8 @@ test("thread/start falls back once to the new-thread route when thread id is sti
 });
 
 test("thread/started cancels the fallback and refreshes the concrete thread route", async () => {
-  const refreshCalls = [];
-  const watchedThreads = [];
+  const refreshCalls: string[] = [];
+  const watchedThreads: string[] = [];
   let stopCount = 0;
   const refresher = new CodeRoverDesktopRefresher({
     enabled: true,
@@ -102,6 +96,9 @@ test("thread/started cancels the fallback and refreshes the concrete thread rout
       return {
         stop() {
           stopCount += 1;
+        },
+        get threadId() {
+          return threadId;
         },
       };
     },
@@ -134,8 +131,12 @@ test("thread/started cancels the fallback and refreshes the concrete thread rout
 });
 
 test("rollout growth refreshes are throttled during long runs", async () => {
-  const refreshCalls = [];
-  let watcherHooks = null;
+  const refreshCalls: string[] = [];
+  let watcherHooks:
+    | {
+      onEvent: (event: { reason: "growth"; threadId: string; size: number }) => void;
+    }
+    | null = null;
   let currentTime = 0;
 
   const refresher = new CodeRoverDesktopRefresher({
@@ -147,8 +148,13 @@ test("rollout growth refreshes are throttled during long runs", async () => {
       refreshCalls.push(targetUrl);
     },
     watchThreadRolloutFactory: (hooks) => {
-      watcherHooks = hooks;
-      return { stop() {} };
+      watcherHooks = hooks as unknown as typeof watcherHooks;
+      return {
+        stop() {},
+        get threadId() {
+          return hooks.threadId;
+        },
+      };
     },
   });
 
@@ -162,7 +168,7 @@ test("rollout growth refreshes are throttled during long runs", async () => {
   refreshCalls.length = 0;
 
   currentTime = 1_000;
-  watcherHooks.onEvent({
+  watcherHooks?.onEvent({
     reason: "growth",
     threadId: "thread-456",
     size: 10,
@@ -172,7 +178,7 @@ test("rollout growth refreshes are throttled during long runs", async () => {
 
   refreshCalls.length = 0;
   currentTime = 2_000;
-  watcherHooks.onEvent({
+  watcherHooks?.onEvent({
     reason: "growth",
     threadId: "thread-456",
     size: 15,
@@ -181,7 +187,7 @@ test("rollout growth refreshes are throttled during long runs", async () => {
   assert.deepEqual(refreshCalls, []);
 
   currentTime = 4_500;
-  watcherHooks.onEvent({
+  watcherHooks?.onEvent({
     reason: "growth",
     threadId: "thread-456",
     size: 20,
@@ -191,7 +197,7 @@ test("rollout growth refreshes are throttled during long runs", async () => {
 });
 
 test("turn/completed bypasses duplicate-target dedupe and still stops the watcher", async () => {
-  const refreshCalls = [];
+  const refreshCalls: string[] = [];
   let stopCount = 0;
   let currentTime = 3_000;
 
@@ -205,6 +211,9 @@ test("turn/completed bypasses duplicate-target dedupe and still stops the watche
     watchThreadRolloutFactory: () => ({
       stop() {
         stopCount += 1;
+      },
+      get threadId() {
+        return "thread-789";
       },
     }),
   });
@@ -245,8 +254,8 @@ test("turn/completed bypasses duplicate-target dedupe and still stops the watche
 });
 
 test("turn/completed is retried after a slow in-flight refresh finishes", async () => {
-  const refreshCalls = [];
-  let releaseSlowRefresh = null;
+  const refreshCalls: string[] = [];
+  let releaseSlowRefresh: (() => void) | null = null;
 
   const refresher = new CodeRoverDesktopRefresher({
     enabled: true,
@@ -254,12 +263,17 @@ test("turn/completed is retried after a slow in-flight refresh finishes", async 
     refreshExecutor: async (targetUrl) => {
       refreshCalls.push(targetUrl);
       if (refreshCalls.length === 1) {
-        await new Promise((resolve) => {
+        await new Promise<void>((resolve) => {
           releaseSlowRefresh = resolve;
         });
       }
     },
-    watchThreadRolloutFactory: () => ({ stop() {} }),
+    watchThreadRolloutFactory: () => ({
+      stop() {},
+      get threadId() {
+        return "thread-slow";
+      },
+    }),
   });
 
   refresher.handleInbound(JSON.stringify({
@@ -291,7 +305,7 @@ test("turn/completed is retried after a slow in-flight refresh finishes", async 
 });
 
 test("completion refresh keeps its own thread target even if another thread queues behind it", async () => {
-  const refreshCalls = [];
+  const refreshCalls: string[] = [];
   let stopCount = 0;
 
   const refresher = new CodeRoverDesktopRefresher({
@@ -305,6 +319,9 @@ test("completion refresh keeps its own thread target even if another thread queu
         if (threadId === "thread-a") {
           stopCount += 1;
         }
+      },
+      get threadId() {
+        return threadId;
       },
     }),
   });
@@ -340,7 +357,7 @@ test("completion refresh keeps its own thread target even if another thread queu
 });
 
 test("handleTransportReset cancels pending refreshes and clears watcher state", async () => {
-  const refreshCalls = [];
+  const refreshCalls: string[] = [];
   let stopCount = 0;
 
   const refresher = new CodeRoverDesktopRefresher({
@@ -352,6 +369,9 @@ test("handleTransportReset cancels pending refreshes and clears watcher state", 
     watchThreadRolloutFactory: () => ({
       stop() {
         stopCount += 1;
+      },
+      get threadId() {
+        return "thread-reset";
       },
     }),
   });
@@ -370,7 +390,7 @@ test("handleTransportReset cancels pending refreshes and clears watcher state", 
 });
 
 test("handleTransportReset clears duplicate-target memory so the next refresh can run", async () => {
-  const refreshCalls = [];
+  const refreshCalls: string[] = [];
   let currentTime = 5_000;
 
   const refresher = new CodeRoverDesktopRefresher({
@@ -380,7 +400,12 @@ test("handleTransportReset clears duplicate-target memory so the next refresh ca
     refreshExecutor: async (targetUrl) => {
       refreshCalls.push(targetUrl);
     },
-    watchThreadRolloutFactory: () => ({ stop() {} }),
+    watchThreadRolloutFactory: () => ({
+      stop() {},
+      get threadId() {
+        return "thread-reset-dedupe";
+      },
+    }),
   });
 
   refresher.handleInbound(JSON.stringify({
@@ -419,6 +444,9 @@ test("desktop refresh disables itself after a desktop-unavailable AppleScript fa
     watchThreadRolloutFactory: () => ({
       stop() {
         stopCount += 1;
+      },
+      get threadId() {
+        return "thread-disable";
       },
     }),
   });
@@ -471,8 +499,8 @@ test("custom refresh commands only disable after repeated failures", async () =>
 });
 
 test("rollout watcher retries transient filesystem errors before succeeding", async () => {
-  const events = [];
-  const errors = [];
+  const events: Array<{ reason: string }> = [];
+  const errors: Error[] = [];
   let readdirCalls = 0;
 
   const watcher = createThreadRolloutActivityWatcher({
@@ -486,7 +514,7 @@ test("rollout watcher retries transient filesystem errors before succeeding", as
       readdirSync: () => {
         readdirCalls += 1;
         if (readdirCalls === 1) {
-          const error = new Error("temporary missing dir");
+          const error = new Error("temporary missing dir") as NodeJS.ErrnoException;
           error.code = "ENOENT";
           throw error;
         }
@@ -499,7 +527,7 @@ test("rollout watcher retries transient filesystem errors before succeeding", as
       },
       statSync: () => ({ size: 12 }),
     },
-    onEvent: (event) => events.push(event),
+    onEvent: (event) => events.push({ reason: event.reason }),
     onError: (error) => errors.push(error),
   });
 
@@ -511,7 +539,7 @@ test("rollout watcher retries transient filesystem errors before succeeding", as
 });
 
 test("rollout watcher stops after repeated transient filesystem failures", async () => {
-  const errors = [];
+  const errors: Error[] = [];
   let currentTime = 0;
 
   const watcher = createThreadRolloutActivityWatcher({
@@ -527,10 +555,11 @@ test("rollout watcher stops after repeated transient filesystem failures", async
     fsModule: {
       existsSync: () => true,
       readdirSync: () => {
-        const error = new Error("still missing");
+        const error = new Error("still missing") as NodeJS.ErrnoException;
         error.code = "ENOENT";
         throw error;
       },
+      statSync: () => ({ size: 0 }),
     },
     onError: (error) => errors.push(error),
   });

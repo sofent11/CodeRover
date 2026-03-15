@@ -1,36 +1,112 @@
-// @ts-nocheck
-export {};
-
-// FILE: git-handler.js
+// FILE: git-handler.ts
 // Purpose: Intercepts git/* JSON-RPC methods and executes git commands locally on the Mac.
-// Layer: Bridge handler
-// Exports: handleGitRequest
-// Depends on: child_process, fs
 
-const { execFile } = require("child_process");
-const fs = require("fs");
-const { promisify } = require("util");
+import { execFile, type ExecFileException } from "child_process";
+import * as fs from "fs";
 
-const execFileAsync = promisify(execFile);
 const GIT_TIMEOUT_MS = 30_000;
 const EMPTY_TREE_HASH = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
-/**
- * Intercepts git/* JSON-RPC methods and executes git commands locally.
- * @param {string} rawMessage - Raw WebSocket message
- * @param {(response: string) => void} sendResponse - Callback to send response back
- * @returns {boolean} true if message was handled, false if it should pass through
- */
-function handleGitRequest(rawMessage, sendResponse) {
-  let parsed;
-  try {
-    parsed = JSON.parse(rawMessage);
-  } catch {
+type SendResponse = (response: string) => void;
+
+type JsonObject = Record<string, unknown>;
+
+interface GitRequestParams extends JsonObject {
+  cwd?: unknown;
+  currentWorkingDirectory?: unknown;
+  message?: unknown;
+  branch?: unknown;
+  name?: unknown;
+  confirm?: unknown;
+}
+
+interface ParsedGitRequest {
+  method?: unknown;
+  id?: unknown;
+  params?: GitRequestParams;
+}
+
+interface GitHandlerError extends Error {
+  errorCode: string;
+  userMessage: string;
+}
+
+interface GitChangedFile {
+  path: string;
+  status: string;
+}
+
+interface GitDiffTotals {
+  additions: number;
+  deletions: number;
+  binaryFiles: number;
+}
+
+interface GitStatusResult {
+  repoRoot: string | null;
+  branch: string | null;
+  tracking: string | null;
+  dirty: boolean;
+  ahead: number;
+  behind: number;
+  state: string;
+  canPush: boolean;
+  files: GitChangedFile[];
+  diff: GitDiffTotals;
+}
+
+interface GitBranchesResult {
+  branches: string[];
+  current: string;
+  default: string | null;
+}
+
+interface GitCommitResult {
+  hash: string;
+  branch: string;
+  summary: string;
+}
+
+interface GitLogEntry {
+  hash: string;
+  message: string;
+  author: string;
+  date: string;
+}
+
+type GitExecError = Error & {
+  code?: ExecFileException["code"];
+  stdout?: string | Buffer;
+  stderr?: string | Buffer;
+};
+
+interface RepoDiffContext {
+  tracking: string | null;
+  fileLines: string[];
+}
+
+type GitMethodResult =
+  | GitStatusResult
+  | { patch: string }
+  | GitCommitResult
+  | { branch: string; remote: string; status: GitStatusResult }
+  | { success: boolean; status: GitStatusResult }
+  | GitBranchesResult
+  | { current: string; tracking: string | null; status: GitStatusResult }
+  | { commits: GitLogEntry[] }
+  | { success: boolean; message: string }
+  | { branch: string; status: GitStatusResult }
+  | { url: string; ownerRepo: string | null }
+  | (GitBranchesResult & { status: GitStatusResult });
+
+export function handleGitRequest(rawMessage: string, sendResponse: SendResponse): boolean {
+  const parsed = parseGitRequest(rawMessage);
+  if (!parsed) {
     return false;
   }
 
-  const method = typeof parsed?.method === "string" ? parsed.method.trim() : "";
-  if (!method.startsWith("git/")) {
+  const method = readNonEmptyString(parsed.method);
+  if (!method || !method.startsWith("git/")) {
     return false;
   }
 
@@ -41,25 +117,31 @@ function handleGitRequest(rawMessage, sendResponse) {
     .then((result) => {
       sendResponse(JSON.stringify({ id, result }));
     })
-    .catch((err) => {
-      const errorCode = err.errorCode || "git_error";
-      const message = err.userMessage || err.message || "Unknown git error";
-      sendResponse(
-        JSON.stringify({
-          id,
-          error: {
-            code: -32000,
-            message,
-            data: { errorCode },
+    .catch((error: GitHandlerError) => {
+      sendResponse(JSON.stringify({
+        id,
+        error: {
+          code: -32000,
+          message: error.userMessage || error.message || "Unknown git error",
+          data: {
+            errorCode: error.errorCode || "git_error",
           },
-        })
-      );
+        },
+      }));
     });
 
   return true;
 }
 
-async function handleGitMethod(method, params) {
+function parseGitRequest(rawMessage: string): ParsedGitRequest | null {
+  try {
+    return JSON.parse(rawMessage) as ParsedGitRequest;
+  } catch {
+    return null;
+  }
+}
+
+async function handleGitMethod(method: string, params: GitRequestParams): Promise<GitMethodResult> {
   const cwd = await resolveGitCwd(params);
 
   switch (method) {
@@ -96,9 +178,7 @@ async function handleGitMethod(method, params) {
   }
 }
 
-// ─── Git Status ───────────────────────────────────────────────
-
-async function gitStatus(cwd) {
+export async function gitStatus(cwd: string): Promise<GitStatusResult> {
   const [porcelain, branchInfo, repoRoot] = await Promise.all([
     git(cwd, "status", "--porcelain=v1", "-b"),
     revListCounts(cwd).catch(() => ({ ahead: 0, behind: 0 })),
@@ -130,9 +210,7 @@ async function gitStatus(cwd) {
   return { repoRoot, branch, tracking, dirty, ahead, behind, state, canPush, files, diff };
 }
 
-// ─── Git Diff ─────────────────────────────────────────────────
-
-async function gitDiff(cwd) {
+async function gitDiff(cwd: string): Promise<{ patch: string }> {
   const porcelain = await git(cwd, "status", "--porcelain=v1", "-b");
   const lines = porcelain.trim().split("\n").filter(Boolean);
   const branchLine = lines[0] || "";
@@ -149,15 +227,8 @@ async function gitDiff(cwd) {
   return { patch };
 }
 
-// ─── Git Commit ───────────────────────────────────────────────
-
-async function gitCommit(cwd, params) {
-  const message =
-    typeof params.message === "string" && params.message.trim()
-      ? params.message.trim()
-      : "Changes from CodeRover";
-
-  // Check for changes first
+async function gitCommit(cwd: string, params: GitRequestParams): Promise<GitCommitResult> {
+  const message = readNonEmptyString(params.message) || "Changes from CodeRover";
   const statusCheck = await git(cwd, "status", "--porcelain");
   if (!statusCheck.trim()) {
     throw gitError("nothing_to_commit", "Nothing to commit.");
@@ -175,82 +246,78 @@ async function gitCommit(cwd, params) {
   return { hash, branch, summary };
 }
 
-// ─── Git Push ─────────────────────────────────────────────────
-
-async function gitPush(cwd) {
+async function gitPush(cwd: string): Promise<{ branch: string; remote: string; status: GitStatusResult }> {
   try {
-    const branchOutput = await git(cwd, "rev-parse", "--abbrev-ref", "HEAD");
-    const branch = branchOutput.trim();
+    const branch = (await git(cwd, "rev-parse", "--abbrev-ref", "HEAD")).trim();
 
-    // Try normal push first; if no upstream, set it
     try {
-        await git(cwd, "push");
-    } catch (pushErr) {
-      if (
-        pushErr.message?.includes("no upstream") ||
-        pushErr.message?.includes("has no upstream branch")
-      ) {
+      await git(cwd, "push");
+    } catch (error) {
+      const message = asError(error).message;
+      if (message.includes("no upstream") || message.includes("has no upstream branch")) {
         await git(cwd, "push", "--set-upstream", "origin", branch);
       } else {
-        throw pushErr;
+        throw error;
       }
     }
 
-    const remote = "origin";
     const status = await gitStatus(cwd);
-    return { branch, remote, status };
-  } catch (err) {
-    if (err.errorCode) throw err;
-    if (err.message?.includes("rejected")) {
+    return { branch, remote: "origin", status };
+  } catch (error) {
+    if (isGitHandlerError(error)) {
+      throw error;
+    }
+    const message = asError(error).message;
+    if (message.includes("rejected")) {
       throw gitError("push_rejected", "Push rejected. Pull changes first.");
     }
-    throw gitError("push_failed", err.message || "Push failed.");
+    throw gitError("push_failed", message || "Push failed.");
   }
 }
 
-// ─── Git Pull ─────────────────────────────────────────────────
-
-async function gitPull(cwd) {
+async function gitPull(cwd: string): Promise<{ success: boolean; status: GitStatusResult }> {
   try {
     await git(cwd, "pull", "--rebase");
     const status = await gitStatus(cwd);
     return { success: true, status };
-  } catch (err) {
-    // Abort rebase on conflict
+  } catch (error) {
     try {
       await git(cwd, "rebase", "--abort");
     } catch {
       // ignore abort errors
     }
-    if (err.errorCode) throw err;
+    if (isGitHandlerError(error)) {
+      throw error;
+    }
     throw gitError("pull_conflict", "Pull failed due to conflicts. Rebase aborted.");
   }
 }
 
-// ─── Git Branches ─────────────────────────────────────────────
-
-async function gitBranches(cwd) {
+async function gitBranches(cwd: string): Promise<GitBranchesResult> {
   const output = await git(cwd, "branch", "-a", "--no-color");
   const lines = output
     .trim()
     .split("\n")
     .filter(Boolean)
-    .map((l) => l.trim());
+    .map((line) => line.trim());
 
   let current = "";
-  const branchSet = new Set();
+  const branchSet = new Set<string>();
 
   for (const line of lines) {
     const isCurrent = line.startsWith("* ");
     const name = line.replace(/^\*\s*/, "").trim();
 
     if (name.includes("HEAD detached") || name === "(no branch)") {
-      if (isCurrent) current = "HEAD";
+      if (isCurrent) {
+        current = "HEAD";
+      }
       continue;
     }
 
-    // Skip remotes/origin/HEAD -> ...
-    if (name.includes("->")) continue;
+    if (name.includes("->")) {
+      continue;
+    }
 
     if (name.startsWith("remotes/origin/")) {
       branchSet.add(name.replace("remotes/origin/", ""));
@@ -258,7 +325,9 @@ async function gitBranches(cwd) {
       branchSet.add(name);
     }
 
-    if (isCurrent) current = name;
+    if (isCurrent) {
+      current = name;
+    }
   }
 
   const branches = [...branchSet].sort();
@@ -267,40 +336,34 @@ async function gitBranches(cwd) {
   return { branches, current, default: defaultBranch };
 }
 
-// ─── Git Checkout ─────────────────────────────────────────────
-
-async function gitCheckout(cwd, params) {
-  const branch = typeof params.branch === "string" ? params.branch.trim() : "";
+async function gitCheckout(
+  cwd: string,
+  params: GitRequestParams
+): Promise<{ current: string; tracking: string | null; status: GitStatusResult }> {
+  const branch = readNonEmptyString(params.branch);
   if (!branch) {
     throw gitError("missing_branch", "Branch name is required.");
   }
 
   try {
     await git(cwd, "checkout", "--", branch);
-  } catch (err) {
-    if (err.message?.includes("would be overwritten")) {
+  } catch (error) {
+    const message = asError(error).message;
+    if (message.includes("would be overwritten")) {
       throw gitError(
         "checkout_conflict_dirty_tree",
         "Cannot switch branches: you have uncommitted changes."
       );
     }
-    throw gitError("checkout_failed", err.message || "Checkout failed.");
+    throw gitError("checkout_failed", message || "Checkout failed.");
   }
 
   const status = await gitStatus(cwd);
   return { current: branch, tracking: status.tracking, status };
 }
 
-// ─── Git Log ──────────────────────────────────────────────────
-
-async function gitLog(cwd) {
-  const output = await git(
-    cwd,
-    "log",
-    "-20",
-    "--format=%H%x00%s%x00%an%x00%aI"
-  );
-
+async function gitLog(cwd: string): Promise<{ commits: GitLogEntry[] }> {
+  const output = await git(cwd, "log", "-20", "--format=%H%x00%s%x00%an%x00%aI");
   const commits = output
     .trim()
     .split("\n")
@@ -318,49 +381,48 @@ async function gitLog(cwd) {
   return { commits };
 }
 
-// ─── Git Create Branch ────────────────────────────────────────
-
-async function gitCreateBranch(cwd, params) {
-  const name = typeof params.name === "string" ? params.name.trim() : "";
+async function gitCreateBranch(
+  cwd: string,
+  params: GitRequestParams
+): Promise<{ branch: string; status: GitStatusResult }> {
+  const name = readNonEmptyString(params.name);
   if (!name) {
     throw gitError("missing_branch_name", "Branch name is required.");
   }
 
   try {
     await git(cwd, "checkout", "-b", name);
-  } catch (err) {
-    if (err.message?.includes("already exists")) {
+  } catch (error) {
+    const message = asError(error).message;
+    if (message.includes("already exists")) {
       throw gitError("branch_exists", `Branch '${name}' already exists.`);
     }
-    throw gitError("create_branch_failed", err.message || "Failed to create branch.");
+    throw gitError("create_branch_failed", message || "Failed to create branch.");
   }
 
   const status = await gitStatus(cwd);
   return { branch: name, status };
 }
 
-// ─── Git Stash ────────────────────────────────────────────────
-
-async function gitStash(cwd) {
+async function gitStash(cwd: string): Promise<{ success: boolean; message: string }> {
   const output = await git(cwd, "stash");
   const saved = !output.includes("No local changes");
   return { success: saved, message: output.trim() };
 }
 
-// ─── Git Stash Pop ────────────────────────────────────────────
-
-async function gitStashPop(cwd) {
+async function gitStashPop(cwd: string): Promise<{ success: boolean; message: string }> {
   try {
     const output = await git(cwd, "stash", "pop");
     return { success: true, message: output.trim() };
-  } catch (err) {
-    throw gitError("stash_pop_conflict", err.message || "Stash pop failed due to conflicts.");
+  } catch (error) {
+    throw gitError("stash_pop_conflict", asError(error).message || "Stash pop failed due to conflicts.");
   }
 }
 
-// ─── Git Reset to Remote ──────────────────────────────────────
-
-async function gitResetToRemote(cwd, params) {
+async function gitResetToRemote(
+  cwd: string,
+  params: GitRequestParams
+): Promise<{ success: boolean; status: GitStatusResult }> {
   if (params.confirm !== "discard_runtime_changes") {
     throw gitError(
       "confirmation_required",
@@ -387,22 +449,17 @@ async function gitResetToRemote(cwd, params) {
   return { success: true, status };
 }
 
-// ─── Git Remote URL ───────────────────────────────────────────
-
-async function gitRemoteUrl(cwd) {
-  const raw = (await git(cwd, "config", "--get", "remote.origin.url")).trim();
-  const ownerRepo = parseOwnerRepo(raw);
-  return { url: raw, ownerRepo };
+async function gitRemoteUrl(cwd: string): Promise<{ url: string; ownerRepo: string | null }> {
+  const url = (await git(cwd, "config", "--get", "remote.origin.url")).trim();
+  return { url, ownerRepo: parseOwnerRepo(url) };
 }
 
-function parseOwnerRepo(remoteUrl) {
+function parseOwnerRepo(remoteUrl: string): string | null {
   const match = remoteUrl.match(/[:/]([^/]+\/[^/]+?)(?:\.git)?$/);
   return match ? match[1] : null;
 }
 
-// ─── Git Branches With Status ─────────────────────────────────
-
-async function gitBranchesWithStatus(cwd) {
+async function gitBranchesWithStatus(cwd: string): Promise<GitBranchesResult & { status: GitStatusResult }> {
   const [branchResult, statusResult] = await Promise.all([
     gitBranches(cwd),
     gitStatus(cwd),
@@ -410,8 +467,7 @@ async function gitBranchesWithStatus(cwd) {
   return { ...branchResult, status: statusResult };
 }
 
-// Computes the local repo delta that still exists on this machine and is not on the remote.
-async function repoDiffTotals(cwd, context) {
+async function repoDiffTotals(cwd: string, context: RepoDiffContext): Promise<GitDiffTotals> {
   const baseRef = await resolveRepoDiffBase(cwd, context.tracking);
   const trackedTotals = await diffTotalsAgainstBase(cwd, baseRef);
   const untrackedPaths = context.fileLines
@@ -427,19 +483,24 @@ async function repoDiffTotals(cwd, context) {
   };
 }
 
-// Uses upstream when available; otherwise falls back to commits not yet present on any remote.
-async function resolveRepoDiffBase(cwd, tracking) {
+async function resolveRepoDiffBase(cwd: string, tracking: string | null): Promise<string> {
   if (tracking) {
     try {
       return (await git(cwd, "merge-base", "HEAD", "@{u}")).trim();
     } catch {
-      // Fall through to the local-only commit scan if upstream metadata is stale.
+      // Fall through to local-only commit scan if upstream metadata is stale.
     }
   }
 
-  const firstLocalOnlyCommit = (
-    await git(cwd, "rev-list", "--reverse", "--topo-order", "HEAD", "--not", "--remotes")
-  )
+  const firstLocalOnlyCommit = (await git(
+    cwd,
+    "rev-list",
+    "--reverse",
+    "--topo-order",
+    "HEAD",
+    "--not",
+    "--remotes"
+  ))
     .trim()
     .split("\n")
     .find(Boolean);
@@ -455,28 +516,24 @@ async function resolveRepoDiffBase(cwd, tracking) {
   }
 }
 
-async function diffTotalsAgainstBase(cwd, baseRef) {
-  const output = await git(cwd, "diff", "--numstat", baseRef);
-  return parseNumstatTotals(output);
+async function diffTotalsAgainstBase(cwd: string, baseRef: string): Promise<GitDiffTotals> {
+  return parseNumstatTotals(await git(cwd, "diff", "--numstat", baseRef));
 }
 
-async function gitDiffAgainstBase(cwd, baseRef) {
+async function gitDiffAgainstBase(cwd: string, baseRef: string): Promise<string> {
   return git(cwd, "diff", "--binary", "--find-renames", baseRef);
 }
 
-async function diffTotalsForUntrackedFiles(cwd, filePaths) {
+async function diffTotalsForUntrackedFiles(cwd: string, filePaths: string[]): Promise<GitDiffTotals> {
   if (!filePaths.length) {
     return { additions: 0, deletions: 0, binaryFiles: 0 };
   }
 
-  const totals = await Promise.all(
-    filePaths.map(async (filePath) => {
-      const output = await gitDiffNoIndexNumstat(cwd, filePath);
-      return parseNumstatTotals(output);
-    })
-  );
+  const totals = await Promise.all(filePaths.map(async (filePath) => {
+    return parseNumstatTotals(await gitDiffNoIndexNumstat(cwd, filePath));
+  }));
 
-  return totals.reduce(
+  return totals.reduce<GitDiffTotals>(
     (aggregate, current) => ({
       additions: aggregate.additions + current.additions,
       deletions: aggregate.deletions + current.deletions,
@@ -486,12 +543,12 @@ async function diffTotalsForUntrackedFiles(cwd, filePaths) {
   );
 }
 
-function parseNumstatTotals(output) {
+function parseNumstatTotals(output: string): GitDiffTotals {
   return output
     .trim()
     .split("\n")
     .filter(Boolean)
-    .reduce(
+    .reduce<GitDiffTotals>(
       (aggregate, line) => {
         const [rawAdditions, rawDeletions] = line.split("\t");
         const additions = Number.parseInt(rawAdditions, 10);
@@ -508,24 +565,20 @@ function parseNumstatTotals(output) {
     );
 }
 
-async function gitDiffNoIndexNumstat(cwd, filePath) {
+async function gitDiffNoIndexNumstat(cwd: string, filePath: string): Promise<string> {
   try {
-    const { stdout } = await execFileAsync(
-      "git",
-      ["diff", "--no-index", "--numstat", "--", "/dev/null", filePath],
-      { cwd, timeout: GIT_TIMEOUT_MS }
-    );
-    return stdout;
-  } catch (err) {
-    if (typeof err?.code === "number" && err.code === 1) {
-      return err.stdout || "";
+    const result = await execFileAsync("git", ["diff", "--no-index", "--numstat", "--", "/dev/null", filePath], cwd);
+    return result.stdout;
+  } catch (error) {
+    const execError = error as GitExecError;
+    if (typeof execError.code === "number" && execError.code === 1) {
+      return readExecOutput(execError.stdout);
     }
-    const msg = (err.stderr || err.message || "").trim();
-    throw new Error(msg || "git diff --no-index failed");
+    throw new Error(readExecOutput(execError.stderr) || execError.message || "git diff --no-index failed");
   }
 }
 
-async function diffPatchForUntrackedFiles(cwd, filePaths) {
+async function diffPatchForUntrackedFiles(cwd: string, filePaths: string[]): Promise<string> {
   if (!filePaths.length) {
     return "";
   }
@@ -534,59 +587,63 @@ async function diffPatchForUntrackedFiles(cwd, filePaths) {
   return patches.filter(Boolean).join("\n\n");
 }
 
-async function gitDiffNoIndexPatch(cwd, filePath) {
+async function gitDiffNoIndexPatch(cwd: string, filePath: string): Promise<string> {
   try {
-    const { stdout } = await execFileAsync(
-      "git",
-      ["diff", "--no-index", "--binary", "--", "/dev/null", filePath],
-      { cwd, timeout: GIT_TIMEOUT_MS }
-    );
-    return stdout;
-  } catch (err) {
-    if (typeof err?.code === "number" && err.code === 1) {
-      return err.stdout || "";
+    const result = await execFileAsync("git", ["diff", "--no-index", "--binary", "--", "/dev/null", filePath], cwd);
+    return result.stdout;
+  } catch (error) {
+    const execError = error as GitExecError;
+    if (typeof execError.code === "number" && execError.code === 1) {
+      return readExecOutput(execError.stdout);
     }
-    const msg = (err.stderr || err.message || "").trim();
-    throw new Error(msg || "git diff --no-index failed");
+    throw new Error(readExecOutput(execError.stderr) || execError.message || "git diff --no-index failed");
   }
 }
 
-// ─── Helpers ──────────────────────────────────────────────────
-
-function git(cwd, ...args) {
-  return execFileAsync("git", args, { cwd, timeout: GIT_TIMEOUT_MS })
-    .then(({ stdout }) => stdout)
-    .catch((err) => {
-      const msg = (err.stderr || err.message || "").trim();
-      const wrapped = new Error(msg || "git command failed");
-      throw wrapped;
-    });
+async function git(cwd: string, ...args: string[]): Promise<string> {
+  try {
+    const result = await execFileAsync("git", args, cwd);
+    return result.stdout;
+  } catch (error) {
+    const execError = error as GitExecError;
+    const message = readExecOutput(execError.stderr) || execError.message || "git command failed";
+    throw new Error(message.trim() || "git command failed");
+  }
 }
 
-async function revListCounts(cwd) {
+async function revListCounts(cwd: string): Promise<{ ahead: number; behind: number }> {
   const output = await git(cwd, "rev-list", "--left-right", "--count", "HEAD...@{u}");
   const parts = output.trim().split(/\s+/);
   return {
-    ahead: parseInt(parts[0], 10) || 0,
-    behind: parseInt(parts[1], 10) || 0,
+    ahead: Number.parseInt(parts[0], 10) || 0,
+    behind: Number.parseInt(parts[1], 10) || 0,
   };
 }
 
-function parseBranchFromStatus(line) {
-  // "## main...origin/main" or "## main" or "## HEAD (no branch)"
+function parseBranchFromStatus(line: string): string | null {
   const match = line.match(/^## (.+?)(?:\.{3}|$)/);
-  if (!match) return null;
+  if (!match) {
+    return null;
+  }
   const branch = match[1].trim();
-  if (branch === "HEAD (no branch)" || branch.includes("HEAD detached")) return null;
+  if (branch === "HEAD (no branch)" || branch.includes("HEAD detached")) {
+    return null;
+  }
   return branch;
 }
 
-function parseTrackingFromStatus(line) {
+function parseTrackingFromStatus(line: string): string | null {
   const match = line.match(/\.{3}(.+?)(?:\s|$)/);
   return match ? match[1].trim() : null;
 }
 
-function computeState(dirty, ahead, behind, detached, noUpstream) {
+function computeState(
+  dirty: boolean,
+  ahead: number,
+  behind: number,
+  detached: boolean,
+  noUpstream: boolean
+): string {
   if (detached) return "detached_head";
   if (noUpstream) return "no_upstream";
   if (dirty && behind > 0) return "dirty_and_behind";
@@ -597,8 +654,7 @@ function computeState(dirty, ahead, behind, detached, noUpstream) {
   return "up_to_date";
 }
 
-async function detectDefaultBranch(cwd, branches) {
-  // Try symbolic-ref first
+async function detectDefaultBranch(cwd: string, branches: string[]): Promise<string | null> {
   try {
     const ref = await git(cwd, "symbolic-ref", "refs/remotes/origin/HEAD");
     const defaultBranch = ref.trim().replace("refs/remotes/origin/", "");
@@ -609,28 +665,23 @@ async function detectDefaultBranch(cwd, branches) {
     // ignore
   }
 
-  // Fallback: prefer main, then master
   if (branches.includes("main")) return "main";
   if (branches.includes("master")) return "master";
   return branches[0] || null;
 }
 
-function gitError(errorCode, userMessage) {
-  const err = new Error(userMessage);
-  err.errorCode = errorCode;
-  err.userMessage = userMessage;
-  return err;
+function gitError(errorCode: string, userMessage: string): GitHandlerError {
+  const error = new Error(userMessage) as GitHandlerError;
+  error.errorCode = errorCode;
+  error.userMessage = userMessage;
+  return error;
 }
 
-// Resolves git commands to a concrete local directory.
-async function resolveGitCwd(params) {
+async function resolveGitCwd(params: GitRequestParams): Promise<string> {
   const requestedCwd = firstNonEmptyString([params.cwd, params.currentWorkingDirectory]);
 
   if (!requestedCwd) {
-    throw gitError(
-      "missing_working_directory",
-      "Git actions require a bound local working directory."
-    );
+    throw gitError("missing_working_directory", "Git actions require a bound local working directory.");
   }
 
   if (!isExistingDirectory(requestedCwd)) {
@@ -643,22 +694,21 @@ async function resolveGitCwd(params) {
   return requestedCwd;
 }
 
-function firstNonEmptyString(candidates) {
+function firstNonEmptyString(candidates: unknown[]): string | null {
   for (const candidate of candidates) {
-    if (typeof candidate !== "string") {
-      continue;
-    }
-
-    const trimmed = candidate.trim();
-    if (trimmed) {
-      return trimmed;
+    const value = readNonEmptyString(candidate);
+    if (value) {
+      return value;
     }
   }
-
   return null;
 }
 
-function isExistingDirectory(candidatePath) {
+function readNonEmptyString(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function isExistingDirectory(candidatePath: string): boolean {
   try {
     return fs.statSync(candidatePath).isDirectory();
   } catch {
@@ -666,10 +716,44 @@ function isExistingDirectory(candidatePath) {
   }
 }
 
-async function resolveRepoRoot(cwd) {
-  const output = await git(cwd, "rev-parse", "--show-toplevel");
-  const repoRoot = output.trim();
+async function resolveRepoRoot(cwd: string): Promise<string | null> {
+  const repoRoot = (await git(cwd, "rev-parse", "--show-toplevel")).trim();
   return repoRoot || null;
 }
 
-module.exports = { handleGitRequest, gitStatus };
+function readExecOutput(value: string | Buffer | undefined): string {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (Buffer.isBuffer(value)) {
+    return value.toString("utf8");
+  }
+  return "";
+}
+
+function execFileAsync(command: string, args: string[], cwd: string): Promise<{ stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    execFile(command, args, { cwd, timeout: GIT_TIMEOUT_MS }, (error, stdout, stderr) => {
+      if (error) {
+        const execError = error as GitExecError;
+        execError.stdout = stdout;
+        execError.stderr = stderr;
+        reject(execError);
+        return;
+      }
+      resolve({ stdout, stderr });
+    });
+  });
+}
+
+function isGitHandlerError(error: unknown): error is GitHandlerError {
+  return Boolean(
+    error
+      && typeof error === "object"
+      && typeof (error as GitHandlerError).errorCode === "string"
+  );
+}
+
+function asError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
+}

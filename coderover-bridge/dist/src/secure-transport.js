@@ -1,25 +1,25 @@
 "use strict";
-Object.defineProperty(exports, "__esModule", { value: true });
-// FILE: secure-transport.js
+// FILE: secure-transport.ts
 // Purpose: Owns the bridge-side E2EE handshake, envelope crypto, and reconnect catch-up buffer.
-// Layer: CLI helper
-// Exports: createBridgeSecureTransport, SECURE_PROTOCOL_VERSION, PAIRING_QR_VERSION
-// Depends on: crypto, ./secure-device-state
-const { createCipheriv, createDecipheriv, createHash, createPrivateKey, createPublicKey, diffieHellman, generateKeyPairSync, hkdfSync, randomBytes, sign, verify, } = require("crypto");
-const { getTrustedPhonePublicKey, rememberTrustedPhone, } = require("./secure-device-state");
-const { debugLog } = require("./debug-log");
-const PAIRING_QR_VERSION = 3;
-const SECURE_PROTOCOL_VERSION = 1;
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.HANDSHAKE_MODE_TRUSTED_RECONNECT = exports.HANDSHAKE_MODE_QR_BOOTSTRAP = exports.SECURE_PROTOCOL_VERSION = exports.PAIRING_QR_VERSION = void 0;
+exports.createBridgeSecureTransport = createBridgeSecureTransport;
+exports.nonceForDirection = nonceForDirection;
+const crypto_1 = require("crypto");
+const secure_device_state_1 = require("./secure-device-state");
+const debug_log_1 = require("./debug-log");
+exports.PAIRING_QR_VERSION = 3;
+exports.SECURE_PROTOCOL_VERSION = 1;
+exports.HANDSHAKE_MODE_QR_BOOTSTRAP = "qr_bootstrap";
+exports.HANDSHAKE_MODE_TRUSTED_RECONNECT = "trusted_reconnect";
 const HANDSHAKE_TAG = "coderover-e2ee-v1";
-const HANDSHAKE_MODE_QR_BOOTSTRAP = "qr_bootstrap";
-const HANDSHAKE_MODE_TRUSTED_RECONNECT = "trusted_reconnect";
 const SECURE_SENDER_MAC = "mac";
 const SECURE_SENDER_IPHONE = "iphone";
 const CLOSE_CODE_REPLACED_CONNECTION = 4003;
 const MAX_PAIRING_AGE_MS = 5 * 60 * 1000;
 const MAX_BRIDGE_OUTBOUND_MESSAGES = 500;
 const MAX_BRIDGE_OUTBOUND_BYTES = 10 * 1024 * 1024;
-function createBridgeSecureTransport({ sessionId, deviceState, transportCandidates = [] }) {
+function createBridgeSecureTransport({ sessionId, deviceState, transportCandidates = [], }) {
     let currentDeviceState = deviceState;
     const pendingHandshakes = new Map();
     const activeSessions = new Map();
@@ -32,7 +32,7 @@ function createBridgeSecureTransport({ sessionId, deviceState, transportCandidat
     function createPairingPayload() {
         currentPairingExpiresAt = Date.now() + MAX_PAIRING_AGE_MS;
         return {
-            v: PAIRING_QR_VERSION,
+            v: exports.PAIRING_QR_VERSION,
             bridgeId: sessionId,
             macDeviceId: currentDeviceState.macDeviceId,
             macIdentityPublicKey: currentDeviceState.macIdentityPublicKey,
@@ -43,7 +43,7 @@ function createBridgeSecureTransport({ sessionId, deviceState, transportCandidat
     function handleIncomingWireMessage(rawMessage, transport = {}) {
         const { transportId = "transport-unknown", sendControlMessage = () => { }, onApplicationMessage = () => { }, sendWireMessage, closeTransport, } = transport;
         const parsed = safeParseJSON(rawMessage);
-        if (!parsed || typeof parsed !== "object") {
+        if (!parsed) {
             return false;
         }
         const kind = normalizeNonEmptyString(parsed.kind);
@@ -59,30 +59,16 @@ function createBridgeSecureTransport({ sessionId, deviceState, transportCandidat
         }
         switch (kind) {
             case "clientHello":
-                handleClientHello(parsed, {
-                    transportId,
-                    sendControlMessage,
-                    sendWireMessage,
-                    closeTransport,
-                });
+                handleClientHello(parsed, { transportId, sendControlMessage, sendWireMessage, closeTransport });
                 return true;
             case "clientAuth":
-                handleClientAuth(parsed, {
-                    transportId,
-                    sendControlMessage,
-                    sendWireMessage,
-                    closeTransport,
-                });
+                handleClientAuth(parsed, { transportId, sendControlMessage, sendWireMessage, closeTransport });
                 return true;
             case "resumeState":
                 handleResumeState(parsed, transportId);
                 return true;
             case "encryptedEnvelope":
-                return handleEncryptedEnvelope(parsed, {
-                    transportId,
-                    sendControlMessage,
-                    onApplicationMessage,
-                });
+                return handleEncryptedEnvelope(parsed, { transportId, sendControlMessage, onApplicationMessage });
             default:
                 return false;
         }
@@ -102,10 +88,9 @@ function createBridgeSecureTransport({ sessionId, deviceState, transportCandidat
         outboundBufferBytes += bufferEntry.sizeBytes;
         trimOutboundBuffer();
         for (const activeSession of activeSessions.values()) {
-            if (!activeSession.isResumed) {
-                continue;
+            if (activeSession.isResumed) {
+                sendBufferedEntry(bufferEntry, activeSession);
             }
-            sendBufferedEntry(bufferEntry, activeSession);
         }
     }
     function isSecureChannelReady() {
@@ -114,12 +99,12 @@ function createBridgeSecureTransport({ sessionId, deviceState, transportCandidat
     function handleClientHello(message, { transportId, sendControlMessage, sendWireMessage, closeTransport, }) {
         const protocolVersion = Number(message.protocolVersion);
         const incomingSessionId = normalizeNonEmptyString(message.sessionId);
-        const handshakeMode = normalizeNonEmptyString(message.handshakeMode);
+        const handshakeMode = normalizeHandshakeMode(message.handshakeMode);
         const phoneDeviceId = normalizeNonEmptyString(message.phoneDeviceId);
         const phoneIdentityPublicKey = normalizeNonEmptyString(message.phoneIdentityPublicKey);
         const phoneEphemeralPublicKey = normalizeNonEmptyString(message.phoneEphemeralPublicKey);
         const clientNonceBase64 = normalizeNonEmptyString(message.clientNonce);
-        if (protocolVersion !== SECURE_PROTOCOL_VERSION || incomingSessionId !== sessionId) {
+        if (protocolVersion !== exports.SECURE_PROTOCOL_VERSION || incomingSessionId !== sessionId) {
             sendControlMessage(createSecureError({
                 code: "update_required",
                 message: "The bridge and iPhone are not using the same secure transport version.",
@@ -133,22 +118,22 @@ function createBridgeSecureTransport({ sessionId, deviceState, transportCandidat
             }));
             return;
         }
-        if (handshakeMode !== HANDSHAKE_MODE_QR_BOOTSTRAP && handshakeMode !== HANDSHAKE_MODE_TRUSTED_RECONNECT) {
+        if (!handshakeMode) {
             sendControlMessage(createSecureError({
                 code: "invalid_handshake_mode",
                 message: "The iPhone requested an unknown secure pairing mode.",
             }));
             return;
         }
-        if (handshakeMode === HANDSHAKE_MODE_QR_BOOTSTRAP && Date.now() > currentPairingExpiresAt) {
+        if (handshakeMode === exports.HANDSHAKE_MODE_QR_BOOTSTRAP && Date.now() > currentPairingExpiresAt) {
             sendControlMessage(createSecureError({
                 code: "pairing_expired",
                 message: "The pairing QR code has expired. Generate a new QR code from the bridge.",
             }));
             return;
         }
-        const trustedPhonePublicKey = getTrustedPhonePublicKey(currentDeviceState, phoneDeviceId);
-        if (handshakeMode === HANDSHAKE_MODE_TRUSTED_RECONNECT) {
+        const trustedPhonePublicKey = (0, secure_device_state_1.getTrustedPhonePublicKey)(currentDeviceState, phoneDeviceId);
+        if (handshakeMode === exports.HANDSHAKE_MODE_TRUSTED_RECONNECT) {
             if (!trustedPhonePublicKey) {
                 sendControlMessage(createSecureError({
                     code: "phone_not_trusted",
@@ -172,14 +157,21 @@ function createBridgeSecureTransport({ sessionId, deviceState, transportCandidat
             }));
             return;
         }
-        const ephemeral = generateKeyPairSync("x25519");
+        const ephemeral = (0, crypto_1.generateKeyPairSync)("x25519");
         const privateJwk = ephemeral.privateKey.export({ format: "jwk" });
         const publicJwk = ephemeral.publicKey.export({ format: "jwk" });
-        const serverNonce = randomBytes(32);
+        const macEphemeralPrivateKey = normalizeNonEmptyString(privateJwk.d);
+        const macEphemeralPublicKey = normalizeNonEmptyString(publicJwk.x);
+        if (!macEphemeralPrivateKey || !macEphemeralPublicKey) {
+            sendControlMessage(createSecureError({
+                code: "invalid_ephemeral_key",
+                message: "The bridge could not generate a secure handshake key.",
+            }));
+            return;
+        }
+        const serverNonce = (0, crypto_1.randomBytes)(32);
         const keyEpoch = nextKeyEpoch;
-        const expiresAtForTranscript = handshakeMode === HANDSHAKE_MODE_QR_BOOTSTRAP
-            ? currentPairingExpiresAt
-            : 0;
+        const expiresAtForTranscript = handshakeMode === exports.HANDSHAKE_MODE_QR_BOOTSTRAP ? currentPairingExpiresAt : 0;
         const transcriptBytes = buildTranscriptBytes({
             sessionId,
             protocolVersion,
@@ -189,7 +181,7 @@ function createBridgeSecureTransport({ sessionId, deviceState, transportCandidat
             phoneDeviceId,
             macIdentityPublicKey: currentDeviceState.macIdentityPublicKey,
             phoneIdentityPublicKey,
-            macEphemeralPublicKey: base64UrlToBase64(publicJwk.x),
+            macEphemeralPublicKey: base64UrlToBase64(macEphemeralPublicKey),
             phoneEphemeralPublicKey,
             clientNonce,
             serverNonce,
@@ -209,8 +201,8 @@ function createBridgeSecureTransport({ sessionId, deviceState, transportCandidat
             phoneDeviceId,
             phoneIdentityPublicKey,
             phoneEphemeralPublicKey,
-            macEphemeralPrivateKey: base64UrlToBase64(privateJwk.d),
-            macEphemeralPublicKey: base64UrlToBase64(publicJwk.x),
+            macEphemeralPrivateKey: base64UrlToBase64(macEphemeralPrivateKey),
+            macEphemeralPublicKey: base64UrlToBase64(macEphemeralPublicKey),
             transcriptBytes,
             expiresAtForTranscript,
             sendWireMessage,
@@ -218,9 +210,12 @@ function createBridgeSecureTransport({ sessionId, deviceState, transportCandidat
         });
         removeActiveSession(transportId);
         const pendingHandshake = pendingHandshakes.get(transportId);
+        if (!pendingHandshake) {
+            return;
+        }
         sendControlMessage({
             kind: "serverHello",
-            protocolVersion: SECURE_PROTOCOL_VERSION,
+            protocolVersion: exports.SECURE_PROTOCOL_VERSION,
             sessionId,
             handshakeMode,
             macDeviceId: currentDeviceState.macDeviceId,
@@ -270,8 +265,8 @@ function createBridgeSecureTransport({ sessionId, deviceState, transportCandidat
             }));
             return;
         }
-        const sharedSecret = diffieHellman({
-            privateKey: createPrivateKey({
+        const sharedSecret = (0, crypto_1.diffieHellman)({
+            privateKey: (0, crypto_1.createPrivateKey)({
                 key: {
                     crv: "X25519",
                     d: base64ToBase64Url(pendingHandshake.macEphemeralPrivateKey),
@@ -280,7 +275,7 @@ function createBridgeSecureTransport({ sessionId, deviceState, transportCandidat
                 },
                 format: "jwk",
             }),
-            publicKey: createPublicKey({
+            publicKey: (0, crypto_1.createPublicKey)({
                 key: {
                     crv: "X25519",
                     kty: "OKP",
@@ -289,7 +284,7 @@ function createBridgeSecureTransport({ sessionId, deviceState, transportCandidat
                 format: "jwk",
             }),
         });
-        const salt = createHash("sha256").update(pendingHandshake.transcriptBytes).digest();
+        const salt = (0, crypto_1.createHash)("sha256").update(pendingHandshake.transcriptBytes).digest();
         const infoPrefix = [
             HANDSHAKE_TAG,
             pendingHandshake.sessionId,
@@ -299,8 +294,7 @@ function createBridgeSecureTransport({ sessionId, deviceState, transportCandidat
         ].join("|");
         const existingTransportId = activeTransportIdByPhone.get(pendingHandshake.phoneDeviceId);
         if (existingTransportId && existingTransportId !== transportId) {
-            const existingSession = activeSessions.get(existingTransportId);
-            existingSession?.closeTransport?.(CLOSE_CODE_REPLACED_CONNECTION, "Replaced by newer connection for this iPhone");
+            activeSessions.get(existingTransportId)?.closeTransport?.(CLOSE_CODE_REPLACED_CONNECTION, "Replaced by newer connection for this iPhone");
             removeActiveSession(existingTransportId);
         }
         const activeSession = {
@@ -314,18 +308,16 @@ function createBridgeSecureTransport({ sessionId, deviceState, transportCandidat
             lastInboundCounter: -1,
             nextOutboundCounter: 0,
             isResumed: false,
-            minBridgeOutboundSeq: pendingHandshake.handshakeMode === HANDSHAKE_MODE_QR_BOOTSTRAP
-                ? nextBridgeOutboundSeq
-                : 1,
+            minBridgeOutboundSeq: pendingHandshake.handshakeMode === exports.HANDSHAKE_MODE_QR_BOOTSTRAP ? nextBridgeOutboundSeq : 1,
             sendWireMessage: sendWireMessage || pendingHandshake.sendWireMessage,
             closeTransport: closeTransport || pendingHandshake.closeTransport,
         };
         activeSessions.set(transportId, activeSession);
         activeTransportIdByPhone.set(activeSession.phoneDeviceId, transportId);
         nextKeyEpoch = pendingHandshake.keyEpoch + 1;
-        if (pendingHandshake.handshakeMode === HANDSHAKE_MODE_QR_BOOTSTRAP
-            || getTrustedPhonePublicKey(currentDeviceState, pendingHandshake.phoneDeviceId)) {
-            currentDeviceState = rememberTrustedPhone(currentDeviceState, pendingHandshake.phoneDeviceId, pendingHandshake.phoneIdentityPublicKey);
+        if (pendingHandshake.handshakeMode === exports.HANDSHAKE_MODE_QR_BOOTSTRAP
+            || (0, secure_device_state_1.getTrustedPhonePublicKey)(currentDeviceState, pendingHandshake.phoneDeviceId)) {
+            currentDeviceState = (0, secure_device_state_1.rememberTrustedPhone)(currentDeviceState, pendingHandshake.phoneDeviceId, pendingHandshake.phoneIdentityPublicKey);
         }
         pendingHandshakes.delete(transportId);
         sendControlMessage({
@@ -364,7 +356,7 @@ function createBridgeSecureTransport({ sessionId, deviceState, transportCandidat
         }
         const incomingSessionId = normalizeNonEmptyString(message.sessionId);
         const keyEpoch = Number(message.keyEpoch);
-        const sender = normalizeNonEmptyString(message.sender);
+        const sender = normalizeSecureSender(message.sender);
         const counter = Number(message.counter);
         if (incomingSessionId !== sessionId
             || keyEpoch !== activeSession.keyEpoch
@@ -423,7 +415,7 @@ function createBridgeSecureTransport({ sessionId, deviceState, transportCandidat
         }
     }
     function sendBufferedEntry(entry, activeSession) {
-        if (!activeSession?.isResumed) {
+        if (!activeSession.isResumed) {
             return;
         }
         const envelope = encryptEnvelopePayload({
@@ -434,8 +426,8 @@ function createBridgeSecureTransport({ sessionId, deviceState, transportCandidat
         activeSession.sendWireMessage?.(JSON.stringify(envelope));
     }
     return {
-        PAIRING_QR_VERSION,
-        SECURE_PROTOCOL_VERSION,
+        PAIRING_QR_VERSION: exports.PAIRING_QR_VERSION,
+        SECURE_PROTOCOL_VERSION: exports.SECURE_PROTOCOL_VERSION,
         createPairingPayload,
         handleIncomingWireMessage,
         handleTransportClosed,
@@ -444,7 +436,7 @@ function createBridgeSecureTransport({ sessionId, deviceState, transportCandidat
     };
 }
 function debugSecureLog(message) {
-    debugLog(`[coderover][secure] ${message}`);
+    (0, debug_log_1.debugLog)(`[coderover][secure] ${message}`);
 }
 function shortId(value) {
     const normalized = normalizeNonEmptyString(value);
@@ -455,14 +447,14 @@ function shortFingerprint(publicKeyBase64) {
     if (!bytes || bytes.length === 0) {
         return "invalid";
     }
-    return createHash("sha256").update(bytes).digest("hex").slice(0, 12);
+    return (0, crypto_1.createHash)("sha256").update(bytes).digest("hex").slice(0, 12);
 }
 function transcriptDigest(transcriptBytes) {
-    return createHash("sha256").update(transcriptBytes).digest("hex").slice(0, 16);
+    return (0, crypto_1.createHash)("sha256").update(transcriptBytes).digest("hex").slice(0, 16);
 }
 function encryptEnvelopePayload(payloadObject, key, sender, counter, sessionId, keyEpoch) {
     const nonce = nonceForDirection(sender, counter);
-    const cipher = createCipheriv("aes-256-gcm", key, nonce);
+    const cipher = (0, crypto_1.createCipheriv)("aes-256-gcm", key, nonce);
     const ciphertext = Buffer.concat([
         cipher.update(Buffer.from(JSON.stringify(payloadObject), "utf8")),
         cipher.final(),
@@ -470,7 +462,7 @@ function encryptEnvelopePayload(payloadObject, key, sender, counter, sessionId, 
     const tag = cipher.getAuthTag();
     return {
         kind: "encryptedEnvelope",
-        v: SECURE_PROTOCOL_VERSION,
+        v: exports.SECURE_PROTOCOL_VERSION,
         sessionId,
         keyEpoch,
         sender,
@@ -482,10 +474,10 @@ function encryptEnvelopePayload(payloadObject, key, sender, counter, sessionId, 
 function decryptEnvelopeBuffer(envelope, key, sender, counter) {
     try {
         const nonce = nonceForDirection(sender, counter);
-        const decipher = createDecipheriv("aes-256-gcm", key, nonce);
-        decipher.setAuthTag(base64ToBuffer(envelope.tag));
+        const decipher = (0, crypto_1.createDecipheriv)("aes-256-gcm", key, nonce);
+        decipher.setAuthTag(base64ToBuffer(envelope.tag) ?? Buffer.alloc(0));
         return Buffer.concat([
-            decipher.update(base64ToBuffer(envelope.ciphertext)),
+            decipher.update(base64ToBuffer(envelope.ciphertext) ?? Buffer.alloc(0)),
             decipher.final(),
         ]);
     }
@@ -494,10 +486,10 @@ function decryptEnvelopeBuffer(envelope, key, sender, counter) {
     }
 }
 function deriveAesKey(sharedSecret, salt, infoLabel) {
-    return Buffer.from(hkdfSync("sha256", sharedSecret, salt, Buffer.from(infoLabel, "utf8"), 32));
+    return Buffer.from((0, crypto_1.hkdfSync)("sha256", sharedSecret, salt, Buffer.from(infoLabel, "utf8"), 32));
 }
 function signTranscript(privateKeyBase64, publicKeyBase64, transcriptBytes) {
-    const signature = sign(null, transcriptBytes, createPrivateKey({
+    const signature = (0, crypto_1.sign)(null, transcriptBytes, (0, crypto_1.createPrivateKey)({
         key: {
             crv: "Ed25519",
             d: base64ToBase64Url(privateKeyBase64),
@@ -510,14 +502,14 @@ function signTranscript(privateKeyBase64, publicKeyBase64, transcriptBytes) {
 }
 function verifyTranscript(publicKeyBase64, transcriptBytes, signatureBase64) {
     try {
-        return verify(null, transcriptBytes, createPublicKey({
+        return (0, crypto_1.verify)(null, transcriptBytes, (0, crypto_1.createPublicKey)({
             key: {
                 crv: "Ed25519",
                 kty: "OKP",
                 x: base64ToBase64Url(publicKeyBase64),
             },
             format: "jwk",
-        }), base64ToBuffer(signatureBase64));
+        }), base64ToBuffer(signatureBase64) ?? Buffer.alloc(0));
     }
     catch {
         return false;
@@ -532,10 +524,10 @@ function buildTranscriptBytes({ sessionId, protocolVersion, handshakeMode, keyEp
         encodeLengthPrefixedUTF8(String(keyEpoch)),
         encodeLengthPrefixedUTF8(macDeviceId),
         encodeLengthPrefixedUTF8(phoneDeviceId),
-        encodeLengthPrefixedBuffer(base64ToBuffer(macIdentityPublicKey)),
-        encodeLengthPrefixedBuffer(base64ToBuffer(phoneIdentityPublicKey)),
-        encodeLengthPrefixedBuffer(base64ToBuffer(macEphemeralPublicKey)),
-        encodeLengthPrefixedBuffer(base64ToBuffer(phoneEphemeralPublicKey)),
+        encodeLengthPrefixedBuffer(base64ToBuffer(macIdentityPublicKey) ?? Buffer.alloc(0)),
+        encodeLengthPrefixedBuffer(base64ToBuffer(phoneIdentityPublicKey) ?? Buffer.alloc(0)),
+        encodeLengthPrefixedBuffer(base64ToBuffer(macEphemeralPublicKey) ?? Buffer.alloc(0)),
+        encodeLengthPrefixedBuffer(base64ToBuffer(phoneEphemeralPublicKey) ?? Buffer.alloc(0)),
         encodeLengthPrefixedBuffer(clientNonce),
         encodeLengthPrefixedBuffer(serverNonce),
         encodeLengthPrefixedUTF8(String(expiresAtForTranscript)),
@@ -567,23 +559,26 @@ function createSecureError({ code, message }) {
     };
 }
 function normalizeNonEmptyString(value) {
-    if (typeof value !== "string") {
-        return "";
-    }
-    return value.trim();
+    return typeof value === "string" ? value.trim() : "";
 }
 function safeParseJSON(value) {
     if (typeof value !== "string") {
         return null;
     }
     try {
-        return JSON.parse(value);
+        const parsed = JSON.parse(value);
+        return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+            ? parsed
+            : null;
     }
     catch {
         return null;
     }
 }
 function base64ToBuffer(value) {
+    if (typeof value !== "string") {
+        return null;
+    }
     try {
         return Buffer.from(value, "base64");
     }
@@ -598,11 +593,18 @@ function base64UrlToBase64(value) {
 function base64ToBase64Url(value) {
     return value.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 }
-module.exports = {
-    HANDSHAKE_MODE_QR_BOOTSTRAP,
-    HANDSHAKE_MODE_TRUSTED_RECONNECT,
-    PAIRING_QR_VERSION,
-    SECURE_PROTOCOL_VERSION,
-    createBridgeSecureTransport,
-    nonceForDirection,
-};
+function normalizeHandshakeMode(value) {
+    const normalized = normalizeNonEmptyString(value);
+    if (normalized === exports.HANDSHAKE_MODE_QR_BOOTSTRAP
+        || normalized === exports.HANDSHAKE_MODE_TRUSTED_RECONNECT) {
+        return normalized;
+    }
+    return null;
+}
+function normalizeSecureSender(value) {
+    const normalized = normalizeNonEmptyString(value);
+    if (normalized === SECURE_SENDER_MAC || normalized === SECURE_SENDER_IPHONE) {
+        return normalized;
+    }
+    return null;
+}

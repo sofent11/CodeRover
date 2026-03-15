@@ -1,23 +1,23 @@
 "use strict";
-Object.defineProperty(exports, "__esModule", { value: true });
-// FILE: providers/gemini-adapter.js
+// FILE: providers/gemini-adapter.ts
 // Purpose: Gemini CLI provider adapter backed by `gemini --output-format stream-json`.
-// Layer: Runtime provider
-// Exports: createGeminiAdapter
-// Depends on: fs, os, path, child_process, crypto, ../provider-catalog
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.createGeminiAdapter = createGeminiAdapter;
+exports.extractGeminiMessages = extractGeminiMessages;
+exports.normalizeGeminiMessage = normalizeGeminiMessage;
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { spawn } = require("child_process");
-const { randomUUID } = require("crypto");
-const { getRuntimeProvider } = require("../provider-catalog");
-function createGeminiAdapter({ store, logPrefix = "[coderover]", } = {}) {
+const child_process_1 = require("child_process");
+const crypto_1 = require("crypto");
+const provider_catalog_1 = require("../provider-catalog");
+function createGeminiAdapter({ store, }) {
     async function syncImportedThreads() {
-        const providerDefinition = getRuntimeProvider("gemini");
+        const providerDefinition = (0, provider_catalog_1.getRuntimeProvider)("gemini");
         for (const entry of discoverGeminiChatFiles()) {
             const existingThreadId = store.findThreadIdByProviderSession("gemini", entry.providerSessionId);
             const nextMeta = {
-                id: existingThreadId || `gemini:${randomUUID()}`,
+                id: existingThreadId || `gemini:${(0, crypto_1.randomUUID)()}`,
                 provider: "gemini",
                 providerSessionId: entry.providerSessionId,
                 title: entry.title,
@@ -41,7 +41,7 @@ function createGeminiAdapter({ store, logPrefix = "[coderover]", } = {}) {
         }
     }
     async function hydrateThread(threadMeta) {
-        if (!threadMeta?.providerSessionId) {
+        if (!threadMeta.providerSessionId) {
             return;
         }
         const existingHistory = store.getThreadHistory(threadMeta.id);
@@ -49,43 +49,21 @@ function createGeminiAdapter({ store, logPrefix = "[coderover]", } = {}) {
             return;
         }
         const messages = loadGeminiHistoryMessages(threadMeta.providerSessionId);
-        const turns = [];
-        let currentTurn = null;
-        for (const message of messages) {
-            if (!message.role || !message.text) {
-                continue;
-            }
-            if (message.role === "user" || !currentTurn) {
-                currentTurn = {
-                    id: randomUUID(),
-                    createdAt: new Date().toISOString(),
-                    status: "completed",
-                    items: [],
-                };
-                turns.push(currentTurn);
-            }
-            currentTurn.items.push({
-                id: randomUUID(),
-                type: message.role === "user" ? "user_message" : "agent_message",
-                role: message.role,
-                createdAt: new Date().toISOString(),
-                content: [{ type: "text", text: message.text }],
-                text: message.text,
-            });
-        }
-        store.saveThreadHistory(threadMeta.id, {
-            threadId: threadMeta.id,
-            turns,
-        });
+        const history = buildGeminiHistory(threadMeta.id, messages);
+        store.saveThreadHistory(threadMeta.id, history);
     }
     async function startTurn({ params, threadMeta, turnContext, }) {
         const prompt = await buildGeminiPrompt(turnContext.inputItems, threadMeta.cwd);
-        const model = normalizeOptionalString(params.model) || threadMeta.model || getRuntimeProvider("gemini").defaultModelId;
+        const model = normalizeOptionalString(params.model)
+            || threadMeta.model
+            || (0, provider_catalog_1.getRuntimeProvider)("gemini").defaultModelId;
         const args = [];
         if (prompt) {
             args.push("--prompt", prompt);
         }
-        args.push("--model", model);
+        if (model) {
+            args.push("--model", model);
+        }
         args.push("--output-format", "stream-json");
         if (resolveFullAccess(params)) {
             args.push("--yolo");
@@ -95,12 +73,12 @@ function createGeminiAdapter({ store, logPrefix = "[coderover]", } = {}) {
         }
         const binary = process.env.GEMINI_PATH || "gemini";
         const child = process.platform === "win32"
-            ? spawn(binary, args, {
+            ? (0, child_process_1.spawn)(binary, args, {
                 cwd: threadMeta.cwd || process.cwd(),
                 env: process.env,
                 stdio: ["ignore", "pipe", "pipe"],
             })
-            : spawn("sh", ["-c", "exec \"$0\" \"$@\"", binary, ...args], {
+            : (0, child_process_1.spawn)("sh", ["-c", "exec \"$0\" \"$@\"", binary, ...args], {
                 cwd: threadMeta.cwd || process.cwd(),
                 env: process.env,
                 stdio: ["ignore", "pipe", "pipe"],
@@ -111,24 +89,24 @@ function createGeminiAdapter({ store, logPrefix = "[coderover]", } = {}) {
         let stdoutBuffer = "";
         let stderrBuffer = "";
         let usage = null;
-        const completion = new Promise((resolve, reject) => {
+        return new Promise((resolve, reject) => {
             child.stdout.on("data", (chunk) => {
-                stdoutBuffer += chunk.toString("utf8");
+                stdoutBuffer += typeof chunk === "string" ? chunk : chunk.toString("utf8");
                 const lines = stdoutBuffer.split("\n");
                 stdoutBuffer = lines.pop() || "";
                 for (const line of lines) {
-                    handleGeminiLine(line, turnContext, threadMeta, (nextUsage) => {
+                    handleGeminiLine(line, turnContext, (nextUsage) => {
                         usage = nextUsage;
                     }, reject);
                 }
             });
             child.stderr.on("data", (chunk) => {
-                stderrBuffer += chunk.toString("utf8");
+                stderrBuffer += typeof chunk === "string" ? chunk : chunk.toString("utf8");
             });
             child.on("error", (error) => reject(error));
             child.on("close", (code) => {
                 if (stdoutBuffer.trim()) {
-                    handleGeminiLine(stdoutBuffer, turnContext, threadMeta, (nextUsage) => {
+                    handleGeminiLine(stdoutBuffer, turnContext, (nextUsage) => {
                         usage = nextUsage;
                     }, reject);
                     stdoutBuffer = "";
@@ -137,18 +115,46 @@ function createGeminiAdapter({ store, logPrefix = "[coderover]", } = {}) {
                     reject(new Error(stderrBuffer.trim() || `Gemini CLI exited with code ${code}`));
                     return;
                 }
-                resolve({
-                    usage,
-                });
+                resolve({ usage });
             });
         });
-        return completion;
     }
     return {
         hydrateThread,
         startTurn,
         syncImportedThreads,
     };
+}
+function buildGeminiHistory(threadId, messages) {
+    const turns = [];
+    let currentTurn = null;
+    for (const message of messages) {
+        if (message.role === "user" || !currentTurn) {
+            currentTurn = {
+                id: (0, crypto_1.randomUUID)(),
+                createdAt: new Date().toISOString(),
+                status: "completed",
+                items: [],
+            };
+            turns.push(currentTurn);
+        }
+        currentTurn.items.push({
+            id: (0, crypto_1.randomUUID)(),
+            type: message.role === "user" ? "user_message" : "agent_message",
+            role: message.role === "user" ? "user" : "assistant",
+            createdAt: new Date().toISOString(),
+            content: [{ type: "text", text: message.text }],
+            text: message.text,
+            message: null,
+            status: null,
+            command: null,
+            metadata: null,
+            plan: null,
+            summary: null,
+            fileChanges: [],
+        });
+    }
+    return { threadId, turns };
 }
 function discoverGeminiChatFiles() {
     const candidates = [
@@ -181,20 +187,16 @@ function discoverGeminiChatFiles() {
     return results;
 }
 function discoverChatFiles(projectDir) {
-    const candidates = [
-        path.join(projectDir, "chats"),
-        projectDir,
-    ];
+    const candidates = [path.join(projectDir, "chats"), projectDir];
     const files = [];
     for (const directory of candidates) {
         if (!fs.existsSync(directory) || !safeStat(directory)?.isDirectory()) {
             continue;
         }
         for (const entry of safeReaddir(directory)) {
-            if (!entry.endsWith(".json")) {
-                continue;
+            if (entry.endsWith(".json")) {
+                files.push(path.join(directory, entry));
             }
-            files.push(path.join(directory, entry));
         }
     }
     return files;
@@ -216,8 +218,7 @@ function loadGeminiHistoryMessages(chatFile) {
         return [];
     }
     try {
-        const parsed = JSON.parse(fs.readFileSync(chatFile, "utf8"));
-        return extractGeminiMessages(parsed);
+        return extractGeminiMessages(JSON.parse(fs.readFileSync(chatFile, "utf8")));
     }
     catch {
         return [];
@@ -227,22 +228,17 @@ function extractGeminiMessages(parsed) {
     if (Array.isArray(parsed)) {
         return parsed
             .map((entry) => normalizeGeminiMessage(entry))
-            .filter(Boolean);
+            .filter((entry) => Boolean(entry));
     }
     if (parsed && typeof parsed === "object") {
-        const candidateArrays = [
-            parsed.messages,
-            parsed.entries,
-            parsed.history,
-            parsed.chat,
-        ];
+        const root = parsed;
+        const candidateArrays = [root.messages, root.entries, root.history, root.chat];
         for (const candidate of candidateArrays) {
-            if (!Array.isArray(candidate)) {
-                continue;
+            if (Array.isArray(candidate)) {
+                return candidate
+                    .map((entry) => normalizeGeminiMessage(entry))
+                    .filter((entry) => Boolean(entry));
             }
-            return candidate
-                .map((entry) => normalizeGeminiMessage(entry))
-                .filter(Boolean);
         }
     }
     return [];
@@ -251,28 +247,24 @@ function normalizeGeminiMessage(entry) {
     if (!entry || typeof entry !== "object") {
         return null;
     }
-    const rawRole = normalizeOptionalString(entry.role || entry.author || entry.sender || entry.type);
+    const root = entry;
+    const rawRole = normalizeOptionalString(root.role || root.author || root.sender || root.type);
     const role = normalizeGeminiRole(rawRole);
-    const text = normalizeOptionalString(extractGeminiMessageText(entry));
+    const text = normalizeOptionalString(extractGeminiMessageText(root));
     if (!role || !text) {
         return null;
     }
-    return {
-        role,
-        text,
-    };
+    return { role, text };
 }
 function normalizeGeminiRole(rawRole) {
-    const role = normalizeOptionalString(rawRole)?.toLowerCase();
+    const role = rawRole?.toLowerCase() || "";
     if (!role) {
         return null;
     }
     if (role.includes("user")) {
         return "user";
     }
-    if (role.includes("gemini")
-        || role.includes("assistant")
-        || role.includes("model")) {
+    if (role.includes("gemini") || role.includes("assistant") || role.includes("model")) {
         return "assistant";
     }
     return null;
@@ -308,7 +300,7 @@ function joinGeminiTextParts(parts) {
     }
     const flattened = parts
         .map((part) => extractGeminiPartText(part))
-        .filter(Boolean);
+        .filter((value) => Boolean(value));
     return flattened.length > 0 ? flattened.join("\n") : null;
 }
 function extractGeminiPartText(part) {
@@ -318,22 +310,18 @@ function extractGeminiPartText(part) {
     if (!part || typeof part !== "object") {
         return null;
     }
-    const directText = normalizeOptionalString(part.text
-        || part.content
-        || part.message
-        || part.resultDisplay
-        || part.description);
+    const root = part;
+    const directText = normalizeOptionalString(root.text || root.content || root.message || root.resultDisplay || root.description);
     if (directText) {
         return directText;
     }
-    const nested = [
-        joinGeminiTextParts(part.parts),
-        joinGeminiTextParts(part.content),
-        joinGeminiTextParts(part.messages),
-        joinGeminiTextParts(part.result),
-        joinGeminiThoughts(part.thoughts),
-    ].find(Boolean);
-    return nested || null;
+    return [
+        joinGeminiTextParts(root.parts),
+        joinGeminiTextParts(root.content),
+        joinGeminiTextParts(root.messages),
+        joinGeminiTextParts(root.result),
+        joinGeminiThoughts(root.thoughts),
+    ].find((value) => Boolean(value)) || null;
 }
 function joinGeminiThoughts(thoughts) {
     if (!Array.isArray(thoughts)) {
@@ -344,28 +332,28 @@ function joinGeminiThoughts(thoughts) {
         if (!thought || typeof thought !== "object") {
             return null;
         }
-        return normalizeOptionalString(thought.description
-            || thought.text
-            || thought.message
-            || thought.subject);
+        const root = thought;
+        return normalizeOptionalString(root.description || root.text || root.message || root.subject);
     })
-        .filter(Boolean);
+        .filter((value) => Boolean(value));
     return flattened.length > 0 ? flattened.join("\n") : null;
 }
 async function buildGeminiPrompt(inputItems, cwd) {
     const textParts = [];
     const imagePaths = [];
     for (const item of inputItems) {
-        if (item.type === "text" && item.text) {
+        if (item.type === "text" && typeof item.text === "string" && item.text) {
             textParts.push(item.text);
             continue;
         }
-        if (item.type === "skill" && item.id) {
+        if (item.type === "skill" && typeof item.id === "string" && item.id) {
             textParts.push(`$${item.id}`);
             continue;
         }
-        if ((item.type === "image" || item.type === "local_image") && (item.url || item.image_url || item.path)) {
-            const imagePath = item.path || await materializeImage(item.url || item.image_url, cwd);
+        if ((item.type === "image" || item.type === "local_image")
+            && (typeof item.url === "string" || typeof item.image_url === "string" || typeof item.path === "string")) {
+            const source = readFirstString([item.path, item.url, item.image_url]);
+            const imagePath = source ? await materializeImage(source, cwd) : null;
             if (imagePath) {
                 imagePaths.push(imagePath);
             }
@@ -394,11 +382,11 @@ async function materializeImage(source, cwd) {
     const extension = mimeType.split("/")[1] || "png";
     const tempDir = path.join(cwd || os.tmpdir(), ".coderover", "gemini-images");
     fs.mkdirSync(tempDir, { recursive: true });
-    const filePath = path.join(tempDir, `${Date.now()}-${randomUUID()}.${extension}`);
+    const filePath = path.join(tempDir, `${Date.now()}-${(0, crypto_1.randomUUID)()}.${extension}`);
     fs.writeFileSync(filePath, Buffer.from(base64, "base64"));
     return filePath;
 }
-function handleGeminiLine(line, turnContext, threadMeta, updateUsage, reject) {
+function handleGeminiLine(line, turnContext, updateUsage, reject) {
     const trimmed = line.trim();
     if (!trimmed) {
         return;
@@ -410,53 +398,57 @@ function handleGeminiLine(line, turnContext, threadMeta, updateUsage, reject) {
     catch {
         return;
     }
-    const type = normalizeOptionalString(event.type);
+    if (!event || typeof event !== "object") {
+        return;
+    }
+    const root = event;
+    const type = normalizeOptionalString(root.type);
     if (!type) {
         return;
     }
-    if (type === "init" && event.session_id) {
-        turnContext.bindProviderSession(event.session_id);
+    if (type === "init") {
+        const sessionId = normalizeOptionalString(root.session_id);
+        if (sessionId) {
+            turnContext.bindProviderSession(sessionId);
+        }
         return;
     }
-    if (type === "message" && normalizeOptionalString(event.role) === "assistant") {
-        const content = normalizeOptionalString(event.content);
+    if (type === "message" && normalizeOptionalString(root.role) === "assistant") {
+        const content = normalizeOptionalString(root.content);
         if (content) {
             turnContext.appendAgentDelta(content, {
-                itemId: event.id || randomUUID(),
+                itemId: normalizeOptionalString(root.id) || (0, crypto_1.randomUUID)(),
             });
             turnContext.updatePreview(content);
         }
         return;
     }
     if (type === "tool_use") {
-        const rendered = renderGeminiToolUse(event);
-        turnContext.appendToolCallDelta(rendered, {
-            itemId: normalizeOptionalString(event.tool_id) || randomUUID(),
-            toolName: normalizeOptionalString(event.tool_name),
+        turnContext.appendToolCallDelta(renderGeminiToolUse(root), {
+            itemId: normalizeOptionalString(root.tool_id) || (0, crypto_1.randomUUID)(),
+            toolName: normalizeOptionalString(root.tool_name),
         });
         return;
     }
     if (type === "tool_result") {
-        const rendered = normalizeOptionalString(event.output) || normalizeOptionalString(event.status) || "tool_result";
-        turnContext.appendToolCallDelta(rendered, {
-            itemId: normalizeOptionalString(event.tool_id) || randomUUID(),
-            toolName: normalizeOptionalString(event.tool_name),
+        turnContext.appendToolCallDelta(normalizeOptionalString(root.output) || normalizeOptionalString(root.status) || "tool_result", {
+            itemId: normalizeOptionalString(root.tool_id) || (0, crypto_1.randomUUID)(),
+            toolName: normalizeOptionalString(root.tool_name),
             completed: true,
         });
         return;
     }
     if (type === "result") {
-        const totalTokens = numberOrNull(event?.stats?.total_tokens || event?.usage?.totalTokens);
+        const stats = asRecord(root.stats);
+        const usageRoot = asRecord(root.usage);
+        const totalTokens = numberOrNull(stats?.total_tokens) ?? numberOrNull(usageRoot?.totalTokens);
         if (totalTokens != null) {
-            updateUsage({
-                tokensUsed: totalTokens,
-                totalTokens,
-            });
+            updateUsage({ tokensUsed: totalTokens, totalTokens });
         }
         return;
     }
     if (type === "error") {
-        reject(new Error(normalizeOptionalString(event.error || event.message) || "Gemini CLI error"));
+        reject(new Error(normalizeOptionalString(root.error || root.message) || "Gemini CLI error"));
     }
 }
 function renderGeminiToolUse(event) {
@@ -469,7 +461,8 @@ function renderGeminiToolUse(event) {
 function resolveFullAccess(params) {
     const approvalPolicy = normalizeOptionalString(params.approvalPolicy);
     const sandbox = normalizeOptionalString(params.sandbox);
-    const sandboxType = normalizeOptionalString(params.sandboxPolicy?.type);
+    const sandboxPolicy = asRecord(params.sandboxPolicy);
+    const sandboxType = normalizeOptionalString(sandboxPolicy?.type);
     return approvalPolicy === "never"
         || sandbox === "dangerFullAccess"
         || sandboxType === "dangerFullAccess";
@@ -498,13 +491,19 @@ function normalizeOptionalString(value) {
     return trimmed || null;
 }
 function numberOrNull(value) {
-    if (typeof value === "number" && Number.isFinite(value)) {
-        return value;
+    return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+function readFirstString(values) {
+    for (const value of values) {
+        const normalized = normalizeOptionalString(value);
+        if (normalized) {
+            return normalized;
+        }
     }
     return null;
 }
-module.exports = {
-    createGeminiAdapter,
-    extractGeminiMessages,
-    normalizeGeminiMessage,
-};
+function asRecord(value) {
+    return value && typeof value === "object" && !Array.isArray(value)
+        ? value
+        : null;
+}

@@ -1,30 +1,44 @@
 "use strict";
-Object.defineProperty(exports, "__esModule", { value: true });
-// FILE: local-bridge-server.test.js
+// FILE: local-bridge-server.test.ts
 // Purpose: Verifies the QR transport candidates stay limited to directly reachable LAN or explicit tailnet endpoints.
-// Layer: Unit test
-// Exports: node:test suite
-// Depends on: node:test, node:assert/strict, os, ../src/local-bridge-server
+Object.defineProperty(exports, "__esModule", { value: true });
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const os = require("os");
-const { WebSocket } = require("ws");
-const { buildTransportCandidates, startLocalBridgeServer, } = require("../src/local-bridge-server");
+const ws_1 = require("ws");
+const local_bridge_server_1 = require("../src/local-bridge-server");
+function delay(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+function mockNetworkInterfaces(mock) {
+    const original = os.networkInterfaces;
+    Object.defineProperty(os, "networkInterfaces", {
+        configurable: true,
+        writable: true,
+        value: mock,
+    });
+    return () => {
+        Object.defineProperty(os, "networkInterfaces", {
+            configurable: true,
+            writable: true,
+            value: original,
+        });
+    };
+}
 test("buildTransportCandidates excludes hostname, utun, and link-local addresses", () => {
-    const originalNetworkInterfaces = os.networkInterfaces;
-    os.networkInterfaces = () => ({
+    const restoreNetworkInterfaces = mockNetworkInterfaces(() => ({
         en0: [
-            { address: "192.168.1.11", family: "IPv4", internal: false },
+            { address: "192.168.1.11", family: "IPv4", internal: false, cidr: null, mac: "", netmask: "" },
         ],
         utun7: [
-            { address: "10.20.0.1", family: "IPv4", internal: false },
+            { address: "10.20.0.1", family: "IPv4", internal: false, cidr: null, mac: "", netmask: "" },
         ],
         en11: [
-            { address: "169.254.119.222", family: "IPv4", internal: false },
+            { address: "169.254.119.222", family: "IPv4", internal: false, cidr: null, mac: "", netmask: "" },
         ],
-    });
+    }));
     try {
-        const candidates = buildTransportCandidates({
+        const candidates = (0, local_bridge_server_1.buildTransportCandidates)({
             bridgeId: "bridge-1",
             localPort: 8765,
         });
@@ -37,18 +51,17 @@ test("buildTransportCandidates excludes hostname, utun, and link-local addresses
         ]);
     }
     finally {
-        os.networkInterfaces = originalNetworkInterfaces;
+        restoreNetworkInterfaces();
     }
 });
 test("buildTransportCandidates appends explicit tailnet endpoint after LAN candidates", () => {
-    const originalNetworkInterfaces = os.networkInterfaces;
-    os.networkInterfaces = () => ({
+    const restoreNetworkInterfaces = mockNetworkInterfaces(() => ({
         en0: [
-            { address: "192.168.1.11", family: "IPv4", internal: false },
+            { address: "192.168.1.11", family: "IPv4", internal: false, cidr: null, mac: "", netmask: "" },
         ],
-    });
+    }));
     try {
-        const candidates = buildTransportCandidates({
+        const candidates = (0, local_bridge_server_1.buildTransportCandidates)({
             bridgeId: "bridge-2",
             localPort: 8765,
             tailnetUrl: "ws://coderover-host.tailnet.ts.net:8765",
@@ -67,21 +80,20 @@ test("buildTransportCandidates appends explicit tailnet endpoint after LAN candi
         ]);
     }
     finally {
-        os.networkInterfaces = originalNetworkInterfaces;
+        restoreNetworkInterfaces();
     }
 });
 test("buildTransportCandidates appends explicit relay endpoints after LAN and tailnet candidates", () => {
-    const originalNetworkInterfaces = os.networkInterfaces;
-    os.networkInterfaces = () => ({
+    const restoreNetworkInterfaces = mockNetworkInterfaces(() => ({
         en0: [
-            { address: "192.168.1.11", family: "IPv4", internal: false },
+            { address: "192.168.1.11", family: "IPv4", internal: false, cidr: null, mac: "", netmask: "" },
         ],
         utun4: [
-            { address: "100.82.80.46", family: "IPv4", internal: false },
+            { address: "100.82.80.46", family: "IPv4", internal: false, cidr: null, mac: "", netmask: "" },
         ],
-    });
+    }));
     try {
-        const candidates = buildTransportCandidates({
+        const candidates = (0, local_bridge_server_1.buildTransportCandidates)({
             bridgeId: "bridge-relay",
             localPort: 8765,
             tailnetUrl: "wss://my-mac.tailnet.example",
@@ -119,21 +131,20 @@ test("buildTransportCandidates appends explicit relay endpoints after LAN and ta
         ]);
     }
     finally {
-        os.networkInterfaces = originalNetworkInterfaces;
+        restoreNetworkInterfaces();
     }
 });
 test("buildTransportCandidates includes Tailscale utun addresses as tailnet candidates", () => {
-    const originalNetworkInterfaces = os.networkInterfaces;
-    os.networkInterfaces = () => ({
+    const restoreNetworkInterfaces = mockNetworkInterfaces(() => ({
         en0: [
-            { address: "192.168.1.11", family: "IPv4", internal: false },
+            { address: "192.168.1.11", family: "IPv4", internal: false, cidr: null, mac: "", netmask: "" },
         ],
         utun4: [
-            { address: "100.82.80.46", family: "IPv4", internal: false },
+            { address: "100.82.80.46", family: "IPv4", internal: false, cidr: null, mac: "", netmask: "" },
         ],
-    });
+    }));
     try {
-        const candidates = buildTransportCandidates({
+        const candidates = (0, local_bridge_server_1.buildTransportCandidates)({
             bridgeId: "bridge-3",
             localPort: 8765,
         });
@@ -151,19 +162,19 @@ test("buildTransportCandidates includes Tailscale utun addresses as tailnet cand
         ]);
     }
     finally {
-        os.networkInterfaces = originalNetworkInterfaces;
+        restoreNetworkInterfaces();
     }
 });
 test("startLocalBridgeServer rejects clients while bridge upstream is unavailable", async () => {
-    const server = startLocalBridgeServer({
+    const server = (0, local_bridge_server_1.startLocalBridgeServer)({
         bridgeId: "bridge-unavailable",
         host: "127.0.0.1",
         port: 0,
         canAcceptConnection: () => false,
     });
-    await new Promise((resolve) => setTimeout(resolve, 25));
+    await delay(25);
     const response = await new Promise((resolve, reject) => {
-        const client = new WebSocket(`ws://127.0.0.1:${server.resolvedPort()}/bridge/bridge-unavailable`);
+        const client = new ws_1.WebSocket(`ws://127.0.0.1:${server.resolvedPort()}/bridge/bridge-unavailable`);
         client.once("unexpected-response", (_request, incomingMessage) => {
             resolve({
                 statusCode: incomingMessage.statusCode,
@@ -184,7 +195,7 @@ test("startLocalBridgeServer rejects clients while bridge upstream is unavailabl
 });
 test("startLocalBridgeServer keeps multiple clients connected at the same time", async () => {
     const received = [];
-    const server = startLocalBridgeServer({
+    const server = (0, local_bridge_server_1.startLocalBridgeServer)({
         bridgeId: "bridge-multi",
         host: "127.0.0.1",
         port: 0,
@@ -195,24 +206,24 @@ test("startLocalBridgeServer keeps multiple clients connected at the same time",
             });
         },
     });
-    await new Promise((resolve) => setTimeout(resolve, 25));
-    const firstClient = new WebSocket(`ws://127.0.0.1:${server.resolvedPort()}/bridge/bridge-multi`);
-    const secondClient = new WebSocket(`ws://127.0.0.1:${server.resolvedPort()}/bridge/bridge-multi`);
+    await delay(25);
+    const firstClient = new ws_1.WebSocket(`ws://127.0.0.1:${server.resolvedPort()}/bridge/bridge-multi`);
+    const secondClient = new ws_1.WebSocket(`ws://127.0.0.1:${server.resolvedPort()}/bridge/bridge-multi`);
     await Promise.all([
         new Promise((resolve, reject) => {
-            firstClient.once("open", resolve);
+            firstClient.once("open", () => resolve());
             firstClient.once("error", reject);
         }),
         new Promise((resolve, reject) => {
-            secondClient.once("open", resolve);
+            secondClient.once("open", () => resolve());
             secondClient.once("error", reject);
         }),
     ]);
     firstClient.send("first");
     secondClient.send("second");
-    await new Promise((resolve) => setTimeout(resolve, 25));
-    assert.equal(firstClient.readyState, WebSocket.OPEN);
-    assert.equal(secondClient.readyState, WebSocket.OPEN);
+    await delay(25);
+    assert.equal(firstClient.readyState, ws_1.WebSocket.OPEN);
+    assert.equal(secondClient.readyState, ws_1.WebSocket.OPEN);
     assert.equal(received.length, 2);
     assert.notEqual(received[0].transportId, received[1].transportId);
     firstClient.terminate();
@@ -220,14 +231,14 @@ test("startLocalBridgeServer keeps multiple clients connected at the same time",
     server.stop();
 });
 test("startLocalBridgeServer reports stale bridge routes as pairing_expired", async () => {
-    const server = startLocalBridgeServer({
+    const server = (0, local_bridge_server_1.startLocalBridgeServer)({
         bridgeId: "bridge-current",
         host: "127.0.0.1",
         port: 0,
     });
-    await new Promise((resolve) => setTimeout(resolve, 25));
+    await delay(25);
     const result = await new Promise((resolve, reject) => {
-        const client = new WebSocket(`ws://127.0.0.1:${server.resolvedPort()}/bridge/bridge-old`);
+        const client = new ws_1.WebSocket(`ws://127.0.0.1:${server.resolvedPort()}/bridge/bridge-old`);
         client.once("message", (data) => {
             const payload = JSON.parse(data.toString("utf8"));
             resolve(payload);

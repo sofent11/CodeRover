@@ -1,11 +1,9 @@
 "use strict";
-Object.defineProperty(exports, "__esModule", { value: true });
-// FILE: thread-context-handler.js
+// FILE: thread-context-handler.ts
 // Purpose: Serves on-demand context-window usage reads from local Codex rollout files.
-// Layer: Bridge handler
-// Exports: handleThreadContextRequest
-// Depends on: ./rollout-watch
-const { readLatestContextWindowUsage } = require("./rollout-watch");
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.handleThreadContextRequest = handleThreadContextRequest;
+const rollout_watch_1 = require("./rollout-watch");
 function handleThreadContextRequest(rawMessage, sendResponse) {
     let parsed;
     try {
@@ -45,7 +43,7 @@ async function handleThreadContextRead(params) {
         throw threadContextError("missing_thread_id", "thread/contextWindow/read requires a threadId.");
     }
     const turnId = readString(params.turnId) || readString(params.turn_id);
-    const result = readLatestContextWindowUsage({ threadId, turnId });
+    const result = (0, rollout_watch_1.readLatestContextWindowUsage)({ threadId, turnId: turnId ?? undefined });
     return {
         threadId,
         usage: result?.usage ?? null,
@@ -61,6 +59,3 @@ function threadContextError(errorCode, userMessage) {
     error.userMessage = userMessage;
     return error;
 }
-module.exports = {
-    handleThreadContextRequest,
-};

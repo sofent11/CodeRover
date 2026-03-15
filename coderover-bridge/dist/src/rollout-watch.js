@@ -1,22 +1,29 @@
 "use strict";
-Object.defineProperty(exports, "__esModule", { value: true });
-// FILE: rollout-watch.js
+// FILE: rollout-watch.ts
 // Purpose: Shared rollout-file lookup/watch helpers for CLI inspection and desktop refresh.
-// Layer: CLI helper
-// Exports: watchThreadRollout, createThreadRolloutActivityWatcher
-// Depends on: fs, os, path, ./session-state
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.createThreadRolloutActivityWatcher = createThreadRolloutActivityWatcher;
+exports.watchThreadRollout = watchThreadRollout;
+exports.resolveSessionsRoot = resolveSessionsRoot;
+exports.findRolloutFileForThread = findRolloutFileForThread;
+exports.readLatestContextWindowUsage = readLatestContextWindowUsage;
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { readLastActiveThread } = require("./session-state");
+const session_state_1 = require("./session-state");
 const DEFAULT_WATCH_INTERVAL_MS = 1_000;
 const DEFAULT_LOOKUP_TIMEOUT_MS = 5_000;
 const DEFAULT_IDLE_TIMEOUT_MS = 10_000;
 const DEFAULT_TRANSIENT_ERROR_RETRY_LIMIT = 2;
 const DEFAULT_CONTEXT_READ_SCAN_BYTES = 512 * 1024;
 const DEFAULT_RECENT_ROLLOUT_CANDIDATE_LIMIT = 24;
-// Polls one rollout file until it materializes and then reports size growth.
-function createThreadRolloutActivityWatcher({ threadId, intervalMs = DEFAULT_WATCH_INTERVAL_MS, lookupTimeoutMs = DEFAULT_LOOKUP_TIMEOUT_MS, idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS, now = () => Date.now(), fsModule = fs, transientErrorRetryLimit = DEFAULT_TRANSIENT_ERROR_RETRY_LIMIT, onEvent = () => { }, onIdle = () => { }, onTimeout = () => { }, onError = () => { }, } = {}) {
+function getDefaultScanFsModule() {
+    return fs;
+}
+function getDefaultReadFsModule() {
+    return fs;
+}
+function createThreadRolloutActivityWatcher({ threadId, intervalMs = DEFAULT_WATCH_INTERVAL_MS, lookupTimeoutMs = DEFAULT_LOOKUP_TIMEOUT_MS, idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS, now = () => Date.now(), fsModule = getDefaultScanFsModule(), transientErrorRetryLimit = DEFAULT_TRANSIENT_ERROR_RETRY_LIMIT, onEvent = () => { }, onIdle = () => { }, onTimeout = () => { }, onError = () => { }, } = {}) {
     const resolvedThreadId = resolveThreadId(threadId);
     const sessionsRoot = resolveSessionsRoot();
     const startedAt = now();
@@ -55,7 +62,7 @@ function createThreadRolloutActivityWatcher({ threadId, intervalMs = DEFAULT_WAT
             }
             const nextSize = readFileSize(rolloutPath, fsModule);
             transientErrorCount = 0;
-            if (nextSize > lastSize) {
+            if (lastSize === null || nextSize > lastSize) {
                 lastSize = nextSize;
                 lastGrowthAt = currentTime;
                 onEvent({
@@ -76,11 +83,12 @@ function createThreadRolloutActivityWatcher({ threadId, intervalMs = DEFAULT_WAT
             }
         }
         catch (error) {
-            if (isRetryableFilesystemError(error) && transientErrorCount < transientErrorRetryLimit) {
+            if (isRetryableFilesystemError(error)
+                && transientErrorCount < transientErrorRetryLimit) {
                 transientErrorCount += 1;
                 return;
             }
-            onError(error);
+            onError(asError(error));
             stop();
         }
     };
@@ -123,7 +131,7 @@ function watchThreadRollout(threadId = "") {
         });
         let chunkBuffer = "";
         stream.on("data", (chunk) => {
-            chunkBuffer += chunk;
+            chunkBuffer += typeof chunk === "string" ? chunk : chunk.toString("utf8");
         });
         stream.on("end", () => {
             offset = current.size;
@@ -150,7 +158,7 @@ function resolveThreadId(threadId) {
     if (threadId && typeof threadId === "string") {
         return threadId;
     }
-    const last = readLastActiveThread();
+    const last = (0, session_state_1.readLastActiveThread)();
     if (last?.threadId) {
         return last.threadId;
     }
@@ -160,13 +168,16 @@ function resolveSessionsRoot() {
     const coderoverHome = process.env.CODEROVER_HOME || path.join(os.homedir(), ".coderover");
     return path.join(coderoverHome, "sessions");
 }
-function findRolloutFileForThread(root, threadId, { fsModule = fs } = {}) {
+function findRolloutFileForThread(root, threadId, { fsModule = getDefaultScanFsModule() } = {}) {
     if (!fsModule.existsSync(root)) {
         return null;
     }
     const stack = [root];
     while (stack.length > 0) {
         const current = stack.pop();
+        if (!current) {
+            continue;
+        }
         const entries = fsModule.readdirSync(current, { withFileTypes: true });
         for (const entry of entries) {
             const fullPath = path.join(current, entry.name);
@@ -177,14 +188,16 @@ function findRolloutFileForThread(root, threadId, { fsModule = fs } = {}) {
             if (!entry.isFile()) {
                 continue;
             }
-            if (entry.name.includes(threadId) && entry.name.startsWith("rollout-") && entry.name.endsWith(".jsonl")) {
+            if (entry.name.includes(threadId)
+                && entry.name.startsWith("rollout-")
+                && entry.name.endsWith(".jsonl")) {
                 return fullPath;
             }
         }
     }
     return null;
 }
-function readLatestContextWindowUsage({ threadId, turnId = "", root = resolveSessionsRoot(), fsModule = fs, scanBytes = DEFAULT_CONTEXT_READ_SCAN_BYTES, } = {}) {
+function readLatestContextWindowUsage({ threadId, turnId = "", root = resolveSessionsRoot(), fsModule = getDefaultReadFsModule(), scanBytes = DEFAULT_CONTEXT_READ_SCAN_BYTES, } = {}) {
     const normalizedThreadId = typeof threadId === "string" ? threadId.trim() : "";
     const normalizedTurnId = typeof turnId === "string" ? turnId.trim() : "";
     if (!normalizedThreadId && !normalizedTurnId) {
@@ -232,7 +245,7 @@ function readLatestContextWindowUsage({ threadId, turnId = "", root = resolveSes
         usage: latestUsage,
     };
 }
-function findRecentRolloutFileForContextRead(root, { threadId = "", turnId = "", fsModule = fs, candidateLimit = DEFAULT_RECENT_ROLLOUT_CANDIDATE_LIMIT, scanBytes = 16 * 1024, } = {}) {
+function findRecentRolloutFileForContextRead(root, { threadId = "", turnId = "", fsModule = getDefaultReadFsModule(), candidateLimit = DEFAULT_RECENT_ROLLOUT_CANDIDATE_LIMIT, scanBytes = 16 * 1024, } = {}) {
     const candidates = collectRecentRolloutFiles(root, { fsModule, candidateLimit });
     if (candidates.length === 0) {
         return null;
@@ -253,7 +266,7 @@ function findRecentRolloutFileForContextRead(root, { threadId = "", turnId = "",
     }
     return null;
 }
-function collectRecentRolloutFiles(root, { fsModule = fs, candidateLimit = DEFAULT_RECENT_ROLLOUT_CANDIDATE_LIMIT, } = {}) {
+function collectRecentRolloutFiles(root, { fsModule = getDefaultScanFsModule(), candidateLimit = DEFAULT_RECENT_ROLLOUT_CANDIDATE_LIMIT, } = {}) {
     if (!root || !fsModule.existsSync(root)) {
         return [];
     }
@@ -261,6 +274,9 @@ function collectRecentRolloutFiles(root, { fsModule = fs, candidateLimit = DEFAU
     const files = [];
     while (stack.length > 0) {
         const current = stack.pop();
+        if (!current) {
+            continue;
+        }
         const entries = fsModule.readdirSync(current, { withFileTypes: true });
         for (const entry of entries) {
             const fullPath = path.join(current, entry.name);
@@ -288,10 +304,10 @@ function collectRecentRolloutFiles(root, { fsModule = fs, candidateLimit = DEFAU
         }
     }
     return files
-        .sort((lhs, rhs) => rhs.modifiedAtMs - lhs.modifiedAtMs)
+        .sort((left, right) => right.modifiedAtMs - left.modifiedAtMs)
         .slice(0, candidateLimit);
 }
-function rolloutFileContainsToken(filePath, token, { fsModule = fs, scanBytes = 16 * 1024, } = {}) {
+function rolloutFileContainsToken(filePath, token, { fsModule = getDefaultReadFsModule(), scanBytes = 16 * 1024, } = {}) {
     const normalizedToken = typeof token === "string" ? token.trim() : "";
     if (!filePath || !normalizedToken) {
         return false;
@@ -332,14 +348,15 @@ function normalizeContextWindowUsage(value) {
     if (!value || typeof value !== "object" || Array.isArray(value)) {
         return null;
     }
-    const tokensUsed = firstFiniteNumber(value, [
+    const root = value;
+    const tokensUsed = firstFiniteNumber(root, [
         "tokensUsed",
         "tokens_used",
         "totalTokens",
         "total_tokens",
         "input_tokens",
     ]);
-    const tokenLimit = firstFiniteNumber(value, [
+    const tokenLimit = firstFiniteNumber(root, [
         "tokenLimit",
         "token_limit",
         "maxTokens",
@@ -382,9 +399,15 @@ function formatRolloutLine(rawLine) {
     catch {
         return null;
     }
-    const timestamp = formatTimestamp(parsed.timestamp);
-    const payload = parsed.payload || {};
-    if (parsed.type === "event_msg") {
+    if (!parsed || typeof parsed !== "object") {
+        return null;
+    }
+    const root = parsed;
+    const timestamp = formatTimestamp(root.timestamp);
+    const payload = root.payload && typeof root.payload === "object" && !Array.isArray(root.payload)
+        ? root.payload
+        : {};
+    if (root.type === "event_msg") {
         const eventType = payload.type;
         if (eventType === "user_message") {
             return `${timestamp} Phone: ${previewText(payload.message)}`;
@@ -409,7 +432,11 @@ function formatTimestamp(value) {
     if (Number.isNaN(date.getTime())) {
         return "[time?]";
     }
-    return `[${date.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}]`;
+    return `[${date.toLocaleTimeString("en-GB", {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+    })}]`;
 }
 function previewText(value) {
     if (typeof value !== "string") {
@@ -421,16 +448,13 @@ function previewText(value) {
     }
     return `${normalized.slice(0, 117)}...`;
 }
-function readFileSize(filePath, fsModule = fs) {
+function readFileSize(filePath, fsModule) {
     return fsModule.statSync(filePath).size;
 }
 function isRetryableFilesystemError(error) {
-    return ["ENOENT", "EACCES", "EPERM", "EBUSY"].includes(error?.code);
+    const code = error?.code;
+    return typeof code === "string" && ["ENOENT", "EACCES", "EPERM", "EBUSY"].includes(code);
 }
-module.exports = {
-    watchThreadRollout,
-    createThreadRolloutActivityWatcher,
-    readLatestContextWindowUsage,
-    resolveSessionsRoot,
-    findRolloutFileForThread,
-};
+function asError(error) {
+    return error instanceof Error ? error : new Error(String(error));
+}

@@ -1,10 +1,10 @@
 "use strict";
-Object.defineProperty(exports, "__esModule", { value: true });
 // FILE: secure-transport.test.js
 // Purpose: Verifies the bridge-side E2EE handshake rejects plaintext and round-trips encrypted payloads.
 // Layer: Unit test
 // Exports: node:test suite
 // Depends on: node:test, node:assert/strict, crypto, ../src/secure-transport
+Object.defineProperty(exports, "__esModule", { value: true });
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { createCipheriv, createDecipheriv, createHash, createPrivateKey, createPublicKey, diffieHellman, generateKeyPairSync, hkdfSync, sign, } = require("crypto");

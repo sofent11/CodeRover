@@ -1,32 +1,81 @@
-// @ts-nocheck
-export {};
-
-// FILE: workspace-handler.js
+// FILE: workspace-handler.ts
 // Purpose: Executes workspace-scoped reverse patch previews/applies without touching unrelated repo changes.
-// Layer: Bridge handler
-// Exports: handleWorkspaceRequest
-// Depends on: child_process, fs, os, path, ./git-handler
 
-const { execFile } = require("child_process");
-const fs = require("fs");
-const os = require("os");
-const path = require("path");
-const { promisify } = require("util");
-const { gitStatus } = require("./git-handler");
+import { execFile, type ExecFileException } from "child_process";
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
 
-const execFileAsync = promisify(execFile);
+import { gitStatus } from "./git-handler";
+
 const GIT_TIMEOUT_MS = 30_000;
-const repoMutationLocks = new Map();
+const repoMutationLocks = new Map<string, Promise<void>>();
 
-function handleWorkspaceRequest(rawMessage, sendResponse) {
-  let parsed;
-  try {
-    parsed = JSON.parse(rawMessage);
-  } catch {
+type SendResponse = (response: string) => void;
+
+interface WorkspaceRequestParams extends Record<string, unknown> {
+  cwd?: unknown;
+  currentWorkingDirectory?: unknown;
+  forwardPatch?: unknown;
+}
+
+interface ParsedWorkspaceRequest {
+  method?: unknown;
+  id?: unknown;
+  params?: WorkspaceRequestParams;
+}
+
+interface WorkspaceHandlerError extends Error {
+  errorCode: string;
+  userMessage: string;
+}
+
+interface WorkspaceConflict {
+  path: string;
+  message: string;
+}
+
+interface WorkspacePatchAnalysis {
+  affectedFiles: string[];
+  unsupportedReasons: string[];
+}
+
+interface WorkspacePreviewResult {
+  canRevert: boolean;
+  affectedFiles: string[];
+  conflicts: WorkspaceConflict[];
+  unsupportedReasons: string[];
+  stagedFiles: string[];
+}
+
+interface WorkspaceApplyResult {
+  success: boolean;
+  revertedFiles: string[];
+  conflicts: WorkspaceConflict[];
+  unsupportedReasons: string[];
+  stagedFiles: string[];
+  status?: Awaited<ReturnType<typeof gitStatus>> | null;
+}
+
+interface PatchApplyResult {
+  ok: boolean;
+  stdout: string;
+  stderr: string;
+}
+
+type GitExecError = Error & {
+  code?: ExecFileException["code"];
+  stdout?: string | Buffer;
+  stderr?: string | Buffer;
+};
+
+export function handleWorkspaceRequest(rawMessage: string, sendResponse: SendResponse): boolean {
+  const parsed = parseWorkspaceRequest(rawMessage);
+  if (!parsed) {
     return false;
   }
 
-  const method = typeof parsed?.method === "string" ? parsed.method.trim() : "";
+  const method = typeof parsed.method === "string" ? parsed.method.trim() : "";
   if (!method.startsWith("workspace/")) {
     return false;
   }
@@ -38,25 +87,34 @@ function handleWorkspaceRequest(rawMessage, sendResponse) {
     .then((result) => {
       sendResponse(JSON.stringify({ id, result }));
     })
-    .catch((err) => {
-      const errorCode = err.errorCode || "workspace_error";
-      const message = err.userMessage || err.message || "Unknown workspace error";
-      sendResponse(
-        JSON.stringify({
-          id,
-          error: {
-            code: -32000,
-            message,
-            data: { errorCode },
+    .catch((error: WorkspaceHandlerError) => {
+      sendResponse(JSON.stringify({
+        id,
+        error: {
+          code: -32000,
+          message: error.userMessage || error.message || "Unknown workspace error",
+          data: {
+            errorCode: error.errorCode || "workspace_error",
           },
-        })
-      );
+        },
+      }));
     });
 
   return true;
 }
 
-async function handleWorkspaceMethod(method, params) {
+function parseWorkspaceRequest(rawMessage: string): ParsedWorkspaceRequest | null {
+  try {
+    return JSON.parse(rawMessage) as ParsedWorkspaceRequest;
+  } catch {
+    return null;
+  }
+}
+
+async function handleWorkspaceMethod(
+  method: string,
+  params: WorkspaceRequestParams
+): Promise<WorkspacePreviewResult | WorkspaceApplyResult> {
   const cwd = await resolveWorkspaceCwd(params);
   const repoRoot = await resolveRepoRoot(cwd);
 
@@ -70,8 +128,10 @@ async function handleWorkspaceMethod(method, params) {
   }
 }
 
-// Validates the reverse patch against the current tree without writing repo files.
-async function workspaceRevertPatchPreview(repoRoot, params) {
+async function workspaceRevertPatchPreview(
+  repoRoot: string,
+  params: WorkspaceRequestParams
+): Promise<WorkspacePreviewResult> {
   const forwardPatch = resolveForwardPatch(params);
   const analysis = analyzeUnifiedPatch(forwardPatch);
   const stagedFiles = await findStagedTargetedFiles(repoRoot, analysis.affectedFiles);
@@ -100,8 +160,10 @@ async function workspaceRevertPatchPreview(repoRoot, params) {
   };
 }
 
-// Reverse-applies the patch only after the same safety checks pass in the locked mutation path.
-async function workspaceRevertPatchApply(repoRoot, params) {
+async function workspaceRevertPatchApply(
+  repoRoot: string,
+  params: WorkspaceRequestParams
+): Promise<WorkspaceApplyResult> {
   const preview = await workspaceRevertPatchPreview(repoRoot, params);
   if (!preview.canRevert) {
     return {
@@ -126,29 +188,25 @@ async function workspaceRevertPatchApply(repoRoot, params) {
     };
   }
 
-  const status = await gitStatus(repoRoot).catch(() => null);
   return {
     success: true,
     revertedFiles: preview.affectedFiles,
     conflicts: [],
     unsupportedReasons: [],
     stagedFiles: [],
-    status,
+    status: await gitStatus(repoRoot).catch(() => null),
   };
 }
 
-function resolveForwardPatch(params) {
-  const forwardPatch =
-    typeof params.forwardPatch === "string" ? params.forwardPatch : "";
-
+function resolveForwardPatch(params: WorkspaceRequestParams): string {
+  const forwardPatch = typeof params.forwardPatch === "string" ? params.forwardPatch : "";
   if (!forwardPatch.trim()) {
     throw workspaceError("missing_patch", "The request must include a non-empty forwardPatch.");
   }
-
   return forwardPatch.endsWith("\n") ? forwardPatch : `${forwardPatch}\n`;
 }
 
-function analyzeUnifiedPatch(rawPatch) {
+function analyzeUnifiedPatch(rawPatch: string): WorkspacePatchAnalysis {
   const patch = rawPatch.trim();
   if (!patch) {
     return {
@@ -165,8 +223,8 @@ function analyzeUnifiedPatch(rawPatch) {
     };
   }
 
-  const affectedFiles = [];
-  const unsupportedReasons = new Set();
+  const affectedFiles: string[] = [];
+  const unsupportedReasons = new Set<string>();
 
   for (const chunk of chunks) {
     const analysis = analyzePatchChunk(chunk);
@@ -188,14 +246,14 @@ function analyzeUnifiedPatch(rawPatch) {
   };
 }
 
-function splitPatchIntoChunks(patch) {
+function splitPatchIntoChunks(patch: string): string[][] {
   const lines = patch.split("\n");
   if (!lines.length) {
     return [];
   }
 
-  const chunks = [];
-  let current = [];
+  const chunks: string[][] = [];
+  let current: string[] = [];
 
   for (const line of lines) {
     if (line.startsWith("diff --git ") && current.length) {
@@ -212,8 +270,8 @@ function splitPatchIntoChunks(patch) {
   return chunks;
 }
 
-function analyzePatchChunk(lines) {
-  const path = extractPatchPath(lines);
+function analyzePatchChunk(lines: string[]): { path: string; unsupportedReasons: string[] } {
+  const pathValue = extractPatchPath(lines);
   const isBinary = lines.some((line) => line.startsWith("Binary files ") || line === "GIT binary patch");
   const isRenameOrModeOnly = lines.some((line) =>
     line.startsWith("rename from ")
@@ -237,23 +295,26 @@ function analyzePatchChunk(lines) {
     }
   }
 
-  const unsupportedReasons = [];
+  const unsupportedReasons: string[] = [];
   if (isBinary) {
     unsupportedReasons.push("Binary changes are not auto-revertable in v1.");
   }
   if (isRenameOrModeOnly) {
     unsupportedReasons.push("Rename, mode-only, or symlink changes are not auto-revertable in v1.");
   }
-  if (!path || (!additions && !deletions && !lines.includes("--- /dev/null") && !lines.includes("+++ /dev/null"))) {
+  if (
+    !pathValue
+    || (!additions && !deletions && !lines.includes("--- /dev/null") && !lines.includes("+++ /dev/null"))
+  ) {
     if (!isBinary && !isRenameOrModeOnly) {
       unsupportedReasons.push("No exact patch was captured.");
     }
   }
 
-  return { path, unsupportedReasons };
+  return { path: pathValue, unsupportedReasons };
 }
 
-function extractPatchPath(lines) {
+function extractPatchPath(lines: string[]): string {
   for (const line of lines) {
     if (line.startsWith("+++ ")) {
       const normalized = normalizeDiffPath(line.slice(4).trim());
@@ -275,7 +336,7 @@ function extractPatchPath(lines) {
   return "";
 }
 
-function normalizeDiffPath(rawPath) {
+function normalizeDiffPath(rawPath: string): string {
   if (!rawPath) {
     return "";
   }
@@ -287,7 +348,7 @@ function normalizeDiffPath(rawPath) {
   return rawPath;
 }
 
-async function findStagedTargetedFiles(cwd, affectedFiles) {
+async function findStagedTargetedFiles(cwd: string, affectedFiles: string[]): Promise<string[]> {
   if (!affectedFiles.length) {
     return [];
   }
@@ -304,20 +365,18 @@ async function findStagedTargetedFiles(cwd, affectedFiles) {
   }
 }
 
-async function runGitApply(cwd, args, patchText) {
+async function runGitApply(cwd: string, args: string[], patchText: string): Promise<PatchApplyResult> {
   const tempPatchPath = await writeTempPatchFile(patchText);
 
   try {
-    const { stdout, stderr } = await execFileAsync("git", [...args, tempPatchPath], {
-      cwd,
-      timeout: GIT_TIMEOUT_MS,
-    });
-    return { ok: true, stdout, stderr };
-  } catch (err) {
+    const result = await execFileAsync("git", [...args, tempPatchPath], cwd);
+    return { ok: true, stdout: result.stdout, stderr: result.stderr };
+  } catch (error) {
+    const execError = error as GitExecError;
     return {
       ok: false,
-      stdout: err.stdout || "",
-      stderr: err.stderr || err.message || "",
+      stdout: readExecOutput(execError.stdout),
+      stderr: readExecOutput(execError.stderr) || execError.message || "",
     };
   } finally {
     try {
@@ -328,7 +387,7 @@ async function runGitApply(cwd, args, patchText) {
   }
 }
 
-async function writeTempPatchFile(patchText) {
+async function writeTempPatchFile(patchText: string): Promise<string> {
   const tempPatchPath = path.join(
     os.tmpdir(),
     `coderover-revert-${Date.now()}-${Math.random().toString(16).slice(2)}.patch`
@@ -337,26 +396,26 @@ async function writeTempPatchFile(patchText) {
   return tempPatchPath;
 }
 
-function parseApplyConflicts(stderr) {
+function parseApplyConflicts(stderr: string): WorkspaceConflict[] {
   const lines = String(stderr || "")
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean);
 
-  const conflictsByPath = new Map();
+  const conflictsByPath = new Map<string, WorkspaceConflict>();
   for (const line of lines) {
-    let path = "unknown";
+    let filePath = "unknown";
     const patchFailedMatch = line.match(/^error:\s+patch failed:\s+(.+?):\d+$/i);
     const doesNotApplyMatch = line.match(/^error:\s+(.+?):\s+patch does not apply$/i);
 
     if (patchFailedMatch) {
-      path = patchFailedMatch[1];
+      filePath = patchFailedMatch[1];
     } else if (doesNotApplyMatch) {
-      path = doesNotApplyMatch[1];
+      filePath = doesNotApplyMatch[1];
     }
 
-    if (!conflictsByPath.has(path)) {
-      conflictsByPath.set(path, { path, message: line });
+    if (!conflictsByPath.has(filePath)) {
+      conflictsByPath.set(filePath, { path: filePath, message: line });
     }
   }
 
@@ -367,10 +426,10 @@ function parseApplyConflicts(stderr) {
   return [...conflictsByPath.values()];
 }
 
-async function withRepoMutationLock(cwd, callback) {
+async function withRepoMutationLock<T>(cwd: string, callback: () => Promise<T>): Promise<T> {
   const previous = repoMutationLocks.get(cwd) || Promise.resolve();
-  let releaseCurrent = null;
-  const current = new Promise((resolve) => {
+  let releaseCurrent: (() => void) | null = null;
+  const current = new Promise<void>((resolve) => {
     releaseCurrent = resolve;
   });
   const chained = previous.then(() => current);
@@ -380,16 +439,15 @@ async function withRepoMutationLock(cwd, callback) {
   try {
     return await callback();
   } finally {
-    releaseCurrent();
+    releaseCurrent?.();
     if (repoMutationLocks.get(cwd) === chained) {
       repoMutationLocks.delete(cwd);
     }
   }
 }
 
-async function resolveWorkspaceCwd(params) {
+async function resolveWorkspaceCwd(params: WorkspaceRequestParams): Promise<string> {
   const requestedCwd = firstNonEmptyString([params.cwd, params.currentWorkingDirectory]);
-
   if (!requestedCwd) {
     throw workspaceError(
       "missing_working_directory",
@@ -407,16 +465,14 @@ async function resolveWorkspaceCwd(params) {
   return requestedCwd;
 }
 
-// Resolves the canonical repo root so revert safety checks stay stable from nested chat folders.
-async function resolveRepoRoot(cwd) {
+async function resolveRepoRoot(cwd: string): Promise<string> {
   try {
-    const output = await git(cwd, "rev-parse", "--show-toplevel");
-    const repoRoot = output.trim();
+    const repoRoot = (await git(cwd, "rev-parse", "--show-toplevel")).trim();
     if (repoRoot) {
       return repoRoot;
     }
   } catch {
-    // Fall through to the user-facing error below.
+    // Fall through to user-facing error below.
   }
 
   throw workspaceError(
@@ -425,22 +481,20 @@ async function resolveRepoRoot(cwd) {
   );
 }
 
-function firstNonEmptyString(candidates) {
+function firstNonEmptyString(candidates: unknown[]): string | null {
   for (const candidate of candidates) {
     if (typeof candidate !== "string") {
       continue;
     }
-
     const trimmed = candidate.trim();
     if (trimmed) {
       return trimmed;
     }
   }
-
   return null;
 }
 
-function isExistingDirectory(candidatePath) {
+function isExistingDirectory(candidatePath: string): boolean {
   try {
     return fs.statSync(candidatePath).isDirectory();
   } catch {
@@ -448,20 +502,43 @@ function isExistingDirectory(candidatePath) {
   }
 }
 
-function workspaceError(errorCode, userMessage) {
-  const err = new Error(userMessage);
-  err.errorCode = errorCode;
-  err.userMessage = userMessage;
-  return err;
+function workspaceError(errorCode: string, userMessage: string): WorkspaceHandlerError {
+  const error = new Error(userMessage) as WorkspaceHandlerError;
+  error.errorCode = errorCode;
+  error.userMessage = userMessage;
+  return error;
 }
 
-function git(cwd, ...args) {
-  return execFileAsync("git", args, { cwd, timeout: GIT_TIMEOUT_MS })
-    .then(({ stdout }) => stdout)
-    .catch((err) => {
-      const msg = (err.stderr || err.message || "").trim();
-      throw new Error(msg || "git command failed");
+async function git(cwd: string, ...args: string[]): Promise<string> {
+  try {
+    return (await execFileAsync("git", args, cwd)).stdout;
+  } catch (error) {
+    const execError = error as GitExecError;
+    throw new Error(readExecOutput(execError.stderr) || execError.message || "git command failed");
+  }
+}
+
+function execFileAsync(command: string, args: string[], cwd: string): Promise<{ stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    execFile(command, args, { cwd, timeout: GIT_TIMEOUT_MS }, (error, stdout, stderr) => {
+      if (error) {
+        const execError = error as GitExecError;
+        execError.stdout = stdout;
+        execError.stderr = stderr;
+        reject(execError);
+        return;
+      }
+      resolve({ stdout, stderr });
     });
+  });
 }
 
-module.exports = { handleWorkspaceRequest };
+function readExecOutput(value: string | Buffer | undefined): string {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (Buffer.isBuffer(value)) {
+    return value.toString("utf8");
+  }
+  return "";
+}

@@ -1,17 +1,14 @@
 "use strict";
-Object.defineProperty(exports, "__esModule", { value: true });
-// FILE: rollout-watch.test.js
+// FILE: rollout-watch.test.ts
 // Purpose: Verifies rollout-backed context-window reads used by the Codex status sheet.
-// Layer: Unit test
-// Exports: node:test suite
-// Depends on: node:test, node:assert/strict, fs, os, path, ../src/rollout-watch, ../src/thread-context-handler
+Object.defineProperty(exports, "__esModule", { value: true });
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { readLatestContextWindowUsage } = require("../src/rollout-watch");
-const { handleThreadContextRequest } = require("../src/thread-context-handler");
+const rollout_watch_1 = require("../src/rollout-watch");
+const thread_context_handler_1 = require("../src/thread-context-handler");
 test("readLatestContextWindowUsage returns the newest usage snapshot from a thread rollout", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "coderover-rollout-"));
     const sessionsRoot = path.join(root, "sessions", "2026", "03", "14");
@@ -22,7 +19,7 @@ test("readLatestContextWindowUsage returns the newest usage snapshot from a thre
         JSON.stringify({ type: "event", usage: { tokensUsed: 180, tokenLimit: 2000 } }),
         "",
     ].join("\n"), "utf8");
-    const result = readLatestContextWindowUsage({
+    const result = (0, rollout_watch_1.readLatestContextWindowUsage)({
         threadId: "thread-123",
         root: path.join(root, "sessions"),
     });
@@ -45,7 +42,7 @@ test("handleThreadContextRequest returns usage payload for thread/contextWindow/
     process.env.CODEROVER_HOME = root;
     try {
         const response = await new Promise((resolve) => {
-            const handled = handleThreadContextRequest(JSON.stringify({
+            const handled = (0, thread_context_handler_1.handleThreadContextRequest)(JSON.stringify({
                 id: "req-1",
                 method: "thread/contextWindow/read",
                 params: { threadId: "thread-ctx" },

@@ -1,7 +1,13 @@
 "use strict";
-Object.defineProperty(exports, "__esModule", { value: true });
 // FILE: runtime-manager/managed-provider-runtime.ts
-// Purpose: Shared managed-provider thread shaping helpers for runtime-manager.
+// Purpose: Typed thread/provider shaping helpers for managed runtimes.
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.buildProviderMetadata = buildProviderMetadata;
+exports.resolveProviderId = resolveProviderId;
+exports.stripProviderField = stripProviderField;
+exports.buildManagedThreadObject = buildManagedThreadObject;
+exports.buildThreadListResult = buildThreadListResult;
+exports.threadObjectToMeta = threadObjectToMeta;
 function buildProviderMetadata(provider, getRuntimeProvider) {
     return {
         providerTitle: getRuntimeProvider(provider).title,
@@ -9,7 +15,7 @@ function buildProviderMetadata(provider, getRuntimeProvider) {
 }
 function resolveProviderId(value, normalizeOptionalString) {
     const candidate = normalizeOptionalString(typeof value === "object" && value
-        ? value.provider || value.id
+        ? value.provider ?? value.id
         : value);
     if (candidate === "claude" || candidate === "gemini" || candidate === "codex") {
         return candidate;
@@ -20,7 +26,7 @@ function stripProviderField(params) {
     if (!params || typeof params !== "object") {
         return params;
     }
-    const { provider, ...rest } = params;
+    const { provider: _provider, ...rest } = params;
     return rest;
 }
 function buildManagedThreadObject(threadMeta, turns, getRuntimeProvider) {
@@ -40,11 +46,11 @@ function buildManagedThreadObject(threadMeta, turns, getRuntimeProvider) {
             ...(threadMeta.metadata || {}),
             providerTitle: providerDefinition.title,
         },
-        ...(turns == null ? {} : { turns }),
+        ...(Array.isArray(turns) ? { turns } : {}),
     };
 }
 function buildThreadListResult(payload, normalizePositiveInteger) {
-    const threads = Array.isArray(payload) ? payload : payload?.threads || [];
+    const threads = Array.isArray(payload) ? payload : payload.threads || [];
     return {
         data: threads,
         items: threads,
@@ -52,40 +58,35 @@ function buildThreadListResult(payload, normalizePositiveInteger) {
         ...(Array.isArray(payload)
             ? {}
             : {
-                nextCursor: payload?.nextCursor ?? null,
-                hasMore: Boolean(payload?.hasMore),
-                pageSize: normalizePositiveInteger(payload?.pageSize) || threads.length,
+                nextCursor: payload.nextCursor ?? null,
+                hasMore: Boolean(payload.hasMore),
+                pageSize: normalizePositiveInteger(payload.pageSize) || threads.length,
             }),
     };
 }
-function threadObjectToMeta(threadObject, { asObject, firstNonEmptyString, getRuntimeProvider, normalizeOptionalString, resolveProviderId, }) {
+function threadObjectToMeta(threadObject, helpers) {
+    const providerId = helpers.resolveProviderId(threadObject);
     return {
-        id: normalizeOptionalString(threadObject.id),
-        provider: resolveProviderId(threadObject),
-        providerSessionId: normalizeOptionalString(threadObject.providerSessionId) || normalizeOptionalString(threadObject.id),
-        title: normalizeOptionalString(threadObject.title),
-        name: normalizeOptionalString(threadObject.name),
-        preview: normalizeOptionalString(threadObject.preview),
-        cwd: firstNonEmptyString([
+        id: helpers.normalizeOptionalString(threadObject.id) || "",
+        provider: providerId,
+        providerSessionId: helpers.normalizeOptionalString(threadObject.providerSessionId)
+            || helpers.normalizeOptionalString(threadObject.id),
+        title: helpers.normalizeOptionalString(threadObject.title),
+        name: helpers.normalizeOptionalString(threadObject.name),
+        preview: helpers.normalizeOptionalString(threadObject.preview),
+        cwd: helpers.firstNonEmptyString([
             threadObject.cwd,
             threadObject.current_working_directory,
             threadObject.working_directory,
         ]),
         metadata: {
-            ...(asObject(threadObject.metadata) || {}),
-            providerTitle: getRuntimeProvider(resolveProviderId(threadObject)).title,
+            ...helpers.asObject(threadObject.metadata),
+            providerTitle: helpers.getRuntimeProvider(providerId).title,
         },
-        capabilities: threadObject.capabilities || getRuntimeProvider(resolveProviderId(threadObject)).supports,
-        createdAt: threadObject.createdAt || threadObject.created_at || new Date().toISOString(),
-        updatedAt: threadObject.updatedAt || threadObject.updated_at || new Date().toISOString(),
+        capabilities: threadObject.capabilities
+            || helpers.getRuntimeProvider(providerId).supports,
+        createdAt: String(threadObject.createdAt || threadObject.created_at || new Date().toISOString()),
+        updatedAt: String(threadObject.updatedAt || threadObject.updated_at || new Date().toISOString()),
         archived: Boolean(threadObject.archived),
     };
 }
-module.exports = {
-    buildManagedThreadObject,
-    buildProviderMetadata,
-    buildThreadListResult,
-    resolveProviderId,
-    stripProviderField,
-    threadObjectToMeta,
-};

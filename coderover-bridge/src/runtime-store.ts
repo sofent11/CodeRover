@@ -1,37 +1,119 @@
-// @ts-nocheck
-export {};
-
-// FILE: runtime-store.js
+// FILE: runtime-store.ts
 // Purpose: Provider-aware local overlay store for CodeRover runtime threads and histories.
-// Layer: CLI helper
-// Exports: createRuntimeStore
-// Depends on: fs, os, path, crypto
 
-const fs = require("fs");
-const os = require("os");
-const path = require("path");
-const { randomUUID } = require("crypto");
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
+import { randomUUID } from "crypto";
+
+type ProviderId = "codex" | "claude" | "gemini";
+type UnknownRecord = Record<string, unknown>;
+
+export interface RuntimeStoreItem {
+  id: string;
+  type: string;
+  role: string | null;
+  content: UnknownRecord[];
+  text: string | null;
+  message: string | null;
+  createdAt: string;
+  status: string | null;
+  command: string | null;
+  metadata: UnknownRecord | null;
+  plan: UnknownRecord | null;
+  summary: string | null;
+  fileChanges: UnknownRecord[];
+}
+
+export interface RuntimeStoreTurn {
+  id: string;
+  createdAt: string;
+  status: string | null;
+  items: RuntimeStoreItem[];
+}
+
+export interface RuntimeThreadHistory {
+  threadId: string;
+  turns: RuntimeStoreTurn[];
+}
+
+export interface RuntimeThreadMeta {
+  id: string;
+  provider: ProviderId;
+  providerSessionId: string | null;
+  title: string | null;
+  name: string | null;
+  preview: string | null;
+  cwd: string | null;
+  model: string | null;
+  metadata: UnknownRecord | null;
+  capabilities: UnknownRecord | null;
+  createdAt: string;
+  updatedAt: string;
+  archived: boolean;
+}
+
+interface RuntimeStoreIndex {
+  version: number;
+  threads: Record<string, RuntimeThreadMeta>;
+  providerSessions: Record<string, string>;
+}
+
+export interface CreateThreadInput {
+  id?: string | null;
+  provider?: unknown;
+  providerSessionId?: string | null;
+  title?: string | null;
+  name?: string | null;
+  preview?: string | null;
+  cwd?: string | null;
+  model?: string | null;
+  metadata?: UnknownRecord | null;
+  capabilities?: UnknownRecord | null;
+  createdAt?: string | number | Date | null;
+  updatedAt?: string | number | Date | null;
+  archived?: boolean;
+}
+
+export interface RuntimeStore {
+  baseDir: string;
+  createThread(input: CreateThreadInput): RuntimeThreadMeta;
+  deleteThread(threadId: unknown): boolean;
+  findThreadIdByProviderSession(provider: unknown, providerSessionId: unknown): string | null;
+  flush(): void;
+  getThreadHistory(threadId: unknown): RuntimeThreadHistory | null;
+  getThreadMeta(threadId: unknown): RuntimeThreadMeta | null;
+  listThreadMetas(): RuntimeThreadMeta[];
+  saveThreadHistory(threadId: unknown, history: unknown): RuntimeThreadHistory;
+  shutdown(): void;
+  bindProviderSession(threadId: unknown, provider: unknown, providerSessionId: unknown): RuntimeThreadMeta | null;
+  updateThreadMeta(
+    threadId: unknown,
+    updater: (entry: RuntimeThreadMeta) => RuntimeThreadMeta | null | undefined
+  ): RuntimeThreadMeta | null;
+  upsertThreadMeta(threadMeta: unknown): RuntimeThreadMeta;
+}
 
 const DEFAULT_STORE_DIR = path.join(os.homedir(), ".coderover", "runtime");
 const INDEX_FILE = "index.json";
 const THREADS_DIR = "threads";
 const INDEX_VERSION = 1;
 
-function createRuntimeStore({ baseDir = DEFAULT_STORE_DIR } = {}) {
+export function createRuntimeStore({ baseDir = DEFAULT_STORE_DIR }: { baseDir?: string } = {}): RuntimeStore {
   const indexPath = path.join(baseDir, INDEX_FILE);
   const threadsDir = path.join(baseDir, THREADS_DIR);
   fs.mkdirSync(threadsDir, { recursive: true });
 
   let indexState = loadIndex(indexPath);
-  let writeTimer = null;
+  let writeTimer: NodeJS.Timeout | null = null;
 
-  function listThreadMetas() {
+  function listThreadMetas(): RuntimeThreadMeta[] {
     return Object.values(indexState.threads)
       .map((entry) => ({ ...entry }))
       .sort(compareThreadMeta);
   }
 
-  function getThreadMeta(threadId) {
+  function getThreadMeta(threadId: unknown): RuntimeThreadMeta | null {
     const normalizedThreadId = normalizeNonEmptyString(threadId);
     if (!normalizedThreadId) {
       return null;
@@ -41,7 +123,7 @@ function createRuntimeStore({ baseDir = DEFAULT_STORE_DIR } = {}) {
     return entry ? { ...entry } : null;
   }
 
-  function getThreadHistory(threadId) {
+  function getThreadHistory(threadId: unknown): RuntimeThreadHistory | null {
     const normalizedThreadId = normalizeNonEmptyString(threadId);
     if (!normalizedThreadId) {
       return null;
@@ -60,7 +142,7 @@ function createRuntimeStore({ baseDir = DEFAULT_STORE_DIR } = {}) {
     }
   }
 
-  function saveThreadHistory(threadId, history) {
+  function saveThreadHistory(threadId: unknown, history: unknown): RuntimeThreadHistory {
     const normalizedThreadId = normalizeNonEmptyString(threadId);
     if (!normalizedThreadId) {
       throw new Error("saveThreadHistory requires a non-empty threadId");
@@ -89,7 +171,7 @@ function createRuntimeStore({ baseDir = DEFAULT_STORE_DIR } = {}) {
     createdAt = null,
     updatedAt = null,
     archived = false,
-  }) {
+  }: CreateThreadInput): RuntimeThreadMeta {
     const normalizedProvider = normalizeProvider(provider);
     const threadId = normalizeThreadId(id, normalizedProvider);
     const nowIso = toIsoDateString(updatedAt || createdAt || Date.now());
@@ -122,7 +204,7 @@ function createRuntimeStore({ baseDir = DEFAULT_STORE_DIR } = {}) {
     return { ...threadMeta };
   }
 
-  function upsertThreadMeta(threadMeta) {
+  function upsertThreadMeta(threadMeta: unknown): RuntimeThreadMeta {
     const normalized = normalizeThreadMeta(threadMeta);
     const previous = indexState.threads[normalized.id] || null;
     indexState.threads[normalized.id] = {
@@ -147,7 +229,10 @@ function createRuntimeStore({ baseDir = DEFAULT_STORE_DIR } = {}) {
     return { ...indexState.threads[normalized.id] };
   }
 
-  function updateThreadMeta(threadId, updater) {
+  function updateThreadMeta(
+    threadId: unknown,
+    updater: (entry: RuntimeThreadMeta) => RuntimeThreadMeta | null | undefined
+  ): RuntimeThreadMeta | null {
     const existing = getThreadMeta(threadId);
     if (!existing) {
       return null;
@@ -157,7 +242,11 @@ function createRuntimeStore({ baseDir = DEFAULT_STORE_DIR } = {}) {
     return upsertThreadMeta(next);
   }
 
-  function bindProviderSession(threadId, provider, providerSessionId) {
+  function bindProviderSession(
+    threadId: unknown,
+    provider: unknown,
+    providerSessionId: unknown
+  ): RuntimeThreadMeta | null {
     return updateThreadMeta(threadId, (entry) => ({
       ...entry,
       provider: normalizeProvider(provider || entry.provider),
@@ -165,12 +254,12 @@ function createRuntimeStore({ baseDir = DEFAULT_STORE_DIR } = {}) {
     }));
   }
 
-  function findThreadIdByProviderSession(provider, providerSessionId) {
+  function findThreadIdByProviderSession(provider: unknown, providerSessionId: unknown): string | null {
     const key = providerSessionKey(provider, providerSessionId);
     return key ? indexState.providerSessions[key] || null : null;
   }
 
-  function deleteThread(threadId) {
+  function deleteThread(threadId: unknown): boolean {
     const existing = getThreadMeta(threadId);
     if (!existing) {
       return false;
@@ -194,11 +283,11 @@ function createRuntimeStore({ baseDir = DEFAULT_STORE_DIR } = {}) {
     return true;
   }
 
-  function flush() {
+  function flush(): void {
     persistIndex(indexPath, indexState);
   }
 
-  function shutdown() {
+  function shutdown(): void {
     if (writeTimer) {
       clearTimeout(writeTimer);
       writeTimer = null;
@@ -206,7 +295,7 @@ function createRuntimeStore({ baseDir = DEFAULT_STORE_DIR } = {}) {
     flush();
   }
 
-  function scheduleIndexWrite() {
+  function scheduleIndexWrite(): void {
     if (writeTimer) {
       return;
     }
@@ -218,7 +307,7 @@ function createRuntimeStore({ baseDir = DEFAULT_STORE_DIR } = {}) {
     writeTimer.unref?.();
   }
 
-  function syncProviderSessionIndex(threadId, provider, providerSessionId) {
+  function syncProviderSessionIndex(threadId: string, provider: ProviderId, providerSessionId: string | null): void {
     const key = providerSessionKey(provider, providerSessionId);
     if (!key) {
       return;
@@ -226,7 +315,7 @@ function createRuntimeStore({ baseDir = DEFAULT_STORE_DIR } = {}) {
     indexState.providerSessions[key] = threadId;
   }
 
-  function threadHistoryPath(threadId) {
+  function threadHistoryPath(threadId: string): string {
     return path.join(threadsDir, `${threadId}.json`);
   }
 
@@ -247,7 +336,7 @@ function createRuntimeStore({ baseDir = DEFAULT_STORE_DIR } = {}) {
   };
 }
 
-function loadIndex(indexPath) {
+function loadIndex(indexPath: string): RuntimeStoreIndex {
   if (!fs.existsSync(indexPath)) {
     return defaultIndex();
   }
@@ -259,12 +348,12 @@ function loadIndex(indexPath) {
   }
 }
 
-function persistIndex(indexPath, indexState) {
+function persistIndex(indexPath: string, indexState: RuntimeStoreIndex): void {
   fs.mkdirSync(path.dirname(indexPath), { recursive: true });
   fs.writeFileSync(indexPath, JSON.stringify(indexState, null, 2));
 }
 
-function defaultIndex() {
+function defaultIndex(): RuntimeStoreIndex {
   return {
     version: INDEX_VERSION,
     threads: {},
@@ -272,28 +361,29 @@ function defaultIndex() {
   };
 }
 
-function normalizeIndex(input) {
+function normalizeIndex(input: unknown): RuntimeStoreIndex {
   const normalized = defaultIndex();
   if (!input || typeof input !== "object") {
     return normalized;
   }
 
-  if (input.threads && typeof input.threads === "object") {
-    for (const [threadId, value] of Object.entries(input.threads)) {
+  const record = input as UnknownRecord;
+  if (record.threads && typeof record.threads === "object") {
+    for (const [threadId, value] of Object.entries(record.threads as Record<string, unknown>)) {
       const normalizedThreadId = normalizeNonEmptyString(threadId);
       if (!normalizedThreadId || !value || typeof value !== "object") {
         continue;
       }
 
       normalized.threads[normalizedThreadId] = normalizeThreadMeta({
-        ...value,
+        ...(value as UnknownRecord),
         id: normalizedThreadId,
       });
     }
   }
 
-  if (input.providerSessions && typeof input.providerSessions === "object") {
-    for (const [key, threadId] of Object.entries(input.providerSessions)) {
+  if (record.providerSessions && typeof record.providerSessions === "object") {
+    for (const [key, threadId] of Object.entries(record.providerSessions as Record<string, unknown>)) {
       const normalizedKey = normalizeNonEmptyString(key);
       const normalizedThreadId = normalizeNonEmptyString(threadId);
       if (!normalizedKey || !normalizedThreadId) {
@@ -313,79 +403,83 @@ function normalizeIndex(input) {
   return normalized;
 }
 
-function normalizeThreadMeta(input) {
-  const normalizedProvider = normalizeProvider(input?.provider);
-  const normalizedId = normalizeThreadId(input?.id, normalizedProvider);
-  const metadata = normalizeObject(input?.metadata);
-  const capabilities = normalizeObject(input?.capabilities);
+function normalizeThreadMeta(input: unknown): RuntimeThreadMeta {
+  const record = input && typeof input === "object" ? (input as UnknownRecord) : {};
+  const normalizedProvider = normalizeProvider(record.provider);
+  const normalizedId = normalizeThreadId(record.id, normalizedProvider);
+  const metadata = normalizeObject(record.metadata);
+  const capabilities = normalizeObject(record.capabilities);
 
   return {
     id: normalizedId,
     provider: normalizedProvider,
-    providerSessionId: normalizeNonEmptyString(input?.providerSessionId) || null,
-    title: normalizeOptionalString(input?.title),
-    name: normalizeOptionalString(input?.name),
-    preview: normalizeOptionalString(input?.preview),
-    cwd: normalizeOptionalPath(input?.cwd),
-    model: normalizeOptionalString(input?.model),
+    providerSessionId: normalizeNonEmptyString(record.providerSessionId) || null,
+    title: normalizeOptionalString(record.title),
+    name: normalizeOptionalString(record.name),
+    preview: normalizeOptionalString(record.preview),
+    cwd: normalizeOptionalPath(record.cwd),
+    model: normalizeOptionalString(record.model),
     metadata,
     capabilities,
-    createdAt: toIsoDateString(input?.createdAt || Date.now()),
-    updatedAt: toIsoDateString(input?.updatedAt || input?.createdAt || Date.now()),
-    archived: Boolean(input?.archived),
+    createdAt: toIsoDateString(record.createdAt || Date.now()),
+    updatedAt: toIsoDateString(record.updatedAt || record.createdAt || Date.now()),
+    archived: Boolean(record.archived),
   };
 }
 
-function normalizeThreadHistory(input, threadId) {
-  const turns = Array.isArray(input?.turns) ? input.turns : [];
+function normalizeThreadHistory(input: unknown, threadId: string): RuntimeThreadHistory {
+  const record = input && typeof input === "object" ? (input as UnknownRecord) : {};
+  const turns = Array.isArray(record.turns) ? record.turns : [];
   return {
     threadId,
     turns: turns
-      .filter((entry) => entry && typeof entry === "object")
+      .filter((entry): entry is UnknownRecord => Boolean(entry) && typeof entry === "object")
       .map((entry) => normalizeTurn(entry)),
   };
 }
 
-function normalizeTurn(input) {
+function normalizeTurn(input: UnknownRecord): RuntimeStoreTurn {
   return {
-    id: normalizeNonEmptyString(input?.id) || randomUUID(),
-    createdAt: toIsoDateString(input?.createdAt || Date.now()),
-    status: normalizeOptionalString(input?.status),
-    items: Array.isArray(input?.items)
+    id: normalizeNonEmptyString(input.id) || randomUUID(),
+    createdAt: toIsoDateString(input.createdAt || Date.now()),
+    status: normalizeOptionalString(input.status),
+    items: Array.isArray(input.items)
       ? input.items
-        .filter((entry) => entry && typeof entry === "object")
+        .filter((entry): entry is UnknownRecord => Boolean(entry) && typeof entry === "object")
         .map((entry) => normalizeItem(entry))
       : [],
   };
 }
 
-function normalizeItem(input) {
+function normalizeItem(input: UnknownRecord): RuntimeStoreItem {
   return {
-    id: normalizeNonEmptyString(input?.id) || randomUUID(),
-    type: normalizeNonEmptyString(input?.type) || "message",
-    role: normalizeOptionalString(input?.role),
-    content: Array.isArray(input?.content) ? input.content.map((entry) => normalizeContent(entry)) : [],
-    text: normalizeOptionalString(input?.text),
-    message: normalizeOptionalString(input?.message),
-    createdAt: toIsoDateString(input?.createdAt || Date.now()),
-    status: normalizeOptionalString(input?.status),
-    command: normalizeOptionalString(input?.command),
-    metadata: normalizeObject(input?.metadata),
-    plan: normalizeObject(input?.plan),
-    summary: normalizeOptionalString(input?.summary),
-    fileChanges: Array.isArray(input?.fileChanges) ? input.fileChanges.map((entry) => normalizeObject(entry)) : [],
+    id: normalizeNonEmptyString(input.id) || randomUUID(),
+    type: normalizeNonEmptyString(input.type) || "message",
+    role: normalizeOptionalString(input.role),
+    content: Array.isArray(input.content) ? input.content.map((entry) => normalizeContent(entry)) : [],
+    text: normalizeOptionalString(input.text),
+    message: normalizeOptionalString(input.message),
+    createdAt: toIsoDateString(input.createdAt || Date.now()),
+    status: normalizeOptionalString(input.status),
+    command: normalizeOptionalString(input.command),
+    metadata: normalizeObject(input.metadata),
+    plan: normalizeObject(input.plan),
+    summary: normalizeOptionalString(input.summary),
+    fileChanges: Array.isArray(input.fileChanges)
+      ? input.fileChanges.map((entry) => normalizeObject(entry) || {})
+      : [],
   };
 }
 
-function normalizeContent(input) {
+function normalizeContent(input: unknown): UnknownRecord {
   if (!input || typeof input !== "object") {
     return { type: "text", text: "" };
   }
 
-  const type = normalizeNonEmptyString(input.type) || "text";
-  const normalized = { type };
+  const type = normalizeNonEmptyString((input as UnknownRecord).type) || "text";
+  const normalized: UnknownRecord = { type };
 
-  for (const [key, value] of Object.entries(input)) {
+  for (const [key, value] of Object.entries(input as UnknownRecord)) {
     if (key === "type") {
       continue;
     }
@@ -396,7 +490,7 @@ function normalizeContent(input) {
     }
 
     if (value && typeof value === "object") {
-      normalized[key] = { ...value };
+      normalized[key] = { ...(value as UnknownRecord) };
       continue;
     }
 
@@ -406,16 +500,16 @@ function normalizeContent(input) {
   return normalized;
 }
 
-function defaultThreadHistory(threadId) {
+function defaultThreadHistory(threadId: string): RuntimeThreadHistory {
   return {
     threadId,
     turns: [],
   };
 }
 
-function compareThreadMeta(left, right) {
-  const leftUpdated = Date.parse(left.updatedAt || 0) || 0;
-  const rightUpdated = Date.parse(right.updatedAt || 0) || 0;
+function compareThreadMeta(left: RuntimeThreadMeta, right: RuntimeThreadMeta): number {
+  const leftUpdated = Date.parse(left.updatedAt || "0") || 0;
+  const rightUpdated = Date.parse(right.updatedAt || "0") || 0;
   if (leftUpdated !== rightUpdated) {
     return rightUpdated - leftUpdated;
   }
@@ -423,7 +517,7 @@ function compareThreadMeta(left, right) {
   return left.id.localeCompare(right.id);
 }
 
-function providerSessionKey(provider, providerSessionId) {
+function providerSessionKey(provider: unknown, providerSessionId: unknown): string {
   const normalizedProvider = normalizeProvider(provider);
   const normalizedSessionId = normalizeNonEmptyString(providerSessionId);
   if (!normalizedProvider || !normalizedSessionId) {
@@ -432,7 +526,7 @@ function providerSessionKey(provider, providerSessionId) {
   return `${normalizedProvider}:${normalizedSessionId}`;
 }
 
-function normalizeThreadId(value, provider) {
+function normalizeThreadId(value: unknown, provider: unknown): string {
   const normalized = normalizeNonEmptyString(value);
   if (normalized) {
     return normalized;
@@ -440,7 +534,7 @@ function normalizeThreadId(value, provider) {
   return `${normalizeProvider(provider)}:${randomUUID()}`;
 }
 
-function normalizeProvider(value) {
+function normalizeProvider(value: unknown): ProviderId {
   const normalized = normalizeNonEmptyString(value).toLowerCase();
   if (normalized === "claude" || normalized === "gemini" || normalized === "codex") {
     return normalized;
@@ -448,19 +542,19 @@ function normalizeProvider(value) {
   return "codex";
 }
 
-function normalizeObject(value) {
+function normalizeObject(value: unknown): UnknownRecord | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return null;
   }
-  return { ...value };
+  return { ...(value as UnknownRecord) };
 }
 
-function normalizeOptionalString(value) {
+function normalizeOptionalString(value: unknown): string | null {
   const normalized = normalizeNonEmptyString(value);
   return normalized || null;
 }
 
-function normalizeOptionalPath(value) {
+function normalizeOptionalPath(value: unknown): string | null {
   const normalized = normalizeOptionalString(value);
   if (!normalized) {
     return null;
@@ -476,14 +570,14 @@ function normalizeOptionalPath(value) {
   return trimmed || "/";
 }
 
-function normalizeNonEmptyString(value) {
+function normalizeNonEmptyString(value: unknown): string {
   if (typeof value !== "string") {
     return "";
   }
   return value.trim();
 }
 
-function toIsoDateString(value) {
+function toIsoDateString(value: unknown): string {
   if (!value) {
     return new Date().toISOString();
   }
@@ -506,7 +600,3 @@ function toIsoDateString(value) {
 
   return new Date().toISOString();
 }
-
-module.exports = {
-  createRuntimeStore,
-};

@@ -1,7 +1,11 @@
 "use strict";
-Object.defineProperty(exports, "__esModule", { value: true });
 // FILE: runtime-manager/client-routing.ts
-// Purpose: Shared helpers for runtime-manager request/response plumbing.
+// Purpose: Typed request/response plumbing helpers for runtime-manager.
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.defaultInitializeParams = defaultInitializeParams;
+exports.createRuntimeError = createRuntimeError;
+exports.createMethodError = createMethodError;
+exports.encodeRequestId = encodeRequestId;
 function defaultInitializeParams() {
     return {
         clientInfo: {
@@ -28,9 +32,3 @@ function encodeRequestId(value) {
     }
     return JSON.stringify(value);
 }
-module.exports = {
-    createMethodError,
-    createRuntimeError,
-    defaultInitializeParams,
-    encodeRequestId,
-};

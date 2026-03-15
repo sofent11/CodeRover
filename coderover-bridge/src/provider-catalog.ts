@@ -1,29 +1,45 @@
-// @ts-nocheck
-export {};
-
-// // FILE: provider-catalog.js
+// FILE: provider-catalog.ts
 // Purpose: Shared provider capability and static model catalog for multi-runtime support.
-// Layer: CLI helper
-// Exports: listRuntimeProviders, getRuntimeProvider, listStaticModelsForProvider
-// Depends on: none
 
-const ACCESS_MODE_ON_REQUEST = {
+import type {
+  RuntimeAccessMode,
+  RuntimeCapabilities,
+  RuntimeModelShape,
+  RuntimeProviderShape,
+  RuntimeReasoningEffortOption,
+} from "./bridge-types";
+
+type ProviderId = "codex" | "claude" | "gemini";
+
+interface RuntimeProviderDefinition extends RuntimeProviderShape {}
+
+interface BuildModelOptions {
+  id: string;
+  model?: string;
+  title: string;
+  description?: string;
+  isDefault?: boolean;
+  efforts?: string[];
+  defaultReasoningEffort?: string | null;
+}
+
+const ACCESS_MODE_ON_REQUEST: RuntimeAccessMode = {
   id: "on-request",
   title: "On-Request",
 };
 
-const ACCESS_MODE_FULL_ACCESS = {
+const ACCESS_MODE_FULL_ACCESS: RuntimeAccessMode = {
   id: "full-access",
   title: "Full access",
 };
 
-const SHARED_ACCESS_MODES = [
+const SHARED_ACCESS_MODES: RuntimeAccessMode[] = [
   ACCESS_MODE_ON_REQUEST,
   ACCESS_MODE_FULL_ACCESS,
 ];
 
-const PROVIDERS = {
-  coderover: {
+const PROVIDERS: Record<ProviderId, RuntimeProviderDefinition> = {
+  codex: {
     id: "codex",
     title: "Codex",
     defaultModelId: null,
@@ -67,7 +83,7 @@ const PROVIDERS = {
   },
 };
 
-const STATIC_MODELS = {
+const STATIC_MODELS: Record<Exclude<ProviderId, "codex">, RuntimeModelShape[]> = {
   claude: [
     buildModel({
       id: "sonnet",
@@ -153,39 +169,42 @@ const STATIC_MODELS = {
   ],
 };
 
-function listRuntimeProviders() {
-  return Object.values(PROVIDERS).map((provider) => ({
-    ...provider,
-    supports: { ...provider.supports },
-    accessModes: provider.accessModes.map((entry) => ({ ...entry })),
-  }));
+export function listRuntimeProviders(): RuntimeProviderDefinition[] {
+  return Object.values(PROVIDERS).map(cloneProvider);
 }
 
-function getRuntimeProvider(providerId) {
+export function getRuntimeProvider(providerId: unknown): RuntimeProviderDefinition {
   const normalizedProvider = normalizeProvider(providerId);
-  const entry = PROVIDERS[normalizedProvider] || PROVIDERS.coderover;
-  return {
-    ...entry,
-    supports: { ...entry.supports },
-    accessModes: entry.accessModes.map((item) => ({ ...item })),
-  };
+  return cloneProvider(PROVIDERS[normalizedProvider]);
 }
 
-function listStaticModelsForProvider(providerId) {
+export function listStaticModelsForProvider(providerId: unknown): RuntimeModelShape[] {
   const normalizedProvider = normalizeProvider(providerId);
-  const models = STATIC_MODELS[normalizedProvider] || [];
+  const models = normalizedProvider === "codex" ? [] : STATIC_MODELS[normalizedProvider];
   return models.map((entry) => ({
     ...entry,
-    supportedReasoningEfforts: entry.supportedReasoningEfforts.map((effort) => ({ ...effort })),
+    supportedReasoningEfforts: entry.supportedReasoningEfforts.map(cloneReasoningEffort),
   }));
 }
 
-function normalizeProvider(value) {
+export function normalizeProvider(value: unknown): ProviderId {
   const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
   if (normalized === "claude" || normalized === "gemini" || normalized === "codex") {
     return normalized;
   }
   return "codex";
+}
+
+function cloneProvider(provider: RuntimeProviderDefinition): RuntimeProviderDefinition {
+  return {
+    ...provider,
+    supports: { ...provider.supports } as RuntimeCapabilities,
+    accessModes: provider.accessModes.map((entry) => ({ ...entry })),
+  };
+}
+
+function cloneReasoningEffort(entry: RuntimeReasoningEffortOption): RuntimeReasoningEffortOption {
+  return { ...entry };
 }
 
 function buildModel({
@@ -196,7 +215,7 @@ function buildModel({
   isDefault = false,
   efforts = [],
   defaultReasoningEffort = null,
-}) {
+}: BuildModelOptions): RuntimeModelShape {
   return {
     id,
     model,
@@ -211,9 +230,3 @@ function buildModel({
     defaultReasoningEffort,
   };
 }
-
-module.exports = {
-  getRuntimeProvider,
-  listRuntimeProviders,
-  listStaticModelsForProvider,
-};

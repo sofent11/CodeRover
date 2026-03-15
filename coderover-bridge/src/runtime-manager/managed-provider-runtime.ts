@@ -1,19 +1,33 @@
-// @ts-nocheck
-export {};
-
 // FILE: runtime-manager/managed-provider-runtime.ts
-// Purpose: Shared managed-provider thread shaping helpers for runtime-manager.
+// Purpose: Typed thread/provider shaping helpers for managed runtimes.
 
-function buildProviderMetadata(provider, getRuntimeProvider) {
+import type {
+  ManagedThreadMeta,
+  RuntimeThreadListPayload,
+  RuntimeThreadMetaHelpers,
+} from "./types";
+import type { RuntimeThreadShape } from "../bridge-types";
+
+type ProviderDefinition = ReturnType<RuntimeThreadMetaHelpers["getRuntimeProvider"]>;
+type ProviderResolver = (value: unknown) => string;
+type NormalizePositiveInteger = (value: unknown) => number | null;
+
+export function buildProviderMetadata(
+  provider: unknown,
+  getRuntimeProvider: (providerId: unknown) => ProviderDefinition
+): { providerTitle: string } {
   return {
     providerTitle: getRuntimeProvider(provider).title,
   };
 }
 
-function resolveProviderId(value, normalizeOptionalString) {
+export function resolveProviderId(
+  value: unknown,
+  normalizeOptionalString: (value: unknown) => string | null
+): string {
   const candidate = normalizeOptionalString(
     typeof value === "object" && value
-      ? value.provider || value.id
+      ? (value as Record<string, unknown>).provider ?? (value as Record<string, unknown>).id
       : value
   );
   if (candidate === "claude" || candidate === "gemini" || candidate === "codex") {
@@ -22,15 +36,19 @@ function resolveProviderId(value, normalizeOptionalString) {
   return "codex";
 }
 
-function stripProviderField(params) {
+export function stripProviderField<TValue>(params: TValue): Omit<TValue, "provider"> | TValue {
   if (!params || typeof params !== "object") {
     return params;
   }
-  const { provider, ...rest } = params;
-  return rest;
+  const { provider: _provider, ...rest } = params as TValue & { provider?: unknown };
+  return rest as Omit<TValue, "provider">;
 }
 
-function buildManagedThreadObject(threadMeta, turns, getRuntimeProvider) {
+export function buildManagedThreadObject(
+  threadMeta: ManagedThreadMeta,
+  turns: unknown,
+  getRuntimeProvider: (providerId: unknown) => ProviderDefinition
+): RuntimeThreadShape {
   const providerDefinition = getRuntimeProvider(threadMeta.provider);
   return {
     id: threadMeta.id,
@@ -47,12 +65,22 @@ function buildManagedThreadObject(threadMeta, turns, getRuntimeProvider) {
       ...(threadMeta.metadata || {}),
       providerTitle: providerDefinition.title,
     },
-    ...(turns == null ? {} : { turns }),
+    ...(Array.isArray(turns) ? { turns } : {}),
   };
 }
 
-function buildThreadListResult(payload, normalizePositiveInteger) {
-  const threads = Array.isArray(payload) ? payload : payload?.threads || [];
+export function buildThreadListResult(
+  payload: RuntimeThreadListPayload | RuntimeThreadShape[],
+  normalizePositiveInteger: NormalizePositiveInteger
+): {
+  data: RuntimeThreadShape[];
+  items: RuntimeThreadShape[];
+  threads: RuntimeThreadShape[];
+  nextCursor?: string | number | null;
+  hasMore?: boolean;
+  pageSize?: number;
+} {
+  const threads = Array.isArray(payload) ? payload : payload.threads || [];
   return {
     data: threads,
     items: threads,
@@ -60,51 +88,39 @@ function buildThreadListResult(payload, normalizePositiveInteger) {
     ...(Array.isArray(payload)
       ? {}
       : {
-        nextCursor: payload?.nextCursor ?? null,
-        hasMore: Boolean(payload?.hasMore),
-        pageSize: normalizePositiveInteger(payload?.pageSize) || threads.length,
+        nextCursor: payload.nextCursor ?? null,
+        hasMore: Boolean(payload.hasMore),
+        pageSize: normalizePositiveInteger(payload.pageSize) || threads.length,
       }),
   };
 }
 
-function threadObjectToMeta(
-  threadObject,
-  {
-    asObject,
-    firstNonEmptyString,
-    getRuntimeProvider,
-    normalizeOptionalString,
-    resolveProviderId,
-  }
-) {
+export function threadObjectToMeta(
+  threadObject: Record<string, unknown>,
+  helpers: RuntimeThreadMetaHelpers
+): ManagedThreadMeta {
+  const providerId = helpers.resolveProviderId(threadObject);
   return {
-    id: normalizeOptionalString(threadObject.id),
-    provider: resolveProviderId(threadObject),
-    providerSessionId: normalizeOptionalString(threadObject.providerSessionId) || normalizeOptionalString(threadObject.id),
-    title: normalizeOptionalString(threadObject.title),
-    name: normalizeOptionalString(threadObject.name),
-    preview: normalizeOptionalString(threadObject.preview),
-    cwd: firstNonEmptyString([
+    id: helpers.normalizeOptionalString(threadObject.id) || "",
+    provider: providerId,
+    providerSessionId: helpers.normalizeOptionalString(threadObject.providerSessionId)
+      || helpers.normalizeOptionalString(threadObject.id),
+    title: helpers.normalizeOptionalString(threadObject.title),
+    name: helpers.normalizeOptionalString(threadObject.name),
+    preview: helpers.normalizeOptionalString(threadObject.preview),
+    cwd: helpers.firstNonEmptyString([
       threadObject.cwd,
       threadObject.current_working_directory,
       threadObject.working_directory,
     ]),
     metadata: {
-      ...(asObject(threadObject.metadata) || {}),
-      providerTitle: getRuntimeProvider(resolveProviderId(threadObject)).title,
+      ...(helpers.asObject(threadObject.metadata) as Record<string, unknown>),
+      providerTitle: helpers.getRuntimeProvider(providerId).title,
     },
-    capabilities: threadObject.capabilities || getRuntimeProvider(resolveProviderId(threadObject)).supports,
-    createdAt: threadObject.createdAt || threadObject.created_at || new Date().toISOString(),
-    updatedAt: threadObject.updatedAt || threadObject.updated_at || new Date().toISOString(),
+    capabilities: (threadObject.capabilities as Record<string, unknown> | null)
+      || helpers.getRuntimeProvider(providerId).supports,
+    createdAt: String(threadObject.createdAt || threadObject.created_at || new Date().toISOString()),
+    updatedAt: String(threadObject.updatedAt || threadObject.updated_at || new Date().toISOString()),
     archived: Boolean(threadObject.archived),
   };
 }
-
-module.exports = {
-  buildManagedThreadObject,
-  buildProviderMetadata,
-  buildThreadListResult,
-  resolveProviderId,
-  stripProviderField,
-  threadObjectToMeta,
-};

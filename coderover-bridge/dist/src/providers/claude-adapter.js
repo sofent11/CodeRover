@@ -10,7 +10,7 @@ const os = require("os");
 const path = require("path");
 const { randomUUID } = require("crypto");
 const { getRuntimeProvider } = require("../provider-catalog");
-function createClaudeAdapter({ store, logPrefix = "[coderover]", } = {}) {
+function createClaudeAdapter({ store, logPrefix = "[coderover]", }) {
     let sdkModulePromise = null;
     async function syncImportedThreads() {
         const sdk = await loadSdkModule();

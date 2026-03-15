@@ -1,18 +1,13 @@
-// @ts-nocheck
-export {};
-
-// FILE: secure-device-state.test.js
+// FILE: secure-device-state.test.ts
 // Purpose: Verifies persisted bridge identity can be read back from Keychain's hex-encoded output.
-// Layer: Unit test
-// Exports: node:test suite
-// Depends on: node:test, node:assert/strict, ../src/secure-device-state
 
-const test = require("node:test");
-const assert = require("node:assert/strict");
-const fs = require("fs");
-const os = require("os");
-const path = require("path");
-const { decodeStoredDeviceStateString } = require("../src/secure-device-state");
+import test = require("node:test");
+import assert = require("node:assert/strict");
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
+
+import { decodeStoredDeviceStateString } from "../src/secure-device-state";
 
 test("decodeStoredDeviceStateString preserves plain JSON", () => {
   const json = JSON.stringify({ bridgeId: "bridge-1" });
@@ -33,7 +28,7 @@ test("bridge device state persists trusted phones across reloads", () => {
   try {
     process.env.HOME = tempHome;
     delete require.cache[modulePath];
-    const secureDeviceState = require("../src/secure-device-state");
+    const secureDeviceState = require("../src/secure-device-state") as typeof import("../src/secure-device-state");
 
     const initial = secureDeviceState.loadOrCreateBridgeDeviceState();
     const updated = secureDeviceState.rememberTrustedPhone(
@@ -43,7 +38,7 @@ test("bridge device state persists trusted phones across reloads", () => {
     );
 
     delete require.cache[modulePath];
-    const reloadedSecureDeviceState = require("../src/secure-device-state");
+    const reloadedSecureDeviceState = require("../src/secure-device-state") as typeof import("../src/secure-device-state");
     const reloaded = reloadedSecureDeviceState.loadOrCreateBridgeDeviceState();
 
     assert.equal(reloaded.bridgeId, updated.bridgeId);

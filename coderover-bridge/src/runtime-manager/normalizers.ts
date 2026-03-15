@@ -1,62 +1,90 @@
-// @ts-nocheck
-export {};
-
 // FILE: runtime-manager/normalizers.ts
-// Purpose: Shared normalization helpers for runtime-manager request parsing and payload shaping.
+// Purpose: Typed normalization helpers for runtime-manager payload parsing and shaping.
 
-function normalizeInputItems(input) {
+import type {
+  PlanModeStateShape,
+  RuntimeInputItem,
+  RuntimeSkillInputItem,
+} from "../bridge-types";
+
+type UnknownRecord = Record<string, unknown>;
+
+function asRecord(value: unknown): UnknownRecord | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as UnknownRecord)
+    : null;
+}
+
+function normalizeStringField(record: UnknownRecord, keys: string[]): string | null {
+  for (const key of keys) {
+    const normalized = normalizeOptionalString(record[key]);
+    if (normalized) {
+      return normalized;
+    }
+  }
+  return null;
+}
+
+export function normalizeInputItems(input: unknown): RuntimeInputItem[] {
   if (!Array.isArray(input)) {
     return [];
   }
 
   return input
     .map((entry) => normalizeInputItem(entry))
-    .filter(Boolean);
+    .filter((entry): entry is RuntimeInputItem => entry !== null);
 }
 
-function normalizeInputItem(entry) {
-  if (!entry || typeof entry !== "object") {
+export function normalizeInputItem(entry: unknown): RuntimeInputItem | null {
+  const record = asRecord(entry);
+  if (!record) {
     return null;
   }
 
-  const type = normalizeInputType(entry.type);
+  const type = normalizeInputType(record.type);
   if (type === "text") {
-    const text = normalizeOptionalString(entry.text || entry.message || entry.content);
+    const text = normalizeStringField(record, ["text", "message", "content"]);
     return text ? { type: "text", text } : null;
   }
 
   if (type === "image") {
-    const url = normalizeOptionalString(entry.image_url || entry.url || entry.path);
+    const url = normalizeStringField(record, ["image_url", "url", "path"]);
+    const path = normalizeOptionalString(record.path);
     if (!url) {
       return null;
     }
-    return {
-      type: entry.path ? "local_image" : "image",
-      ...(entry.path ? { path: entry.path } : { image_url: url }),
-      ...(entry.path ? {} : { url }),
-    };
+    return path
+      ? { type: "local_image", path }
+      : { type: "image", image_url: url, url };
   }
 
   if (type === "skill") {
-    const id = normalizeOptionalString(entry.id);
+    const id = normalizeOptionalString(record.id);
     if (!id) {
       return null;
     }
-    return {
+    const skill: RuntimeSkillInputItem = {
       type: "skill",
       id,
-      ...(normalizeOptionalString(entry.name) ? { name: entry.name.trim() } : {}),
-      ...(normalizeOptionalString(entry.path) ? { path: entry.path.trim() } : {}),
     };
+    const name = normalizeOptionalString(record.name);
+    const path = normalizeOptionalString(record.path);
+    if (name) {
+      skill.name = name;
+    }
+    if (path) {
+      skill.path = path;
+    }
+    return skill;
   }
 
   return {
     type,
-    ...entry,
-  };
+    ...record,
+  } as RuntimeInputItem;
 }
 
-function normalizeInputType(value) {
+export function normalizeInputType(value: unknown): string {
   const normalized = normalizeNonEmptyString(value).toLowerCase().replace(/[_-]/g, "");
   if (normalized === "image" || normalized === "localimage" || normalized === "inputimage") {
     return "image";
@@ -67,37 +95,43 @@ function normalizeInputType(value) {
   return "text";
 }
 
-function normalizePlanState(planState) {
-  if (!planState || typeof planState !== "object") {
+export function normalizePlanState(planState: unknown): PlanModeStateShape {
+  const record = asRecord(planState);
+  if (!record) {
     return {
       explanation: null,
       steps: [],
     };
   }
 
-  const explanation = normalizeOptionalString(planState.explanation || planState.summary);
-  const steps = Array.isArray(planState.steps)
-    ? planState.steps
-      .map((entry) => {
-        if (!entry || typeof entry !== "object") {
-          return null;
-        }
-        const step = normalizeOptionalString(entry.step);
-        const status = normalizeOptionalString(entry.status);
-        if (!step || !status) {
-          return null;
-        }
-        return { step, status };
-      })
-      .filter(Boolean)
-    : [];
+  const explanation = normalizeStringField(record, ["explanation", "summary"]);
+  const rawSteps = Array.isArray(record.steps) ? record.steps : [];
+  const steps = rawSteps
+    .map((entry) => {
+      const stepRecord = asRecord(entry);
+      if (!stepRecord) {
+        return null;
+      }
+      const step = normalizeOptionalString(stepRecord.step);
+      const status = normalizeOptionalString(stepRecord.status);
+      if (!step || !status) {
+        return null;
+      }
+      return { step, status };
+    })
+    .filter((entry): entry is { step: string; status: string } => entry !== null);
+
   return {
     explanation,
     steps,
   };
 }
 
-function buildCommandPreview(command, status, exitCode) {
+export function buildCommandPreview(
+  command: unknown,
+  status: unknown,
+  exitCode: unknown
+): string {
   const shortCommand = normalizeOptionalString(command) || "command";
   const normalizedStatus = normalizeOptionalString(status) || "running";
   const label = normalizedStatus === "completed"
@@ -107,25 +141,21 @@ function buildCommandPreview(command, status, exitCode) {
       : normalizedStatus === "stopped"
         ? "Stopped"
         : "Running";
-  if (typeof exitCode === "number") {
-    return `${label} ${shortCommand} (exit ${exitCode})`;
-  }
-  return `${label} ${shortCommand}`;
+  return typeof exitCode === "number"
+    ? `${label} ${shortCommand} (exit ${exitCode})`
+    : `${label} ${shortCommand}`;
 }
 
-function normalizeOptionalString(value) {
+export function normalizeOptionalString(value: unknown): string | null {
   const normalized = normalizeNonEmptyString(value);
   return normalized || null;
 }
 
-function normalizeNonEmptyString(value) {
-  if (typeof value !== "string") {
-    return "";
-  }
-  return value.trim();
+export function normalizeNonEmptyString(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
 }
 
-function firstNonEmptyString(values) {
+export function firstNonEmptyString(values: unknown[]): string | null {
   for (const value of values) {
     const normalized = normalizeOptionalString(value);
     if (normalized) {
@@ -135,14 +165,11 @@ function firstNonEmptyString(values) {
   return null;
 }
 
-function asObject(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return {};
-  }
-  return value;
+export function asObject(value: unknown): UnknownRecord {
+  return asRecord(value) || {};
 }
 
-function normalizeTimestampString(value) {
+export function normalizeTimestampString(value: unknown): string | null {
   if (value == null) {
     return null;
   }
@@ -167,24 +194,10 @@ function normalizeTimestampString(value) {
   return new Date(parsed).toISOString();
 }
 
-function normalizePositiveInteger(value) {
+export function normalizePositiveInteger(value: unknown): number | null {
   const numeric = Number(value);
   if (!Number.isInteger(numeric) || numeric <= 0) {
     return null;
   }
   return numeric;
 }
-
-module.exports = {
-  asObject,
-  buildCommandPreview,
-  firstNonEmptyString,
-  normalizeInputItem,
-  normalizeInputItems,
-  normalizeInputType,
-  normalizeNonEmptyString,
-  normalizeOptionalString,
-  normalizePlanState,
-  normalizePositiveInteger,
-  normalizeTimestampString,
-};

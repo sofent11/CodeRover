@@ -1,16 +1,46 @@
-// @ts-nocheck
-export {};
-
-// FILE: codex-transport.js
+// FILE: codex-transport.ts
 // Purpose: Abstracts the Codex-side transport so the bridge can talk to either a spawned app-server or an existing WebSocket endpoint.
-// Layer: CLI helper
-// Exports: createCodexTransport
-// Depends on: child_process, ws
 
-const { spawn } = require("child_process");
-const WebSocket = require("ws");
+import { spawn, type ChildProcessWithoutNullStreams } from "child_process";
+import WebSocket = require("ws");
 
-function createCodexTransport({ endpoint = "", env = process.env } = {}) {
+type MessageHandler = (message: string) => void;
+type CloseHandler = (...args: unknown[]) => void;
+type ErrorHandler = (error: Error) => void;
+
+interface CodexTransport {
+  mode: "spawn" | "websocket";
+  describe(): string;
+  send(message: string): void;
+  onMessage(handler: MessageHandler): void;
+  onClose(handler: CloseHandler): void;
+  onError(handler: ErrorHandler): void;
+  shutdown(): void;
+}
+
+interface CodexLaunchPlan {
+  command: string;
+  args: string[];
+  options: {
+    stdio: ["pipe", "pipe", "pipe"];
+    env: NodeJS.ProcessEnv;
+    windowsHide?: boolean;
+  };
+  description: string;
+}
+
+interface ListenerBag {
+  onMessage: MessageHandler | null;
+  onClose: CloseHandler | null;
+  onError: ErrorHandler | null;
+  emitMessage(message: string): void;
+  emitClose(...args: unknown[]): void;
+  emitError(error: Error): void;
+}
+
+export function createCodexTransport(
+  { endpoint = "", env = process.env }: { endpoint?: string; env?: NodeJS.ProcessEnv } = {}
+): CodexTransport {
   if (endpoint) {
     return createWebSocketTransport({ endpoint });
   }
@@ -18,7 +48,7 @@ function createCodexTransport({ endpoint = "", env = process.env } = {}) {
   return createSpawnTransport({ env });
 }
 
-function createSpawnTransport({ env }) {
+function createSpawnTransport({ env }: { env: NodeJS.ProcessEnv }): CodexTransport {
   const launch = createCodexLaunchPlan({ env });
   const codex = spawn(launch.command, launch.args, launch.options);
 
@@ -46,8 +76,7 @@ function createSpawnTransport({ env }) {
 
     listeners.emitClose(code, signal);
   });
-  // Keep stderr muted during normal operation, but preserve enough output to
-  // explain launch failures when the child exits before the bridge can use it.
+
   codex.stderr.on("data", (chunk) => {
     stderrBuffer = appendOutputBuffer(stderrBuffer, chunk.toString("utf8"));
   });
@@ -70,20 +99,20 @@ function createSpawnTransport({ env }) {
     describe() {
       return launch.description;
     },
-    send(message) {
+    send(message: string) {
       if (!codex.stdin.writable) {
         return;
       }
 
       codex.stdin.write(message.endsWith("\n") ? message : `${message}\n`);
     },
-    onMessage(handler) {
+    onMessage(handler: MessageHandler) {
       listeners.onMessage = handler;
     },
-    onClose(handler) {
+    onClose(handler: CloseHandler) {
       listeners.onClose = handler;
     },
-    onError(handler) {
+    onError(handler: ErrorHandler) {
       listeners.onError = handler;
     },
     shutdown() {
@@ -93,10 +122,8 @@ function createSpawnTransport({ env }) {
   };
 }
 
-// Builds a single, platform-aware launch path so the bridge never "guesses"
-// between multiple commands and accidentally starts duplicate runtimes.
-function createCodexLaunchPlan({ env }) {
-  const sharedOptions = {
+function createCodexLaunchPlan({ env }: { env: NodeJS.ProcessEnv }): CodexLaunchPlan {
+  const sharedOptions: CodexLaunchPlan["options"] = {
     stdio: ["pipe", "pipe", "pipe"],
     env: { ...env },
   };
@@ -121,9 +148,7 @@ function createCodexLaunchPlan({ env }) {
   };
 }
 
-// Stops the exact process tree we launched on Windows so the shell wrapper
-// does not leave a child Codex process running in the background.
-function shutdownCodexProcess(codex) {
+function shutdownCodexProcess(codex: ChildProcessWithoutNullStreams): void {
   if (codex.killed || codex.exitCode !== null) {
     return;
   }
@@ -142,18 +167,28 @@ function shutdownCodexProcess(codex) {
   codex.kill("SIGTERM");
 }
 
-function createCodexCloseError({ code, signal, stderrBuffer, launchDescription }) {
+function createCodexCloseError({
+  code,
+  signal,
+  stderrBuffer,
+  launchDescription,
+}: {
+  code: number | null;
+  signal: NodeJS.Signals | null;
+  stderrBuffer: string;
+  launchDescription: string;
+}): Error {
   const details = stderrBuffer.trim();
   const reason = details || `Process exited with code ${code}${signal ? ` (signal: ${signal})` : ""}.`;
   return new Error(`Codex launcher ${launchDescription} failed: ${reason}`);
 }
 
-function appendOutputBuffer(buffer, chunk) {
+function appendOutputBuffer(buffer: string, chunk: string): string {
   const next = `${buffer}${chunk}`;
   return next.slice(-4_096);
 }
 
-function createWebSocketTransport({ endpoint }) {
+function createWebSocketTransport({ endpoint }: { endpoint: string }): CodexTransport {
   const socket = new WebSocket(endpoint);
   const listeners = createListenerBag();
 
@@ -176,20 +211,20 @@ function createWebSocketTransport({ endpoint }) {
     describe() {
       return endpoint;
     },
-    send(message) {
+    send(message: string) {
       if (socket.readyState !== WebSocket.OPEN) {
         return;
       }
 
       socket.send(message);
     },
-    onMessage(handler) {
+    onMessage(handler: MessageHandler) {
       listeners.onMessage = handler;
     },
-    onClose(handler) {
+    onClose(handler: CloseHandler) {
       listeners.onClose = handler;
     },
-    onError(handler) {
+    onError(handler: ErrorHandler) {
       listeners.onError = handler;
     },
     shutdown() {
@@ -200,21 +235,19 @@ function createWebSocketTransport({ endpoint }) {
   };
 }
 
-function createListenerBag() {
+function createListenerBag(): ListenerBag {
   return {
     onMessage: null,
     onClose: null,
     onError: null,
-    emitMessage(message) {
+    emitMessage(message: string) {
       this.onMessage?.(message);
     },
-    emitClose(...args) {
+    emitClose(...args: unknown[]) {
       this.onClose?.(...args);
     },
-    emitError(error) {
+    emitError(error: Error) {
       this.onError?.(error);
     },
   };
 }
-
-module.exports = { createCodexTransport };

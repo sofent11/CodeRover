@@ -1,11 +1,11 @@
 "use strict";
-Object.defineProperty(exports, "__esModule", { value: true });
-// FILE: index.js
+// FILE: index.ts
 // Purpose: Small entrypoint wrapper for the bridge runtime.
-// Layer: CLI entry
-// Exports: startBridge, openLastActiveThread, watchThreadRollout
-// Depends on: ./bridge, ./session-state, ./rollout-watch
-const { startBridge } = require("./bridge");
-const { openLastActiveThread } = require("./session-state");
-const { watchThreadRollout } = require("./rollout-watch");
-module.exports = { startBridge, openLastActiveThread, watchThreadRollout };
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.watchThreadRollout = exports.openLastActiveThread = exports.startBridge = void 0;
+const bridgeModule = require("./bridge");
+const sessionStateModule = require("./session-state");
+const rolloutWatchModule = require("./rollout-watch");
+exports.startBridge = bridgeModule.startBridge;
+exports.openLastActiveThread = sessionStateModule.openLastActiveThread;
+exports.watchThreadRollout = rolloutWatchModule.watchThreadRollout;

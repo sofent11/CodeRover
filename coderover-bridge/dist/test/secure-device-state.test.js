@@ -1,24 +1,21 @@
 "use strict";
-Object.defineProperty(exports, "__esModule", { value: true });
-// FILE: secure-device-state.test.js
+// FILE: secure-device-state.test.ts
 // Purpose: Verifies persisted bridge identity can be read back from Keychain's hex-encoded output.
-// Layer: Unit test
-// Exports: node:test suite
-// Depends on: node:test, node:assert/strict, ../src/secure-device-state
+Object.defineProperty(exports, "__esModule", { value: true });
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { decodeStoredDeviceStateString } = require("../src/secure-device-state");
+const secure_device_state_1 = require("../src/secure-device-state");
 test("decodeStoredDeviceStateString preserves plain JSON", () => {
     const json = JSON.stringify({ bridgeId: "bridge-1" });
-    assert.equal(decodeStoredDeviceStateString(json), json);
+    assert.equal((0, secure_device_state_1.decodeStoredDeviceStateString)(json), json);
 });
 test("decodeStoredDeviceStateString decodes Keychain hex output", () => {
     const json = JSON.stringify({ bridgeId: "bridge-1", macDeviceId: "mac-1" }, null, 2);
     const hex = Buffer.from(json, "utf8").toString("hex");
-    assert.equal(decodeStoredDeviceStateString(hex), json);
+    assert.equal((0, secure_device_state_1.decodeStoredDeviceStateString)(hex), json);
 });
 test("bridge device state persists trusted phones across reloads", () => {
     const originalHome = process.env.HOME;

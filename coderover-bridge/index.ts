@@ -1,7 +1,4 @@
-// @ts-nocheck
-export {};
-
 // FILE: index.ts
-// Purpose: Published CommonJS entrypoint shim for the compiled bridge package.
+// Purpose: Published TypeScript entrypoint shim for the compiled bridge package.
 
-module.exports = require("./src");
+export * from "./src";

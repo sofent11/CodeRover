@@ -1,13 +1,12 @@
 "use strict";
-Object.defineProperty(exports, "__esModule", { value: true });
-// FILE: local-bridge-server.js
+// FILE: local-bridge-server.ts
 // Purpose: Hosts the stable local WebSocket endpoint that iPhone clients can reconnect to directly.
-// Layer: CLI helper
-// Exports: startLocalBridgeServer, buildTransportCandidates
-// Depends on: http, os, ws
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.startLocalBridgeServer = startLocalBridgeServer;
+exports.buildTransportCandidates = buildTransportCandidates;
 const http = require("http");
 const os = require("os");
-const { WebSocketServer, WebSocket } = require("ws");
+const ws_1 = require("ws");
 const CLOSE_CODE_INVALID_ROUTE = 4000;
 const CLOSE_CODE_IPHONE_REPLACED = 4003;
 const CLOSE_CODE_UPSTREAM_RESTARTING = 4004;
@@ -15,7 +14,10 @@ const HEARTBEAT_INTERVAL_MS = 30_000;
 const STALE_PAIRING_CLOSE_DELAY_MS = 200;
 const BRIDGE_PATH_PREFIX = "/bridge/";
 const STALE_PAIRING_ERROR_MESSAGE = "This bridge pairing is no longer valid. Scan a new QR code to pair again.";
-function startLocalBridgeServer({ bridgeId, host = "0.0.0.0", port = 8765, logPrefix = "[coderover]", canAcceptConnection = () => true, onMessage, onClientClose, onError, } = {}) {
+function isNetworkInterfaceInfoArray(value) {
+    return Array.isArray(value);
+}
+function startLocalBridgeServer({ bridgeId = "", host = "0.0.0.0", port = 8765, logPrefix = "[coderover]", canAcceptConnection = () => true, onMessage, onClientClose, onError, } = {}) {
     const routePath = `/bridge/${bridgeId}`;
     const server = http.createServer((req, res) => {
         if (req.url === routePath) {
@@ -26,7 +28,7 @@ function startLocalBridgeServer({ bridgeId, host = "0.0.0.0", port = 8765, logPr
         res.writeHead(404, { "content-type": "application/json; charset=utf-8" });
         res.end(JSON.stringify({ ok: false, error: "not_found" }));
     });
-    const wss = new WebSocketServer({ noServer: true });
+    const wss = new ws_1.WebSocketServer({ noServer: true });
     let nextClientId = 1;
     const clients = new Map();
     const heartbeat = setInterval(() => {
@@ -52,20 +54,21 @@ function startLocalBridgeServer({ bridgeId, host = "0.0.0.0", port = 8765, logPr
     server.on("upgrade", (req, socket, head) => {
         if (req.url !== routePath && isBridgeRoutePath(req.url)) {
             wss.handleUpgrade(req, socket, head, (ws) => {
+                const bridgeSocket = ws;
                 console.warn(`${logPrefix} rejected stale bridge route ${req.url}; expected ${routePath}`);
                 try {
-                    ws.send(JSON.stringify({
+                    bridgeSocket.send(JSON.stringify({
                         kind: "secureError",
                         code: "pairing_expired",
                         message: STALE_PAIRING_ERROR_MESSAGE,
                     }));
                     setTimeout(() => {
                         try {
-                            ws.close(CLOSE_CODE_INVALID_ROUTE, "Bridge pairing expired");
+                            bridgeSocket.close(CLOSE_CODE_INVALID_ROUTE, "Bridge pairing expired");
                         }
                         catch {
                             try {
-                                ws.terminate();
+                                bridgeSocket.terminate();
                             }
                             catch {
                                 // Best-effort only.
@@ -75,7 +78,7 @@ function startLocalBridgeServer({ bridgeId, host = "0.0.0.0", port = 8765, logPr
                 }
                 catch {
                     try {
-                        ws.terminate();
+                        bridgeSocket.terminate();
                     }
                     catch {
                         // Best-effort only.
@@ -99,32 +102,33 @@ function startLocalBridgeServer({ bridgeId, host = "0.0.0.0", port = 8765, logPr
         });
     });
     wss.on("connection", (ws) => {
+        const bridgeSocket = ws;
         const transportId = `transport-${nextClientId}`;
         nextClientId += 1;
-        ws._bridgeTransportId = transportId;
-        ws._bridgeAlive = true;
-        clients.set(transportId, ws);
+        bridgeSocket._bridgeTransportId = transportId;
+        bridgeSocket._bridgeAlive = true;
+        clients.set(transportId, bridgeSocket);
         console.log(`${logPrefix} local client connected (${routePath}, ${transportId})`);
-        ws.on("pong", () => {
-            ws._bridgeAlive = true;
+        bridgeSocket.on("pong", () => {
+            bridgeSocket._bridgeAlive = true;
         });
-        ws.on("message", (data) => {
+        bridgeSocket.on("message", (data) => {
             const message = typeof data === "string" ? data : data.toString("utf8");
             onMessage?.(message, {
                 transportId,
                 sendControlMessage(controlMessage) {
-                    if (ws.readyState === WebSocket.OPEN) {
-                        ws.send(JSON.stringify(controlMessage));
+                    if (bridgeSocket.readyState === ws_1.WebSocket.OPEN) {
+                        bridgeSocket.send(JSON.stringify(controlMessage));
                     }
                 },
                 sendWireMessage(wireMessage) {
-                    if (ws.readyState === WebSocket.OPEN) {
-                        ws.send(wireMessage);
+                    if (bridgeSocket.readyState === ws_1.WebSocket.OPEN) {
+                        bridgeSocket.send(wireMessage);
                     }
                 },
                 closeTransport(code = CLOSE_CODE_IPHONE_REPLACED, reason = "Replaced by newer iPhone connection") {
                     try {
-                        ws.close(code, reason);
+                        bridgeSocket.close(code, reason);
                     }
                     catch {
                         // Best-effort cleanup only.
@@ -132,12 +136,12 @@ function startLocalBridgeServer({ bridgeId, host = "0.0.0.0", port = 8765, logPr
                 },
             });
         });
-        ws.on("close", () => {
+        bridgeSocket.on("close", () => {
             clients.delete(transportId);
             onClientClose?.({ transportId });
             console.log(`${logPrefix} local client disconnected (${transportId})`);
         });
-        ws.on("error", (error) => {
+        bridgeSocket.on("error", (error) => {
             console.error(`${logPrefix} local WebSocket error:`, error.message);
         });
     });
@@ -151,7 +155,8 @@ function startLocalBridgeServer({ bridgeId, host = "0.0.0.0", port = 8765, logPr
         port,
         routePath,
         resolvedPort() {
-            return server.address()?.port || port;
+            const address = server.address();
+            return address?.port || port;
         },
         disconnectClient(transportId, code = CLOSE_CODE_UPSTREAM_RESTARTING, reason = "Bridge upstream restarting") {
             const clientToClose = clients.get(transportId);
@@ -192,7 +197,7 @@ function startLocalBridgeServer({ bridgeId, host = "0.0.0.0", port = 8765, logPr
         },
     };
 }
-function buildTransportCandidates({ bridgeId, localPort, tailnetUrl = "", relayUrls = [], } = {}) {
+function buildTransportCandidates({ bridgeId = "", localPort = 8765, tailnetUrl = "", relayUrls = [], } = {}) {
     const routePath = `/bridge/${bridgeId}`;
     const candidates = [];
     const seen = new Set();
@@ -237,7 +242,7 @@ function listReachableIPv4Addresses(addressFilter) {
     const interfaces = os.networkInterfaces();
     const addresses = [];
     for (const [interfaceName, networkDetails] of Object.entries(interfaces)) {
-        if (!Array.isArray(networkDetails)) {
+        if (!isNetworkInterfaceInfoArray(networkDetails)) {
             continue;
         }
         for (const detail of networkDetails) {
@@ -285,11 +290,8 @@ function isReachableTailnetIPv4(address, interfaceName) {
         || normalizedInterfaceName.includes("tailscale");
 }
 function isPrivateIPv4(address) {
-    if (typeof address !== "string") {
-        return false;
-    }
-    const octets = address.split(".").map((value) => Number.parseInt(value, 10));
-    if (octets.length !== 4 || octets.some((value) => Number.isNaN(value) || value < 0 || value > 255)) {
+    const octets = parseIpv4Octets(address);
+    if (!octets) {
         return false;
     }
     if (octets[0] === 10) {
@@ -301,14 +303,21 @@ function isPrivateIPv4(address) {
     return octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31;
 }
 function isTailnetCarrierIPv4(address) {
-    if (typeof address !== "string") {
-        return false;
-    }
-    const octets = address.split(".").map((value) => Number.parseInt(value, 10));
-    if (octets.length !== 4 || octets.some((value) => Number.isNaN(value) || value < 0 || value > 255)) {
+    const octets = parseIpv4Octets(address);
+    if (!octets) {
         return false;
     }
     return octets[0] === 100 && octets[1] >= 64 && octets[1] <= 127;
+}
+function parseIpv4Octets(address) {
+    if (typeof address !== "string") {
+        return null;
+    }
+    const octets = address.split(".").map((value) => Number.parseInt(value, 10));
+    if (octets.length !== 4 || octets.some((value) => Number.isNaN(value) || value < 0 || value > 255)) {
+        return null;
+    }
+    return octets;
 }
 function buildCandidateUrl(baseUrl, routePath) {
     const normalizedBase = baseUrl.replace(/\/+$/, "");
@@ -349,7 +358,3 @@ function normalizeNonEmptyString(value) {
     }
     return value.trim();
 }
-module.exports = {
-    buildTransportCandidates,
-    startLocalBridgeServer,
-};

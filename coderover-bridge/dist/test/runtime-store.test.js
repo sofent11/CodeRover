@@ -1,19 +1,16 @@
 "use strict";
-Object.defineProperty(exports, "__esModule", { value: true });
-// FILE: runtime-store.test.js
+// FILE: runtime-store.test.ts
 // Purpose: Verifies provider-aware overlay persistence for managed runtime threads.
-// Layer: Unit test
-// Exports: node:test suite
-// Depends on: node:test, node:assert/strict, fs, os, path, ../src/runtime-store
+Object.defineProperty(exports, "__esModule", { value: true });
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { createRuntimeStore } = require("../src/runtime-store");
+const runtime_store_1 = require("../src/runtime-store");
 function createTempStore() {
     const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "coderover-runtime-store-"));
-    const store = createRuntimeStore({ baseDir });
+    const store = (0, runtime_store_1.createRuntimeStore)({ baseDir });
     return {
         store,
         cleanup() {

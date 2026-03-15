@@ -1,20 +1,15 @@
-// @ts-nocheck
-export {};
-
-// FILE: runtime-store.test.js
+// FILE: runtime-store.test.ts
 // Purpose: Verifies provider-aware overlay persistence for managed runtime threads.
-// Layer: Unit test
-// Exports: node:test suite
-// Depends on: node:test, node:assert/strict, fs, os, path, ../src/runtime-store
 
-const test = require("node:test");
-const assert = require("node:assert/strict");
-const fs = require("fs");
-const os = require("os");
-const path = require("path");
-const { createRuntimeStore } = require("../src/runtime-store");
+import test = require("node:test");
+import assert = require("node:assert/strict");
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
 
-function createTempStore() {
+import { createRuntimeStore, type RuntimeStore } from "../src/runtime-store";
+
+function createTempStore(): { store: RuntimeStore; cleanup(): void } {
   const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "coderover-runtime-store-"));
   const store = createRuntimeStore({ baseDir });
   return {

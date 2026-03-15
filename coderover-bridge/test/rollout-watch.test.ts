@@ -1,19 +1,14 @@
-// @ts-nocheck
-export {};
-
-// FILE: rollout-watch.test.js
+// FILE: rollout-watch.test.ts
 // Purpose: Verifies rollout-backed context-window reads used by the Codex status sheet.
-// Layer: Unit test
-// Exports: node:test suite
-// Depends on: node:test, node:assert/strict, fs, os, path, ../src/rollout-watch, ../src/thread-context-handler
 
-const test = require("node:test");
-const assert = require("node:assert/strict");
-const fs = require("fs");
-const os = require("os");
-const path = require("path");
-const { readLatestContextWindowUsage } = require("../src/rollout-watch");
-const { handleThreadContextRequest } = require("../src/thread-context-handler");
+import test = require("node:test");
+import assert = require("node:assert/strict");
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
+
+import { readLatestContextWindowUsage } from "../src/rollout-watch";
+import { handleThreadContextRequest } from "../src/thread-context-handler";
 
 test("readLatestContextWindowUsage returns the newest usage snapshot from a thread rollout", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "coderover-rollout-"));
@@ -63,7 +58,7 @@ test("handleThreadContextRequest returns usage payload for thread/contextWindow/
   process.env.CODEROVER_HOME = root;
 
   try {
-    const response = await new Promise((resolve) => {
+    const response = await new Promise<{ handled: boolean; rawResponse: string }>((resolve) => {
       const handled = handleThreadContextRequest(
         JSON.stringify({
           id: "req-1",

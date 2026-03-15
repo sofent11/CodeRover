@@ -1,29 +1,33 @@
-// @ts-nocheck
-export {};
-
-// FILE: session-state.js
+// FILE: session-state.ts
 // Purpose: Persists the latest active CodeRover thread so the user can reopen it on the Mac for handoff.
-// Layer: CLI helper
-// Exports: rememberActiveThread, openLastActiveThread, readLastActiveThread
-// Depends on: fs, os, path, child_process
 
-const fs = require("fs");
-const os = require("os");
-const path = require("path");
-const { execFileSync } = require("child_process");
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
+import { execFileSync } from "child_process";
+
+export interface LastActiveThreadState {
+  threadId: string;
+  source: string;
+  updatedAt: string;
+}
+
+export interface OpenLastActiveThreadOptions {
+  bundleId?: string;
+}
 
 const STATE_DIR = path.join(os.homedir(), ".coderover");
 const STATE_FILE = path.join(STATE_DIR, "last-thread.json");
 const DEFAULT_BUNDLE_ID = "com.sofent.CodeRover";
 
-function rememberActiveThread(threadId, source) {
+export function rememberActiveThread(threadId: unknown, source: unknown): boolean {
   if (!threadId || typeof threadId !== "string") {
     return false;
   }
 
-  const payload = {
+  const payload: LastActiveThreadState = {
     threadId,
-    source: source || "unknown",
+    source: typeof source === "string" && source ? source : "unknown",
     updatedAt: new Date().toISOString(),
   };
 
@@ -32,7 +36,9 @@ function rememberActiveThread(threadId, source) {
   return true;
 }
 
-function openLastActiveThread({ bundleId = DEFAULT_BUNDLE_ID } = {}) {
+export function openLastActiveThread(
+  { bundleId = DEFAULT_BUNDLE_ID }: OpenLastActiveThreadOptions = {}
+): LastActiveThreadState {
   const state = readState();
   const threadId = state?.threadId;
   if (!threadId) {
@@ -44,17 +50,13 @@ function openLastActiveThread({ bundleId = DEFAULT_BUNDLE_ID } = {}) {
   return state;
 }
 
-function readState() {
+function readState(): LastActiveThreadState | null {
   if (!fs.existsSync(STATE_FILE)) {
     return null;
   }
 
   const raw = fs.readFileSync(STATE_FILE, "utf8");
-  return JSON.parse(raw);
+  return JSON.parse(raw) as LastActiveThreadState;
 }
 
-module.exports = {
-  rememberActiveThread,
-  openLastActiveThread,
-  readLastActiveThread: readState,
-};
+export const readLastActiveThread = readState;

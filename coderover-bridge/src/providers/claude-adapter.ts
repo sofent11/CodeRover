@@ -1,4 +1,3 @@
-// @ts-nocheck
 export {};
 
 // FILE: providers/claude-adapter.js
@@ -13,10 +12,15 @@ const path = require("path");
 const { randomUUID } = require("crypto");
 const { getRuntimeProvider } = require("../provider-catalog");
 
+interface CreateClaudeAdapterOptions {
+  store: any;
+  logPrefix?: string;
+}
+
 function createClaudeAdapter({
   store,
   logPrefix = "[coderover]",
-} = {}) {
+}: CreateClaudeAdapterOptions) {
   let sdkModulePromise = null;
 
   async function syncImportedThreads() {

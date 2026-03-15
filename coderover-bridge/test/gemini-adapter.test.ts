@@ -1,18 +1,13 @@
-// @ts-nocheck
-export {};
-
-// FILE: gemini-adapter.test.js
+// FILE: gemini-adapter.test.ts
 // Purpose: Verifies Gemini CLI history import normalizes local chat JSON into bridge timeline messages.
-// Layer: Unit test
-// Exports: node:test suite
-// Depends on: node:test, node:assert/strict, ../src/providers/gemini-adapter
 
-const test = require("node:test");
-const assert = require("node:assert/strict");
-const {
+import test = require("node:test");
+import assert = require("node:assert/strict");
+
+import {
   extractGeminiMessages,
   normalizeGeminiMessage,
-} = require("../src/providers/gemini-adapter");
+} from "../src/providers/gemini-adapter";
 
 test("normalizeGeminiMessage supports real Gemini user and assistant entries", () => {
   assert.deepEqual(

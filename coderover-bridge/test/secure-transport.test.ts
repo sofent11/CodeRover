@@ -1,11 +1,10 @@
-// @ts-nocheck
-export {};
-
 // FILE: secure-transport.test.js
 // Purpose: Verifies the bridge-side E2EE handshake rejects plaintext and round-trips encrypted payloads.
 // Layer: Unit test
 // Exports: node:test suite
 // Depends on: node:test, node:assert/strict, crypto, ../src/secure-transport
+
+export {};
 
 const test = require("node:test");
 const assert = require("node:assert/strict");

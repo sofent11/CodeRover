@@ -1,11 +1,8 @@
-// @ts-nocheck
-export {};
-
-const test = require("node:test");
-const assert = require("node:assert/strict");
-const fs = require("fs");
-const path = require("path");
-const { spawnSync } = require("child_process");
+import test = require("node:test");
+import assert = require("node:assert/strict");
+import * as fs from "fs";
+import * as path from "path";
+import { spawnSync } from "child_process";
 
 const BIN_PATH = path.join(process.cwd(), "bin", "coderover.js");
 

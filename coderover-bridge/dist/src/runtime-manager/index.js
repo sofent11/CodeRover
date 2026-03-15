@@ -19,7 +19,7 @@ const { buildRpcError, buildRpcSuccess } = require("../rpc-client");
 const { createCodexAdapter } = require("../providers/codex-adapter");
 const { createClaudeAdapter } = require("../providers/claude-adapter");
 const { createGeminiAdapter } = require("../providers/gemini-adapter");
-function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]", storeBaseDir, store: providedStore = null, codexAdapter: providedCodexAdapter = null, claudeAdapter: providedClaudeAdapter = null, geminiAdapter: providedGeminiAdapter = null, codexObservedThreadPollIntervalMs = CODEX_OBSERVED_THREAD_POLL_INTERVAL_MS, codexObservedThreadIdleTtlMs = CODEX_OBSERVED_THREAD_IDLE_TTL_MS, codexObservedThreadErrorBackoffMs = CODEX_OBSERVED_THREAD_ERROR_BACKOFF_MS, codexObservedThreadLimit = CODEX_OBSERVED_THREAD_LIMIT, } = {}) {
+function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]", storeBaseDir, store: providedStore = null, codexAdapter: providedCodexAdapter = null, claudeAdapter: providedClaudeAdapter = null, geminiAdapter: providedGeminiAdapter = null, codexObservedThreadPollIntervalMs = CODEX_OBSERVED_THREAD_POLL_INTERVAL_MS, codexObservedThreadIdleTtlMs = CODEX_OBSERVED_THREAD_IDLE_TTL_MS, codexObservedThreadErrorBackoffMs = CODEX_OBSERVED_THREAD_ERROR_BACKOFF_MS, codexObservedThreadLimit = CODEX_OBSERVED_THREAD_LIMIT, }) {
     if (typeof sendApplicationMessage !== "function") {
         throw new Error("createRuntimeManager requires sendApplicationMessage");
     }
@@ -1974,7 +1974,7 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
                 delta: normalizedDelta,
             });
         }
-        function appendToolCallDelta(delta, { itemId, toolName, fileChanges, completed = false } = {}) {
+        function appendToolCallDelta(delta, { itemId, toolName, fileChanges, completed = false, } = {}) {
             const normalizedDelta = normalizeOptionalString(delta);
             const item = ensureItem({
                 itemId,

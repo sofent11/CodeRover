@@ -1,4 +1,3 @@
-// @ts-nocheck
 export {};
 
 // FILE: runtime-manager.js
@@ -41,6 +40,20 @@ const { createCodexAdapter } = require("../providers/codex-adapter");
 const { createClaudeAdapter } = require("../providers/claude-adapter");
 const { createGeminiAdapter } = require("../providers/gemini-adapter");
 
+interface CreateRuntimeManagerOptions {
+  sendApplicationMessage: (rawMessage: string) => void;
+  logPrefix?: string;
+  storeBaseDir?: string;
+  store?: any;
+  codexAdapter?: any;
+  claudeAdapter?: any;
+  geminiAdapter?: any;
+  codexObservedThreadPollIntervalMs?: number;
+  codexObservedThreadIdleTtlMs?: number;
+  codexObservedThreadErrorBackoffMs?: number;
+  codexObservedThreadLimit?: number;
+}
+
 function createRuntimeManager({
   sendApplicationMessage,
   logPrefix = "[coderover]",
@@ -53,7 +66,7 @@ function createRuntimeManager({
   codexObservedThreadIdleTtlMs = CODEX_OBSERVED_THREAD_IDLE_TTL_MS,
   codexObservedThreadErrorBackoffMs = CODEX_OBSERVED_THREAD_ERROR_BACKOFF_MS,
   codexObservedThreadLimit = CODEX_OBSERVED_THREAD_LIMIT,
-} = {}) {
+}: CreateRuntimeManagerOptions) {
   if (typeof sendApplicationMessage !== "function") {
     throw new Error("createRuntimeManager requires sendApplicationMessage");
   }
@@ -2163,7 +2176,7 @@ function createRuntimeManager({
       }));
     }
 
-    function appendAgentDelta(delta, { itemId } = {}) {
+    function appendAgentDelta(delta, { itemId }: { itemId?: string } = {}) {
       const normalizedDelta = normalizeOptionalString(delta);
       if (!normalizedDelta) {
         return;
@@ -2193,7 +2206,7 @@ function createRuntimeManager({
       });
     }
 
-    function appendReasoningDelta(delta, { itemId } = {}) {
+    function appendReasoningDelta(delta, { itemId }: { itemId?: string } = {}) {
       const normalizedDelta = normalizeOptionalString(delta);
       if (!normalizedDelta) {
         return;
@@ -2213,7 +2226,20 @@ function createRuntimeManager({
       });
     }
 
-    function appendToolCallDelta(delta, { itemId, toolName, fileChanges, completed = false } = {}) {
+    function appendToolCallDelta(
+      delta,
+      {
+        itemId,
+        toolName,
+        fileChanges,
+        completed = false,
+      }: {
+        itemId?: string;
+        toolName?: string;
+        fileChanges?: unknown[];
+        completed?: boolean;
+      } = {}
+    ) {
       const normalizedDelta = normalizeOptionalString(delta);
       const item = ensureItem({
         itemId,
@@ -2294,7 +2320,10 @@ function createRuntimeManager({
       });
     }
 
-    function upsertPlan(planState, { itemId, deltaText } = {}) {
+    function upsertPlan(
+      planState,
+      { itemId, deltaText }: { itemId?: string; deltaText?: string } = {}
+    ) {
       const item = ensureItem({
         itemId,
         type: "plan",

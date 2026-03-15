@@ -1,15 +1,13 @@
-// @ts-nocheck
-export {};
-
-// FILE: local-bridge-server.js
+// FILE: local-bridge-server.ts
 // Purpose: Hosts the stable local WebSocket endpoint that iPhone clients can reconnect to directly.
-// Layer: CLI helper
-// Exports: startLocalBridgeServer, buildTransportCandidates
-// Depends on: http, os, ws
 
-const http = require("http");
-const os = require("os");
-const { WebSocketServer, WebSocket } = require("ws");
+import * as http from "http";
+import * as os from "os";
+import type { AddressInfo } from "net";
+
+import { WebSocketServer, WebSocket } from "ws";
+
+import type { TransportCandidateShape } from "./bridge-types";
 
 const CLOSE_CODE_INVALID_ROUTE = 4000;
 const CLOSE_CODE_IPHONE_REPLACED = 4003;
@@ -20,8 +18,53 @@ const BRIDGE_PATH_PREFIX = "/bridge/";
 const STALE_PAIRING_ERROR_MESSAGE =
   "This bridge pairing is no longer valid. Scan a new QR code to pair again.";
 
-function startLocalBridgeServer({
-  bridgeId,
+interface BridgeWebSocket extends WebSocket {
+  _bridgeAlive?: boolean;
+  _bridgeTransportId?: string;
+}
+
+export interface LocalBridgeTransport {
+  transportId: string;
+  sendControlMessage(controlMessage: Record<string, unknown>): void;
+  sendWireMessage(wireMessage: string): void;
+  closeTransport(code?: number, reason?: string): void;
+}
+
+interface LocalBridgeClientCloseEvent {
+  transportId: string;
+}
+
+interface StartLocalBridgeServerOptions {
+  bridgeId?: string;
+  host?: string;
+  port?: number;
+  logPrefix?: string;
+  canAcceptConnection?: () => boolean;
+  onMessage?: (message: string, transport: LocalBridgeTransport) => void;
+  onClientClose?: (event: LocalBridgeClientCloseEvent) => void;
+  onError?: (error: Error) => void;
+}
+
+export interface LocalBridgeServer {
+  bridgeId: string;
+  host: string;
+  port: number;
+  routePath: string;
+  resolvedPort(): number;
+  disconnectClient(transportId: string, code?: number, reason?: string): void;
+  disconnectAllClients(code?: number, reason?: string): void;
+  disconnectCurrentClient(code?: number, reason?: string): void;
+  stop(): void;
+}
+
+function isNetworkInterfaceInfoArray(
+  value: unknown
+): value is os.NetworkInterfaceInfo[] {
+  return Array.isArray(value);
+}
+
+export function startLocalBridgeServer({
+  bridgeId = "",
   host = "0.0.0.0",
   port = 8765,
   logPrefix = "[coderover]",
@@ -29,7 +72,7 @@ function startLocalBridgeServer({
   onMessage,
   onClientClose,
   onError,
-} = {}) {
+}: StartLocalBridgeServerOptions = {}): LocalBridgeServer {
   const routePath = `/bridge/${bridgeId}`;
   const server = http.createServer((req, res) => {
     if (req.url === routePath) {
@@ -43,7 +86,7 @@ function startLocalBridgeServer({
   });
   const wss = new WebSocketServer({ noServer: true });
   let nextClientId = 1;
-  const clients = new Map();
+  const clients = new Map<string, BridgeWebSocket>();
   const heartbeat = setInterval(() => {
     for (const ws of clients.values()) {
       if (ws._bridgeAlive === false) {
@@ -67,11 +110,10 @@ function startLocalBridgeServer({
   server.on("upgrade", (req, socket, head) => {
     if (req.url !== routePath && isBridgeRoutePath(req.url)) {
       wss.handleUpgrade(req, socket, head, (ws) => {
-        console.warn(
-          `${logPrefix} rejected stale bridge route ${req.url}; expected ${routePath}`
-        );
+        const bridgeSocket = ws as BridgeWebSocket;
+        console.warn(`${logPrefix} rejected stale bridge route ${req.url}; expected ${routePath}`);
         try {
-          ws.send(
+          bridgeSocket.send(
             JSON.stringify({
               kind: "secureError",
               code: "pairing_expired",
@@ -80,10 +122,10 @@ function startLocalBridgeServer({
           );
           setTimeout(() => {
             try {
-              ws.close(CLOSE_CODE_INVALID_ROUTE, "Bridge pairing expired");
+              bridgeSocket.close(CLOSE_CODE_INVALID_ROUTE, "Bridge pairing expired");
             } catch {
               try {
-                ws.terminate();
+                bridgeSocket.terminate();
               } catch {
                 // Best-effort only.
               }
@@ -91,7 +133,7 @@ function startLocalBridgeServer({
           }, STALE_PAIRING_CLOSE_DELAY_MS);
         } catch {
           try {
-            ws.terminate();
+            bridgeSocket.terminate();
           } catch {
             // Best-effort only.
           }
@@ -118,29 +160,30 @@ function startLocalBridgeServer({
   });
 
   wss.on("connection", (ws) => {
+    const bridgeSocket = ws as BridgeWebSocket;
     const transportId = `transport-${nextClientId}`;
     nextClientId += 1;
-    ws._bridgeTransportId = transportId;
-    ws._bridgeAlive = true;
-    clients.set(transportId, ws);
+    bridgeSocket._bridgeTransportId = transportId;
+    bridgeSocket._bridgeAlive = true;
+    clients.set(transportId, bridgeSocket);
     console.log(`${logPrefix} local client connected (${routePath}, ${transportId})`);
 
-    ws.on("pong", () => {
-      ws._bridgeAlive = true;
+    bridgeSocket.on("pong", () => {
+      bridgeSocket._bridgeAlive = true;
     });
 
-    ws.on("message", (data) => {
+    bridgeSocket.on("message", (data) => {
       const message = typeof data === "string" ? data : data.toString("utf8");
       onMessage?.(message, {
         transportId,
-        sendControlMessage(controlMessage) {
-          if (ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify(controlMessage));
+        sendControlMessage(controlMessage: Record<string, unknown>) {
+          if (bridgeSocket.readyState === WebSocket.OPEN) {
+            bridgeSocket.send(JSON.stringify(controlMessage));
           }
         },
-        sendWireMessage(wireMessage) {
-          if (ws.readyState === WebSocket.OPEN) {
-            ws.send(wireMessage);
+        sendWireMessage(wireMessage: string) {
+          if (bridgeSocket.readyState === WebSocket.OPEN) {
+            bridgeSocket.send(wireMessage);
           }
         },
         closeTransport(
@@ -148,7 +191,7 @@ function startLocalBridgeServer({
           reason = "Replaced by newer iPhone connection"
         ) {
           try {
-            ws.close(code, reason);
+            bridgeSocket.close(code, reason);
           } catch {
             // Best-effort cleanup only.
           }
@@ -156,13 +199,13 @@ function startLocalBridgeServer({
       });
     });
 
-    ws.on("close", () => {
+    bridgeSocket.on("close", () => {
       clients.delete(transportId);
       onClientClose?.({ transportId });
       console.log(`${logPrefix} local client disconnected (${transportId})`);
     });
 
-    ws.on("error", (error) => {
+    bridgeSocket.on("error", (error) => {
       console.error(`${logPrefix} local WebSocket error:`, error.message);
     });
   });
@@ -178,10 +221,11 @@ function startLocalBridgeServer({
     port,
     routePath,
     resolvedPort() {
-      return server.address()?.port || port;
+      const address = server.address() as AddressInfo | null;
+      return address?.port || port;
     },
     disconnectClient(
-      transportId,
+      transportId: string,
       code = CLOSE_CODE_UPSTREAM_RESTARTING,
       reason = "Bridge upstream restarting"
     ) {
@@ -217,7 +261,7 @@ function startLocalBridgeServer({
       }
       for (const client of wss.clients) {
         try {
-          client.terminate();
+          (client as BridgeWebSocket).terminate();
         } catch {
           // Best-effort shutdown only.
         }
@@ -229,17 +273,24 @@ function startLocalBridgeServer({
   };
 }
 
-function buildTransportCandidates({
-  bridgeId,
-  localPort,
+interface BuildTransportCandidatesOptions {
+  bridgeId?: string;
+  localPort?: number;
+  tailnetUrl?: string;
+  relayUrls?: string[] | string;
+}
+
+export function buildTransportCandidates({
+  bridgeId = "",
+  localPort = 8765,
   tailnetUrl = "",
   relayUrls = [],
-} = {}) {
+}: BuildTransportCandidatesOptions = {}): TransportCandidateShape[] {
   const routePath = `/bridge/${bridgeId}`;
-  const candidates = [];
-  const seen = new Set();
+  const candidates: TransportCandidateShape[] = [];
+  const seen = new Set<string>();
 
-  function addCandidate(kind, url, label) {
+  function addCandidate(kind: string, url: string, label?: string): void {
     const normalizedUrl = normalizeNonEmptyString(url);
     if (!normalizedUrl || seen.has(normalizedUrl)) {
       return;
@@ -273,24 +324,26 @@ function buildTransportCandidates({
   return candidates;
 }
 
-function listReachableLocalIPv4Addresses() {
+function listReachableLocalIPv4Addresses(): string[] {
   return listReachableIPv4Addresses(isReachableLocalIPv4);
 }
 
-function listReachableTailnetIPv4Addresses() {
+function listReachableTailnetIPv4Addresses(): string[] {
   return listReachableIPv4Addresses(isReachableTailnetIPv4);
 }
 
-function isBridgeRoutePath(pathname) {
+function isBridgeRoutePath(pathname: string | undefined): boolean {
   return typeof pathname === "string" && pathname.startsWith(BRIDGE_PATH_PREFIX);
 }
 
-function listReachableIPv4Addresses(addressFilter) {
+function listReachableIPv4Addresses(
+  addressFilter: (address: string, interfaceName: string) => boolean
+): string[] {
   const interfaces = os.networkInterfaces();
-  const addresses = [];
+  const addresses: string[] = [];
 
   for (const [interfaceName, networkDetails] of Object.entries(interfaces)) {
-    if (!Array.isArray(networkDetails)) {
+    if (!isNetworkInterfaceInfoArray(networkDetails)) {
       continue;
     }
 
@@ -308,7 +361,7 @@ function listReachableIPv4Addresses(addressFilter) {
   return addresses;
 }
 
-function isReachableLocalIPv4(address, interfaceName) {
+function isReachableLocalIPv4(address: string, interfaceName: string): boolean {
   if (!isPrivateIPv4(address)) {
     return false;
   }
@@ -336,7 +389,7 @@ function isReachableLocalIPv4(address, interfaceName) {
   return true;
 }
 
-function isReachableTailnetIPv4(address, interfaceName) {
+function isReachableTailnetIPv4(address: string, interfaceName: string): boolean {
   if (!isTailnetCarrierIPv4(address)) {
     return false;
   }
@@ -350,13 +403,9 @@ function isReachableTailnetIPv4(address, interfaceName) {
     || normalizedInterfaceName.includes("tailscale");
 }
 
-function isPrivateIPv4(address) {
-  if (typeof address !== "string") {
-    return false;
-  }
-
-  const octets = address.split(".").map((value) => Number.parseInt(value, 10));
-  if (octets.length !== 4 || octets.some((value) => Number.isNaN(value) || value < 0 || value > 255)) {
+function isPrivateIPv4(address: string): boolean {
+  const octets = parseIpv4Octets(address);
+  if (!octets) {
     return false;
   }
 
@@ -371,20 +420,28 @@ function isPrivateIPv4(address) {
   return octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31;
 }
 
-function isTailnetCarrierIPv4(address) {
-  if (typeof address !== "string") {
-    return false;
-  }
-
-  const octets = address.split(".").map((value) => Number.parseInt(value, 10));
-  if (octets.length !== 4 || octets.some((value) => Number.isNaN(value) || value < 0 || value > 255)) {
+function isTailnetCarrierIPv4(address: string): boolean {
+  const octets = parseIpv4Octets(address);
+  if (!octets) {
     return false;
   }
 
   return octets[0] === 100 && octets[1] >= 64 && octets[1] <= 127;
 }
 
-function buildCandidateUrl(baseUrl, routePath) {
+function parseIpv4Octets(address: string): number[] | null {
+  if (typeof address !== "string") {
+    return null;
+  }
+
+  const octets = address.split(".").map((value) => Number.parseInt(value, 10));
+  if (octets.length !== 4 || octets.some((value) => Number.isNaN(value) || value < 0 || value > 255)) {
+    return null;
+  }
+  return octets;
+}
+
+function buildCandidateUrl(baseUrl: string, routePath: string): string {
   const normalizedBase = baseUrl.replace(/\/+$/, "");
   if (normalizedBase.endsWith(routePath)) {
     return normalizedBase;
@@ -392,7 +449,7 @@ function buildCandidateUrl(baseUrl, routePath) {
   return `${normalizedBase}${routePath}`;
 }
 
-function normalizeRelayUrls(relayUrls) {
+function normalizeRelayUrls(relayUrls: string[] | string): string[] {
   if (typeof relayUrls === "string") {
     return relayUrls
       .split(/[,\n]/)
@@ -409,7 +466,7 @@ function normalizeRelayUrls(relayUrls) {
     .filter(Boolean);
 }
 
-function describeRelayCandidate(url) {
+function describeRelayCandidate(url: string): string {
   try {
     const parsed = new URL(url);
     if (parsed.hostname) {
@@ -422,14 +479,9 @@ function describeRelayCandidate(url) {
   return "Relay";
 }
 
-function normalizeNonEmptyString(value) {
+function normalizeNonEmptyString(value: unknown): string {
   if (typeof value !== "string") {
     return "";
   }
   return value.trim();
 }
-
-module.exports = {
-  buildTransportCandidates,
-  startLocalBridgeServer,
-};

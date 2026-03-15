@@ -1,14 +1,12 @@
 "use strict";
-Object.defineProperty(exports, "__esModule", { value: true });
-// FILE: runtime-store.js
+// FILE: runtime-store.ts
 // Purpose: Provider-aware local overlay store for CodeRover runtime threads and histories.
-// Layer: CLI helper
-// Exports: createRuntimeStore
-// Depends on: fs, os, path, crypto
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.createRuntimeStore = createRuntimeStore;
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { randomUUID } = require("crypto");
+const crypto_1 = require("crypto");
 const DEFAULT_STORE_DIR = path.join(os.homedir(), ".coderover", "runtime");
 const INDEX_FILE = "index.json";
 const THREADS_DIR = "threads";
@@ -219,8 +217,9 @@ function normalizeIndex(input) {
     if (!input || typeof input !== "object") {
         return normalized;
     }
-    if (input.threads && typeof input.threads === "object") {
-        for (const [threadId, value] of Object.entries(input.threads)) {
+    const record = input;
+    if (record.threads && typeof record.threads === "object") {
+        for (const [threadId, value] of Object.entries(record.threads)) {
             const normalizedThreadId = normalizeNonEmptyString(threadId);
             if (!normalizedThreadId || !value || typeof value !== "object") {
                 continue;
@@ -231,8 +230,8 @@ function normalizeIndex(input) {
             });
         }
     }
-    if (input.providerSessions && typeof input.providerSessions === "object") {
-        for (const [key, threadId] of Object.entries(input.providerSessions)) {
+    if (record.providerSessions && typeof record.providerSessions === "object") {
+        for (const [key, threadId] of Object.entries(record.providerSessions)) {
             const normalizedKey = normalizeNonEmptyString(key);
             const normalizedThreadId = normalizeNonEmptyString(threadId);
             if (!normalizedKey || !normalizedThreadId) {
@@ -252,62 +251,66 @@ function normalizeIndex(input) {
     return normalized;
 }
 function normalizeThreadMeta(input) {
-    const normalizedProvider = normalizeProvider(input?.provider);
-    const normalizedId = normalizeThreadId(input?.id, normalizedProvider);
-    const metadata = normalizeObject(input?.metadata);
-    const capabilities = normalizeObject(input?.capabilities);
+    const record = input && typeof input === "object" ? input : {};
+    const normalizedProvider = normalizeProvider(record.provider);
+    const normalizedId = normalizeThreadId(record.id, normalizedProvider);
+    const metadata = normalizeObject(record.metadata);
+    const capabilities = normalizeObject(record.capabilities);
     return {
         id: normalizedId,
         provider: normalizedProvider,
-        providerSessionId: normalizeNonEmptyString(input?.providerSessionId) || null,
-        title: normalizeOptionalString(input?.title),
-        name: normalizeOptionalString(input?.name),
-        preview: normalizeOptionalString(input?.preview),
-        cwd: normalizeOptionalPath(input?.cwd),
-        model: normalizeOptionalString(input?.model),
+        providerSessionId: normalizeNonEmptyString(record.providerSessionId) || null,
+        title: normalizeOptionalString(record.title),
+        name: normalizeOptionalString(record.name),
+        preview: normalizeOptionalString(record.preview),
+        cwd: normalizeOptionalPath(record.cwd),
+        model: normalizeOptionalString(record.model),
         metadata,
         capabilities,
-        createdAt: toIsoDateString(input?.createdAt || Date.now()),
-        updatedAt: toIsoDateString(input?.updatedAt || input?.createdAt || Date.now()),
-        archived: Boolean(input?.archived),
+        createdAt: toIsoDateString(record.createdAt || Date.now()),
+        updatedAt: toIsoDateString(record.updatedAt || record.createdAt || Date.now()),
+        archived: Boolean(record.archived),
     };
 }
 function normalizeThreadHistory(input, threadId) {
-    const turns = Array.isArray(input?.turns) ? input.turns : [];
+    const record = input && typeof input === "object" ? input : {};
+    const turns = Array.isArray(record.turns) ? record.turns : [];
     return {
         threadId,
         turns: turns
-            .filter((entry) => entry && typeof entry === "object")
+            .filter((entry) => Boolean(entry) && typeof entry === "object")
             .map((entry) => normalizeTurn(entry)),
     };
 }
 function normalizeTurn(input) {
     return {
-        id: normalizeNonEmptyString(input?.id) || randomUUID(),
-        createdAt: toIsoDateString(input?.createdAt || Date.now()),
-        status: normalizeOptionalString(input?.status),
-        items: Array.isArray(input?.items)
+        id: normalizeNonEmptyString(input.id) || (0, crypto_1.randomUUID)(),
+        createdAt: toIsoDateString(input.createdAt || Date.now()),
+        status: normalizeOptionalString(input.status),
+        items: Array.isArray(input.items)
             ? input.items
-                .filter((entry) => entry && typeof entry === "object")
+                .filter((entry) => Boolean(entry) && typeof entry === "object")
                 .map((entry) => normalizeItem(entry))
             : [],
     };
 }
 function normalizeItem(input) {
     return {
-        id: normalizeNonEmptyString(input?.id) || randomUUID(),
-        type: normalizeNonEmptyString(input?.type) || "message",
-        role: normalizeOptionalString(input?.role),
-        content: Array.isArray(input?.content) ? input.content.map((entry) => normalizeContent(entry)) : [],
-        text: normalizeOptionalString(input?.text),
-        message: normalizeOptionalString(input?.message),
-        createdAt: toIsoDateString(input?.createdAt || Date.now()),
-        status: normalizeOptionalString(input?.status),
-        command: normalizeOptionalString(input?.command),
-        metadata: normalizeObject(input?.metadata),
-        plan: normalizeObject(input?.plan),
-        summary: normalizeOptionalString(input?.summary),
-        fileChanges: Array.isArray(input?.fileChanges) ? input.fileChanges.map((entry) => normalizeObject(entry)) : [],
+        id: normalizeNonEmptyString(input.id) || (0, crypto_1.randomUUID)(),
+        type: normalizeNonEmptyString(input.type) || "message",
+        role: normalizeOptionalString(input.role),
+        content: Array.isArray(input.content) ? input.content.map((entry) => normalizeContent(entry)) : [],
+        text: normalizeOptionalString(input.text),
+        message: normalizeOptionalString(input.message),
+        createdAt: toIsoDateString(input.createdAt || Date.now()),
+        status: normalizeOptionalString(input.status),
+        command: normalizeOptionalString(input.command),
+        metadata: normalizeObject(input.metadata),
+        plan: normalizeObject(input.plan),
+        summary: normalizeOptionalString(input.summary),
+        fileChanges: Array.isArray(input.fileChanges)
+            ? input.fileChanges.map((entry) => normalizeObject(entry) || {})
+            : [],
     };
 }
 function normalizeContent(input) {
@@ -339,8 +342,8 @@ function defaultThreadHistory(threadId) {
     };
 }
 function compareThreadMeta(left, right) {
-    const leftUpdated = Date.parse(left.updatedAt || 0) || 0;
-    const rightUpdated = Date.parse(right.updatedAt || 0) || 0;
+    const leftUpdated = Date.parse(left.updatedAt || "0") || 0;
+    const rightUpdated = Date.parse(right.updatedAt || "0") || 0;
     if (leftUpdated !== rightUpdated) {
         return rightUpdated - leftUpdated;
     }
@@ -359,7 +362,7 @@ function normalizeThreadId(value, provider) {
     if (normalized) {
         return normalized;
     }
-    return `${normalizeProvider(provider)}:${randomUUID()}`;
+    return `${normalizeProvider(provider)}:${(0, crypto_1.randomUUID)()}`;
 }
 function normalizeProvider(value) {
     const normalized = normalizeNonEmptyString(value).toLowerCase();
@@ -417,6 +420,3 @@ function toIsoDateString(value) {
     }
     return new Date().toISOString();
 }
-module.exports = {
-    createRuntimeStore,
-};

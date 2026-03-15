@@ -1,11 +1,9 @@
 "use strict";
-Object.defineProperty(exports, "__esModule", { value: true });
-// FILE: providers/codex-adapter.js
+// FILE: providers/codex-adapter.ts
 // Purpose: Thin adapter over the existing Codex app-server JSON-RPC transport.
-// Layer: Runtime provider
-// Exports: createCodexAdapter
-// Depends on: ../rpc-client
-const { createJsonRpcClient } = require("../rpc-client");
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.createCodexAdapter = createCodexAdapter;
+const rpc_client_1 = require("../rpc-client");
 function createCodexAdapter({ sendToClient, logPrefix = "[coderover]", } = {}) {
     let rpcClient = null;
     function attachTransport(transport) {
@@ -15,7 +13,7 @@ function createCodexAdapter({ sendToClient, logPrefix = "[coderover]", } = {}) {
             return;
         }
         rpcClient?.close(new Error("Codex transport replaced"));
-        rpcClient = createJsonRpcClient({
+        rpcClient = (0, rpc_client_1.createJsonRpcClient)({
             sendRawMessage(message) {
                 transport.send(message);
             },
@@ -25,10 +23,7 @@ function createCodexAdapter({ sendToClient, logPrefix = "[coderover]", } = {}) {
         });
     }
     function handleIncomingRaw(rawMessage) {
-        if (!rpcClient) {
-            return;
-        }
-        rpcClient.handleIncomingRaw(rawMessage);
+        rpcClient?.handleIncomingRaw(rawMessage);
     }
     function handleTransportClosed(reason = "Codex transport closed") {
         rpcClient?.close(new Error(reason));
@@ -80,10 +75,10 @@ function createCodexAdapter({ sendToClient, logPrefix = "[coderover]", } = {}) {
             return request("thread/list", params);
         },
         notify,
-        request,
         readThread(params) {
             return request("thread/read", params);
         },
+        request,
         resumeThread(params) {
             return request("thread/resume", params);
         },
@@ -99,6 +94,3 @@ function createCodexAdapter({ sendToClient, logPrefix = "[coderover]", } = {}) {
         },
     };
 }
-module.exports = {
-    createCodexAdapter,
-};

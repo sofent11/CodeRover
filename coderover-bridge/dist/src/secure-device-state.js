@@ -1,15 +1,16 @@
 "use strict";
-Object.defineProperty(exports, "__esModule", { value: true });
-// FILE: secure-device-state.js
+// FILE: secure-device-state.ts
 // Purpose: Persists the bridge device identity and trusted phone registry for E2EE pairing.
-// Layer: CLI helper
-// Exports: loadOrCreateBridgeDeviceState, rememberTrustedPhone, getTrustedPhonePublicKey
-// Depends on: fs, os, path, crypto, child_process
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.loadOrCreateBridgeDeviceState = loadOrCreateBridgeDeviceState;
+exports.rememberTrustedPhone = rememberTrustedPhone;
+exports.getTrustedPhonePublicKey = getTrustedPhonePublicKey;
+exports.decodeStoredDeviceStateString = decodeStoredDeviceStateString;
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { randomUUID, generateKeyPairSync } = require("crypto");
-const { execFileSync } = require("child_process");
+const crypto_1 = require("crypto");
+const child_process_1 = require("child_process");
 const STORE_DIR = path.join(os.homedir(), ".coderover");
 const STORE_FILE = path.join(STORE_DIR, "device-state.json");
 const KEYCHAIN_SERVICE = "com.coderover.bridge.device-state";
@@ -51,13 +52,13 @@ function getTrustedPhonePublicKey(state, phoneDeviceId) {
     return state.trustedPhones?.[normalizedDeviceId] || null;
 }
 function createBridgeDeviceState() {
-    const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+    const { publicKey, privateKey } = (0, crypto_1.generateKeyPairSync)("ed25519");
     const privateJwk = privateKey.export({ format: "jwk" });
     const publicJwk = publicKey.export({ format: "jwk" });
     return {
         version: 1,
-        bridgeId: randomUUID(),
-        macDeviceId: randomUUID(),
+        bridgeId: (0, crypto_1.randomUUID)(),
+        macDeviceId: (0, crypto_1.randomUUID)(),
         macIdentityPublicKey: base64UrlToBase64(publicJwk.x),
         macIdentityPrivateKey: base64UrlToBase64(privateJwk.d),
         trustedPhones: {},
@@ -108,7 +109,7 @@ function readStoredDeviceStateString() {
 }
 function readKeychainStateString() {
     try {
-        return execFileSync("security", [
+        return (0, child_process_1.execFileSync)("security", [
             "find-generic-password",
             "-s",
             KEYCHAIN_SERVICE,
@@ -138,7 +139,7 @@ function decodeStoredDeviceStateString(value) {
 }
 function writeKeychainStateString(value) {
     try {
-        execFileSync("security", [
+        (0, child_process_1.execFileSync)("security", [
             "add-generic-password",
             "-U",
             "-s",
@@ -155,18 +156,21 @@ function writeKeychainStateString(value) {
     }
 }
 function normalizeBridgeDeviceState(rawState) {
-    const rawBridgeId = normalizeNonEmptyString(rawState?.bridgeId);
-    const rawMacDeviceId = normalizeNonEmptyString(rawState?.macDeviceId);
-    const bridgeId = isCanonicalUUID(rawBridgeId) ? rawBridgeId : randomUUID();
-    const macDeviceId = isCanonicalUUID(rawMacDeviceId) ? rawMacDeviceId : randomUUID();
-    const macIdentityPublicKey = normalizeNonEmptyString(rawState?.macIdentityPublicKey);
-    const macIdentityPrivateKey = normalizeNonEmptyString(rawState?.macIdentityPrivateKey);
+    const record = rawState && typeof rawState === "object"
+        ? rawState
+        : {};
+    const rawBridgeId = normalizeNonEmptyString(record.bridgeId);
+    const rawMacDeviceId = normalizeNonEmptyString(record.macDeviceId);
+    const bridgeId = isCanonicalUUID(rawBridgeId) ? rawBridgeId : (0, crypto_1.randomUUID)();
+    const macDeviceId = isCanonicalUUID(rawMacDeviceId) ? rawMacDeviceId : (0, crypto_1.randomUUID)();
+    const macIdentityPublicKey = normalizeNonEmptyString(record.macIdentityPublicKey);
+    const macIdentityPrivateKey = normalizeNonEmptyString(record.macIdentityPrivateKey);
     if (!macIdentityPublicKey || !macIdentityPrivateKey) {
         throw new Error("Bridge device state is incomplete");
     }
     const trustedPhones = {};
-    if (rawState?.trustedPhones && typeof rawState.trustedPhones === "object") {
-        for (const [deviceId, publicKey] of Object.entries(rawState.trustedPhones)) {
+    if (record.trustedPhones && typeof record.trustedPhones === "object") {
+        for (const [deviceId, publicKey] of Object.entries(record.trustedPhones)) {
             const normalizedDeviceId = normalizeNonEmptyString(deviceId);
             const normalizedPublicKey = normalizeNonEmptyString(publicKey);
             if (!isCanonicalUUID(normalizedDeviceId) || !normalizedPublicKey) {
@@ -177,7 +181,7 @@ function normalizeBridgeDeviceState(rawState) {
     }
     const didMigrate = (bridgeId !== rawBridgeId
         || macDeviceId !== rawMacDeviceId
-        || Object.keys(trustedPhones).length !== Object.keys(rawState?.trustedPhones || {}).length);
+        || Object.keys(trustedPhones).length !== Object.keys(record.trustedPhones || {}).length);
     return {
         version: 1,
         bridgeId,
@@ -195,20 +199,16 @@ function normalizeNonEmptyString(value) {
     return value.trim();
 }
 function looksLikeHexEncodedUTF8(value) {
-    if (typeof value !== "string" || value.length < 2 || value.length % 2 !== 0) {
+    if (value.length < 2 || value.length % 2 !== 0) {
         return false;
     }
     return /^[0-9a-f]+$/i.test(value);
 }
 function isCanonicalUUID(value) {
-    return typeof value === "string"
-        && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value.trim());
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value.trim());
 }
 function stripMigrationMarker(state) {
-    if (!state || typeof state !== "object") {
-        return state;
-    }
-    const { didMigrate, ...stableState } = state;
+    const { didMigrate: _didMigrate, ...stableState } = state;
     return stableState;
 }
 function base64UrlToBase64(value) {
@@ -218,9 +218,3 @@ function base64UrlToBase64(value) {
     const padded = `${value}${"=".repeat((4 - (value.length % 4 || 4)) % 4)}`;
     return padded.replace(/-/g, "+").replace(/_/g, "/");
 }
-module.exports = {
-    decodeStoredDeviceStateString,
-    getTrustedPhonePublicKey,
-    loadOrCreateBridgeDeviceState,
-    rememberTrustedPhone,
-};

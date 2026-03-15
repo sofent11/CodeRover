@@ -1,11 +1,9 @@
 "use strict";
-Object.defineProperty(exports, "__esModule", { value: true });
-// FILE: codex-transport.js
+// FILE: codex-transport.ts
 // Purpose: Abstracts the Codex-side transport so the bridge can talk to either a spawned app-server or an existing WebSocket endpoint.
-// Layer: CLI helper
-// Exports: createCodexTransport
-// Depends on: child_process, ws
-const { spawn } = require("child_process");
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.createCodexTransport = createCodexTransport;
+const child_process_1 = require("child_process");
 const WebSocket = require("ws");
 function createCodexTransport({ endpoint = "", env = process.env } = {}) {
     if (endpoint) {
@@ -15,7 +13,7 @@ function createCodexTransport({ endpoint = "", env = process.env } = {}) {
 }
 function createSpawnTransport({ env }) {
     const launch = createCodexLaunchPlan({ env });
-    const codex = spawn(launch.command, launch.args, launch.options);
+    const codex = (0, child_process_1.spawn)(launch.command, launch.args, launch.options);
     let stdoutBuffer = "";
     let stderrBuffer = "";
     let didRequestShutdown = false;
@@ -38,8 +36,6 @@ function createSpawnTransport({ env }) {
         }
         listeners.emitClose(code, signal);
     });
-    // Keep stderr muted during normal operation, but preserve enough output to
-    // explain launch failures when the child exits before the bridge can use it.
     codex.stderr.on("data", (chunk) => {
         stderrBuffer = appendOutputBuffer(stderrBuffer, chunk.toString("utf8"));
     });
@@ -80,8 +76,6 @@ function createSpawnTransport({ env }) {
         },
     };
 }
-// Builds a single, platform-aware launch path so the bridge never "guesses"
-// between multiple commands and accidentally starts duplicate runtimes.
 function createCodexLaunchPlan({ env }) {
     const sharedOptions = {
         stdio: ["pipe", "pipe", "pipe"],
@@ -105,14 +99,12 @@ function createCodexLaunchPlan({ env }) {
         description: "`codex app-server`",
     };
 }
-// Stops the exact process tree we launched on Windows so the shell wrapper
-// does not leave a child Codex process running in the background.
 function shutdownCodexProcess(codex) {
     if (codex.killed || codex.exitCode !== null) {
         return;
     }
     if (process.platform === "win32" && codex.pid) {
-        const killer = spawn("taskkill", ["/pid", String(codex.pid), "/t", "/f"], {
+        const killer = (0, child_process_1.spawn)("taskkill", ["/pid", String(codex.pid), "/t", "/f"], {
             stdio: "ignore",
             windowsHide: true,
         });
@@ -123,7 +115,7 @@ function shutdownCodexProcess(codex) {
     }
     codex.kill("SIGTERM");
 }
-function createCodexCloseError({ code, signal, stderrBuffer, launchDescription }) {
+function createCodexCloseError({ code, signal, stderrBuffer, launchDescription, }) {
     const details = stderrBuffer.trim();
     const reason = details || `Process exited with code ${code}${signal ? ` (signal: ${signal})` : ""}.`;
     return new Error(`Codex launcher ${launchDescription} failed: ${reason}`);
@@ -189,4 +181,3 @@ function createListenerBag() {
         },
     };
 }
-module.exports = { createCodexTransport };

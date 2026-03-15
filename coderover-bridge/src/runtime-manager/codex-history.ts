@@ -1,70 +1,115 @@
-// @ts-nocheck
-export {};
-
 // FILE: runtime-manager/codex-history.ts
-// Purpose: Shared history-window and cursor helpers for runtime-manager.
+// Purpose: Typed history-window and cursor helpers for Codex-backed thread reads.
 
-function extractThreadArray(result, extractArray) {
+import type {
+  HistoryCursorShape,
+  RuntimeThreadShape,
+} from "../bridge-types";
+import type {
+  RuntimeHistoryRecord,
+  RuntimeHistoryRequest,
+  RuntimeHistorySnapshot,
+  RuntimeThreadWindowDependencies,
+} from "./types";
+
+type UnknownRecord = Record<string, unknown>;
+type StripProviderField = <TValue>(params: TValue) => TValue;
+type NormalizeOptionalString = (value: unknown) => string | null;
+
+interface ThreadListLike {
+  id?: string;
+  updatedAt?: string | null;
+  [key: string]: unknown;
+}
+
+interface UpstreamHistoryWindowLike {
+  hasOlder?: boolean;
+  hasNewer?: boolean;
+}
+
+interface UpstreamHistoryWindowResponse {
+  thread: RuntimeThreadShape | null;
+  historyWindow: {
+    mode: RuntimeHistoryRequest["mode"];
+    olderCursor: string | null;
+    newerCursor: string | null;
+    oldestAnchor: HistoryCursorShape | null;
+    newestAnchor: HistoryCursorShape | null;
+    hasOlder: boolean;
+    hasNewer: boolean;
+    isPartial: true;
+    servedFromCache: false;
+    pageSize: number;
+  };
+}
+
+export function extractThreadArray(
+  result: unknown,
+  extractArray: (value: unknown, candidatePaths: string[]) => unknown[]
+): unknown[] {
   return extractArray(result, ["data", "items", "threads"]);
 }
 
-function extractThreadFromResult(result) {
+export function extractThreadFromResult(result: unknown): RuntimeThreadShape | null {
   if (!result || typeof result !== "object") {
     return null;
   }
-  if (result.thread && typeof result.thread === "object") {
-    return result.thread;
-  }
-  return null;
+  const thread = (result as UnknownRecord).thread;
+  return thread && typeof thread === "object" ? (thread as RuntimeThreadShape) : null;
 }
 
-function extractHistoryWindowFromResult(result) {
+export function extractHistoryWindowFromResult(result: unknown): UnknownRecord | null {
   if (!result || typeof result !== "object") {
     return null;
   }
-  const windowObject = result.historyWindow || result.history_window;
-  if (!windowObject || typeof windowObject !== "object" || Array.isArray(windowObject)) {
-    return null;
-  }
-  return windowObject;
+  const windowObject = (result as UnknownRecord).historyWindow
+    ?? (result as UnknownRecord).history_window;
+  return windowObject && typeof windowObject === "object" && !Array.isArray(windowObject)
+    ? (windowObject as UnknownRecord)
+    : null;
 }
 
-function buildUpstreamCodexHistoryParams(params, historyRequest, stripProviderField) {
+export function buildUpstreamCodexHistoryParams(
+  params: Record<string, unknown> | null | undefined,
+  historyRequest: RuntimeHistoryRequest | null,
+  stripProviderField: StripProviderField
+): Record<string, unknown> {
   const upstreamParams = {
     ...stripProviderField(params || {}),
   };
   if (!historyRequest) {
     return upstreamParams;
   }
+
   upstreamParams.history = {
     mode: historyRequest.mode,
     limit: historyRequest.limit,
   };
   if (historyRequest.mode !== "tail" && historyRequest.cursor) {
-    upstreamParams.history.anchor = historyRequest.cursor;
-    delete upstreamParams.history.cursor;
+    (upstreamParams.history as Record<string, unknown>).anchor = historyRequest.cursor;
+    delete (upstreamParams.history as Record<string, unknown>).cursor;
   }
   return upstreamParams;
 }
 
-function buildUpstreamHistoryWindowResponse(
-  snapshot,
-  historyRequest,
-  upstreamHistoryWindow,
-  thread,
-  { compareHistoryRecord, historyCursorForRecord, historyRecordAnchor }
-) {
-  const records = [...(snapshot?.records || [])].sort(compareHistoryRecord);
+export function buildUpstreamHistoryWindowResponse(
+  snapshot: RuntimeHistorySnapshot,
+  historyRequest: RuntimeHistoryRequest,
+  upstreamHistoryWindow: UpstreamHistoryWindowLike | null | undefined,
+  thread: RuntimeThreadShape | null,
+  dependencies: RuntimeThreadWindowDependencies
+): UpstreamHistoryWindowResponse {
+  const records = [...(snapshot?.records || [])].sort(dependencies.compareHistoryRecord);
   const oldestRecord = records.length > 0 ? records[0] : null;
   const newestRecord = records.length > 0 ? records[records.length - 1] : null;
   return {
     thread,
     historyWindow: {
       mode: historyRequest.mode,
-      olderCursor: oldestRecord ? historyCursorForRecord(snapshot.threadId, oldestRecord) : null,
-      newerCursor: newestRecord ? historyCursorForRecord(snapshot.threadId, newestRecord) : null,
-      oldestAnchor: oldestRecord ? historyRecordAnchor(oldestRecord) : null,
-      newestAnchor: newestRecord ? historyRecordAnchor(newestRecord) : null,
+      olderCursor: oldestRecord ? dependencies.historyCursorForRecord(snapshot.threadId, oldestRecord) : null,
+      newerCursor: newestRecord ? dependencies.historyCursorForRecord(snapshot.threadId, newestRecord) : null,
+      oldestAnchor: oldestRecord ? dependencies.historyRecordAnchor(oldestRecord) : null,
+      newestAnchor: newestRecord ? dependencies.historyRecordAnchor(newestRecord) : null,
       hasOlder: Boolean(upstreamHistoryWindow?.hasOlder),
       hasNewer: Boolean(upstreamHistoryWindow?.hasNewer),
       isPartial: true,
@@ -74,7 +119,11 @@ function buildUpstreamHistoryWindowResponse(
   };
 }
 
-function extractArray(value, candidatePaths, readPath) {
+export function extractArray(
+  value: unknown,
+  candidatePaths: string[],
+  readPath: (root: unknown, path: string) => unknown
+): unknown[] {
   if (!value) {
     return [];
   }
@@ -89,20 +138,20 @@ function extractArray(value, candidatePaths, readPath) {
   return [];
 }
 
-function readPath(root, path) {
+export function readPath(root: unknown, path: string): unknown {
   const parts = path.split(".");
-  let current = root;
+  let current: unknown = root;
   for (const part of parts) {
     if (!current || typeof current !== "object") {
       return null;
     }
-    current = current[part];
+    current = (current as UnknownRecord)[part];
   }
   return current;
 }
 
-function mergeThreadLists(threads) {
-  const seen = new Map();
+export function mergeThreadLists<TThread extends ThreadListLike>(threads: TThread[]): TThread[] {
+  const seen = new Map<string, TThread>();
   for (const thread of threads) {
     if (!thread || typeof thread !== "object" || !thread.id) {
       continue;
@@ -112,16 +161,16 @@ function mergeThreadLists(threads) {
       seen.set(thread.id, thread);
       continue;
     }
-    const previousUpdated = Date.parse(previous.updatedAt || 0) || 0;
-    const nextUpdated = Date.parse(thread.updatedAt || 0) || 0;
+    const previousUpdated = Date.parse(previous.updatedAt || "0") || 0;
+    const nextUpdated = Date.parse(thread.updatedAt || "0") || 0;
     if (nextUpdated >= previousUpdated) {
       seen.set(thread.id, thread);
     }
   }
 
   return [...seen.values()].sort((left, right) => {
-    const leftUpdated = Date.parse(left.updatedAt || 0) || 0;
-    const rightUpdated = Date.parse(right.updatedAt || 0) || 0;
+    const leftUpdated = Date.parse(left.updatedAt || "0") || 0;
+    const rightUpdated = Date.parse(right.updatedAt || "0") || 0;
     if (leftUpdated !== rightUpdated) {
       return rightUpdated - leftUpdated;
     }
@@ -129,8 +178,12 @@ function mergeThreadLists(threads) {
   });
 }
 
-function extractThreadListCursor(result, normalizeOptionalString) {
-  const cursor = result?.nextCursor ?? result?.next_cursor ?? null;
+export function extractThreadListCursor(
+  result: unknown,
+  normalizeOptionalString: NormalizeOptionalString
+): string | number | null {
+  const record = result && typeof result === "object" ? (result as UnknownRecord) : null;
+  const cursor = record?.nextCursor ?? record?.next_cursor ?? null;
   if (cursor == null) {
     return null;
   }
@@ -138,17 +191,5 @@ function extractThreadListCursor(result, normalizeOptionalString) {
     const normalized = normalizeOptionalString(cursor);
     return normalized || null;
   }
-  return cursor;
+  return typeof cursor === "number" ? cursor : null;
 }
-
-module.exports = {
-  buildUpstreamCodexHistoryParams,
-  buildUpstreamHistoryWindowResponse,
-  extractArray,
-  extractHistoryWindowFromResult,
-  extractThreadArray,
-  extractThreadFromResult,
-  extractThreadListCursor,
-  mergeThreadLists,
-  readPath,
-};

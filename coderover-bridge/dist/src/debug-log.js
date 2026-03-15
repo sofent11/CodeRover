@@ -1,5 +1,10 @@
 "use strict";
+// FILE: debug-log.ts
+// Purpose: Central debug logging helpers gated by the bridge debug env var.
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.isDebugLoggingEnabled = isDebugLoggingEnabled;
+exports.debugLog = debugLog;
+exports.debugError = debugError;
 function isDebugLoggingEnabled() {
     const value = String(process.env.CODEROVER_DEBUG_LOGS || "")
         .trim()
@@ -18,8 +23,3 @@ function debugError(message) {
     }
     console.error(message);
 }
-module.exports = {
-    isDebugLoggingEnabled,
-    debugLog,
-    debugError,
-};
