@@ -1,6 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-// FILE: providers/claude-adapter.js
+exports.createClaudeAdapter = createClaudeAdapter;
+// FILE: providers/claude-adapter.ts
 // Purpose: Claude Code provider adapter backed by @anthropic-ai/claude-agent-sdk.
 // Layer: Runtime provider
 // Exports: createClaudeAdapter
@@ -8,21 +9,22 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { randomUUID } = require("crypto");
-const { getRuntimeProvider } = require("../provider-catalog");
+const crypto_1 = require("crypto");
+const provider_catalog_1 = require("../provider-catalog");
 function createClaudeAdapter({ store, logPrefix = "[coderover]", }) {
+    void logPrefix;
     let sdkModulePromise = null;
     async function syncImportedThreads() {
         const sdk = await loadSdkModule();
         const sessions = await sdk.listSessions().catch(() => []);
-        const providerDefinition = getRuntimeProvider("claude");
+        const providerDefinition = (0, provider_catalog_1.getRuntimeProvider)("claude");
         for (const session of sessions) {
             if (!session?.sessionId) {
                 continue;
             }
             const existingThreadId = store.findThreadIdByProviderSession("claude", session.sessionId);
             const nextMeta = {
-                id: existingThreadId || `claude:${randomUUID()}`,
+                id: existingThreadId || `claude:${(0, crypto_1.randomUUID)()}`,
                 provider: "claude",
                 providerSessionId: session.sessionId,
                 title: normalizeOptionalString(session.customTitle || session.summary),
@@ -66,7 +68,7 @@ function createClaudeAdapter({ store, logPrefix = "[coderover]", }) {
             }
             if (role === "user" || !currentTurn) {
                 currentTurn = {
-                    id: randomUUID(),
+                    id: (0, crypto_1.randomUUID)(),
                     createdAt: new Date().toISOString(),
                     status: "completed",
                     items: [],
@@ -75,20 +77,34 @@ function createClaudeAdapter({ store, logPrefix = "[coderover]", }) {
             }
             const item = role === "user"
                 ? {
-                    id: message.uuid || randomUUID(),
+                    id: message.uuid || (0, crypto_1.randomUUID)(),
                     type: "user_message",
                     role: "user",
                     createdAt: new Date().toISOString(),
                     content: buildClaudeHistoryContent(message.message),
                     text: extractClaudeMessageText(message.message),
+                    message: null,
+                    status: null,
+                    command: null,
+                    metadata: null,
+                    plan: null,
+                    summary: null,
+                    fileChanges: [],
                 }
                 : {
-                    id: message.uuid || randomUUID(),
+                    id: message.uuid || (0, crypto_1.randomUUID)(),
                     type: "agent_message",
                     role: "assistant",
                     createdAt: new Date().toISOString(),
                     content: [{ type: "text", text: extractClaudeMessageText(message.message) }],
                     text: extractClaudeMessageText(message.message),
+                    message: null,
+                    status: null,
+                    command: null,
+                    metadata: null,
+                    plan: null,
+                    summary: null,
+                    fileChanges: [],
                 };
             currentTurn.items.push(item);
         }
@@ -111,7 +127,7 @@ function createClaudeAdapter({ store, logPrefix = "[coderover]", }) {
             prompt,
             options: {
                 cwd: threadMeta.cwd || process.cwd(),
-                model: normalizeOptionalString(params.model) || threadMeta.model || getRuntimeProvider("claude").defaultModelId,
+                model: normalizeOptionalString(params.model) || threadMeta.model || (0, provider_catalog_1.getRuntimeProvider)("claude").defaultModelId,
                 resume: threadMeta.providerSessionId || undefined,
                 includePartialMessages: true,
                 tools: {
@@ -126,9 +142,11 @@ function createClaudeAdapter({ store, logPrefix = "[coderover]", }) {
                 permissionMode,
                 allowDangerouslySkipPermissions: permissionMode === "bypassPermissions",
                 canUseTool: async (toolName, input, context) => {
+                    const normalizedToolName = normalizeOptionalString(toolName);
+                    const normalizedInput = asRecord(input);
                     toolInputsById.set(context.toolUseID, {
-                        toolName,
-                        input,
+                        toolName: normalizedToolName,
+                        input: normalizedInput,
                     });
                     if (permissionMode === "bypassPermissions") {
                         return {
@@ -136,34 +154,34 @@ function createClaudeAdapter({ store, logPrefix = "[coderover]", }) {
                             updatedInput: input,
                         };
                     }
-                    if (toolName === "AskUserQuestion") {
-                        const request = buildStructuredUserInputRequest(input, context.toolUseID);
+                    if (normalizedToolName === "AskUserQuestion") {
+                        const request = buildStructuredUserInputRequest(normalizedInput, context.toolUseID);
                         if (!request) {
                             return {
                                 behavior: "allow",
-                                updatedInput: input,
+                                updatedInput: normalizedInput,
                             };
                         }
                         const response = await turnContext.requestStructuredInput(request);
                         return {
                             behavior: "allow",
                             updatedInput: {
-                                ...input,
+                                ...(normalizedInput || {}),
                                 ...convertStructuredResponseToClaudeAnswerPayload(request.questions, response),
                             },
                         };
                     }
                     const decision = await turnContext.requestApproval({
                         itemId: context.toolUseID,
-                        method: approvalMethodForClaudeTool(toolName),
-                        command: extractToolCommand(toolName, input),
-                        reason: `Claude wants to use ${toolName}`,
-                        toolName,
+                        method: approvalMethodForClaudeTool(normalizedToolName),
+                        command: extractToolCommand(normalizedToolName, normalizedInput),
+                        reason: `Claude wants to use ${normalizedToolName || "a tool"}`,
+                        toolName: normalizedToolName,
                     });
                     if (isApprovalAccepted(decision)) {
                         return {
                             behavior: "allow",
-                            updatedInput: input,
+                            updatedInput: normalizedInput,
                         };
                     }
                     return {
@@ -190,6 +208,9 @@ function createClaudeAdapter({ store, logPrefix = "[coderover]", }) {
                 continue;
             }
             if (message.type === "tool_progress") {
+                if (!message.tool_use_id) {
+                    continue;
+                }
                 const toolUse = toolInputsById.get(message.tool_use_id);
                 if (!toolUse) {
                     continue;
@@ -204,7 +225,11 @@ function createClaudeAdapter({ store, logPrefix = "[coderover]", }) {
                     });
                 }
                 else {
-                    turnContext.appendToolCallDelta(renderToolUse(toolUse.toolName, toolUse.input), {
+                    const renderedToolUse = renderToolUse(toolUse.toolName, toolUse.input);
+                    if (!renderedToolUse) {
+                        continue;
+                    }
+                    turnContext.appendToolCallDelta(renderedToolUse, {
                         itemId: message.tool_use_id,
                         toolName: toolUse.toolName,
                     });
@@ -215,7 +240,7 @@ function createClaudeAdapter({ store, logPrefix = "[coderover]", }) {
                 const assistantText = extractClaudeAssistantText(message.message);
                 if (assistantText && !streamState.didEmitAssistantText) {
                     turnContext.appendAgentDelta(assistantText, {
-                        itemId: message.uuid || randomUUID(),
+                        itemId: message.uuid || (0, crypto_1.randomUUID)(),
                     });
                     streamState.didEmitAssistantText = true;
                 }
@@ -224,7 +249,7 @@ function createClaudeAdapter({ store, logPrefix = "[coderover]", }) {
                         explanation: assistantText,
                         steps: [],
                     }, {
-                        itemId: `${message.uuid || randomUUID()}-plan`,
+                        itemId: `${message.uuid || (0, crypto_1.randomUUID)()}-plan`,
                         deltaText: assistantText,
                     });
                     streamState.didEmitPlan = true;
@@ -233,13 +258,13 @@ function createClaudeAdapter({ store, logPrefix = "[coderover]", }) {
                     if (block.type !== "tool_use") {
                         continue;
                     }
-                    const rendered = renderToolUse(block.name, block.input);
+                    const rendered = renderToolUse(normalizeOptionalString(block.name), asRecord(block.input));
                     if (!rendered) {
                         continue;
                     }
                     turnContext.appendToolCallDelta(rendered, {
-                        itemId: block.id || randomUUID(),
-                        toolName: block.name,
+                        itemId: normalizeOptionalString(block.id) || (0, crypto_1.randomUUID)(),
+                        toolName: normalizeOptionalString(block.name),
                         completed: true,
                     });
                 }
@@ -266,23 +291,24 @@ function createClaudeAdapter({ store, logPrefix = "[coderover]", }) {
     };
 }
 function handleClaudeStreamEvent(event, streamState, turnContext) {
-    if (!event || typeof event !== "object") {
+    const eventRecord = asRecord(event);
+    if (!eventRecord) {
         return;
     }
-    const eventType = normalizeOptionalString(event.type);
+    const eventType = normalizeOptionalString(eventRecord.type);
     if (!eventType) {
         return;
     }
     if (eventType === "content_block_start") {
-        const block = event.content_block || {};
+        const block = asRecord(eventRecord.content_block) || {};
         const blockType = normalizeOptionalString(block.type);
-        const blockIndex = resolveClaudeBlockIndex(event);
+        const blockIndex = resolveClaudeBlockIndex(eventRecord);
         if (blockIndex == null || !blockType) {
             return;
         }
         streamState.blocksByIndex.set(blockIndex, {
             type: blockType,
-            itemId: normalizeOptionalString(block.id) || randomUUID(),
+            itemId: normalizeOptionalString(block.id) || (0, crypto_1.randomUUID)(),
             toolName: normalizeOptionalString(block.name),
         });
         return;
@@ -290,8 +316,8 @@ function handleClaudeStreamEvent(event, streamState, turnContext) {
     if (eventType !== "content_block_delta") {
         return;
     }
-    const blockIndex = resolveClaudeBlockIndex(event);
-    const delta = event.delta || {};
+    const blockIndex = resolveClaudeBlockIndex(eventRecord);
+    const delta = asRecord(eventRecord.delta) || {};
     const blockState = blockIndex == null ? null : streamState.blocksByIndex.get(blockIndex);
     const deltaType = normalizeOptionalString(delta.type);
     if (!blockState || !deltaType) {
@@ -330,15 +356,15 @@ async function buildPromptFromInput(inputItems, cwd) {
     const textChunks = [];
     const imagePaths = [];
     for (const item of inputItems) {
-        if (item.type === "text" && item.text) {
+        if (isTextInputItem(item)) {
             textChunks.push(item.text);
             continue;
         }
-        if (item.type === "skill" && item.id) {
+        if (isSkillInputItem(item)) {
             textChunks.push(`$${item.id}`);
             continue;
         }
-        if ((item.type === "image" || item.type === "local_image") && (item.url || item.image_url || item.path)) {
+        if (isImageInputItem(item)) {
             const pathValue = item.path || await materializeImage(item.url || item.image_url, cwd);
             if (pathValue) {
                 imagePaths.push(pathValue);
@@ -368,7 +394,7 @@ async function materializeImage(source, cwd) {
     const extension = mimeType.split("/")[1] || "png";
     const tempDir = path.join(cwd || os.tmpdir(), ".coderover", "claude-images");
     fs.mkdirSync(tempDir, { recursive: true });
-    const filePath = path.join(tempDir, `${Date.now()}-${randomUUID()}.${extension}`);
+    const filePath = path.join(tempDir, `${Date.now()}-${(0, crypto_1.randomUUID)()}.${extension}`);
     fs.writeFileSync(filePath, Buffer.from(base64, "base64"));
     return filePath;
 }
@@ -378,15 +404,15 @@ function resolveClaudePermissionMode(params) {
     }
     const approvalPolicy = normalizeOptionalString(params.approvalPolicy);
     const sandbox = normalizeOptionalString(params.sandbox);
-    const sandboxType = normalizeOptionalString(params.sandboxPolicy?.type);
+    const sandboxType = normalizeOptionalString(asRecord(params.sandboxPolicy)?.type);
     const fullAccess = approvalPolicy === "never"
         || sandbox === "dangerFullAccess"
         || sandboxType === "dangerFullAccess";
     return fullAccess ? "bypassPermissions" : "default";
 }
 function isPlanMode(params) {
-    const collaborationMode = params?.collaborationMode;
-    if (!collaborationMode || typeof collaborationMode !== "object") {
+    const collaborationMode = asRecord(params.collaborationMode);
+    if (!collaborationMode) {
         return false;
     }
     return normalizeOptionalString(collaborationMode.mode) === "plan";
@@ -424,14 +450,15 @@ function buildStructuredUserInputRequest(input, itemId) {
     return {
         itemId,
         questions: rawQuestions.map((question, index) => ({
+            ...(asRecord(question) || {}),
             id: `question-${index + 1}`,
-            header: normalizeOptionalString(question.header) || `Q${index + 1}`,
-            question: normalizeOptionalString(question.question) || `Question ${index + 1}?`,
-            options: Array.isArray(question.options)
-                ? question.options
+            header: normalizeOptionalString(asRecord(question)?.header) || `Q${index + 1}`,
+            question: normalizeOptionalString(asRecord(question)?.question) || `Question ${index + 1}?`,
+            options: Array.isArray(asRecord(question)?.options)
+                ? (asRecord(question)?.options)
                     .map((option) => ({
-                    label: normalizeOptionalString(option.label) || "Option",
-                    description: normalizeOptionalString(option.description) || "",
+                    label: normalizeOptionalString(asRecord(option)?.label) || "Option",
+                    description: normalizeOptionalString(asRecord(option)?.description) || "",
                 }))
                     .filter((option) => option.label)
                 : [],
@@ -439,21 +466,21 @@ function buildStructuredUserInputRequest(input, itemId) {
     };
 }
 function convertStructuredResponseToClaudeAnswerPayload(questions, response) {
-    const answersObject = response?.answers && typeof response.answers === "object"
-        ? response.answers
-        : {};
+    const responseObject = asRecord(response);
+    const answersObject = asRecord(responseObject?.answers) || {};
     const answerMap = {};
     for (const question of questions) {
-        const answerEntry = answersObject[question.id];
+        const answerEntry = asRecord(answersObject[question.id]);
         const answers = Array.isArray(answerEntry?.answers)
             ? answerEntry.answers
                 .map((entry) => normalizeOptionalString(entry))
-                .filter(Boolean)
+                .filter((entry) => Boolean(entry))
             : [];
         answerMap[question.question] = answers.join(", ");
     }
     return {
         questions: questions.map((question) => ({
+            id: question.id,
             question: question.question,
             header: question.header,
             options: question.options,
@@ -463,16 +490,18 @@ function convertStructuredResponseToClaudeAnswerPayload(questions, response) {
     };
 }
 function isApprovalAccepted(result) {
-    const decision = normalizeOptionalString(typeof result === "string" ? result : result?.decision || result?.result);
+    const resultObject = asRecord(result);
+    const decision = normalizeOptionalString(typeof result === "string" ? result : resultObject?.decision || resultObject?.result);
     return decision === "accept" || decision === "acceptForSession";
 }
 function buildClaudeUsage(usage) {
-    if (!usage || typeof usage !== "object") {
+    const usageObject = asRecord(usage);
+    if (!usageObject) {
         return null;
     }
-    const inputTokens = numberOrNull(usage.input_tokens || usage.inputTokens);
-    const outputTokens = numberOrNull(usage.output_tokens || usage.outputTokens);
-    const totalTokens = numberOrNull(usage.total_tokens || usage.totalTokens)
+    const inputTokens = numberOrNull(usageObject.input_tokens || usageObject.inputTokens);
+    const outputTokens = numberOrNull(usageObject.output_tokens || usageObject.outputTokens);
+    const totalTokens = numberOrNull(usageObject.total_tokens || usageObject.totalTokens)
         || ((inputTokens || 0) + (outputTokens || 0));
     if (totalTokens == null) {
         return null;
@@ -490,31 +519,36 @@ function extractClaudeAssistantText(message) {
     return extractClaudeMessageText(message);
 }
 function extractClaudeMessageText(message) {
-    if (!message || typeof message !== "object") {
+    const messageObject = asRecord(message);
+    if (!messageObject) {
         return "";
     }
-    const content = Array.isArray(message.content) ? message.content : [];
+    const content = Array.isArray(messageObject.content) ? messageObject.content : [];
     const textParts = content
         .map((block) => {
-        if (!block || typeof block !== "object") {
+        const contentBlock = asRecord(block);
+        if (!contentBlock) {
             return "";
         }
-        if (block.type === "text") {
-            return normalizeOptionalString(block.text) || "";
+        if (contentBlock.type === "text") {
+            return normalizeOptionalString(contentBlock.text) || "";
         }
-        if (block.type === "thinking") {
-            return normalizeOptionalString(block.thinking) || "";
+        if (contentBlock.type === "thinking") {
+            return normalizeOptionalString(contentBlock.thinking) || "";
         }
         return "";
     })
-        .filter(Boolean);
+        .filter((value) => Boolean(value));
     return textParts.join("\n").trim();
 }
 function extractClaudeContentBlocks(message) {
-    if (!message || typeof message !== "object" || !Array.isArray(message.content)) {
+    const messageObject = asRecord(message);
+    if (!messageObject || !Array.isArray(messageObject.content)) {
         return [];
     }
-    return message.content.filter((entry) => entry && typeof entry === "object");
+    return messageObject.content
+        .map((entry) => asRecord(entry))
+        .filter((entry) => Boolean(entry));
 }
 function resolveClaudeBlockIndex(event) {
     if (typeof event.index === "number") {
@@ -545,6 +579,21 @@ function numberOrNull(value) {
     }
     return null;
 }
-module.exports = {
-    createClaudeAdapter,
-};
+function asRecord(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+        return null;
+    }
+    return value;
+}
+function isTextInputItem(item) {
+    return item.type === "text" && typeof item.text === "string" && item.text.length > 0;
+}
+function isSkillInputItem(item) {
+    return item.type === "skill" && typeof item.id === "string" && item.id.length > 0;
+}
+function isImageInputItem(item) {
+    return (item.type === "image" || item.type === "local_image")
+        && (typeof item.path === "string"
+            || typeof item.url === "string"
+            || typeof item.image_url === "string");
+}

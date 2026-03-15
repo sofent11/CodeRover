@@ -8,11 +8,18 @@ import { spawn } from "child_process";
 import { randomUUID } from "crypto";
 
 import { getRuntimeProvider } from "../provider-catalog";
+import type { RuntimeInputItem } from "../bridge-types";
 import type {
   RuntimeStore,
   RuntimeThreadHistory,
   RuntimeThreadMeta,
 } from "../runtime-store";
+import type {
+  ManagedProviderAdapter,
+  ManagedProviderAdapterFactoryOptions,
+  ManagedProviderStartTurnOptions,
+  ManagedProviderTurnContext,
+} from "../runtime-manager/types";
 
 type ProviderRole = "user" | "assistant";
 
@@ -36,46 +43,16 @@ interface GeminiStartTurnParams extends Record<string, unknown> {
   sandboxPolicy?: { type?: unknown } | unknown;
 }
 
-interface GeminiTurnContext {
-  inputItems: Array<Record<string, unknown>>;
-  abortController: AbortController;
-  setInterruptHandler(handler: () => void): void;
-  bindProviderSession(sessionId: string): void;
-  appendAgentDelta(deltaText: string, options?: { itemId?: string }): void;
-  appendToolCallDelta(
-    deltaText: string,
-    options?: { itemId?: string; toolName?: string | null; completed?: boolean }
-  ): void;
-  updatePreview(preview: string): void;
-}
-
-interface GeminiStartTurnOptions {
-  params: GeminiStartTurnParams;
-  threadMeta: RuntimeThreadMeta & { model?: string | null };
-  turnContext: GeminiTurnContext;
-}
-
 interface GeminiUsageResult {
   tokensUsed: number;
   totalTokens: number;
-}
-
-interface CreateGeminiAdapterOptions {
-  store: RuntimeStore;
-  logPrefix?: string;
-}
-
-interface GeminiAdapter {
-  hydrateThread(threadMeta: RuntimeThreadMeta): Promise<void>;
-  startTurn(options: GeminiStartTurnOptions): Promise<{ usage?: GeminiUsageResult | null }>;
-  syncImportedThreads(): Promise<void>;
 }
 
 type JsonRecord = Record<string, unknown>;
 
 export function createGeminiAdapter({
   store,
-}: CreateGeminiAdapterOptions): GeminiAdapter {
+}: ManagedProviderAdapterFactoryOptions): ManagedProviderAdapter {
   async function syncImportedThreads(): Promise<void> {
     const providerDefinition = getRuntimeProvider("gemini");
     for (const entry of discoverGeminiChatFiles()) {
@@ -90,8 +67,8 @@ export function createGeminiAdapter({
         cwd: entry.cwd,
         metadata: {
           providerTitle: providerDefinition.title,
-        } as Record<string, unknown>,
-        capabilities: providerDefinition.supports as unknown as Record<string, unknown>,
+        },
+        capabilities: providerDefinition.supports,
         createdAt: entry.updatedAt,
         updatedAt: entry.updatedAt,
         archived: false,
@@ -124,7 +101,7 @@ export function createGeminiAdapter({
     params,
     threadMeta,
     turnContext,
-  }: GeminiStartTurnOptions): Promise<{ usage?: GeminiUsageResult | null }> {
+  }: ManagedProviderStartTurnOptions): Promise<{ usage?: GeminiUsageResult | null }> {
     const prompt = await buildGeminiPrompt(turnContext.inputItems, threadMeta.cwd);
     const model =
       normalizeOptionalString(params.model)
@@ -462,7 +439,7 @@ function joinGeminiThoughts(thoughts: unknown): string | null {
   return flattened.length > 0 ? flattened.join("\n") : null;
 }
 
-async function buildGeminiPrompt(inputItems: Array<Record<string, unknown>>, cwd: string | null): Promise<string> {
+async function buildGeminiPrompt(inputItems: RuntimeInputItem[], cwd: string | null): Promise<string> {
   const textParts: string[] = [];
   const imagePaths: string[] = [];
 
@@ -523,7 +500,7 @@ async function materializeImage(source: string, cwd: string | null): Promise<str
 
 function handleGeminiLine(
   line: string,
-  turnContext: GeminiTurnContext,
+  turnContext: ManagedProviderTurnContext,
   updateUsage: (usage: GeminiUsageResult) => void,
   reject: (reason?: unknown) => void
 ): void {

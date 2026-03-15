@@ -1,17 +1,16 @@
-// FILE: runtime-manager.test.js
+// FILE: runtime-manager.test.ts
 // Purpose: Verifies bridge-managed multi-provider routing for non-CodeRover threads.
 // Layer: Unit test
 // Exports: node:test suite
 // Depends on: node:test, node:assert/strict, fs, os, path, ../src/runtime-manager
 
-export {};
+import { test } from "node:test";
+import { strict as assert } from "node:assert";
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
 
-const test = require("node:test");
-const assert = require("node:assert/strict");
-const fs = require("fs");
-const os = require("os");
-const path = require("path");
-const { createRuntimeManager } = require("../src/runtime-manager");
+import { createRuntimeManager } from "../src/runtime-manager";
 
 type MutableThreadRef = { current: any };
 

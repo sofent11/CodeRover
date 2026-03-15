@@ -428,10 +428,11 @@ function parseApplyConflicts(stderr: string): WorkspaceConflict[] {
 
 async function withRepoMutationLock<T>(cwd: string, callback: () => Promise<T>): Promise<T> {
   const previous = repoMutationLocks.get(cwd) || Promise.resolve();
-  let releaseCurrent: (() => void) | null = null;
+  let releaseCurrent!: () => void;
   const current = new Promise<void>((resolve) => {
     releaseCurrent = resolve;
   });
+  const releaseLock = releaseCurrent;
   const chained = previous.then(() => current);
   repoMutationLocks.set(cwd, chained);
 
@@ -439,7 +440,7 @@ async function withRepoMutationLock<T>(cwd: string, callback: () => Promise<T>):
   try {
     return await callback();
   } finally {
-    releaseCurrent?.();
+    releaseLock();
     if (repoMutationLocks.get(cwd) === chained) {
       repoMutationLocks.delete(cwd);
     }

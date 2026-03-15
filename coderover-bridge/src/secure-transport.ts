@@ -52,6 +52,7 @@ interface SecureErrorMessage {
   kind: "secureError";
   code: string;
   message: string;
+  [key: string]: unknown;
 }
 
 interface ServerHelloMessage {
@@ -67,6 +68,7 @@ interface ServerHelloMessage {
   expiresAtForTranscript: number;
   macSignature: string;
   clientNonce: string;
+  [key: string]: unknown;
 }
 
 interface SecureReadyMessage {
@@ -74,6 +76,7 @@ interface SecureReadyMessage {
   sessionId: string;
   keyEpoch: number;
   macDeviceId: string;
+  [key: string]: unknown;
 }
 
 type SecureControlMessage = SecureErrorMessage | ServerHelloMessage | SecureReadyMessage | JsonRecord;
@@ -131,6 +134,7 @@ interface PairingPayload {
   macIdentityPublicKey: string;
   transportCandidates: TransportCandidateShape[];
   expiresAt: number;
+  [key: string]: unknown;
 }
 
 interface EncryptedEnvelope {

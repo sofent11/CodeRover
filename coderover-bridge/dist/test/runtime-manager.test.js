@@ -1,16 +1,16 @@
 "use strict";
-// FILE: runtime-manager.test.js
+// FILE: runtime-manager.test.ts
 // Purpose: Verifies bridge-managed multi-provider routing for non-CodeRover threads.
 // Layer: Unit test
 // Exports: node:test suite
 // Depends on: node:test, node:assert/strict, fs, os, path, ../src/runtime-manager
 Object.defineProperty(exports, "__esModule", { value: true });
-const test = require("node:test");
-const assert = require("node:assert/strict");
+const node_test_1 = require("node:test");
+const node_assert_1 = require("node:assert");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { createRuntimeManager } = require("../src/runtime-manager");
+const runtime_manager_1 = require("../src/runtime-manager");
 function createManagerFixture() {
     return createManagerFixtureWithOptions({});
 }
@@ -36,7 +36,7 @@ function createManagerFixtureWithOptions({ codexAdapter: providedCodexAdapter = 
         hydrateThread: noopAsync,
         startTurn: noopAsync,
     };
-    const manager = createRuntimeManager({
+    const manager = (0, runtime_manager_1.createRuntimeManager)({
         sendApplicationMessage(message) {
             messages.push(JSON.parse(message));
         },
@@ -75,21 +75,21 @@ async function request(fixture, id, method, params) {
 function responseById(messages, id) {
     return messages.find((message) => message.id === id);
 }
-test("runtime/provider/list advertises Codex, Claude, and Gemini capabilities", async () => {
+(0, node_test_1.test)("runtime/provider/list advertises Codex, Claude, and Gemini capabilities", async () => {
     const fixture = createManagerFixture();
     try {
         const messages = await request(fixture, "providers-1", "runtime/provider/list", {});
         const response = responseById(messages, "providers-1");
-        assert.ok(response);
-        assert.deepEqual(response.result.providers.map((provider) => provider.id), ["codex", "claude", "gemini"]);
-        assert.equal(response.result.providers[1].supports.turnSteer, false);
-        assert.equal(response.result.providers[2].supports.reasoningOptions, false);
+        node_assert_1.strict.ok(response);
+        node_assert_1.strict.deepEqual(response.result.providers.map((provider) => provider.id), ["codex", "claude", "gemini"]);
+        node_assert_1.strict.equal(response.result.providers[1].supports.turnSteer, false);
+        node_assert_1.strict.equal(response.result.providers[2].supports.reasoningOptions, false);
     }
     finally {
         fixture.cleanup();
     }
 });
-test("thread/start creates and lists managed Claude threads with provider metadata", async () => {
+(0, node_test_1.test)("thread/start creates and lists managed Claude threads with provider metadata", async () => {
     const fixture = createManagerFixture();
     try {
         const startMessages = await request(fixture, "thread-start-1", "thread/start", {
@@ -98,25 +98,25 @@ test("thread/start creates and lists managed Claude threads with provider metada
             model: "sonnet",
         });
         const startResponse = responseById(startMessages, "thread-start-1");
-        assert.ok(startResponse);
+        node_assert_1.strict.ok(startResponse);
         const startedThread = startResponse.result.thread;
-        assert.match(startedThread.id, /^claude:/);
-        assert.equal(startedThread.provider, "claude");
-        assert.equal(startedThread.capabilities.turnSteer, false);
-        assert.equal(startedThread.metadata.providerTitle, "Claude Code");
-        assert.ok(startMessages.some((message) => message.method === "thread/started"));
+        node_assert_1.strict.match(startedThread.id, /^claude:/);
+        node_assert_1.strict.equal(startedThread.provider, "claude");
+        node_assert_1.strict.equal(startedThread.capabilities.turnSteer, false);
+        node_assert_1.strict.equal(startedThread.metadata.providerTitle, "Claude Code");
+        node_assert_1.strict.ok(startMessages.some((message) => message.method === "thread/started"));
         const listMessages = await request(fixture, "thread-list-1", "thread/list", {});
         const listResponse = responseById(listMessages, "thread-list-1");
-        assert.ok(listResponse);
-        assert.equal(listResponse.result.items.length, 1);
-        assert.equal(listResponse.result.items[0].provider, "claude");
-        assert.equal(listResponse.result.items[0].cwd, "/tmp/demo-project");
+        node_assert_1.strict.ok(listResponse);
+        node_assert_1.strict.equal(listResponse.result.items.length, 1);
+        node_assert_1.strict.equal(listResponse.result.items[0].provider, "claude");
+        node_assert_1.strict.equal(listResponse.result.items[0].cwd, "/tmp/demo-project");
     }
     finally {
         fixture.cleanup();
     }
 });
-test("thread archive overlays and turn/steer capability gating work for managed runtimes", async () => {
+(0, node_test_1.test)("thread archive overlays and turn/steer capability gating work for managed runtimes", async () => {
     const fixture = createManagerFixture();
     try {
         const startMessages = await request(fixture, "thread-start-2", "thread/start", {
@@ -128,25 +128,25 @@ test("thread archive overlays and turn/steer capability gating work for managed 
             threadId,
         });
         const archiveResponse = responseById(archiveMessages, "thread-archive-1");
-        assert.ok(archiveResponse);
+        node_assert_1.strict.ok(archiveResponse);
         const activeListMessages = await request(fixture, "thread-list-active", "thread/list", {});
         const activeListResponse = responseById(activeListMessages, "thread-list-active");
-        assert.equal(activeListResponse.result.items.length, 0);
+        node_assert_1.strict.equal(activeListResponse.result.items.length, 0);
         const archivedListMessages = await request(fixture, "thread-list-archived", "thread/list", {
             archived: true,
         });
         const archivedListResponse = responseById(archivedListMessages, "thread-list-archived");
-        assert.equal(archivedListResponse.result.items.length, 1);
-        assert.equal(archivedListResponse.result.items[0].provider, "gemini");
+        node_assert_1.strict.equal(archivedListResponse.result.items.length, 1);
+        node_assert_1.strict.equal(archivedListResponse.result.items[0].provider, "gemini");
         const steerMessages = await request(fixture, "turn-steer-1", "turn/steer", {
             threadId,
             turnId: "turn-1",
             input: [{ type: "text", text: "continue" }],
         });
         const steerResponse = responseById(steerMessages, "turn-steer-1");
-        assert.ok(steerResponse?.error);
-        assert.equal(steerResponse.error.code, -32601);
-        assert.match(steerResponse.error.message, /only available for Codex threads/i);
+        node_assert_1.strict.ok(steerResponse?.error);
+        node_assert_1.strict.equal(steerResponse.error.code, -32601);
+        node_assert_1.strict.match(steerResponse.error.message, /only available for Codex threads/i);
     }
     finally {
         fixture.cleanup();
@@ -365,7 +365,7 @@ function createDefaultCodexTransportFixture(manager, { threadRef, } = {}) {
         transport,
     };
 }
-test("thread/list forwards Codex cursor metadata while merging thread arrays", async () => {
+(0, node_test_1.test)("thread/list forwards Codex cursor metadata while merging thread arrays", async () => {
     const codexFixture = createCodexAdapterFixture({
         threads: [buildCodexThread({ threadId: "codex-thread-list", messageCount: 4 })],
     });
@@ -375,18 +375,18 @@ test("thread/list forwards Codex cursor metadata while merging thread arrays", a
     try {
         const messages = await request(fixture, "thread-list-cursor", "thread/list", {});
         const response = responseById(messages, "thread-list-cursor");
-        assert.ok(response);
-        assert.equal(response.result.nextCursor, "cursor-2");
-        assert.equal(response.result.hasMore, true);
-        assert.equal(response.result.pageSize, 1);
-        assert.equal(response.result.items.length, 1);
-        assert.equal(response.result.items[0].provider, "codex");
+        node_assert_1.strict.ok(response);
+        node_assert_1.strict.equal(response.result.nextCursor, "cursor-2");
+        node_assert_1.strict.equal(response.result.hasMore, true);
+        node_assert_1.strict.equal(response.result.pageSize, 1);
+        node_assert_1.strict.equal(response.result.items.length, 1);
+        node_assert_1.strict.equal(response.result.items[0].provider, "codex");
     }
     finally {
         fixture.cleanup();
     }
 });
-test("thread/read history tail and after windows reuse the Codex cache", async () => {
+(0, node_test_1.test)("thread/read history tail and after windows reuse the Codex cache", async () => {
     const thread = buildCodexThread();
     const codexFixture = createCodexAdapterFixture({ threads: [thread] });
     const fixture = createManagerFixtureWithOptions({
@@ -401,15 +401,15 @@ test("thread/read history tail and after windows reuse the Codex cache", async (
             },
         });
         const tailResponse = responseById(tailMessages, "thread-read-tail");
-        assert.ok(tailResponse);
-        assert.equal(tailResponse.result.historyWindow.mode, "tail");
-        assert.equal(tailResponse.result.historyWindow.servedFromCache, false);
-        assert.equal(tailResponse.result.historyWindow.hasOlder, true);
-        assert.equal(tailResponse.result.historyWindow.pageSize, 50);
-        assert.ok(tailResponse.result.historyWindow.olderCursor);
-        assert.ok(tailResponse.result.historyWindow.newerCursor);
-        assert.equal(tailResponse.result.thread.turns[0].items.length, 50);
-        assert.equal(tailResponse.result.thread.turns[0].items[0].id, "item-131");
+        node_assert_1.strict.ok(tailResponse);
+        node_assert_1.strict.equal(tailResponse.result.historyWindow.mode, "tail");
+        node_assert_1.strict.equal(tailResponse.result.historyWindow.servedFromCache, false);
+        node_assert_1.strict.equal(tailResponse.result.historyWindow.hasOlder, true);
+        node_assert_1.strict.equal(tailResponse.result.historyWindow.pageSize, 50);
+        node_assert_1.strict.ok(tailResponse.result.historyWindow.olderCursor);
+        node_assert_1.strict.ok(tailResponse.result.historyWindow.newerCursor);
+        node_assert_1.strict.equal(tailResponse.result.thread.turns[0].items.length, 50);
+        node_assert_1.strict.equal(tailResponse.result.thread.turns[0].items[0].id, "item-131");
         const cachedTailMessages = await request(fixture, "thread-read-tail-cached", "thread/read", {
             threadId: thread.id,
             history: {
@@ -418,7 +418,7 @@ test("thread/read history tail and after windows reuse the Codex cache", async (
             },
         });
         const cachedTailResponse = responseById(cachedTailMessages, "thread-read-tail-cached");
-        assert.equal(cachedTailResponse.result.historyWindow.servedFromCache, true);
+        node_assert_1.strict.equal(cachedTailResponse.result.historyWindow.servedFromCache, true);
         const afterMessages = await request(fixture, "thread-read-after", "thread/read", {
             threadId: thread.id,
             history: {
@@ -428,15 +428,15 @@ test("thread/read history tail and after windows reuse the Codex cache", async (
             },
         });
         const afterResponse = responseById(afterMessages, "thread-read-after");
-        assert.equal(afterResponse.result.historyWindow.servedFromCache, true);
-        assert.equal(afterResponse.result.thread.turns[0].items.length, 5);
-        assert.equal(afterResponse.result.thread.turns[0].items[0].id, "item-132");
+        node_assert_1.strict.equal(afterResponse.result.historyWindow.servedFromCache, true);
+        node_assert_1.strict.equal(afterResponse.result.thread.turns[0].items.length, 5);
+        node_assert_1.strict.equal(afterResponse.result.thread.turns[0].items[0].id, "item-132");
     }
     finally {
         fixture.cleanup();
     }
 });
-test("thread/read forwards uncached Codex history windows upstream before falling back to full snapshots", async () => {
+(0, node_test_1.test)("thread/read forwards uncached Codex history windows upstream before falling back to full snapshots", async () => {
     const thread = buildCodexThread({
         threadId: "codex-thread-upstream-history",
         messageCount: 5,
@@ -510,24 +510,24 @@ test("thread/read forwards uncached Codex history windows upstream before fallin
             },
         });
         const tailResponse = responseById(tailMessages, "thread-read-upstream-tail");
-        assert.ok(tailResponse);
-        assert.equal(tailResponse.result.historyWindow.mode, "tail");
-        assert.equal(tailResponse.result.historyWindow.pageSize, 3);
-        assert.equal(tailResponse.result.thread.turns[0].items.length, 3);
-        assert.deepEqual(tailResponse.result.thread.turns[0].items.map((item) => item.id), ["item-3", "item-4", "item-5"]);
-        assert.equal(readParams.length, 2);
-        assert.equal(readParams[0].includeTurns, false);
-        assert.deepEqual(readParams[1].history, {
+        node_assert_1.strict.ok(tailResponse);
+        node_assert_1.strict.equal(tailResponse.result.historyWindow.mode, "tail");
+        node_assert_1.strict.equal(tailResponse.result.historyWindow.pageSize, 3);
+        node_assert_1.strict.equal(tailResponse.result.thread.turns[0].items.length, 3);
+        node_assert_1.strict.deepEqual(tailResponse.result.thread.turns[0].items.map((item) => item.id), ["item-3", "item-4", "item-5"]);
+        node_assert_1.strict.equal(readParams.length, 2);
+        node_assert_1.strict.equal(readParams[0].includeTurns, false);
+        node_assert_1.strict.deepEqual(readParams[1].history, {
             mode: "tail",
             limit: 3,
         });
-        assert.equal(readParams[1].includeTurns, undefined);
+        node_assert_1.strict.equal(readParams[1].includeTurns, undefined);
     }
     finally {
         fixture.cleanup();
     }
 });
-test("forwarded Codex item delta notifications include cursor metadata when cache context exists", async () => {
+(0, node_test_1.test)("forwarded Codex item delta notifications include cursor metadata when cache context exists", async () => {
     const fixture = createManagerFixtureWithOptions({
         useDefaultCodexAdapter: true,
     });
@@ -574,23 +574,23 @@ test("forwarded Codex item delta notifications include cursor metadata when cach
         }));
         const forwarded = fixture.messages[beforeCount];
         const historyChanged = fixture.messages[beforeCount + 1];
-        assert.ok(forwarded);
-        assert.equal(forwarded.method, "item/agentMessage/delta");
-        assert.ok(forwarded.params.cursor);
-        assert.ok(forwarded.params.previousCursor);
-        assert.equal(forwarded.params.previousItemId, "item-3");
-        assert.ok(historyChanged);
-        assert.equal(historyChanged.method, "thread/history/changed");
-        assert.equal(historyChanged.params.threadId, thread.id);
-        assert.equal(historyChanged.params.itemId, "item-4");
-        assert.equal(historyChanged.params.sourceMethod, "item/agentMessage/delta");
-        assert.ok(historyChanged.params.cursor);
+        node_assert_1.strict.ok(forwarded);
+        node_assert_1.strict.equal(forwarded.method, "item/agentMessage/delta");
+        node_assert_1.strict.ok(forwarded.params.cursor);
+        node_assert_1.strict.ok(forwarded.params.previousCursor);
+        node_assert_1.strict.equal(forwarded.params.previousItemId, "item-3");
+        node_assert_1.strict.ok(historyChanged);
+        node_assert_1.strict.equal(historyChanged.method, "thread/history/changed");
+        node_assert_1.strict.equal(historyChanged.params.threadId, thread.id);
+        node_assert_1.strict.equal(historyChanged.params.itemId, "item-4");
+        node_assert_1.strict.equal(historyChanged.params.sourceMethod, "item/agentMessage/delta");
+        node_assert_1.strict.ok(historyChanged.params.cursor);
     }
     finally {
         fixture.cleanup();
     }
 });
-test("forwarded Codex snake_case delta notifications are normalized before reaching the app", async () => {
+(0, node_test_1.test)("forwarded Codex snake_case delta notifications are normalized before reaching the app", async () => {
     const fixture = createManagerFixtureWithOptions({
         useDefaultCodexAdapter: true,
     });
@@ -624,18 +624,18 @@ test("forwarded Codex snake_case delta notifications are normalized before reach
             },
         }));
         const forwarded = fixture.messages[beforeCount];
-        assert.ok(forwarded);
-        assert.equal(forwarded.method, "item/agentMessage/delta");
-        assert.equal(forwarded.params.threadId, thread.id);
-        assert.equal(forwarded.params.turnId, "turn-snake");
-        assert.equal(forwarded.params.itemId, "item-snake");
-        assert.ok(forwarded.params.cursor);
+        node_assert_1.strict.ok(forwarded);
+        node_assert_1.strict.equal(forwarded.method, "item/agentMessage/delta");
+        node_assert_1.strict.equal(forwarded.params.threadId, thread.id);
+        node_assert_1.strict.equal(forwarded.params.turnId, "turn-snake");
+        node_assert_1.strict.equal(forwarded.params.itemId, "item-snake");
+        node_assert_1.strict.ok(forwarded.params.cursor);
     }
     finally {
         fixture.cleanup();
     }
 });
-test("forwarded codex/event legacy delta notifications are normalized before reaching the app", async () => {
+(0, node_test_1.test)("forwarded codex/event legacy delta notifications are normalized before reaching the app", async () => {
     const fixture = createManagerFixtureWithOptions({
         useDefaultCodexAdapter: true,
     });
@@ -673,16 +673,16 @@ test("forwarded codex/event legacy delta notifications are normalized before rea
             },
         }));
         const forwarded = fixture.messages[beforeCount];
-        assert.ok(forwarded);
-        assert.equal(forwarded.method, "item/agentMessage/delta");
-        assert.equal(forwarded.params.conversationId, thread.id);
-        assert.ok(forwarded.params.cursor);
+        node_assert_1.strict.ok(forwarded);
+        node_assert_1.strict.equal(forwarded.method, "item/agentMessage/delta");
+        node_assert_1.strict.equal(forwarded.params.conversationId, thread.id);
+        node_assert_1.strict.ok(forwarded.params.cursor);
     }
     finally {
         fixture.cleanup();
     }
 });
-test("legacy Codex event notifications invalidate stale history windows so after reads refetch upstream", async () => {
+(0, node_test_1.test)("legacy Codex event notifications invalidate stale history windows so after reads refetch upstream", async () => {
     const fixture = createManagerFixtureWithOptions({
         useDefaultCodexAdapter: true,
     });
@@ -704,9 +704,9 @@ test("legacy Codex event notifications invalidate stale history windows so after
             },
         });
         const tailResponse = responseById(tailMessages, "legacy-tail");
-        assert.ok(tailResponse);
-        assert.equal(tailResponse.result.historyWindow.servedFromCache, false);
-        assert.deepEqual(tailResponse.result.thread.turns[0].items.map((item) => item.id), ["item-1", "item-2", "item-3"]);
+        node_assert_1.strict.ok(tailResponse);
+        node_assert_1.strict.equal(tailResponse.result.historyWindow.servedFromCache, false);
+        node_assert_1.strict.deepEqual(tailResponse.result.thread.turns[0].items.map((item) => item.id), ["item-1", "item-2", "item-3"]);
         const nextThread = buildCodexThread({
             threadId: threadRef.current.id,
             messageCount: 4,
@@ -729,11 +729,11 @@ test("legacy Codex event notifications invalidate stale history windows so after
             },
         }));
         const historyChanged = fixture.messages.at(-1);
-        assert.ok(historyChanged);
-        assert.equal(historyChanged.method, "thread/history/changed");
-        assert.equal(historyChanged.params.threadId, nextThread.id);
-        assert.equal(historyChanged.params.reason, "cache-invalidated");
-        assert.equal(historyChanged.params.sourceMethod, "item/completed");
+        node_assert_1.strict.ok(historyChanged);
+        node_assert_1.strict.equal(historyChanged.method, "thread/history/changed");
+        node_assert_1.strict.equal(historyChanged.params.threadId, nextThread.id);
+        node_assert_1.strict.equal(historyChanged.params.reason, "cache-invalidated");
+        node_assert_1.strict.equal(historyChanged.params.sourceMethod, "item/completed");
         const afterMessages = await request(fixture, "legacy-after", "thread/read", {
             threadId: threadRef.current.id,
             history: {
@@ -743,16 +743,16 @@ test("legacy Codex event notifications invalidate stale history windows so after
             },
         });
         const afterResponse = responseById(afterMessages, "legacy-after");
-        assert.ok(afterResponse);
-        assert.equal(afterResponse.result.historyWindow.servedFromCache, false);
-        assert.deepEqual(afterResponse.result.thread.turns[0].items.map((item) => item.id), ["item-4"]);
-        assert.equal(transportFixture.readCountsByThread.get(threadRef.current.id), 3);
+        node_assert_1.strict.ok(afterResponse);
+        node_assert_1.strict.equal(afterResponse.result.historyWindow.servedFromCache, false);
+        node_assert_1.strict.deepEqual(afterResponse.result.thread.turns[0].items.map((item) => item.id), ["item-4"]);
+        node_assert_1.strict.equal(transportFixture.readCountsByThread.get(threadRef.current.id), 3);
     }
     finally {
         fixture.cleanup();
     }
 });
-test("codex/event legacy notifications invalidate stale history windows so after reads refetch upstream", async () => {
+(0, node_test_1.test)("codex/event legacy notifications invalidate stale history windows so after reads refetch upstream", async () => {
     const fixture = createManagerFixtureWithOptions({
         useDefaultCodexAdapter: true,
     });
@@ -774,8 +774,8 @@ test("codex/event legacy notifications invalidate stale history windows so after
             },
         });
         const tailResponse = responseById(tailMessages, "legacy-prefix-tail");
-        assert.ok(tailResponse);
-        assert.equal(tailResponse.result.historyWindow.servedFromCache, false);
+        node_assert_1.strict.ok(tailResponse);
+        node_assert_1.strict.equal(tailResponse.result.historyWindow.servedFromCache, false);
         threadRef.current = buildCodexThread({
             threadId: threadRef.current.id,
             messageCount: 4,
@@ -805,15 +805,15 @@ test("codex/event legacy notifications invalidate stale history windows so after
             },
         });
         const afterResponse = responseById(afterMessages, "legacy-prefix-after");
-        assert.ok(afterResponse);
-        assert.equal(afterResponse.result.historyWindow.servedFromCache, false);
-        assert.deepEqual(afterResponse.result.thread.turns[0].items.map((item) => item.id), ["item-4"]);
+        node_assert_1.strict.ok(afterResponse);
+        node_assert_1.strict.equal(afterResponse.result.historyWindow.servedFromCache, false);
+        node_assert_1.strict.deepEqual(afterResponse.result.thread.turns[0].items.map((item) => item.id), ["item-4"]);
     }
     finally {
         fixture.cleanup();
     }
 });
-test("Codex delta notifications without threadId still advance cache windows via turn context", async () => {
+(0, node_test_1.test)("Codex delta notifications without threadId still advance cache windows via turn context", async () => {
     const fixture = createManagerFixtureWithOptions({
         useDefaultCodexAdapter: true,
     });
@@ -835,8 +835,8 @@ test("Codex delta notifications without threadId still advance cache windows via
             },
         });
         const tailResponse = responseById(tailMessages, "turn-context-tail");
-        assert.ok(tailResponse);
-        assert.equal(tailResponse.result.historyWindow.servedFromCache, false);
+        node_assert_1.strict.ok(tailResponse);
+        node_assert_1.strict.equal(tailResponse.result.historyWindow.servedFromCache, false);
         const beforeCount = fixture.messages.length;
         fixture.manager.handleCodexTransportMessage(JSON.stringify({
             jsonrpc: "2.0",
@@ -848,8 +848,8 @@ test("Codex delta notifications without threadId still advance cache windows via
             },
         }));
         const forwarded = fixture.messages[beforeCount];
-        assert.ok(forwarded);
-        assert.equal(forwarded.method, "item/agentMessage/delta");
+        node_assert_1.strict.ok(forwarded);
+        node_assert_1.strict.equal(forwarded.method, "item/agentMessage/delta");
         const afterMessages = await request(fixture, "turn-context-after", "thread/read", {
             threadId: threadRef.current.id,
             history: {
@@ -859,15 +859,15 @@ test("Codex delta notifications without threadId still advance cache windows via
             },
         });
         const afterResponse = responseById(afterMessages, "turn-context-after");
-        assert.ok(afterResponse);
-        assert.equal(afterResponse.result.historyWindow.servedFromCache, true);
-        assert.deepEqual(afterResponse.result.thread.turns[0].items.map((item) => item.id), ["item-4"]);
+        node_assert_1.strict.ok(afterResponse);
+        node_assert_1.strict.equal(afterResponse.result.historyWindow.servedFromCache, true);
+        node_assert_1.strict.deepEqual(afterResponse.result.thread.turns[0].items.map((item) => item.id), ["item-4"]);
     }
     finally {
         fixture.cleanup();
     }
 });
-test("forwarded Codex item delta notifications backfill thread and turn identity from cache", async () => {
+(0, node_test_1.test)("forwarded Codex item delta notifications backfill thread and turn identity from cache", async () => {
     const fixture = createManagerFixtureWithOptions({
         useDefaultCodexAdapter: true,
     });
@@ -909,17 +909,17 @@ test("forwarded Codex item delta notifications backfill thread and turn identity
             },
         }));
         const forwarded = fixture.messages[beforeCount];
-        assert.ok(forwarded);
-        assert.equal(forwarded.method, "item/agentMessage/delta");
-        assert.equal(forwarded.params.threadId, thread.id);
-        assert.equal(forwarded.params.turnId, "turn-identity");
-        assert.equal(forwarded.params.itemId, "item-identity");
+        node_assert_1.strict.ok(forwarded);
+        node_assert_1.strict.equal(forwarded.method, "item/agentMessage/delta");
+        node_assert_1.strict.equal(forwarded.params.threadId, thread.id);
+        node_assert_1.strict.equal(forwarded.params.turnId, "turn-identity");
+        node_assert_1.strict.equal(forwarded.params.itemId, "item-identity");
     }
     finally {
         fixture.cleanup();
     }
 });
-test("unscoped Codex history events invalidate cache so reopen fetches upstream", async () => {
+(0, node_test_1.test)("unscoped Codex history events invalidate cache so reopen fetches upstream", async () => {
     const fixture = createManagerFixtureWithOptions({
         useDefaultCodexAdapter: true,
     });
@@ -941,8 +941,8 @@ test("unscoped Codex history events invalidate cache so reopen fetches upstream"
             },
         });
         const tailResponse = responseById(tailMessages, "unscoped-tail");
-        assert.ok(tailResponse);
-        assert.equal(tailResponse.result.historyWindow.servedFromCache, false);
+        node_assert_1.strict.ok(tailResponse);
+        node_assert_1.strict.equal(tailResponse.result.historyWindow.servedFromCache, false);
         const nextThread = buildCodexThread({
             threadId: threadRef.current.id,
             messageCount: 4,
@@ -966,15 +966,15 @@ test("unscoped Codex history events invalidate cache so reopen fetches upstream"
             },
         });
         const afterResponse = responseById(afterMessages, "unscoped-after");
-        assert.ok(afterResponse);
-        assert.equal(afterResponse.result.historyWindow.servedFromCache, false);
-        assert.deepEqual(afterResponse.result.thread.turns[0].items.map((item) => item.id), ["item-4"]);
+        node_assert_1.strict.ok(afterResponse);
+        node_assert_1.strict.equal(afterResponse.result.historyWindow.servedFromCache, false);
+        node_assert_1.strict.deepEqual(afterResponse.result.thread.turns[0].items.map((item) => item.id), ["item-4"]);
     }
     finally {
         fixture.cleanup();
     }
 });
-test("thread/read history before window falls back to upstream when the cache boundary has a gap", async () => {
+(0, node_test_1.test)("thread/read history before window falls back to upstream when the cache boundary has a gap", async () => {
     const thread = buildCodexThread();
     const codexFixture = createCodexAdapterFixture({ threads: [thread] });
     const fixture = createManagerFixtureWithOptions({
@@ -989,7 +989,7 @@ test("thread/read history before window falls back to upstream when the cache bo
             },
         });
         const tailResponse = responseById(tailMessages, "thread-read-tail");
-        assert.equal(codexFixture.readCountsByThread.get(thread.id), 2);
+        node_assert_1.strict.equal(codexFixture.readCountsByThread.get(thread.id), 2);
         const beforeMessages = await request(fixture, "thread-read-before", "thread/read", {
             threadId: thread.id,
             history: {
@@ -999,16 +999,16 @@ test("thread/read history before window falls back to upstream when the cache bo
             },
         });
         const beforeResponse = responseById(beforeMessages, "thread-read-before");
-        assert.equal(beforeResponse.result.historyWindow.servedFromCache, false);
-        assert.equal(beforeResponse.result.thread.turns[0].items[0].id, "item-81");
-        assert.equal(beforeResponse.result.thread.turns[0].items.length, 50);
-        assert.equal(codexFixture.readCountsByThread.get(thread.id), 3);
+        node_assert_1.strict.equal(beforeResponse.result.historyWindow.servedFromCache, false);
+        node_assert_1.strict.equal(beforeResponse.result.thread.turns[0].items[0].id, "item-81");
+        node_assert_1.strict.equal(beforeResponse.result.thread.turns[0].items.length, 50);
+        node_assert_1.strict.equal(codexFixture.readCountsByThread.get(thread.id), 3);
     }
     finally {
         fixture.cleanup();
     }
 });
-test("managed thread/read history windows expose the same cursor shape as Codex", async () => {
+(0, node_test_1.test)("managed thread/read history windows expose the same cursor shape as Codex", async () => {
     const claudeAdapter = {
         syncImportedThreads: async () => { },
         hydrateThread: async () => { },
@@ -1039,12 +1039,12 @@ test("managed thread/read history windows expose the same cursor shape as Codex"
             },
         });
         const tailResponse = responseById(tailMessages, "managed-thread-tail");
-        assert.equal(tailResponse.result.historyWindow.pageSize, 2);
-        assert.equal(tailResponse.result.historyWindow.hasOlder, true);
-        assert.equal(tailResponse.result.historyWindow.hasNewer, false);
-        assert.ok(tailResponse.result.historyWindow.olderCursor);
-        assert.ok(tailResponse.result.historyWindow.newerCursor);
-        assert.deepEqual(tailResponse.result.thread.turns[0].items.map((item) => item.id), ["item-2", "item-3"]);
+        node_assert_1.strict.equal(tailResponse.result.historyWindow.pageSize, 2);
+        node_assert_1.strict.equal(tailResponse.result.historyWindow.hasOlder, true);
+        node_assert_1.strict.equal(tailResponse.result.historyWindow.hasNewer, false);
+        node_assert_1.strict.ok(tailResponse.result.historyWindow.olderCursor);
+        node_assert_1.strict.ok(tailResponse.result.historyWindow.newerCursor);
+        node_assert_1.strict.deepEqual(tailResponse.result.thread.turns[0].items.map((item) => item.id), ["item-2", "item-3"]);
         const beforeMessages = await request(fixture, "managed-thread-before", "thread/read", {
             threadId,
             history: {
@@ -1054,9 +1054,9 @@ test("managed thread/read history windows expose the same cursor shape as Codex"
             },
         });
         const beforeResponse = responseById(beforeMessages, "managed-thread-before");
-        assert.deepEqual(beforeResponse.result.thread.turns[0].items.map((item) => item.id), ["item-1"]);
-        assert.equal(beforeResponse.result.historyWindow.hasOlder, false);
-        assert.equal(beforeResponse.result.historyWindow.hasNewer, true);
+        node_assert_1.strict.deepEqual(beforeResponse.result.thread.turns[0].items.map((item) => item.id), ["item-1"]);
+        node_assert_1.strict.equal(beforeResponse.result.historyWindow.hasOlder, false);
+        node_assert_1.strict.equal(beforeResponse.result.historyWindow.hasNewer, true);
         const afterMessages = await request(fixture, "managed-thread-after", "thread/read", {
             threadId,
             history: {
@@ -1066,15 +1066,15 @@ test("managed thread/read history windows expose the same cursor shape as Codex"
             },
         });
         const afterResponse = responseById(afterMessages, "managed-thread-after");
-        assert.deepEqual(afterResponse.result.thread.turns[0].items.map((item) => item.id), ["item-3"]);
-        assert.equal(afterResponse.result.historyWindow.hasOlder, true);
-        assert.equal(afterResponse.result.historyWindow.hasNewer, false);
+        node_assert_1.strict.deepEqual(afterResponse.result.thread.turns[0].items.map((item) => item.id), ["item-3"]);
+        node_assert_1.strict.equal(afterResponse.result.historyWindow.hasOlder, true);
+        node_assert_1.strict.equal(afterResponse.result.historyWindow.hasNewer, false);
     }
     finally {
         fixture.cleanup();
     }
 });
-test("managed realtime notifications include cursor and previousCursor metadata", async () => {
+(0, node_test_1.test)("managed realtime notifications include cursor and previousCursor metadata", async () => {
     const geminiAdapter = {
         syncImportedThreads: async () => { },
         hydrateThread: async () => { },
@@ -1100,18 +1100,18 @@ test("managed realtime notifications include cursor and previousCursor metadata"
         const itemNotifications = fixture.messages
             .slice(beforeCount)
             .filter((message) => message.method === "item/agentMessage/delta");
-        assert.equal(itemNotifications.length, 2);
-        assert.ok(itemNotifications[0].params.cursor);
-        assert.equal(itemNotifications[0].params.previousCursor, undefined);
-        assert.ok(itemNotifications[1].params.cursor);
-        assert.equal(itemNotifications[1].params.previousItemId, "item-1");
-        assert.equal(itemNotifications[1].params.previousCursor, itemNotifications[0].params.cursor);
+        node_assert_1.strict.equal(itemNotifications.length, 2);
+        node_assert_1.strict.ok(itemNotifications[0].params.cursor);
+        node_assert_1.strict.equal(itemNotifications[0].params.previousCursor, undefined);
+        node_assert_1.strict.ok(itemNotifications[1].params.cursor);
+        node_assert_1.strict.equal(itemNotifications[1].params.previousItemId, "item-1");
+        node_assert_1.strict.equal(itemNotifications[1].params.previousCursor, itemNotifications[0].params.cursor);
     }
     finally {
         fixture.cleanup();
     }
 });
-test("thread/read rejects malformed history.cursor", async () => {
+(0, node_test_1.test)("thread/read rejects malformed history.cursor", async () => {
     const codexFixture = createCodexAdapterFixture({
         threads: [buildCodexThread({ threadId: "codex-invalid-cursor", messageCount: 4 })],
     });
@@ -1128,14 +1128,14 @@ test("thread/read rejects malformed history.cursor", async () => {
             },
         });
         const response = responseById(messages, "thread-read-invalid-cursor");
-        assert.equal(response.error.code, -32602);
-        assert.match(response.error.message, /history\.cursor is invalid/i);
+        node_assert_1.strict.equal(response.error.code, -32602);
+        node_assert_1.strict.match(response.error.message, /history\.cursor is invalid/i);
     }
     finally {
         fixture.cleanup();
     }
 });
-test("Codex history cache evicts the least recently used thread after twenty entries", async () => {
+(0, node_test_1.test)("Codex history cache evicts the least recently used thread after twenty entries", async () => {
     const threads = Array.from({ length: 21 }, (_, index) => buildCodexThread({
         threadId: `codex-thread-${index + 1}`,
         messageCount: 60,
@@ -1155,7 +1155,7 @@ test("Codex history cache evicts the least recently used thread after twenty ent
                 },
             });
         }
-        assert.equal(codexFixture.readCountsByThread.get("codex-thread-1"), 2);
+        node_assert_1.strict.equal(codexFixture.readCountsByThread.get("codex-thread-1"), 2);
         const rereadMessages = await request(fixture, "tail-codex-thread-1-reread", "thread/read", {
             threadId: "codex-thread-1",
             history: {
@@ -1164,14 +1164,14 @@ test("Codex history cache evicts the least recently used thread after twenty ent
             },
         });
         const rereadResponse = responseById(rereadMessages, "tail-codex-thread-1-reread");
-        assert.equal(rereadResponse.result.historyWindow.servedFromCache, false);
-        assert.equal(codexFixture.readCountsByThread.get("codex-thread-1"), 3);
+        node_assert_1.strict.equal(rereadResponse.result.historyWindow.servedFromCache, false);
+        node_assert_1.strict.equal(codexFixture.readCountsByThread.get("codex-thread-1"), 3);
     }
     finally {
         fixture.cleanup();
     }
 });
-test("observed Codex threads emit thread/history/changed after bridge-side thread/read polling detects new history", async () => {
+(0, node_test_1.test)("observed Codex threads emit thread/history/changed after bridge-side thread/read polling detects new history", async () => {
     const threadRef = {
         current: buildCodexThread({
             threadId: "codex-observed-thread",
@@ -1246,19 +1246,19 @@ test("observed Codex threads emit thread/history/changed after bridge-side threa
         await sleep(80);
         const newMessages = fixture.messages.slice(beforeCount);
         const historyChanged = newMessages.find((message) => message.method === "thread/history/changed");
-        assert.ok(historyChanged);
-        assert.equal(historyChanged.params.threadId, threadRef.current.id);
-        assert.equal(historyChanged.params.sourceMethod, "thread/read");
-        assert.equal(historyChanged.params.rawMethod, "thread/read");
-        assert.equal(historyChanged.params.itemId, "item-3");
-        assert.ok(historyChanged.params.cursor);
-        assert.ok(readCountsByThread.get(threadRef.current.id) >= 2);
+        node_assert_1.strict.ok(historyChanged);
+        node_assert_1.strict.equal(historyChanged.params.threadId, threadRef.current.id);
+        node_assert_1.strict.equal(historyChanged.params.sourceMethod, "thread/read");
+        node_assert_1.strict.equal(historyChanged.params.rawMethod, "thread/read");
+        node_assert_1.strict.equal(historyChanged.params.itemId, "item-3");
+        node_assert_1.strict.ok(historyChanged.params.cursor);
+        node_assert_1.strict.ok(readCountsByThread.get(threadRef.current.id) >= 2);
     }
     finally {
         fixture.cleanup();
     }
 });
-test("observed Codex threads do not emit repeated thread/history/changed for unchanged long histories", async () => {
+(0, node_test_1.test)("observed Codex threads do not emit repeated thread/history/changed for unchanged long histories", async () => {
     const threadRef = {
         current: buildCodexThread({
             threadId: "codex-observed-stable-thread",
@@ -1319,7 +1319,7 @@ test("observed Codex threads do not emit repeated thread/history/changed for unc
         await sleep(80);
         const newMessages = fixture.messages.slice(beforeCount);
         const historyChangedMessages = newMessages.filter((message) => message.method === "thread/history/changed");
-        assert.equal(historyChangedMessages.length, 0);
+        node_assert_1.strict.equal(historyChangedMessages.length, 0);
     }
     finally {
         fixture.cleanup();

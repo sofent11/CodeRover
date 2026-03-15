@@ -1,14 +1,12 @@
-// FILE: secure-transport.test.js
+// FILE: secure-transport.test.ts
 // Purpose: Verifies the bridge-side E2EE handshake rejects plaintext and round-trips encrypted payloads.
 // Layer: Unit test
 // Exports: node:test suite
 // Depends on: node:test, node:assert/strict, crypto, ../src/secure-transport
 
-export {};
-
-const test = require("node:test");
-const assert = require("node:assert/strict");
-const {
+import { test } from "node:test";
+import { strict as assert } from "node:assert";
+import {
   createCipheriv,
   createDecipheriv,
   createHash,
@@ -18,13 +16,14 @@ const {
   generateKeyPairSync,
   hkdfSync,
   sign,
-} = require("crypto");
-const {
+} from "crypto";
+import {
   HANDSHAKE_MODE_QR_BOOTSTRAP,
   HANDSHAKE_MODE_TRUSTED_RECONNECT,
   createBridgeSecureTransport,
   nonceForDirection,
-} = require("../src/secure-transport");
+} from "../src/secure-transport";
+import type { BridgeDeviceState } from "../src/secure-device-state";
 
 test("secure transport rejects plaintext JSON-RPC before the secure handshake", () => {
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
@@ -32,12 +31,12 @@ test("secure transport rejects plaintext JSON-RPC before the secure handshake", 
   const publicJwk = publicKey.export({ format: "jwk" });
   const secureTransport = createBridgeSecureTransport({
     sessionId: "session-1",
-    deviceState: {
+    deviceState: createBridgeDeviceState({
+      bridgeId: "bridge-1",
       macDeviceId: "mac-1",
       macIdentityPrivateKey: base64UrlToBase64(privateJwk.d),
       macIdentityPublicKey: base64UrlToBase64(publicJwk.x),
-      trustedPhones: {},
-    },
+    }),
   });
 
   const controlMessages = [];
@@ -68,14 +67,15 @@ test("secure transport round-trips encrypted payloads after a trusted reconnect 
   const phoneEphemeral = createOkpKeyPair("x25519");
   const secureTransport = createBridgeSecureTransport({
     sessionId: "session-2",
-    deviceState: {
+    deviceState: createBridgeDeviceState({
+      bridgeId: "bridge-2",
       macDeviceId: "mac-2",
       macIdentityPrivateKey: macIdentity.privateKey,
       macIdentityPublicKey: macIdentity.publicKey,
       trustedPhones: {
         "phone-2": phoneIdentity.publicKey,
       },
-    },
+    }),
   });
 
   const controlMessages = [];
@@ -213,10 +213,7 @@ test("secure transport round-trips encrypted payloads after a trusted reconnect 
   );
 
   secureTransport.queueOutboundApplicationMessage(
-    JSON.stringify({ id: "response-1", result: { ok: true } }),
-    (message) => {
-      wireMessages.push(message);
-    }
+    JSON.stringify({ id: "response-1", result: { ok: true } })
   );
   assert.equal(wireMessages.length, 1);
 
@@ -263,12 +260,12 @@ test("secure transport broadcasts outbound messages to multiple resumed phones",
   const secondWireMessages = [];
   const secureTransport = createBridgeSecureTransport({
     sessionId: "session-multi",
-    deviceState: {
+    deviceState: createBridgeDeviceState({
+      bridgeId: "bridge-multi",
       macDeviceId: "mac-multi",
       macIdentityPrivateKey: macIdentity.privateKey,
       macIdentityPublicKey: macIdentity.publicKey,
-      trustedPhones: {},
-    },
+    }),
   });
 
   const firstHandshake = finishHandshake({
@@ -339,12 +336,12 @@ test("qr bootstrap keeps previously paired phones trusted when a second phone sc
   const secondPhoneEphemeral = createOkpKeyPair("x25519");
   const secureTransport = createBridgeSecureTransport({
     sessionId: "session-3",
-    deviceState: {
+    deviceState: createBridgeDeviceState({
+      bridgeId: "bridge-3",
       macDeviceId: "mac-3",
       macIdentityPrivateKey: macIdentity.privateKey,
       macIdentityPublicKey: macIdentity.publicKey,
-      trustedPhones: {},
-    },
+    }),
   });
 
   finishHandshake({
@@ -471,12 +468,12 @@ test("qr bootstrap starts a fresh replay window instead of leaking buffered mess
   const wireMessages = [];
   const secureTransport = createBridgeSecureTransport({
     sessionId: "session-4",
-    deviceState: {
+    deviceState: createBridgeDeviceState({
+      bridgeId: "bridge-4",
       macDeviceId: "mac-4",
       macIdentityPrivateKey: macIdentity.privateKey,
       macIdentityPublicKey: macIdentity.publicKey,
-      trustedPhones: {},
-    },
+    }),
   });
 
   finishHandshake({
@@ -494,10 +491,7 @@ test("qr bootstrap starts a fresh replay window instead of leaking buffered mess
   });
 
   secureTransport.queueOutboundApplicationMessage(
-    JSON.stringify({ id: "stale-response", result: { ok: true } }),
-    (message) => {
-      wireMessages.push(message);
-    }
+    JSON.stringify({ id: "stale-response", result: { ok: true } })
   );
   assert.equal(wireMessages.length, 1);
 
@@ -643,6 +637,29 @@ function finishHandshake({
   );
 
   return { applicationMessages, controlMessages, serverHello, transcriptBytes };
+}
+
+function createBridgeDeviceState({
+  bridgeId,
+  macDeviceId,
+  macIdentityPrivateKey,
+  macIdentityPublicKey,
+  trustedPhones = {},
+}: {
+  bridgeId: string;
+  macDeviceId: string;
+  macIdentityPrivateKey: string;
+  macIdentityPublicKey: string;
+  trustedPhones?: Record<string, string>;
+}): BridgeDeviceState {
+  return {
+    version: 1,
+    bridgeId,
+    macDeviceId,
+    macIdentityPrivateKey,
+    macIdentityPublicKey,
+    trustedPhones,
+  };
 }
 
 function deriveSessionKeys({

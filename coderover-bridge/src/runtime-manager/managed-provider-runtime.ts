@@ -102,7 +102,7 @@ export function threadObjectToMeta(
   const providerId = helpers.resolveProviderId(threadObject);
   return {
     id: helpers.normalizeOptionalString(threadObject.id) || "",
-    provider: providerId,
+    provider: providerId as ManagedThreadMeta["provider"],
     providerSessionId: helpers.normalizeOptionalString(threadObject.providerSessionId)
       || helpers.normalizeOptionalString(threadObject.id),
     title: helpers.normalizeOptionalString(threadObject.title),
@@ -113,6 +113,7 @@ export function threadObjectToMeta(
       threadObject.current_working_directory,
       threadObject.working_directory,
     ]),
+    model: helpers.normalizeOptionalString(threadObject.model),
     metadata: {
       ...(helpers.asObject(threadObject.metadata) as Record<string, unknown>),
       providerTitle: helpers.getRuntimeProvider(providerId).title,

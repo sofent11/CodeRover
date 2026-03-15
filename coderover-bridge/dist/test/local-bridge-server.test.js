@@ -2,8 +2,8 @@
 // FILE: local-bridge-server.test.ts
 // Purpose: Verifies the QR transport candidates stay limited to directly reachable LAN or explicit tailnet endpoints.
 Object.defineProperty(exports, "__esModule", { value: true });
-const test = require("node:test");
-const assert = require("node:assert/strict");
+const node_test_1 = require("node:test");
+const node_assert_1 = require("node:assert");
 const os = require("os");
 const ws_1 = require("ws");
 const local_bridge_server_1 = require("../src/local-bridge-server");
@@ -25,7 +25,7 @@ function mockNetworkInterfaces(mock) {
         });
     };
 }
-test("buildTransportCandidates excludes hostname, utun, and link-local addresses", () => {
+(0, node_test_1.test)("buildTransportCandidates excludes hostname, utun, and link-local addresses", () => {
     const restoreNetworkInterfaces = mockNetworkInterfaces(() => ({
         en0: [
             { address: "192.168.1.11", family: "IPv4", internal: false, cidr: null, mac: "", netmask: "" },
@@ -42,7 +42,7 @@ test("buildTransportCandidates excludes hostname, utun, and link-local addresses
             bridgeId: "bridge-1",
             localPort: 8765,
         });
-        assert.deepEqual(candidates, [
+        node_assert_1.strict.deepEqual(candidates, [
             {
                 kind: "local_ipv4",
                 url: "ws://192.168.1.11:8765/bridge/bridge-1",
@@ -54,7 +54,7 @@ test("buildTransportCandidates excludes hostname, utun, and link-local addresses
         restoreNetworkInterfaces();
     }
 });
-test("buildTransportCandidates appends explicit tailnet endpoint after LAN candidates", () => {
+(0, node_test_1.test)("buildTransportCandidates appends explicit tailnet endpoint after LAN candidates", () => {
     const restoreNetworkInterfaces = mockNetworkInterfaces(() => ({
         en0: [
             { address: "192.168.1.11", family: "IPv4", internal: false, cidr: null, mac: "", netmask: "" },
@@ -66,7 +66,7 @@ test("buildTransportCandidates appends explicit tailnet endpoint after LAN candi
             localPort: 8765,
             tailnetUrl: "ws://coderover-host.tailnet.ts.net:8765",
         });
-        assert.deepEqual(candidates, [
+        node_assert_1.strict.deepEqual(candidates, [
             {
                 kind: "local_ipv4",
                 url: "ws://192.168.1.11:8765/bridge/bridge-2",
@@ -83,7 +83,7 @@ test("buildTransportCandidates appends explicit tailnet endpoint after LAN candi
         restoreNetworkInterfaces();
     }
 });
-test("buildTransportCandidates appends explicit relay endpoints after LAN and tailnet candidates", () => {
+(0, node_test_1.test)("buildTransportCandidates appends explicit relay endpoints after LAN and tailnet candidates", () => {
     const restoreNetworkInterfaces = mockNetworkInterfaces(() => ({
         en0: [
             { address: "192.168.1.11", family: "IPv4", internal: false, cidr: null, mac: "", netmask: "" },
@@ -102,7 +102,7 @@ test("buildTransportCandidates appends explicit relay endpoints after LAN and ta
                 "wss://relay-2.example.com/coderover",
             ],
         });
-        assert.deepEqual(candidates, [
+        node_assert_1.strict.deepEqual(candidates, [
             {
                 kind: "local_ipv4",
                 url: "ws://192.168.1.11:8765/bridge/bridge-relay",
@@ -134,7 +134,7 @@ test("buildTransportCandidates appends explicit relay endpoints after LAN and ta
         restoreNetworkInterfaces();
     }
 });
-test("buildTransportCandidates includes Tailscale utun addresses as tailnet candidates", () => {
+(0, node_test_1.test)("buildTransportCandidates includes Tailscale utun addresses as tailnet candidates", () => {
     const restoreNetworkInterfaces = mockNetworkInterfaces(() => ({
         en0: [
             { address: "192.168.1.11", family: "IPv4", internal: false, cidr: null, mac: "", netmask: "" },
@@ -148,7 +148,7 @@ test("buildTransportCandidates includes Tailscale utun addresses as tailnet cand
             bridgeId: "bridge-3",
             localPort: 8765,
         });
-        assert.deepEqual(candidates, [
+        node_assert_1.strict.deepEqual(candidates, [
             {
                 kind: "local_ipv4",
                 url: "ws://192.168.1.11:8765/bridge/bridge-3",
@@ -165,7 +165,7 @@ test("buildTransportCandidates includes Tailscale utun addresses as tailnet cand
         restoreNetworkInterfaces();
     }
 });
-test("startLocalBridgeServer rejects clients while bridge upstream is unavailable", async () => {
+(0, node_test_1.test)("startLocalBridgeServer rejects clients while bridge upstream is unavailable", async () => {
     const server = (0, local_bridge_server_1.startLocalBridgeServer)({
         bridgeId: "bridge-unavailable",
         host: "127.0.0.1",
@@ -191,9 +191,9 @@ test("startLocalBridgeServer rejects clients while bridge upstream is unavailabl
         });
     });
     server.stop();
-    assert.equal(response.statusCode, 503);
+    node_assert_1.strict.equal(response.statusCode, 503);
 });
-test("startLocalBridgeServer keeps multiple clients connected at the same time", async () => {
+(0, node_test_1.test)("startLocalBridgeServer keeps multiple clients connected at the same time", async () => {
     const received = [];
     const server = (0, local_bridge_server_1.startLocalBridgeServer)({
         bridgeId: "bridge-multi",
@@ -222,15 +222,15 @@ test("startLocalBridgeServer keeps multiple clients connected at the same time",
     firstClient.send("first");
     secondClient.send("second");
     await delay(25);
-    assert.equal(firstClient.readyState, ws_1.WebSocket.OPEN);
-    assert.equal(secondClient.readyState, ws_1.WebSocket.OPEN);
-    assert.equal(received.length, 2);
-    assert.notEqual(received[0].transportId, received[1].transportId);
+    node_assert_1.strict.equal(firstClient.readyState, ws_1.WebSocket.OPEN);
+    node_assert_1.strict.equal(secondClient.readyState, ws_1.WebSocket.OPEN);
+    node_assert_1.strict.equal(received.length, 2);
+    node_assert_1.strict.notEqual(received[0].transportId, received[1].transportId);
     firstClient.terminate();
     secondClient.terminate();
     server.stop();
 });
-test("startLocalBridgeServer reports stale bridge routes as pairing_expired", async () => {
+(0, node_test_1.test)("startLocalBridgeServer reports stale bridge routes as pairing_expired", async () => {
     const server = (0, local_bridge_server_1.startLocalBridgeServer)({
         bridgeId: "bridge-current",
         host: "127.0.0.1",
@@ -247,7 +247,7 @@ test("startLocalBridgeServer reports stale bridge routes as pairing_expired", as
         client.once("error", reject);
     });
     server.stop();
-    assert.deepEqual(result, {
+    node_assert_1.strict.deepEqual(result, {
         kind: "secureError",
         code: "pairing_expired",
         message: "This bridge pairing is no longer valid. Scan a new QR code to pair again.",

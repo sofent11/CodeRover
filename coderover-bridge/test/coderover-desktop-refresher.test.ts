@@ -1,14 +1,17 @@
 // FILE: coderover-desktop-refresher.test.ts
 // Purpose: Verifies desktop refresh defaults, failure hardening, and rollout-based throttling.
 
-import test = require("node:test");
-import assert = require("node:assert/strict");
+import { test } from "node:test";
+import { strict as assert } from "node:assert";
 
 import {
   CodeRoverDesktopRefresher,
   readBridgeConfig,
 } from "../src/coderover-desktop-refresher";
-import { createThreadRolloutActivityWatcher } from "../src/rollout-watch";
+import {
+  createThreadRolloutActivityWatcher,
+  type ThreadRolloutActivityEvent,
+} from "../src/rollout-watch";
 
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -134,7 +137,8 @@ test("rollout growth refreshes are throttled during long runs", async () => {
   const refreshCalls: string[] = [];
   let watcherHooks:
     | {
-      onEvent: (event: { reason: "growth"; threadId: string; size: number }) => void;
+      threadId: string;
+      onEvent: (event: ThreadRolloutActivityEvent) => void;
     }
     | null = null;
   let currentTime = 0;
@@ -148,7 +152,10 @@ test("rollout growth refreshes are throttled during long runs", async () => {
       refreshCalls.push(targetUrl);
     },
     watchThreadRolloutFactory: (hooks) => {
-      watcherHooks = hooks as unknown as typeof watcherHooks;
+      watcherHooks = {
+        threadId: hooks.threadId,
+        onEvent: hooks.onEvent,
+      };
       return {
         stop() {},
         get threadId() {
@@ -157,6 +164,19 @@ test("rollout growth refreshes are throttled during long runs", async () => {
       };
     },
   });
+
+  const emitGrowth = (size: number): void => {
+    const hooks = watcherHooks;
+    if (!hooks) {
+      throw new Error("expected rollout watcher hooks");
+    }
+    hooks.onEvent({
+      reason: "growth",
+      threadId: hooks.threadId,
+      rolloutPath: "/tmp/rollout-thread-456.jsonl",
+      size,
+    });
+  };
 
   refresher.handleInbound(JSON.stringify({
     method: "turn/start",
@@ -168,30 +188,18 @@ test("rollout growth refreshes are throttled during long runs", async () => {
   refreshCalls.length = 0;
 
   currentTime = 1_000;
-  watcherHooks?.onEvent({
-    reason: "growth",
-    threadId: "thread-456",
-    size: 10,
-  });
+  emitGrowth(10);
   await wait(10);
   assert.deepEqual(refreshCalls, ["coderover://threads/thread-456"]);
 
   refreshCalls.length = 0;
   currentTime = 2_000;
-  watcherHooks?.onEvent({
-    reason: "growth",
-    threadId: "thread-456",
-    size: 15,
-  });
+  emitGrowth(15);
   await wait(10);
   assert.deepEqual(refreshCalls, []);
 
   currentTime = 4_500;
-  watcherHooks?.onEvent({
-    reason: "growth",
-    threadId: "thread-456",
-    size: 20,
-  });
+  emitGrowth(20);
   await wait(10);
   assert.deepEqual(refreshCalls, ["coderover://threads/thread-456"]);
 });
@@ -255,7 +263,7 @@ test("turn/completed bypasses duplicate-target dedupe and still stops the watche
 
 test("turn/completed is retried after a slow in-flight refresh finishes", async () => {
   const refreshCalls: string[] = [];
-  let releaseSlowRefresh: (() => void) | null = null;
+  let releaseSlowRefresh!: () => void;
 
   const refresher = new CodeRoverDesktopRefresher({
     enabled: true,
@@ -295,7 +303,8 @@ test("turn/completed is retried after a slow in-flight refresh finishes", async 
 
   assert.equal(refreshCalls.length, 1);
 
-  releaseSlowRefresh?.();
+  const releaseRefresh = releaseSlowRefresh;
+  releaseRefresh();
   await wait(20);
 
   assert.deepEqual(refreshCalls, [

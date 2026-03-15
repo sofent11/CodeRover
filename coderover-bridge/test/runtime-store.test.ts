@@ -1,8 +1,8 @@
 // FILE: runtime-store.test.ts
 // Purpose: Verifies provider-aware overlay persistence for managed runtime threads.
 
-import test = require("node:test");
-import assert = require("node:assert/strict");
+import { test } from "node:test";
+import { strict as assert } from "node:assert";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";

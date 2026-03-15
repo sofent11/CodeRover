@@ -1,20 +1,44 @@
 export {};
 
-// FILE: runtime-manager.js
+// FILE: runtime-manager.ts
 // Purpose: Bridge-owned multi-provider runtime router for Codex, Claude Code, and Gemini CLI.
 // Layer: Runtime orchestration
 // Exports: createRuntimeManager
 // Depends on: crypto, ../runtime-store, ../provider-catalog, ../providers/*
 
-const { randomUUID } = require("crypto");
-const { createRuntimeStore } = require("../runtime-store");
-const { debugLog, debugError } = require("../debug-log");
-const historyHelpers = require("./codex-history");
-const routingHelpers = require("./client-routing");
-const observerHelpers = require("./codex-observer");
-const managedRuntimeHelpers = require("./managed-provider-runtime");
-const normalizerHelpers = require("./normalizers");
-const {
+import { randomUUID } from "crypto";
+
+import type {
+  JsonRpcEnvelope,
+  JsonRpcId,
+  RuntimeInputItem,
+  RuntimeItemShape,
+  RuntimeThreadShape,
+  RuntimeTurnShape,
+} from "../bridge-types";
+import {
+  createRuntimeStore,
+  type RuntimeStore,
+  type RuntimeStoreTurn,
+  type RuntimeStoreItem,
+  type RuntimeThreadMeta,
+} from "../runtime-store";
+import { debugLog, debugError } from "../debug-log";
+import { buildRpcError, buildRpcSuccess } from "../rpc-client";
+import {
+  getRuntimeProvider,
+  listRuntimeProviders,
+  listStaticModelsForProvider,
+} from "../provider-catalog";
+import { createCodexAdapter, type CodexAdapter } from "../providers/codex-adapter";
+import { createClaudeAdapter } from "../providers/claude-adapter";
+import { createGeminiAdapter } from "../providers/gemini-adapter";
+import * as historyHelpers from "./codex-history";
+import * as routingHelpers from "./client-routing";
+import * as observerHelpers from "./codex-observer";
+import * as managedRuntimeHelpers from "./managed-provider-runtime";
+import * as normalizerHelpers from "./normalizers";
+import {
   CODEX_HISTORY_CACHE_MESSAGE_LIMIT,
   CODEX_HISTORY_CACHE_THREAD_LIMIT,
   CODEX_OBSERVED_THREAD_ERROR_BACKOFF_MS,
@@ -29,32 +53,93 @@ const {
   ERROR_THREAD_NOT_FOUND,
   EXTERNAL_SYNC_INTERVAL_MS,
   HISTORY_CURSOR_VERSION,
-} = require("./types");
-const {
-  getRuntimeProvider,
-  listRuntimeProviders,
-  listStaticModelsForProvider,
-} = require("../provider-catalog");
-const { buildRpcError, buildRpcSuccess } = require("../rpc-client");
-const { createCodexAdapter } = require("../providers/codex-adapter");
-const { createClaudeAdapter } = require("../providers/claude-adapter");
-const { createGeminiAdapter } = require("../providers/gemini-adapter");
+  type ManagedProviderAdapter,
+  type ManagedProviderTurnContext,
+  type RuntimeHistoryRecord,
+  type RuntimeHistoryRequest,
+  type RuntimeInitializeParams,
+} from "./types";
+
+type UnknownRecord = Record<string, unknown>;
+
+interface RuntimeManager {
+  attachCodexTransport(transport: unknown): void;
+  handleClientMessage(rawMessage: string): Promise<boolean>;
+  handleCodexTransportClosed(reason?: unknown): void;
+  handleCodexTransportMessage(rawMessage: string): void;
+  shutdown(): void;
+}
+
+interface PendingClientRequest {
+  method: string;
+  threadId: string | null;
+  resolve(value: unknown): void;
+  reject(error: Error): void;
+}
+
+interface ActiveRunEntry {
+  provider: RuntimeThreadMeta["provider"];
+  threadId: string;
+  turnId: string;
+  stopRequested: boolean;
+  interrupt(): void | Promise<void>;
+}
+
+interface CodexHistorySnapshot {
+  threadId: string;
+  threadBase: RuntimeThreadShape;
+  records: RuntimeHistoryRecord[];
+  hasOlder: boolean;
+  hasNewer: boolean;
+}
+
+interface ObservedCodexThreadWatcher extends observerHelpers.ObservedCodexThreadWatcher {
+  timer: NodeJS.Timeout | null;
+  inFlight: boolean;
+  lastSnapshot: CodexHistorySnapshot | null;
+  lastPollAt: number;
+}
+
+type ManagedHistoryItem = RuntimeStoreItem & {
+  cwd?: string | null;
+  exitCode?: number | null;
+  durationMs?: number | null;
+  explanation?: string | null;
+  changes?: unknown[] | null;
+  plan?: unknown;
+};
+
+interface ManagedHistoryTurn extends Omit<RuntimeStoreTurn, "items"> {
+  items: ManagedHistoryItem[];
+}
+
+interface LocalManagedTurnContext extends ManagedProviderTurnContext {
+  turnId: string;
+  threadId: string;
+  threadMeta: RuntimeThreadMeta;
+  params: UnknownRecord;
+  userTextPreview: string;
+  complete(options?: { status?: string; usage?: unknown }): void;
+  fail(error: unknown, options?: { status?: string }): void;
+  interrupt(): void | Promise<void>;
+  updateTokenUsage(usage: unknown): void;
+}
 
 interface CreateRuntimeManagerOptions {
   sendApplicationMessage: (rawMessage: string) => void;
   logPrefix?: string;
   storeBaseDir?: string;
-  store?: any;
-  codexAdapter?: any;
-  claudeAdapter?: any;
-  geminiAdapter?: any;
+  store?: RuntimeStore | null;
+  codexAdapter?: ReturnType<typeof createCodexAdapter> | null;
+  claudeAdapter?: ReturnType<typeof createClaudeAdapter> | null;
+  geminiAdapter?: ReturnType<typeof createGeminiAdapter> | null;
   codexObservedThreadPollIntervalMs?: number;
   codexObservedThreadIdleTtlMs?: number;
   codexObservedThreadErrorBackoffMs?: number;
   codexObservedThreadLimit?: number;
 }
 
-function createRuntimeManager({
+export function createRuntimeManager({
   sendApplicationMessage,
   logPrefix = "[coderover]",
   storeBaseDir,
@@ -66,22 +151,22 @@ function createRuntimeManager({
   codexObservedThreadIdleTtlMs = CODEX_OBSERVED_THREAD_IDLE_TTL_MS,
   codexObservedThreadErrorBackoffMs = CODEX_OBSERVED_THREAD_ERROR_BACKOFF_MS,
   codexObservedThreadLimit = CODEX_OBSERVED_THREAD_LIMIT,
-}: CreateRuntimeManagerOptions) {
+}: CreateRuntimeManagerOptions): RuntimeManager {
   if (typeof sendApplicationMessage !== "function") {
     throw new Error("createRuntimeManager requires sendApplicationMessage");
   }
 
   const store = providedStore || createRuntimeStore({ baseDir: storeBaseDir });
-  const pendingClientRequests = new Map();
-  const activeRunsByThread = new Map();
-  const codexHistoryCache = new Map();
-  const codexObservedThreadWatchers = new Map();
+  const pendingClientRequests = new Map<string, PendingClientRequest>();
+  const activeRunsByThread = new Map<string, ActiveRunEntry>();
+  const codexHistoryCache = new Map<string, CodexHistorySnapshot>();
+  const codexObservedThreadWatchers = new Map<string, ObservedCodexThreadWatcher>();
 
   let codexWarm = false;
-  let codexWarmPromise = null;
+  let codexWarmPromise: Promise<void> | null = null;
   let lastExternalSyncAt = 0;
 
-  const codexAdapter = providedCodexAdapter || createCodexAdapter({
+  const codexAdapter: CodexAdapter = providedCodexAdapter || createCodexAdapter({
     logPrefix,
     sendToClient(rawMessage, parsedMessage) {
       forwardCodexTransportMessage(rawMessage, parsedMessage);
@@ -97,8 +182,8 @@ function createRuntimeManager({
     store,
   });
 
-  async function handleClientMessage(rawMessage) {
-    let parsed = null;
+  async function handleClientMessage(rawMessage: string): Promise<boolean> {
+    let parsed: UnknownRecord | null = null;
     try {
       parsed = JSON.parse(rawMessage);
     } catch {
@@ -115,7 +200,7 @@ function createRuntimeManager({
     }
 
     const params = asObject(parsed?.params);
-    const requestId = parsed?.id;
+    const requestId = parsed?.id as JsonRpcId | undefined;
 
     try {
       switch (method) {
@@ -241,13 +326,14 @@ function createRuntimeManager({
               name: nextName,
               updatedAt: new Date().toISOString(),
             }));
+            const stableMeta = updatedMeta || threadMeta;
 
             sendNotification("thread/name/updated", {
-              threadId: updatedMeta.id,
-              name: updatedMeta.name,
+              threadId: stableMeta.id,
+              name: stableMeta.name,
             });
             return {
-              thread: buildManagedThreadObject(updatedMeta),
+              thread: buildManagedThreadObject(stableMeta),
             };
           });
 
@@ -261,8 +347,9 @@ function createRuntimeManager({
               archived,
               updatedAt: new Date().toISOString(),
             }));
+            const stableMeta = updatedMeta || threadMeta;
             return {
-              thread: buildManagedThreadObject(updatedMeta),
+              thread: buildManagedThreadObject(stableMeta),
             };
           });
 
@@ -272,9 +359,10 @@ function createRuntimeManager({
             if (threadMeta.provider === "codex") {
               await ensureCodexWarm();
               const result = await codexAdapter.startTurn(stripProviderField(params));
+              const turnResult = asObject(result);
               seedCodexHistoryCacheWithUserInput(
                 threadMeta.id,
-                normalizeOptionalString(result?.turnId || result?.turn_id),
+                normalizeOptionalString(turnResult.turnId || turnResult.turn_id),
                 params
               );
               observeCodexThread(threadMeta.id, { immediate: true, reason: "turn-start" });
@@ -308,9 +396,12 @@ function createRuntimeManager({
                 if (!activeRunsByThread.has(threadMeta.id)) {
                   return;
                 }
+                const resultRecord = result && typeof result === "object"
+                  ? (result as Record<string, unknown>)
+                  : {};
                 turnContext.complete({
                   status: runEntry.stopRequested ? "stopped" : "completed",
-                  usage: result?.usage || null,
+                  usage: resultRecord.usage || null,
                 });
               })
               .catch((error) => {
@@ -395,7 +486,7 @@ function createRuntimeManager({
     }
   }
 
-  function attachCodexTransport(transport) {
+  function attachCodexTransport(transport: Parameters<CodexAdapter["attachTransport"]>[0]): void {
     codexWarm = false;
     codexWarmPromise = null;
     codexHistoryCache.clear();
@@ -403,24 +494,25 @@ function createRuntimeManager({
     codexAdapter.attachTransport(transport);
   }
 
-  function handleCodexTransportMessage(rawMessage) {
+  function handleCodexTransportMessage(rawMessage: string): void {
     codexAdapter.handleIncomingRaw(rawMessage);
   }
 
-  function handleCodexTransportClosed(reason) {
+  function handleCodexTransportClosed(reason?: unknown): void {
     codexWarm = false;
     codexWarmPromise = null;
     codexHistoryCache.clear();
-    stopAllObservedCodexThreadWatchers(reason || "transport-closed");
-    codexAdapter.handleTransportClosed(reason);
+    const normalizedReason = normalizeOptionalString(reason) || "transport-closed";
+    stopAllObservedCodexThreadWatchers(normalizedReason);
+    codexAdapter.handleTransportClosed(normalizedReason);
   }
 
-  function shutdown() {
+  function shutdown(): void {
     stopAllObservedCodexThreadWatchers("shutdown");
     store.shutdown();
   }
 
-  function forwardCodexTransportMessage(rawMessage, parsedMessage) {
+  function forwardCodexTransportMessage(rawMessage: string, parsedMessage: unknown): void {
     logCodexRealtimeEvent("codex-in", parsedMessage);
     const historyChange = handleCodexHistoryCacheEvent(rawMessage);
     const decoratedMessage = decorateCodexTransportMessage(rawMessage, parsedMessage);
@@ -429,7 +521,10 @@ function createRuntimeManager({
     emitCodexHistoryChangedNotification(historyChange);
   }
 
-  function observeCodexThread(threadId, { immediate = false, reason = "observe" } = {}) {
+  function observeCodexThread(
+    threadId: unknown,
+    { immediate = false, reason = "observe" }: { immediate?: boolean; reason?: string } = {}
+  ): void {
     const normalizedThreadId = normalizeOptionalString(threadId);
     if (!normalizedThreadId) {
       return;
@@ -442,7 +537,7 @@ function createRuntimeManager({
     evictObservedCodexThreadsIfNeeded(normalizedThreadId);
 
     const now = Date.now();
-    const watcher = codexObservedThreadWatchers.get(normalizedThreadId) || {
+    const watcher: ObservedCodexThreadWatcher = codexObservedThreadWatchers.get(normalizedThreadId) || {
       threadId: normalizedThreadId,
       lastObservedAt: now,
       timer: null,
@@ -458,7 +553,7 @@ function createRuntimeManager({
     );
   }
 
-  function evictObservedCodexThreadsIfNeeded(preserveThreadId = null) {
+  function evictObservedCodexThreadsIfNeeded(preserveThreadId: string | null = null): void {
     if (codexObservedThreadWatchers.size < codexObservedThreadLimit) {
       return;
     }
@@ -469,11 +564,17 @@ function createRuntimeManager({
     );
     while (codexObservedThreadWatchers.size >= codexObservedThreadLimit && evictionCandidates.length > 0) {
       const evicted = evictionCandidates.shift();
+      if (!evicted) {
+        break;
+      }
       stopObservedCodexThreadWatcher(evicted.threadId, "evicted");
     }
   }
 
-  function scheduleObservedCodexThreadPoll(watcher, delayMs) {
+  function scheduleObservedCodexThreadPoll(
+    watcher: ObservedCodexThreadWatcher | null | undefined,
+    delayMs: number
+  ): void {
     if (!watcher || !codexObservedThreadWatchers.has(watcher.threadId)) {
       return;
     }
@@ -487,12 +588,13 @@ function createRuntimeManager({
     watcher.timer.unref?.();
   }
 
-  async function pollObservedCodexThread(threadId) {
+  async function pollObservedCodexThread(threadId: unknown): Promise<void> {
     const normalizedThreadId = normalizeOptionalString(threadId);
     const watcher = normalizedThreadId ? codexObservedThreadWatchers.get(normalizedThreadId) : null;
     if (!watcher || watcher.inFlight) {
       return;
     }
+    const observedThreadId = normalizedThreadId;
 
     watcher.inFlight = true;
     watcher.lastPollAt = Date.now();
@@ -525,8 +627,9 @@ function createRuntimeManager({
         emitCodexHistoryChangedNotification(historyChange);
       }
     } catch (error) {
-      debugError(`${logPrefix} observed thread poll failed thread=${normalizedThreadId}: ${error.message}`);
-      if (codexObservedThreadWatchers.has(normalizedThreadId)) {
+      const errorRecord = asObject(error);
+      debugError(`${logPrefix} observed thread poll failed thread=${normalizedThreadId}: ${String(errorRecord.message || error)}`);
+      if (codexObservedThreadWatchers.has(observedThreadId)) {
         watcher.inFlight = false;
         scheduleObservedCodexThreadPoll(watcher, codexObservedThreadErrorBackoffMs);
       }
@@ -534,7 +637,7 @@ function createRuntimeManager({
     }
 
     watcher.inFlight = false;
-    if (!codexObservedThreadWatchers.has(normalizedThreadId)) {
+    if (!codexObservedThreadWatchers.has(observedThreadId)) {
       return;
     }
 
@@ -546,7 +649,7 @@ function createRuntimeManager({
     scheduleObservedCodexThreadPoll(watcher, codexObservedThreadPollIntervalMs);
   }
 
-  function stopObservedCodexThreadWatcher(threadId, reason = "stopped") {
+  function stopObservedCodexThreadWatcher(threadId: unknown, reason = "stopped"): void {
     const normalizedThreadId = normalizeOptionalString(threadId);
     if (!normalizedThreadId) {
       return;
@@ -562,20 +665,21 @@ function createRuntimeManager({
     debugLog(`${logPrefix} [codex-flow] stage=unobserve thread=${normalizedThreadId} reason=${reason}`);
   }
 
-  function stopAllObservedCodexThreadWatchers(reason = "reset") {
+  function stopAllObservedCodexThreadWatchers(reason = "reset"): void {
     for (const threadId of [...codexObservedThreadWatchers.keys()]) {
       stopObservedCodexThreadWatcher(threadId, reason);
     }
   }
 
-  function decorateCodexTransportMessage(rawMessage, parsedMessage) {
-    const method = normalizeOptionalString(parsedMessage?.method);
-    const params = asObject(parsedMessage?.params);
+  function decorateCodexTransportMessage(rawMessage: string, parsedMessage: unknown): string {
+    const parsedRecord = asObject(parsedMessage);
+    const method = normalizeOptionalString(parsedRecord.method);
+    const params = asObject(parsedRecord.params);
     if (!method) {
       return rawMessage;
     }
 
-    const normalizedMethod = parsedMessage?.id == null
+    const normalizedMethod = parsedRecord.id == null
       ? (normalizeCodexHistoryEventMethod(method, params) || method)
       : method;
     const decoratedParams = params
@@ -588,19 +692,20 @@ function createRuntimeManager({
     }
 
     return JSON.stringify({
-      ...parsedMessage,
+      ...parsedRecord,
       method: normalizedMethod,
       params: decoratedParams,
     });
   }
 
-  async function handleClientResponse(rawMessage, parsed) {
+  async function handleClientResponse(rawMessage: string, parsed: UnknownRecord): Promise<boolean> {
     const responseKey = encodeRequestId(parsed.id);
     const pending = pendingClientRequests.get(responseKey);
     if (pending) {
       pendingClientRequests.delete(responseKey);
       if (parsed.error) {
-        pending.reject(new Error(parsed.error.message || "Client rejected server request"));
+        const errorRecord = asObject(parsed.error);
+        pending.reject(new Error(normalizeOptionalString(errorRecord.message) || "Client rejected server request"));
       } else {
         pending.resolve(parsed.result);
       }
@@ -622,7 +727,10 @@ function createRuntimeManager({
     return false;
   }
 
-  async function handleRequestWithResponse(requestId, handler) {
+  async function handleRequestWithResponse(
+    requestId: JsonRpcId | undefined,
+    handler: () => Promise<unknown>
+  ): Promise<boolean> {
     if (requestId == null) {
       await handler();
       return true;
@@ -632,7 +740,7 @@ function createRuntimeManager({
     return true;
   }
 
-  async function ensureCodexWarm(initializeParams = null) {
+  async function ensureCodexWarm(initializeParams: RuntimeInitializeParams | UnknownRecord | null = null): Promise<void> {
     if (codexWarm) {
       return;
     }
@@ -670,7 +778,7 @@ function createRuntimeManager({
     }
   }
 
-  async function ensureExternalThreadsIndexed() {
+  async function ensureExternalThreadsIndexed(): Promise<void> {
     const now = Date.now();
     if ((now - lastExternalSyncAt) < EXTERNAL_SYNC_INTERVAL_MS) {
       return;
@@ -682,7 +790,12 @@ function createRuntimeManager({
     ]);
   }
 
-  async function listThreads(params) {
+  async function listThreads(params: UnknownRecord): Promise<{
+    threads: RuntimeThreadShape[];
+    nextCursor: string | number | null;
+    hasMore: boolean;
+    pageSize: number;
+  }> {
     const archived = Boolean(params?.archived);
     const coderoverPage = await listConversationThreads(params, archived);
     const managedThreads = store.listThreadMetas()
@@ -698,7 +811,15 @@ function createRuntimeManager({
     };
   }
 
-  async function listConversationThreads(params, archived) {
+  async function listConversationThreads(
+    params: UnknownRecord,
+    archived: boolean
+  ): Promise<{
+    threads: RuntimeThreadShape[];
+    nextCursor: string | number | null;
+    hasMore: boolean;
+    pageSize: number;
+  }> {
     if (!codexAdapter.isAvailable()) {
       return {
         threads: [],
@@ -716,7 +837,9 @@ function createRuntimeManager({
       normalizedParams.limit = DEFAULT_THREAD_LIST_PAGE_SIZE;
     }
     const result = await codexAdapter.listThreads(normalizedParams);
-    const threads = extractThreadArray(result).map((thread) => decorateConversationThread(thread));
+    const threads = extractThreadArray(result).map((thread) =>
+      decorateConversationThread(asObject(thread) as RuntimeThreadShape)
+    );
     const filteredThreads = threads.filter((thread) => {
       const overlay = store.getThreadMeta(thread.id);
       const overlayArchived = overlay?.archived;
@@ -734,7 +857,7 @@ function createRuntimeManager({
     };
   }
 
-  async function readThread(params) {
+  async function readThread(params: UnknownRecord): Promise<unknown> {
     const threadId = normalizeOptionalString(params.threadId || params.thread_id);
     const threadMeta = await requireThreadMeta(threadId);
     const historyRequest = normalizeHistoryRequest(params?.history);
@@ -746,7 +869,7 @@ function createRuntimeManager({
     return readManagedThread(threadMeta, params, historyRequest);
   }
 
-  async function requireThreadMeta(threadId) {
+  async function requireThreadMeta(threadId: unknown): Promise<RuntimeThreadMeta> {
     const normalizedThreadId = normalizeOptionalString(threadId);
     if (!normalizedThreadId) {
       throw createRuntimeError(ERROR_INVALID_PARAMS, "threadId is required");
@@ -767,7 +890,7 @@ function createRuntimeManager({
     throw createRuntimeError(ERROR_THREAD_NOT_FOUND, `Thread not found: ${normalizedThreadId}`);
   }
 
-  async function readConversationThreadMeta(threadId) {
+  async function readConversationThreadMeta(threadId: unknown): Promise<RuntimeThreadMeta | null> {
     if (!codexAdapter.isAvailable()) {
       return null;
     }
@@ -789,7 +912,7 @@ function createRuntimeManager({
     }
   }
 
-  function getManagedProviderAdapter(provider) {
+  function getManagedProviderAdapter(provider: RuntimeThreadMeta["provider"]): ManagedProviderAdapter {
     if (provider === "claude") {
       return claudeAdapter;
     }
@@ -1114,6 +1237,12 @@ function createRuntimeManager({
         provider: "codex",
         providerSessionId: normalizedThreadId,
         metadata: buildProviderMetadata("codex"),
+        title: null,
+        name: null,
+        preview: null,
+        cwd: null,
+        createdAt: nowIso,
+        updatedAt: nowIso,
       },
       records: [],
       hasOlder: false,
@@ -1123,8 +1252,8 @@ function createRuntimeManager({
       ...entry.threadBase,
       updatedAt: nowIso,
       preview: inputItems
-        .filter((item) => item.type === "text" && normalizeOptionalString(item.text))
-        .map((item) => item.text)
+        .map((item) => readTextInput(item))
+        .filter(Boolean)
         .join("\n")
         .trim() || entry.threadBase.preview || null,
     };
@@ -1140,15 +1269,18 @@ function createRuntimeManager({
         id: `local:${normalizedTurnId}:user`,
         type: "user_message",
         role: "user",
-        content: inputItems,
+        content: inputItems as unknown as UnknownRecord[],
         text: inputItems
-          .filter((item) => item.type === "text" && normalizeOptionalString(item.text))
-          .map((item) => item.text)
+          .map((item) => readTextInput(item))
+          .filter(Boolean)
           .join("\n")
           .trim() || null,
         createdAt: nowIso,
       },
       ordinal: nextHistoryOrdinal(entry.records),
+      createdAtMs: Date.parse(nowIso) || Date.now(),
+      turnIndex: 0,
+      itemIndex: 0,
     });
     writeCodexHistoryCache(normalizedThreadId, entry);
   }
@@ -1169,7 +1301,7 @@ function createRuntimeManager({
     const method = normalizeCodexHistoryEventMethod(rawMethod, params);
 
     if (method === "thread/started" && params.thread && typeof params.thread === "object") {
-      const decoratedThread = decorateConversationThread(params.thread);
+      const decoratedThread = decorateConversationThread(asObject(params.thread) as RuntimeThreadShape);
       primeCodexHistoryCache(decoratedThread.id, decoratedThread);
       return null;
     }
@@ -2099,13 +2231,22 @@ function createRuntimeManager({
     return record;
   }
 
-  function createManagedTurnContext(threadMeta, params) {
+  function createManagedTurnContext(
+    threadMeta: RuntimeThreadMeta,
+    params: UnknownRecord
+  ): LocalManagedTurnContext {
     const providerDefinition = getRuntimeProvider(threadMeta.provider);
     const abortController = new AbortController();
     const nowIso = new Date().toISOString();
-    const threadHistory = store.getThreadHistory(threadMeta.id) || { threadId: threadMeta.id, turns: [] };
+    const threadHistory = (store.getThreadHistory(threadMeta.id) || {
+      threadId: threadMeta.id,
+      turns: [],
+    }) as {
+      threadId: string;
+      turns: ManagedHistoryTurn[];
+    };
     const turnId = randomUUID();
-    const turnRecord = {
+    const turnRecord: ManagedHistoryTurn = {
       id: turnId,
       createdAt: nowIso,
       status: "running",
@@ -2115,8 +2256,8 @@ function createRuntimeManager({
 
     const inputItems = normalizeInputItems(params.input);
     const userTextPreview = inputItems
-      .filter((entry) => entry.type === "text" && entry.text)
-      .map((entry) => entry.text)
+      .map((entry) => readTextInput(entry))
+      .filter(Boolean)
       .join("\n")
       .trim();
 
@@ -2125,10 +2266,10 @@ function createRuntimeManager({
         id: randomUUID(),
         type: "user_message",
         role: "user",
-        content: inputItems,
+        content: inputItems as unknown as UnknownRecord[],
         text: userTextPreview || null,
         createdAt: nowIso,
-      });
+      } as ManagedHistoryItem);
     }
 
     store.saveThreadHistory(threadMeta.id, threadHistory);
@@ -2151,7 +2292,19 @@ function createRuntimeManager({
 
     let interruptHandler = null;
 
-    function ensureItem({ itemId, type, role = null, content = null, defaults = {} }) {
+    function ensureItem({
+      itemId,
+      type,
+      role = null,
+      content = null,
+      defaults = {},
+    }: {
+      itemId?: string;
+      type: string;
+      role?: string | null;
+      content?: RuntimeItemShape[] | null;
+      defaults?: Record<string, unknown>;
+    }): ManagedHistoryItem {
       const normalizedItemId = normalizeOptionalString(itemId) || randomUUID();
       let item = turnRecord.items.find((entry) => entry.id === normalizedItemId);
       if (!item) {
@@ -2159,16 +2312,24 @@ function createRuntimeManager({
           id: normalizedItemId,
           type,
           role,
+          text: null,
+          message: null,
+          status: null,
+          command: null,
+          metadata: null,
+          plan: null,
+          summary: null,
+          fileChanges: [],
           content: content ? [...content] : [],
           createdAt: new Date().toISOString(),
           ...defaults,
-        };
+        } as ManagedHistoryItem;
         turnRecord.items.push(item);
       }
       return item;
     }
 
-    function persistThreadHistory() {
+    function persistThreadHistory(): void {
       store.saveThreadHistory(threadMeta.id, threadHistory);
       store.updateThreadMeta(threadMeta.id, (entry) => ({
         ...entry,
@@ -2176,7 +2337,7 @@ function createRuntimeManager({
       }));
     }
 
-    function appendAgentDelta(delta, { itemId }: { itemId?: string } = {}) {
+    function appendAgentDelta(delta: unknown, { itemId }: { itemId?: string } = {}): void {
       const normalizedDelta = normalizeOptionalString(delta);
       if (!normalizedDelta) {
         return;
@@ -2187,7 +2348,7 @@ function createRuntimeManager({
         role: "assistant",
         content: [{ type: "text", text: "" }],
       });
-      const firstText = item.content.find((entry) => entry.type === "text");
+      const firstText = item.content.find((entry) => entry.type === "text") as RuntimeItemShape | undefined;
       if (firstText) {
         firstText.text = `${firstText.text || ""}${normalizedDelta}`;
       } else {
@@ -2206,7 +2367,7 @@ function createRuntimeManager({
       });
     }
 
-    function appendReasoningDelta(delta, { itemId }: { itemId?: string } = {}) {
+    function appendReasoningDelta(delta: unknown, { itemId }: { itemId?: string } = {}): void {
       const normalizedDelta = normalizeOptionalString(delta);
       if (!normalizedDelta) {
         return;
@@ -2239,7 +2400,7 @@ function createRuntimeManager({
         fileChanges?: unknown[];
         completed?: boolean;
       } = {}
-    ) {
+    ): void {
       const normalizedDelta = normalizeOptionalString(delta);
       const item = ensureItem({
         itemId,
@@ -2281,7 +2442,15 @@ function createRuntimeManager({
       exitCode,
       durationMs,
       outputDelta,
-    }) {
+    }: {
+      itemId?: string;
+      command?: unknown;
+      cwd?: unknown;
+      status?: unknown;
+      exitCode?: unknown;
+      durationMs?: unknown;
+      outputDelta?: unknown;
+    }): void {
       const item = ensureItem({
         itemId,
         type: "command_execution",
@@ -2321,9 +2490,9 @@ function createRuntimeManager({
     }
 
     function upsertPlan(
-      planState,
+      planState: unknown,
       { itemId, deltaText }: { itemId?: string; deltaText?: string } = {}
-    ) {
+    ): void {
       const item = ensureItem({
         itemId,
         type: "plan",
@@ -2337,7 +2506,7 @@ function createRuntimeManager({
       const normalizedPlan = normalizePlanState(planState);
       item.explanation = normalizedPlan.explanation;
       item.summary = normalizedPlan.explanation;
-      item.plan = normalizedPlan.steps;
+      item.plan = normalizedPlan.steps as unknown as Record<string, unknown>;
       item.text = normalizeOptionalString(deltaText)
         || normalizedPlan.explanation
         || item.text
@@ -2354,14 +2523,14 @@ function createRuntimeManager({
       });
     }
 
-    function bindProviderSession(sessionId) {
+    function bindProviderSession(sessionId: unknown): void {
       if (!sessionId) {
         return;
       }
       store.bindProviderSession(threadMeta.id, threadMeta.provider, sessionId);
     }
 
-    function updateTokenUsage(usage) {
+    function updateTokenUsage(usage: unknown): void {
       if (!usage || typeof usage !== "object") {
         return;
       }
@@ -2371,7 +2540,7 @@ function createRuntimeManager({
       });
     }
 
-    function updatePreview(preview) {
+    function updatePreview(preview: unknown): void {
       const normalizedPreview = normalizeOptionalString(preview);
       if (!normalizedPreview) {
         return;
@@ -2382,9 +2551,9 @@ function createRuntimeManager({
       }));
     }
 
-    function requestApproval(request) {
+    function requestApproval(request: UnknownRecord): Promise<unknown> {
       return requestFromClient({
-        method: request.method || "item/tool/requestApproval",
+        method: normalizeOptionalString(request.method) || "item/tool/requestApproval",
         params: {
           threadId: threadMeta.id,
           turnId,
@@ -2397,7 +2566,7 @@ function createRuntimeManager({
       });
     }
 
-    function requestStructuredInput(request) {
+    function requestStructuredInput(request: UnknownRecord): Promise<unknown> {
       return requestFromClient({
         method: "item/tool/requestUserInput",
         params: {
@@ -2410,11 +2579,11 @@ function createRuntimeManager({
       });
     }
 
-    function setInterruptHandler(handler) {
+    function setInterruptHandler(handler: unknown): void {
       interruptHandler = typeof handler === "function" ? handler : null;
     }
 
-    function complete({ status = "completed", usage = null } = {}) {
+    function complete({ status = "completed", usage = null }: { status?: string; usage?: unknown } = {}): void {
       turnRecord.status = status;
       persistThreadHistory();
       if (usage) {
@@ -2427,8 +2596,8 @@ function createRuntimeManager({
       });
     }
 
-    function fail(error, { status = "failed" } = {}) {
-      const message = normalizeOptionalString(error?.message) || "Runtime error";
+    function fail(error: unknown, { status = "failed" }: { status?: string } = {}): void {
+      const message = normalizeOptionalString(asObject(error).message) || "Runtime error";
       sendNotification("error", {
         threadId: threadMeta.id,
         turnId,
@@ -2467,7 +2636,15 @@ function createRuntimeManager({
     };
   }
 
-  function requestFromClient({ method, params, threadId }) {
+  function requestFromClient({
+    method,
+    params,
+    threadId,
+  }: {
+    method: string;
+    params: UnknownRecord;
+    threadId: string | null;
+  }): Promise<unknown> {
     const requestId = randomUUID();
     const requestKey = encodeRequestId(requestId);
     return new Promise((resolve, reject) => {
@@ -2486,13 +2663,13 @@ function createRuntimeManager({
     });
   }
 
-  function sendThreadStartedNotification(threadObject) {
+  function sendThreadStartedNotification(threadObject: RuntimeThreadShape): void {
     sendNotification("thread/started", {
       thread: threadObject,
     });
   }
 
-  function sendNotification(method, params) {
+  function sendNotification(method: string, params: UnknownRecord): void {
     const decoratedParams = decorateNotificationWithHistoryMetadata(method, params, (threadId) =>
       readManagedHistorySnapshot(threadId)
     );
@@ -2503,7 +2680,7 @@ function createRuntimeManager({
     }));
   }
 
-  function decorateConversationThread(threadObject) {
+  function decorateConversationThread(threadObject: RuntimeThreadShape): RuntimeThreadShape {
     const overlay = store.getThreadMeta(threadObject.id) || null;
     const providerDefinition = getRuntimeProvider("codex");
     return {
@@ -2520,41 +2697,61 @@ function createRuntimeManager({
       name: overlay?.name || threadObject.name || null,
       preview: overlay?.preview || threadObject.preview || null,
       cwd: overlay?.cwd || threadObject.cwd || threadObject.current_working_directory || threadObject.working_directory || null,
-      createdAt: overlay?.createdAt || threadObject.createdAt || threadObject.created_at || null,
-      updatedAt: overlay?.updatedAt || threadObject.updatedAt || threadObject.updated_at || null,
+      createdAt: overlay?.createdAt
+        || normalizeTimestampString(threadObject.createdAt)
+        || normalizeTimestampString(threadObject.created_at)
+        || new Date().toISOString(),
+      updatedAt: overlay?.updatedAt
+        || normalizeTimestampString(threadObject.updatedAt)
+        || normalizeTimestampString(threadObject.updated_at)
+        || new Date().toISOString(),
     };
   }
 
-  function upsertOverlayFromThread(threadObject) {
+  function upsertOverlayFromThread(threadObject: RuntimeThreadShape): void {
     store.upsertThreadMeta(threadObjectToMeta(threadObject));
   }
 
-  function buildManagedThreadObject(threadMeta, turns = null) {
-    return managedRuntimeHelpers.buildManagedThreadObject(threadMeta, turns, getRuntimeProvider);
+  function buildManagedThreadObject(
+    threadMeta: RuntimeThreadMeta,
+    turns: RuntimeTurnShape[] | RuntimeStoreTurn[] | null = null
+  ): RuntimeThreadShape {
+    return managedRuntimeHelpers.buildManagedThreadObject(
+      threadMeta,
+      turns,
+      getRuntimeProvider
+    );
   }
 
-  function buildThreadListResult(payload) {
+  function buildThreadListResult(payload: RuntimeThreadShape[] | {
+    threads: RuntimeThreadShape[];
+    nextCursor?: string | number | null;
+    hasMore?: boolean;
+    pageSize?: number | null;
+  }): unknown {
     return managedRuntimeHelpers.buildThreadListResult(payload, normalizePositiveInteger);
   }
 
-  function threadObjectToMeta(threadObject) {
+  function threadObjectToMeta(threadObject: UnknownRecord): RuntimeThreadMeta {
     return managedRuntimeHelpers.threadObjectToMeta(threadObject, {
       asObject,
       firstNonEmptyString,
       getRuntimeProvider,
       normalizeOptionalString,
+      normalizePositiveInteger,
+      normalizeTimestampString,
       resolveProviderId,
     });
   }
 
-  function normalizeModelListResult(result) {
+  function normalizeModelListResult(result: unknown): { items: unknown[] } {
     const items = extractArray(result, ["items", "data", "models"]);
     return {
       items,
     };
   }
 
-  function normalizeSkillsResult(result) {
+  function normalizeSkillsResult(result: unknown): unknown {
     const skills = extractArray(result, ["skills", "result.skills", "result.data"]);
     return {
       skills,
@@ -2562,14 +2759,14 @@ function createRuntimeManager({
     };
   }
 
-  function normalizeFuzzyFileResult(result) {
+  function normalizeFuzzyFileResult(result: unknown): { files: unknown[] } {
     const files = extractArray(result, ["files", "result.files"]);
     return {
       files,
     };
   }
 
-  function findThreadIdByTurnId(turnId) {
+  function findThreadIdByTurnId(turnId: unknown): string | null {
     const normalizedTurnId = normalizeOptionalString(turnId);
     if (!normalizedTurnId) {
       return null;
@@ -2616,7 +2813,12 @@ function buildUpstreamHistoryWindowResponse(snapshot, historyRequest, upstreamHi
     {
       compareHistoryRecord,
       historyCursorForRecord,
-      historyRecordAnchor,
+      historyRecordAnchor(record) {
+        return {
+          threadId: snapshot.threadId,
+          ...historyRecordAnchor(record),
+        };
+      },
     }
   );
 }
@@ -2924,7 +3126,10 @@ function buildCommandPreview(command, status, exitCode) {
 }
 
 function buildProviderMetadata(provider) {
-  return managedRuntimeHelpers.buildProviderMetadata(provider, getRuntimeProvider);
+  return managedRuntimeHelpers.buildProviderMetadata(
+    provider,
+    getRuntimeProvider
+  );
 }
 
 function resolveProviderId(value) {
@@ -2967,6 +3172,10 @@ function asObject(value) {
   return normalizerHelpers.asObject(value);
 }
 
-module.exports = {
-  createRuntimeManager,
-};
+function readTextInput(item) {
+  if (!item || item.type !== "text") {
+    return null;
+  }
+  const text = typeof item.text === "string" ? item.text : "";
+  return normalizeOptionalString(text);
+}

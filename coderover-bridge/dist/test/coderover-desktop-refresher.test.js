@@ -2,14 +2,14 @@
 // FILE: coderover-desktop-refresher.test.ts
 // Purpose: Verifies desktop refresh defaults, failure hardening, and rollout-based throttling.
 Object.defineProperty(exports, "__esModule", { value: true });
-const test = require("node:test");
-const assert = require("node:assert/strict");
+const node_test_1 = require("node:test");
+const node_assert_1 = require("node:assert");
 const coderover_desktop_refresher_1 = require("../src/coderover-desktop-refresher");
 const rollout_watch_1 = require("../src/rollout-watch");
 function wait(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
-test("readBridgeConfig keeps safe defaults and explicit overrides", () => {
+(0, node_test_1.test)("readBridgeConfig keeps safe defaults and explicit overrides", () => {
     const macConfig = (0, coderover_desktop_refresher_1.readBridgeConfig)({ env: {}, platform: "darwin" });
     const macEndpointConfig = (0, coderover_desktop_refresher_1.readBridgeConfig)({
         env: { CODEROVER_ENDPOINT: "ws://localhost:8080" },
@@ -40,18 +40,18 @@ test("readBridgeConfig keeps safe defaults and explicit overrides", () => {
         },
         platform: "darwin",
     });
-    assert.equal(macConfig.refreshEnabled, false);
-    assert.equal(macEndpointConfig.refreshEnabled, false);
-    assert.equal(linuxConfig.refreshEnabled, false);
-    assert.equal(linuxCommandConfig.refreshEnabled, false);
-    assert.equal(explicitOnConfig.refreshEnabled, true);
-    assert.equal(explicitOffConfig.refreshEnabled, false);
-    assert.deepEqual(relayConfig.relayUrls, [
+    node_assert_1.strict.equal(macConfig.refreshEnabled, false);
+    node_assert_1.strict.equal(macEndpointConfig.refreshEnabled, false);
+    node_assert_1.strict.equal(linuxConfig.refreshEnabled, false);
+    node_assert_1.strict.equal(linuxCommandConfig.refreshEnabled, false);
+    node_assert_1.strict.equal(explicitOnConfig.refreshEnabled, true);
+    node_assert_1.strict.equal(explicitOffConfig.refreshEnabled, false);
+    node_assert_1.strict.deepEqual(relayConfig.relayUrls, [
         "wss://relay-a.example.com",
         "wss://relay-b.example.com/coderover",
     ]);
 });
-test("thread/start falls back once to the new-thread route when thread id is still unknown", async () => {
+(0, node_test_1.test)("thread/start falls back once to the new-thread route when thread id is still unknown", async () => {
     const refreshCalls = [];
     const refresher = new coderover_desktop_refresher_1.CodeRoverDesktopRefresher({
         enabled: true,
@@ -66,10 +66,10 @@ test("thread/start falls back once to the new-thread route when thread id is sti
         params: {},
     }));
     await wait(40);
-    assert.deepEqual(refreshCalls, ["coderover://threads/new"]);
+    node_assert_1.strict.deepEqual(refreshCalls, ["coderover://threads/new"]);
     refresher.handleTransportReset();
 });
-test("thread/started cancels the fallback and refreshes the concrete thread route", async () => {
+(0, node_test_1.test)("thread/started cancels the fallback and refreshes the concrete thread route", async () => {
     const refreshCalls = [];
     const watchedThreads = [];
     let stopCount = 0;
@@ -106,14 +106,14 @@ test("thread/started cancels the fallback and refreshes the concrete thread rout
         },
     }));
     await wait(25);
-    assert.deepEqual(refreshCalls, ["coderover://threads/thread-123"]);
-    assert.deepEqual(watchedThreads, ["thread-123"]);
+    node_assert_1.strict.deepEqual(refreshCalls, ["coderover://threads/thread-123"]);
+    node_assert_1.strict.deepEqual(watchedThreads, ["thread-123"]);
     await wait(30);
-    assert.deepEqual(refreshCalls, ["coderover://threads/thread-123"]);
+    node_assert_1.strict.deepEqual(refreshCalls, ["coderover://threads/thread-123"]);
     refresher.handleTransportReset();
-    assert.equal(stopCount, 1);
+    node_assert_1.strict.equal(stopCount, 1);
 });
-test("rollout growth refreshes are throttled during long runs", async () => {
+(0, node_test_1.test)("rollout growth refreshes are throttled during long runs", async () => {
     const refreshCalls = [];
     let watcherHooks = null;
     let currentTime = 0;
@@ -126,7 +126,10 @@ test("rollout growth refreshes are throttled during long runs", async () => {
             refreshCalls.push(targetUrl);
         },
         watchThreadRolloutFactory: (hooks) => {
-            watcherHooks = hooks;
+            watcherHooks = {
+                threadId: hooks.threadId,
+                onEvent: hooks.onEvent,
+            };
             return {
                 stop() { },
                 get threadId() {
@@ -135,6 +138,18 @@ test("rollout growth refreshes are throttled during long runs", async () => {
             };
         },
     });
+    const emitGrowth = (size) => {
+        const hooks = watcherHooks;
+        if (!hooks) {
+            throw new Error("expected rollout watcher hooks");
+        }
+        hooks.onEvent({
+            reason: "growth",
+            threadId: hooks.threadId,
+            rolloutPath: "/tmp/rollout-thread-456.jsonl",
+            size,
+        });
+    };
     refresher.handleInbound(JSON.stringify({
         method: "turn/start",
         params: {
@@ -144,32 +159,20 @@ test("rollout growth refreshes are throttled during long runs", async () => {
     await wait(10);
     refreshCalls.length = 0;
     currentTime = 1_000;
-    watcherHooks?.onEvent({
-        reason: "growth",
-        threadId: "thread-456",
-        size: 10,
-    });
+    emitGrowth(10);
     await wait(10);
-    assert.deepEqual(refreshCalls, ["coderover://threads/thread-456"]);
+    node_assert_1.strict.deepEqual(refreshCalls, ["coderover://threads/thread-456"]);
     refreshCalls.length = 0;
     currentTime = 2_000;
-    watcherHooks?.onEvent({
-        reason: "growth",
-        threadId: "thread-456",
-        size: 15,
-    });
+    emitGrowth(15);
     await wait(10);
-    assert.deepEqual(refreshCalls, []);
+    node_assert_1.strict.deepEqual(refreshCalls, []);
     currentTime = 4_500;
-    watcherHooks?.onEvent({
-        reason: "growth",
-        threadId: "thread-456",
-        size: 20,
-    });
+    emitGrowth(20);
     await wait(10);
-    assert.deepEqual(refreshCalls, ["coderover://threads/thread-456"]);
+    node_assert_1.strict.deepEqual(refreshCalls, ["coderover://threads/thread-456"]);
 });
-test("turn/completed bypasses duplicate-target dedupe and still stops the watcher", async () => {
+(0, node_test_1.test)("turn/completed bypasses duplicate-target dedupe and still stops the watcher", async () => {
     const refreshCalls = [];
     let stopCount = 0;
     let currentTime = 3_000;
@@ -214,15 +217,15 @@ test("turn/completed bypasses duplicate-target dedupe and still stops the watche
         },
     }));
     await wait(10);
-    assert.deepEqual(refreshCalls, [
+    node_assert_1.strict.deepEqual(refreshCalls, [
         "coderover://threads/thread-789",
         "coderover://threads/thread-789",
     ]);
-    assert.equal(stopCount, 1);
+    node_assert_1.strict.equal(stopCount, 1);
 });
-test("turn/completed is retried after a slow in-flight refresh finishes", async () => {
+(0, node_test_1.test)("turn/completed is retried after a slow in-flight refresh finishes", async () => {
     const refreshCalls = [];
-    let releaseSlowRefresh = null;
+    let releaseSlowRefresh;
     const refresher = new coderover_desktop_refresher_1.CodeRoverDesktopRefresher({
         enabled: true,
         debounceMs: 0,
@@ -256,15 +259,16 @@ test("turn/completed is retried after a slow in-flight refresh finishes", async 
         },
     }));
     await wait(10);
-    assert.equal(refreshCalls.length, 1);
-    releaseSlowRefresh?.();
+    node_assert_1.strict.equal(refreshCalls.length, 1);
+    const releaseRefresh = releaseSlowRefresh;
+    releaseRefresh();
     await wait(20);
-    assert.deepEqual(refreshCalls, [
+    node_assert_1.strict.deepEqual(refreshCalls, [
         "coderover://threads/thread-slow",
         "coderover://threads/thread-slow",
     ]);
 });
-test("completion refresh keeps its own thread target even if another thread queues behind it", async () => {
+(0, node_test_1.test)("completion refresh keeps its own thread target even if another thread queues behind it", async () => {
     const refreshCalls = [];
     let stopCount = 0;
     const refresher = new coderover_desktop_refresher_1.CodeRoverDesktopRefresher({
@@ -305,13 +309,13 @@ test("completion refresh keeps its own thread target even if another thread queu
     refresher.clearRefreshTimer();
     await refresher.runPendingRefresh();
     await refresher.runPendingRefresh();
-    assert.deepEqual(refreshCalls, [
+    node_assert_1.strict.deepEqual(refreshCalls, [
         "coderover://threads/thread-a",
         "coderover://threads/thread-b",
     ]);
-    assert.equal(stopCount, 1);
+    node_assert_1.strict.equal(stopCount, 1);
 });
-test("handleTransportReset cancels pending refreshes and clears watcher state", async () => {
+(0, node_test_1.test)("handleTransportReset cancels pending refreshes and clears watcher state", async () => {
     const refreshCalls = [];
     let stopCount = 0;
     const refresher = new coderover_desktop_refresher_1.CodeRoverDesktopRefresher({
@@ -337,10 +341,10 @@ test("handleTransportReset cancels pending refreshes and clears watcher state", 
     }));
     refresher.handleTransportReset();
     await wait(50);
-    assert.deepEqual(refreshCalls, []);
-    assert.equal(stopCount, 1);
+    node_assert_1.strict.deepEqual(refreshCalls, []);
+    node_assert_1.strict.equal(stopCount, 1);
 });
-test("handleTransportReset clears duplicate-target memory so the next refresh can run", async () => {
+(0, node_test_1.test)("handleTransportReset clears duplicate-target memory so the next refresh can run", async () => {
     const refreshCalls = [];
     let currentTime = 5_000;
     const refresher = new coderover_desktop_refresher_1.CodeRoverDesktopRefresher({
@@ -369,12 +373,12 @@ test("handleTransportReset clears duplicate-target memory so the next refresh ca
         params: { threadId: "thread-reset-dedupe" },
     }));
     await wait(10);
-    assert.deepEqual(refreshCalls, [
+    node_assert_1.strict.deepEqual(refreshCalls, [
         "coderover://threads/thread-reset-dedupe",
         "coderover://threads/thread-reset-dedupe",
     ]);
 });
-test("desktop refresh disables itself after a desktop-unavailable AppleScript failure", async () => {
+(0, node_test_1.test)("desktop refresh disables itself after a desktop-unavailable AppleScript failure", async () => {
     let attempts = 0;
     let stopCount = 0;
     const refresher = new coderover_desktop_refresher_1.CodeRoverDesktopRefresher({
@@ -408,11 +412,11 @@ test("desktop refresh disables itself after a desktop-unavailable AppleScript fa
         },
     }));
     await wait(10);
-    assert.equal(attempts, 1);
-    assert.equal(stopCount, 1);
-    assert.equal(refresher.runtimeRefreshAvailable, false);
+    node_assert_1.strict.equal(attempts, 1);
+    node_assert_1.strict.equal(stopCount, 1);
+    node_assert_1.strict.equal(refresher.runtimeRefreshAvailable, false);
 });
-test("custom refresh commands only disable after repeated failures", async () => {
+(0, node_test_1.test)("custom refresh commands only disable after repeated failures", async () => {
     let attempts = 0;
     const refresher = new coderover_desktop_refresher_1.CodeRoverDesktopRefresher({
         enabled: true,
@@ -431,10 +435,10 @@ test("custom refresh commands only disable after repeated failures", async () =>
         }));
         await wait(10);
     }
-    assert.equal(attempts, 3);
-    assert.equal(refresher.runtimeRefreshAvailable, false);
+    node_assert_1.strict.equal(attempts, 3);
+    node_assert_1.strict.equal(refresher.runtimeRefreshAvailable, false);
 });
-test("rollout watcher retries transient filesystem errors before succeeding", async () => {
+(0, node_test_1.test)("rollout watcher retries transient filesystem errors before succeeding", async () => {
     const events = [];
     const errors = [];
     let readdirCalls = 0;
@@ -466,10 +470,10 @@ test("rollout watcher retries transient filesystem errors before succeeding", as
     });
     await wait(25);
     watcher.stop();
-    assert.equal(errors.length, 0);
-    assert.equal(events[0]?.reason, "materialized");
+    node_assert_1.strict.equal(errors.length, 0);
+    node_assert_1.strict.equal(events[0]?.reason, "materialized");
 });
-test("rollout watcher stops after repeated transient filesystem failures", async () => {
+(0, node_test_1.test)("rollout watcher stops after repeated transient filesystem failures", async () => {
     const errors = [];
     let currentTime = 0;
     const watcher = (0, rollout_watch_1.createThreadRolloutActivityWatcher)({
@@ -495,5 +499,5 @@ test("rollout watcher stops after repeated transient filesystem failures", async
     });
     await wait(25);
     watcher.stop();
-    assert.equal(errors.length, 1);
+    node_assert_1.strict.equal(errors.length, 1);
 });

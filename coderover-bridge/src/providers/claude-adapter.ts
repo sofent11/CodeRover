@@ -1,29 +1,147 @@
 export {};
 
-// FILE: providers/claude-adapter.js
+// FILE: providers/claude-adapter.ts
 // Purpose: Claude Code provider adapter backed by @anthropic-ai/claude-agent-sdk.
 // Layer: Runtime provider
 // Exports: createClaudeAdapter
 // Depends on: fs, os, path, crypto, ../provider-catalog
 
-const fs = require("fs");
-const os = require("os");
-const path = require("path");
-const { randomUUID } = require("crypto");
-const { getRuntimeProvider } = require("../provider-catalog");
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
+import { randomUUID } from "crypto";
 
-interface CreateClaudeAdapterOptions {
-  store: any;
-  logPrefix?: string;
+import { getRuntimeProvider } from "../provider-catalog";
+import type {
+  RuntimeStoreItem,
+  RuntimeStoreTurn,
+  RuntimeThreadMeta,
+} from "../runtime-store";
+import type { RuntimeInputItem } from "../bridge-types";
+import type {
+  ManagedProviderAdapter,
+  ManagedProviderAdapterFactoryOptions,
+  ManagedProviderStartTurnOptions,
+  ManagedProviderTurnContext,
+} from "../runtime-manager/types";
+
+type UnknownRecord = Record<string, unknown>;
+type ClaudePermissionMode = "plan" | "bypassPermissions" | "default";
+
+interface ClaudeSdkSession {
+  sessionId?: string;
+  customTitle?: unknown;
+  summary?: unknown;
+  firstPrompt?: unknown;
+  cwd?: unknown;
+  lastModified?: unknown;
 }
 
-function createClaudeAdapter({
+interface ClaudeSdkHistoryMessage {
+  uuid?: string;
+  type?: unknown;
+  message?: unknown;
+}
+
+interface ClaudeSdkToolContext {
+  toolUseID: string;
+}
+
+interface ClaudeSdkQueryMessage {
+  type?: unknown;
+  uuid?: string;
+  session_id?: string;
+  event?: unknown;
+  message?: unknown;
+  usage?: unknown;
+  tool_use_id?: string;
+}
+
+interface ClaudeSdkQuery extends AsyncIterable<ClaudeSdkQueryMessage> {
+  interrupt(): Promise<void>;
+}
+
+interface ClaudeSdkModule {
+  listSessions(): Promise<ClaudeSdkSession[]>;
+  getSessionMessages(
+    sessionId: string,
+    options?: {
+      dir?: string;
+    }
+  ): Promise<ClaudeSdkHistoryMessage[]>;
+  query(options: {
+    prompt: string;
+    options: {
+      cwd: string;
+      model: string | null;
+      resume?: string;
+      includePartialMessages: boolean;
+      tools: {
+        type: "preset";
+        preset: "claude_code";
+      };
+      settingSources: string[];
+      systemPrompt: {
+        type: "preset";
+        preset: "claude_code";
+      };
+      permissionMode: ClaudePermissionMode;
+      allowDangerouslySkipPermissions: boolean;
+      canUseTool: (
+        toolName: unknown,
+        input: unknown,
+        context: ClaudeSdkToolContext
+      ) => Promise<UnknownRecord>;
+    };
+  }): ClaudeSdkQuery;
+}
+
+interface ClaudeHistoryContentBlock extends UnknownRecord {
+  type?: unknown;
+  text?: unknown;
+  thinking?: unknown;
+  name?: unknown;
+  input?: unknown;
+  id?: unknown;
+}
+
+interface ClaudeStreamBlockState {
+  type: string;
+  itemId: string;
+  toolName: string | null;
+}
+
+interface ClaudeStreamState {
+  blocksByIndex: Map<number, ClaudeStreamBlockState>;
+  didEmitAssistantText: boolean;
+  didEmitPlan: boolean;
+}
+
+interface StructuredQuestionOption {
+  label: string;
+  description: string;
+}
+
+interface StructuredQuestion {
+  id: string;
+  header: string;
+  question: string;
+  options: StructuredQuestionOption[];
+}
+
+interface StructuredInputRequest extends UnknownRecord {
+  itemId: string;
+  questions: StructuredQuestion[];
+}
+
+export function createClaudeAdapter({
   store,
   logPrefix = "[coderover]",
-}: CreateClaudeAdapterOptions) {
-  let sdkModulePromise = null;
+}: ManagedProviderAdapterFactoryOptions): ManagedProviderAdapter {
+  void logPrefix;
+  let sdkModulePromise: Promise<ClaudeSdkModule> | null = null;
 
-  async function syncImportedThreads() {
+  async function syncImportedThreads(): Promise<void> {
     const sdk = await loadSdkModule();
     const sessions = await sdk.listSessions().catch(() => []);
     const providerDefinition = getRuntimeProvider("claude");
@@ -59,7 +177,7 @@ function createClaudeAdapter({
     }
   }
 
-  async function hydrateThread(threadMeta) {
+  async function hydrateThread(threadMeta: RuntimeThreadMeta): Promise<void> {
     if (!threadMeta?.providerSessionId) {
       return;
     }
@@ -74,8 +192,8 @@ function createClaudeAdapter({
       dir: threadMeta.cwd || undefined,
     }).catch(() => []);
 
-    const turns = [];
-    let currentTurn = null;
+    const turns: RuntimeStoreTurn[] = [];
+    let currentTurn: RuntimeStoreTurn | null = null;
     for (const message of messages) {
       const role = normalizeOptionalString(message?.type);
       if (!role) {
@@ -92,7 +210,7 @@ function createClaudeAdapter({
         turns.push(currentTurn);
       }
 
-      const item = role === "user"
+      const item: RuntimeStoreItem = role === "user"
         ? {
           id: message.uuid || randomUUID(),
           type: "user_message",
@@ -100,6 +218,13 @@ function createClaudeAdapter({
           createdAt: new Date().toISOString(),
           content: buildClaudeHistoryContent(message.message),
           text: extractClaudeMessageText(message.message),
+          message: null,
+          status: null,
+          command: null,
+          metadata: null,
+          plan: null,
+          summary: null,
+          fileChanges: [],
         }
         : {
           id: message.uuid || randomUUID(),
@@ -108,6 +233,13 @@ function createClaudeAdapter({
           createdAt: new Date().toISOString(),
           content: [{ type: "text", text: extractClaudeMessageText(message.message) }],
           text: extractClaudeMessageText(message.message),
+          message: null,
+          status: null,
+          command: null,
+          metadata: null,
+          plan: null,
+          summary: null,
+          fileChanges: [],
         };
       currentTurn.items.push(item);
     }
@@ -122,12 +254,12 @@ function createClaudeAdapter({
     params,
     threadMeta,
     turnContext,
-  }) {
+  }: ManagedProviderStartTurnOptions): Promise<Record<string, unknown>> {
     const sdk = await loadSdkModule();
     const prompt = await buildPromptFromInput(turnContext.inputItems, threadMeta.cwd);
     const permissionMode = resolveClaudePermissionMode(params);
-    const toolInputsById = new Map();
-    const streamState = {
+    const toolInputsById = new Map<string, { toolName: string | null; input: UnknownRecord | null }>();
+    const streamState: ClaudeStreamState = {
       blocksByIndex: new Map(),
       didEmitAssistantText: false,
       didEmitPlan: false,
@@ -151,10 +283,12 @@ function createClaudeAdapter({
         },
         permissionMode,
         allowDangerouslySkipPermissions: permissionMode === "bypassPermissions",
-        canUseTool: async (toolName, input, context) => {
+        canUseTool: async (toolName: unknown, input: unknown, context: ClaudeSdkToolContext) => {
+          const normalizedToolName = normalizeOptionalString(toolName);
+          const normalizedInput = asRecord(input);
           toolInputsById.set(context.toolUseID, {
-            toolName,
-            input,
+            toolName: normalizedToolName,
+            input: normalizedInput,
           });
 
           if (permissionMode === "bypassPermissions") {
@@ -164,12 +298,12 @@ function createClaudeAdapter({
             };
           }
 
-          if (toolName === "AskUserQuestion") {
-            const request = buildStructuredUserInputRequest(input, context.toolUseID);
+          if (normalizedToolName === "AskUserQuestion") {
+            const request = buildStructuredUserInputRequest(normalizedInput, context.toolUseID);
             if (!request) {
               return {
                 behavior: "allow",
-                updatedInput: input,
+                updatedInput: normalizedInput,
               };
             }
 
@@ -177,7 +311,7 @@ function createClaudeAdapter({
             return {
               behavior: "allow",
               updatedInput: {
-                ...input,
+                ...(normalizedInput || {}),
                 ...convertStructuredResponseToClaudeAnswerPayload(request.questions, response),
               },
             };
@@ -185,16 +319,16 @@ function createClaudeAdapter({
 
           const decision = await turnContext.requestApproval({
             itemId: context.toolUseID,
-            method: approvalMethodForClaudeTool(toolName),
-            command: extractToolCommand(toolName, input),
-            reason: `Claude wants to use ${toolName}`,
-            toolName,
+            method: approvalMethodForClaudeTool(normalizedToolName),
+            command: extractToolCommand(normalizedToolName, normalizedInput),
+            reason: `Claude wants to use ${normalizedToolName || "a tool"}`,
+            toolName: normalizedToolName,
           });
 
           if (isApprovalAccepted(decision)) {
             return {
               behavior: "allow",
-              updatedInput: input,
+              updatedInput: normalizedInput,
             };
           }
 
@@ -225,6 +359,9 @@ function createClaudeAdapter({
       }
 
       if (message.type === "tool_progress") {
+        if (!message.tool_use_id) {
+          continue;
+        }
         const toolUse = toolInputsById.get(message.tool_use_id);
         if (!toolUse) {
           continue;
@@ -239,8 +376,12 @@ function createClaudeAdapter({
             outputDelta: "",
           });
         } else {
+          const renderedToolUse = renderToolUse(toolUse.toolName, toolUse.input);
+          if (!renderedToolUse) {
+            continue;
+          }
           turnContext.appendToolCallDelta(
-            renderToolUse(toolUse.toolName, toolUse.input),
+            renderedToolUse,
             {
               itemId: message.tool_use_id,
               toolName: toolUse.toolName,
@@ -275,13 +416,13 @@ function createClaudeAdapter({
             continue;
           }
 
-          const rendered = renderToolUse(block.name, block.input);
+          const rendered = renderToolUse(normalizeOptionalString(block.name), asRecord(block.input));
           if (!rendered) {
             continue;
           }
           turnContext.appendToolCallDelta(rendered, {
-            itemId: block.id || randomUUID(),
-            toolName: block.name,
+            itemId: normalizeOptionalString(block.id) || randomUUID(),
+            toolName: normalizeOptionalString(block.name),
             completed: true,
           });
         }
@@ -300,7 +441,7 @@ function createClaudeAdapter({
 
   async function loadSdkModule() {
     if (!sdkModulePromise) {
-      sdkModulePromise = import("@anthropic-ai/claude-agent-sdk");
+      sdkModulePromise = import("@anthropic-ai/claude-agent-sdk") as unknown as Promise<ClaudeSdkModule>;
     }
     return sdkModulePromise;
   }
@@ -312,20 +453,25 @@ function createClaudeAdapter({
   };
 }
 
-function handleClaudeStreamEvent(event, streamState, turnContext) {
-  if (!event || typeof event !== "object") {
+function handleClaudeStreamEvent(
+  event: unknown,
+  streamState: ClaudeStreamState,
+  turnContext: ManagedProviderTurnContext
+): void {
+  const eventRecord = asRecord(event);
+  if (!eventRecord) {
     return;
   }
 
-  const eventType = normalizeOptionalString(event.type);
+  const eventType = normalizeOptionalString(eventRecord.type);
   if (!eventType) {
     return;
   }
 
   if (eventType === "content_block_start") {
-    const block = event.content_block || {};
+    const block = asRecord(eventRecord.content_block) || {};
     const blockType = normalizeOptionalString(block.type);
-    const blockIndex = resolveClaudeBlockIndex(event);
+    const blockIndex = resolveClaudeBlockIndex(eventRecord);
     if (blockIndex == null || !blockType) {
       return;
     }
@@ -341,8 +487,8 @@ function handleClaudeStreamEvent(event, streamState, turnContext) {
     return;
   }
 
-  const blockIndex = resolveClaudeBlockIndex(event);
-  const delta = event.delta || {};
+  const blockIndex = resolveClaudeBlockIndex(eventRecord);
+  const delta = asRecord(eventRecord.delta) || {};
   const blockState = blockIndex == null ? null : streamState.blocksByIndex.get(blockIndex);
   const deltaType = normalizeOptionalString(delta.type);
   if (!blockState || !deltaType) {
@@ -381,22 +527,25 @@ function handleClaudeStreamEvent(event, streamState, turnContext) {
   }
 }
 
-async function buildPromptFromInput(inputItems, cwd) {
-  const textChunks = [];
-  const imagePaths = [];
+async function buildPromptFromInput(
+  inputItems: RuntimeInputItem[],
+  cwd: string | null | undefined
+): Promise<string> {
+  const textChunks: string[] = [];
+  const imagePaths: string[] = [];
 
   for (const item of inputItems) {
-    if (item.type === "text" && item.text) {
+    if (isTextInputItem(item)) {
       textChunks.push(item.text);
       continue;
     }
 
-    if (item.type === "skill" && item.id) {
+    if (isSkillInputItem(item)) {
       textChunks.push(`$${item.id}`);
       continue;
     }
 
-    if ((item.type === "image" || item.type === "local_image") && (item.url || item.image_url || item.path)) {
+    if (isImageInputItem(item)) {
       const pathValue = item.path || await materializeImage(item.url || item.image_url, cwd);
       if (pathValue) {
         imagePaths.push(pathValue);
@@ -411,7 +560,7 @@ async function buildPromptFromInput(inputItems, cwd) {
   return prompt;
 }
 
-async function materializeImage(source, cwd) {
+async function materializeImage(source: unknown, cwd: string | null | undefined): Promise<string | null> {
   const normalized = normalizeOptionalString(source);
   if (!normalized) {
     return null;
@@ -436,14 +585,14 @@ async function materializeImage(source, cwd) {
   return filePath;
 }
 
-function resolveClaudePermissionMode(params) {
+function resolveClaudePermissionMode(params: Record<string, unknown>): ClaudePermissionMode {
   if (isPlanMode(params)) {
     return "plan";
   }
 
   const approvalPolicy = normalizeOptionalString(params.approvalPolicy);
   const sandbox = normalizeOptionalString(params.sandbox);
-  const sandboxType = normalizeOptionalString(params.sandboxPolicy?.type);
+  const sandboxType = normalizeOptionalString(asRecord(params.sandboxPolicy)?.type);
   const fullAccess = approvalPolicy === "never"
     || sandbox === "dangerFullAccess"
     || sandboxType === "dangerFullAccess";
@@ -451,15 +600,15 @@ function resolveClaudePermissionMode(params) {
   return fullAccess ? "bypassPermissions" : "default";
 }
 
-function isPlanMode(params) {
-  const collaborationMode = params?.collaborationMode;
-  if (!collaborationMode || typeof collaborationMode !== "object") {
+function isPlanMode(params: Record<string, unknown>): boolean {
+  const collaborationMode = asRecord(params.collaborationMode);
+  if (!collaborationMode) {
     return false;
   }
   return normalizeOptionalString(collaborationMode.mode) === "plan";
 }
 
-function approvalMethodForClaudeTool(toolName) {
+function approvalMethodForClaudeTool(toolName: string | null): string {
   if (toolName === "Bash") {
     return "item/commandExecution/requestApproval";
   }
@@ -469,7 +618,7 @@ function approvalMethodForClaudeTool(toolName) {
   return "item/tool/requestApproval";
 }
 
-function extractToolCommand(toolName, input) {
+function extractToolCommand(toolName: string | null, input: UnknownRecord | null | undefined): string | null {
   if (toolName === "Bash") {
     return normalizeOptionalString(input?.command);
   }
@@ -479,7 +628,7 @@ function extractToolCommand(toolName, input) {
   return normalizeOptionalString(toolName);
 }
 
-function renderToolUse(toolName, input) {
+function renderToolUse(toolName: string | null, input: UnknownRecord | null | undefined): string | null {
   const command = extractToolCommand(toolName, input);
   if (command) {
     return `${toolName}: ${command}`;
@@ -487,7 +636,10 @@ function renderToolUse(toolName, input) {
   return normalizeOptionalString(toolName);
 }
 
-function buildStructuredUserInputRequest(input, itemId) {
+function buildStructuredUserInputRequest(
+  input: UnknownRecord | null | undefined,
+  itemId: string
+): StructuredInputRequest | null {
   const rawQuestions = Array.isArray(input?.questions) ? input.questions : null;
   if (!rawQuestions || rawQuestions.length === 0) {
     return null;
@@ -496,14 +648,15 @@ function buildStructuredUserInputRequest(input, itemId) {
   return {
     itemId,
     questions: rawQuestions.map((question, index) => ({
+      ...(asRecord(question) || {}),
       id: `question-${index + 1}`,
-      header: normalizeOptionalString(question.header) || `Q${index + 1}`,
-      question: normalizeOptionalString(question.question) || `Question ${index + 1}?`,
-      options: Array.isArray(question.options)
-        ? question.options
+      header: normalizeOptionalString(asRecord(question)?.header) || `Q${index + 1}`,
+      question: normalizeOptionalString(asRecord(question)?.question) || `Question ${index + 1}?`,
+      options: Array.isArray(asRecord(question)?.options)
+        ? (asRecord(question)?.options as unknown[])
           .map((option) => ({
-            label: normalizeOptionalString(option.label) || "Option",
-            description: normalizeOptionalString(option.description) || "",
+            label: normalizeOptionalString(asRecord(option)?.label) || "Option",
+            description: normalizeOptionalString(asRecord(option)?.description) || "",
           }))
           .filter((option) => option.label)
         : [],
@@ -511,24 +664,27 @@ function buildStructuredUserInputRequest(input, itemId) {
   };
 }
 
-function convertStructuredResponseToClaudeAnswerPayload(questions, response) {
-  const answersObject = response?.answers && typeof response.answers === "object"
-    ? response.answers
-    : {};
-  const answerMap = {};
+function convertStructuredResponseToClaudeAnswerPayload(
+  questions: StructuredQuestion[],
+  response: unknown
+): { questions: Array<StructuredQuestion & { multiSelect: false }>; answers: Record<string, string> } {
+  const responseObject = asRecord(response);
+  const answersObject = asRecord(responseObject?.answers) || {};
+  const answerMap: Record<string, string> = {};
 
   for (const question of questions) {
-    const answerEntry = answersObject[question.id];
+    const answerEntry = asRecord(answersObject[question.id]);
     const answers = Array.isArray(answerEntry?.answers)
       ? answerEntry.answers
         .map((entry) => normalizeOptionalString(entry))
-        .filter(Boolean)
+        .filter((entry): entry is string => Boolean(entry))
       : [];
     answerMap[question.question] = answers.join(", ");
   }
 
   return {
     questions: questions.map((question) => ({
+      id: question.id,
       question: question.question,
       header: question.header,
       options: question.options,
@@ -538,18 +694,20 @@ function convertStructuredResponseToClaudeAnswerPayload(questions, response) {
   };
 }
 
-function isApprovalAccepted(result) {
-  const decision = normalizeOptionalString(typeof result === "string" ? result : result?.decision || result?.result);
+function isApprovalAccepted(result: unknown): boolean {
+  const resultObject = asRecord(result);
+  const decision = normalizeOptionalString(typeof result === "string" ? result : resultObject?.decision || resultObject?.result);
   return decision === "accept" || decision === "acceptForSession";
 }
 
-function buildClaudeUsage(usage) {
-  if (!usage || typeof usage !== "object") {
+function buildClaudeUsage(usage: unknown): { tokensUsed: number; totalTokens: number } | null {
+  const usageObject = asRecord(usage);
+  if (!usageObject) {
     return null;
   }
-  const inputTokens = numberOrNull(usage.input_tokens || usage.inputTokens);
-  const outputTokens = numberOrNull(usage.output_tokens || usage.outputTokens);
-  const totalTokens = numberOrNull(usage.total_tokens || usage.totalTokens)
+  const inputTokens = numberOrNull(usageObject.input_tokens || usageObject.inputTokens);
+  const outputTokens = numberOrNull(usageObject.output_tokens || usageObject.outputTokens);
+  const totalTokens = numberOrNull(usageObject.total_tokens || usageObject.totalTokens)
     || ((inputTokens || 0) + (outputTokens || 0));
   if (totalTokens == null) {
     return null;
@@ -560,46 +718,51 @@ function buildClaudeUsage(usage) {
   };
 }
 
-function buildClaudeHistoryContent(message) {
+function buildClaudeHistoryContent(message: unknown): RuntimeStoreItem["content"] {
   const text = extractClaudeMessageText(message);
   return text ? [{ type: "text", text }] : [];
 }
 
-function extractClaudeAssistantText(message) {
+function extractClaudeAssistantText(message: unknown): string {
   return extractClaudeMessageText(message);
 }
 
-function extractClaudeMessageText(message) {
-  if (!message || typeof message !== "object") {
+function extractClaudeMessageText(message: unknown): string {
+  const messageObject = asRecord(message);
+  if (!messageObject) {
     return "";
   }
 
-  const content = Array.isArray(message.content) ? message.content : [];
+  const content = Array.isArray(messageObject.content) ? messageObject.content : [];
   const textParts = content
     .map((block) => {
-      if (!block || typeof block !== "object") {
+      const contentBlock = asRecord(block);
+      if (!contentBlock) {
         return "";
       }
-      if (block.type === "text") {
-        return normalizeOptionalString(block.text) || "";
+      if (contentBlock.type === "text") {
+        return normalizeOptionalString(contentBlock.text) || "";
       }
-      if (block.type === "thinking") {
-        return normalizeOptionalString(block.thinking) || "";
+      if (contentBlock.type === "thinking") {
+        return normalizeOptionalString(contentBlock.thinking) || "";
       }
       return "";
     })
-    .filter(Boolean);
+    .filter((value): value is string => Boolean(value));
   return textParts.join("\n").trim();
 }
 
-function extractClaudeContentBlocks(message) {
-  if (!message || typeof message !== "object" || !Array.isArray(message.content)) {
+function extractClaudeContentBlocks(message: unknown): ClaudeHistoryContentBlock[] {
+  const messageObject = asRecord(message);
+  if (!messageObject || !Array.isArray(messageObject.content)) {
     return [];
   }
-  return message.content.filter((entry) => entry && typeof entry === "object");
+  return messageObject.content
+    .map((entry) => asRecord(entry))
+    .filter((entry): entry is ClaudeHistoryContentBlock => Boolean(entry));
 }
 
-function resolveClaudeBlockIndex(event) {
+function resolveClaudeBlockIndex(event: UnknownRecord): number | null {
   if (typeof event.index === "number") {
     return event.index;
   }
@@ -609,7 +772,7 @@ function resolveClaudeBlockIndex(event) {
   return null;
 }
 
-function normalizeOptionalString(value) {
+function normalizeOptionalString(value: unknown): string | null {
   if (typeof value !== "string") {
     return null;
   }
@@ -617,7 +780,7 @@ function normalizeOptionalString(value) {
   return trimmed || null;
 }
 
-function toIsoDateString(value) {
+function toIsoDateString(value: unknown): string {
   if (typeof value === "number") {
     const milliseconds = value > 10_000_000_000 ? value : value * 1000;
     return new Date(milliseconds).toISOString();
@@ -625,13 +788,33 @@ function toIsoDateString(value) {
   return new Date().toISOString();
 }
 
-function numberOrNull(value) {
+function numberOrNull(value: unknown): number | null {
   if (typeof value === "number" && Number.isFinite(value)) {
     return value;
   }
   return null;
 }
 
-module.exports = {
-  createClaudeAdapter,
-};
+function asRecord(value: unknown): UnknownRecord | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  return value as UnknownRecord;
+}
+
+function isTextInputItem(item: RuntimeInputItem): item is Extract<RuntimeInputItem, { type: "text" }> {
+  return item.type === "text" && typeof item.text === "string" && item.text.length > 0;
+}
+
+function isSkillInputItem(item: RuntimeInputItem): item is Extract<RuntimeInputItem, { type: "skill" }> {
+  return item.type === "skill" && typeof item.id === "string" && item.id.length > 0;
+}
+
+function isImageInputItem(
+  item: RuntimeInputItem
+): item is Extract<RuntimeInputItem, { type: "image" | "local_image" }> {
+  return (item.type === "image" || item.type === "local_image")
+    && (typeof item.path === "string"
+      || typeof item.url === "string"
+      || typeof item.image_url === "string");
+}

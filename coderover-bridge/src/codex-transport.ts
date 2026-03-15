@@ -2,7 +2,7 @@
 // Purpose: Abstracts the Codex-side transport so the bridge can talk to either a spawned app-server or an existing WebSocket endpoint.
 
 import { spawn, type ChildProcessWithoutNullStreams } from "child_process";
-import WebSocket = require("ws");
+import { WebSocket } from "ws";
 
 type MessageHandler = (message: string) => void;
 type CloseHandler = (...args: unknown[]) => void;

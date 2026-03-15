@@ -9,6 +9,7 @@ import type {
   RuntimeThreadShape,
   RuntimeTurnShape,
 } from "../bridge-types";
+import type { RuntimeStore, RuntimeThreadMeta } from "../runtime-store";
 
 export const ERROR_METHOD_NOT_FOUND = -32601;
 export const ERROR_INVALID_PARAMS = -32602;
@@ -57,11 +58,7 @@ export interface RuntimeThreadListPayload {
   pageSize?: number | null;
 }
 
-export interface ManagedThreadMeta extends RuntimeThreadShape {
-  id: string;
-  provider: string;
-  providerSessionId: string | null;
-}
+export interface ManagedThreadMeta extends RuntimeThreadMeta {}
 
 export interface RuntimeCommandPreviewContext {
   command: string | null;
@@ -106,6 +103,44 @@ export interface RuntimeThreadWindowDependencies {
 
 export interface RuntimeInputNormalizerDependencies {
   normalizeOptionalString(value: unknown): string | null;
+}
+
+export interface ManagedProviderThreadMeta extends RuntimeThreadMeta {}
+
+export interface ManagedProviderTurnContext {
+  inputItems: RuntimeInputItem[];
+  abortController: AbortController;
+  setInterruptHandler(handler: () => Promise<void> | void): void;
+  bindProviderSession(sessionId: string): void;
+  requestStructuredInput(request: Record<string, unknown>): Promise<unknown>;
+  requestApproval(request: Record<string, unknown>): Promise<unknown>;
+  updateCommandExecution(payload: unknown): void;
+  appendToolCallDelta(delta: string, options?: Record<string, unknown>): void;
+  appendAgentDelta(delta: string, options?: Record<string, unknown>): void;
+  appendReasoningDelta(delta: string, options?: Record<string, unknown>): void;
+  upsertPlan(planState: Record<string, unknown>, options?: Record<string, unknown>): void;
+  updatePreview(preview: string): void;
+}
+
+export interface ManagedProviderStartTurnOptions {
+  params: Record<string, unknown>;
+  threadMeta: ManagedProviderThreadMeta;
+  turnContext: ManagedProviderTurnContext;
+}
+
+export interface ManagedProviderTurnResult {
+  usage?: unknown;
+}
+
+export interface ManagedProviderAdapter {
+  hydrateThread(threadMeta: RuntimeThreadMeta): Promise<void>;
+  startTurn(options: ManagedProviderStartTurnOptions): Promise<ManagedProviderTurnResult | void>;
+  syncImportedThreads(): Promise<void>;
+}
+
+export interface ManagedProviderAdapterFactoryOptions {
+  store: RuntimeStore;
+  logPrefix?: string;
 }
 
 export interface RuntimeNormalizedPlanState extends PlanModeStateShape {}

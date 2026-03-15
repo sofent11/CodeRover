@@ -17,11 +17,28 @@ const DEFAULT_IDLE_TIMEOUT_MS = 10_000;
 const DEFAULT_TRANSIENT_ERROR_RETRY_LIMIT = 2;
 const DEFAULT_CONTEXT_READ_SCAN_BYTES = 512 * 1024;
 const DEFAULT_RECENT_ROLLOUT_CANDIDATE_LIMIT = 24;
+const defaultScanFsModule = {
+    existsSync(filePath) {
+        return fs.existsSync(filePath);
+    },
+    readdirSync(filePath, options) {
+        return fs.readdirSync(filePath, options);
+    },
+    statSync(filePath) {
+        return fs.statSync(filePath);
+    },
+};
+const defaultReadFsModule = {
+    ...defaultScanFsModule,
+    readFileSync(filePath, options) {
+        return fs.readFileSync(filePath, options);
+    },
+};
 function getDefaultScanFsModule() {
-    return fs;
+    return defaultScanFsModule;
 }
 function getDefaultReadFsModule() {
-    return fs;
+    return defaultReadFsModule;
 }
 function createThreadRolloutActivityWatcher({ threadId, intervalMs = DEFAULT_WATCH_INTERVAL_MS, lookupTimeoutMs = DEFAULT_LOOKUP_TIMEOUT_MS, idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS, now = () => Date.now(), fsModule = getDefaultScanFsModule(), transientErrorRetryLimit = DEFAULT_TRANSIENT_ERROR_RETRY_LIMIT, onEvent = () => { }, onIdle = () => { }, onTimeout = () => { }, onError = () => { }, } = {}) {
     const resolvedThreadId = resolveThreadId(threadId);
@@ -364,7 +381,7 @@ function normalizeContextWindowUsage(value) {
         "contextWindow",
         "context_window",
     ]);
-    if (!Number.isFinite(tokensUsed) || !Number.isFinite(tokenLimit) || tokenLimit <= 0) {
+    if (tokensUsed == null || tokenLimit == null || tokenLimit <= 0) {
         return null;
     }
     return {

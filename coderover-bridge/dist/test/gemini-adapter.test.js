@@ -2,11 +2,11 @@
 // FILE: gemini-adapter.test.ts
 // Purpose: Verifies Gemini CLI history import normalizes local chat JSON into bridge timeline messages.
 Object.defineProperty(exports, "__esModule", { value: true });
-const test = require("node:test");
-const assert = require("node:assert/strict");
+const node_test_1 = require("node:test");
+const node_assert_1 = require("node:assert");
 const gemini_adapter_1 = require("../src/providers/gemini-adapter");
-test("normalizeGeminiMessage supports real Gemini user and assistant entries", () => {
-    assert.deepEqual((0, gemini_adapter_1.normalizeGeminiMessage)({
+(0, node_test_1.test)("normalizeGeminiMessage supports real Gemini user and assistant entries", () => {
+    node_assert_1.strict.deepEqual((0, gemini_adapter_1.normalizeGeminiMessage)({
         type: "user",
         content: [
             { text: "first line" },
@@ -16,7 +16,7 @@ test("normalizeGeminiMessage supports real Gemini user and assistant entries", (
         role: "user",
         text: "first line\nsecond line",
     });
-    assert.deepEqual((0, gemini_adapter_1.normalizeGeminiMessage)({
+    node_assert_1.strict.deepEqual((0, gemini_adapter_1.normalizeGeminiMessage)({
         type: "gemini",
         content: "assistant reply",
     }), {
@@ -24,7 +24,7 @@ test("normalizeGeminiMessage supports real Gemini user and assistant entries", (
         text: "assistant reply",
     });
 });
-test("extractGeminiMessages ignores info entries and keeps local chat history", () => {
+(0, node_test_1.test)("extractGeminiMessages ignores info entries and keeps local chat history", () => {
     const messages = (0, gemini_adapter_1.extractGeminiMessages)({
         sessionId: "session-1",
         messages: [
@@ -55,7 +55,7 @@ test("extractGeminiMessages ignores info entries and keeps local chat history", 
             },
         ],
     });
-    assert.deepEqual(messages, [
+    node_assert_1.strict.deepEqual(messages, [
         {
             role: "user",
             text: "review this diff",

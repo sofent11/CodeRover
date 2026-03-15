@@ -312,10 +312,11 @@ function parseApplyConflicts(stderr) {
 }
 async function withRepoMutationLock(cwd, callback) {
     const previous = repoMutationLocks.get(cwd) || Promise.resolve();
-    let releaseCurrent = null;
+    let releaseCurrent;
     const current = new Promise((resolve) => {
         releaseCurrent = resolve;
     });
+    const releaseLock = releaseCurrent;
     const chained = previous.then(() => current);
     repoMutationLocks.set(cwd, chained);
     await previous;
@@ -323,7 +324,7 @@ async function withRepoMutationLock(cwd, callback) {
         return await callback();
     }
     finally {
-        releaseCurrent?.();
+        releaseLock();
         if (repoMutationLocks.get(cwd) === chained) {
             repoMutationLocks.delete(cwd);
         }

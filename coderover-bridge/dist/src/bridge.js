@@ -12,9 +12,9 @@ const thread_context_handler_1 = require("./thread-context-handler");
 const workspace_handler_1 = require("./workspace-handler");
 const secure_device_state_1 = require("./secure-device-state");
 const debug_log_1 = require("./debug-log");
+const runtime_manager_1 = require("./runtime-manager");
 const local_bridge_server_1 = require("./local-bridge-server");
 const secure_transport_1 = require("./secure-transport");
-const runtimeManagerModule = require("./runtime-manager");
 const PAIRING_QR_REPRINT_INTERVAL_MS = 4 * 60 * 1000;
 function startBridge() {
     const config = (0, coderover_desktop_refresher_1.readBridgeConfig)();
@@ -33,7 +33,7 @@ function startBridge() {
     let codexRestartAttempt = 0;
     let pairingQRRefreshTimer = null;
     let secureTransport = null;
-    const runtimeManager = runtimeManagerModule.createRuntimeManager({
+    const runtimeManager = (0, runtime_manager_1.createRuntimeManager)({
         sendApplicationMessage(rawMessage) {
             sendApplicationResponse(rawMessage);
         },

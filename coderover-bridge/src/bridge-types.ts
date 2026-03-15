@@ -45,7 +45,7 @@ export interface RuntimeAccessMode {
   title: string;
 }
 
-export interface RuntimeCapabilities {
+export interface RuntimeCapabilities extends Record<string, boolean> {
   planMode: boolean;
   structuredUserInput: boolean;
   inlineApproval: boolean;

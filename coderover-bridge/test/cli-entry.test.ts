@@ -1,5 +1,5 @@
-import test = require("node:test");
-import assert = require("node:assert/strict");
+import { test } from "node:test";
+import { strict as assert } from "node:assert";
 import * as fs from "fs";
 import * as path from "path";
 import { spawnSync } from "child_process";

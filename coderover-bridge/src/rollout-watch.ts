@@ -112,12 +112,31 @@ interface RecentRolloutFile {
   modifiedAtMs: number;
 }
 
+const defaultScanFsModule: RolloutScanFsModule = {
+  existsSync(filePath) {
+    return fs.existsSync(filePath);
+  },
+  readdirSync(filePath, options) {
+    return fs.readdirSync(filePath, options);
+  },
+  statSync(filePath) {
+    return fs.statSync(filePath);
+  },
+};
+
+const defaultReadFsModule: RolloutReadFsModule = {
+  ...defaultScanFsModule,
+  readFileSync(filePath, options) {
+    return fs.readFileSync(filePath, options);
+  },
+};
+
 function getDefaultScanFsModule(): RolloutScanFsModule {
-  return fs as unknown as RolloutScanFsModule;
+  return defaultScanFsModule;
 }
 
 function getDefaultReadFsModule(): RolloutReadFsModule {
-  return fs as unknown as RolloutReadFsModule;
+  return defaultReadFsModule;
 }
 
 export function createThreadRolloutActivityWatcher({
@@ -573,7 +592,7 @@ function normalizeContextWindowUsage(value: unknown): ContextWindowUsage | null 
     "context_window",
   ]);
 
-  if (!Number.isFinite(tokensUsed) || !Number.isFinite(tokenLimit) || tokenLimit <= 0) {
+  if (tokensUsed == null || tokenLimit == null || tokenLimit <= 0) {
     return null;
   }
 

@@ -2,8 +2,8 @@
 // FILE: runtime-store.test.ts
 // Purpose: Verifies provider-aware overlay persistence for managed runtime threads.
 Object.defineProperty(exports, "__esModule", { value: true });
-const test = require("node:test");
-const assert = require("node:assert/strict");
+const node_test_1 = require("node:test");
+const node_assert_1 = require("node:assert");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -19,7 +19,7 @@ function createTempStore() {
         },
     };
 }
-test("runtime store persists provider session mappings and thread history", () => {
+(0, node_test_1.test)("runtime store persists provider session mappings and thread history", () => {
     const fixture = createTempStore();
     try {
         const created = fixture.store.createThread({
@@ -28,11 +28,11 @@ test("runtime store persists provider session mappings and thread history", () =
             title: "Claude thread",
             cwd: "/tmp/project-a",
         });
-        assert.match(created.id, /^claude:/);
-        assert.equal(fixture.store.findThreadIdByProviderSession("claude", "session-1"), created.id);
+        node_assert_1.strict.match(created.id, /^claude:/);
+        node_assert_1.strict.equal(fixture.store.findThreadIdByProviderSession("claude", "session-1"), created.id);
         fixture.store.bindProviderSession(created.id, "claude", "session-2");
-        assert.equal(fixture.store.findThreadIdByProviderSession("claude", "session-1"), null);
-        assert.equal(fixture.store.findThreadIdByProviderSession("claude", "session-2"), created.id);
+        node_assert_1.strict.equal(fixture.store.findThreadIdByProviderSession("claude", "session-1"), null);
+        node_assert_1.strict.equal(fixture.store.findThreadIdByProviderSession("claude", "session-2"), created.id);
         fixture.store.saveThreadHistory(created.id, {
             threadId: created.id,
             turns: [
@@ -53,14 +53,14 @@ test("runtime store persists provider session mappings and thread history", () =
             ],
         });
         const history = fixture.store.getThreadHistory(created.id);
-        assert.equal(history?.turns?.length, 1);
-        assert.equal(history?.turns?.[0]?.items?.[0]?.text, "hello");
+        node_assert_1.strict.equal(history?.turns?.length, 1);
+        node_assert_1.strict.equal(history?.turns?.[0]?.items?.[0]?.text, "hello");
     }
     finally {
         fixture.cleanup();
     }
 });
-test("runtime store keeps archive and name overlays in the thread index", () => {
+(0, node_test_1.test)("runtime store keeps archive and name overlays in the thread index", () => {
     const fixture = createTempStore();
     try {
         const created = fixture.store.createThread({
@@ -75,11 +75,11 @@ test("runtime store keeps archive and name overlays in the thread index", () => 
             archived: true,
         }));
         const updated = fixture.store.getThreadMeta(created.id);
-        assert.equal(updated?.name, "Renamed Gemini thread");
-        assert.equal(updated?.archived, true);
+        node_assert_1.strict.equal(updated?.name, "Renamed Gemini thread");
+        node_assert_1.strict.equal(updated?.archived, true);
         fixture.store.deleteThread(created.id);
-        assert.equal(fixture.store.getThreadMeta(created.id), null);
-        assert.equal(fixture.store.findThreadIdByProviderSession("gemini", "chat-1"), null);
+        node_assert_1.strict.equal(fixture.store.getThreadMeta(created.id), null);
+        node_assert_1.strict.equal(fixture.store.findThreadIdByProviderSession("gemini", "chat-1"), null);
     }
     finally {
         fixture.cleanup();

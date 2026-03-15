@@ -1,29 +1,30 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-// FILE: runtime-manager.js
+exports.createRuntimeManager = createRuntimeManager;
+// FILE: runtime-manager.ts
 // Purpose: Bridge-owned multi-provider runtime router for Codex, Claude Code, and Gemini CLI.
 // Layer: Runtime orchestration
 // Exports: createRuntimeManager
 // Depends on: crypto, ../runtime-store, ../provider-catalog, ../providers/*
-const { randomUUID } = require("crypto");
-const { createRuntimeStore } = require("../runtime-store");
-const { debugLog, debugError } = require("../debug-log");
+const crypto_1 = require("crypto");
+const runtime_store_1 = require("../runtime-store");
+const debug_log_1 = require("../debug-log");
+const rpc_client_1 = require("../rpc-client");
+const provider_catalog_1 = require("../provider-catalog");
+const codex_adapter_1 = require("../providers/codex-adapter");
+const claude_adapter_1 = require("../providers/claude-adapter");
+const gemini_adapter_1 = require("../providers/gemini-adapter");
 const historyHelpers = require("./codex-history");
 const routingHelpers = require("./client-routing");
 const observerHelpers = require("./codex-observer");
 const managedRuntimeHelpers = require("./managed-provider-runtime");
 const normalizerHelpers = require("./normalizers");
-const { CODEX_HISTORY_CACHE_MESSAGE_LIMIT, CODEX_HISTORY_CACHE_THREAD_LIMIT, CODEX_OBSERVED_THREAD_ERROR_BACKOFF_MS, CODEX_OBSERVED_THREAD_IDLE_TTL_MS, CODEX_OBSERVED_THREAD_LIMIT, CODEX_OBSERVED_THREAD_POLL_INTERVAL_MS, DEFAULT_HISTORY_WINDOW_LIMIT, DEFAULT_THREAD_LIST_PAGE_SIZE, ERROR_INTERNAL, ERROR_INVALID_PARAMS, ERROR_METHOD_NOT_FOUND, ERROR_THREAD_NOT_FOUND, EXTERNAL_SYNC_INTERVAL_MS, HISTORY_CURSOR_VERSION, } = require("./types");
-const { getRuntimeProvider, listRuntimeProviders, listStaticModelsForProvider, } = require("../provider-catalog");
-const { buildRpcError, buildRpcSuccess } = require("../rpc-client");
-const { createCodexAdapter } = require("../providers/codex-adapter");
-const { createClaudeAdapter } = require("../providers/claude-adapter");
-const { createGeminiAdapter } = require("../providers/gemini-adapter");
-function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]", storeBaseDir, store: providedStore = null, codexAdapter: providedCodexAdapter = null, claudeAdapter: providedClaudeAdapter = null, geminiAdapter: providedGeminiAdapter = null, codexObservedThreadPollIntervalMs = CODEX_OBSERVED_THREAD_POLL_INTERVAL_MS, codexObservedThreadIdleTtlMs = CODEX_OBSERVED_THREAD_IDLE_TTL_MS, codexObservedThreadErrorBackoffMs = CODEX_OBSERVED_THREAD_ERROR_BACKOFF_MS, codexObservedThreadLimit = CODEX_OBSERVED_THREAD_LIMIT, }) {
+const types_1 = require("./types");
+function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]", storeBaseDir, store: providedStore = null, codexAdapter: providedCodexAdapter = null, claudeAdapter: providedClaudeAdapter = null, geminiAdapter: providedGeminiAdapter = null, codexObservedThreadPollIntervalMs = types_1.CODEX_OBSERVED_THREAD_POLL_INTERVAL_MS, codexObservedThreadIdleTtlMs = types_1.CODEX_OBSERVED_THREAD_IDLE_TTL_MS, codexObservedThreadErrorBackoffMs = types_1.CODEX_OBSERVED_THREAD_ERROR_BACKOFF_MS, codexObservedThreadLimit = types_1.CODEX_OBSERVED_THREAD_LIMIT, }) {
     if (typeof sendApplicationMessage !== "function") {
         throw new Error("createRuntimeManager requires sendApplicationMessage");
     }
-    const store = providedStore || createRuntimeStore({ baseDir: storeBaseDir });
+    const store = providedStore || (0, runtime_store_1.createRuntimeStore)({ baseDir: storeBaseDir });
     const pendingClientRequests = new Map();
     const activeRunsByThread = new Map();
     const codexHistoryCache = new Map();
@@ -31,17 +32,17 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
     let codexWarm = false;
     let codexWarmPromise = null;
     let lastExternalSyncAt = 0;
-    const codexAdapter = providedCodexAdapter || createCodexAdapter({
+    const codexAdapter = providedCodexAdapter || (0, codex_adapter_1.createCodexAdapter)({
         logPrefix,
         sendToClient(rawMessage, parsedMessage) {
             forwardCodexTransportMessage(rawMessage, parsedMessage);
         },
     });
-    const claudeAdapter = providedClaudeAdapter || createClaudeAdapter({
+    const claudeAdapter = providedClaudeAdapter || (0, claude_adapter_1.createClaudeAdapter)({
         logPrefix,
         store,
     });
-    const geminiAdapter = providedGeminiAdapter || createGeminiAdapter({
+    const geminiAdapter = providedGeminiAdapter || (0, gemini_adapter_1.createGeminiAdapter)({
         logPrefix,
         store,
     });
@@ -67,15 +68,15 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
                 case "initialize":
                     await ensureCodexWarm(params);
                     if (requestId != null) {
-                        sendApplicationMessage(buildRpcSuccess(requestId, { bridgeManaged: true }));
+                        sendApplicationMessage((0, rpc_client_1.buildRpcSuccess)(requestId, { bridgeManaged: true }));
                     }
                     return true;
                 case "initialized":
                     return true;
                 case "runtime/provider/list":
                     if (requestId != null) {
-                        sendApplicationMessage(buildRpcSuccess(requestId, {
-                            providers: listRuntimeProviders(),
+                        sendApplicationMessage((0, rpc_client_1.buildRpcSuccess)(requestId, {
+                            providers: (0, provider_catalog_1.listRuntimeProviders)(),
                         }));
                     }
                     return true;
@@ -89,7 +90,7 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
                             return normalizeModelListResult(result);
                         }
                         return {
-                            items: listStaticModelsForProvider(provider),
+                            items: (0, provider_catalog_1.listStaticModelsForProvider)(provider),
                         };
                     });
                 case "collaborationMode/list":
@@ -137,7 +138,7 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
                             name: null,
                             preview: null,
                             metadata: buildProviderMetadata(provider),
-                            capabilities: getRuntimeProvider(provider).supports,
+                            capabilities: (0, provider_catalog_1.getRuntimeProvider)(provider).supports,
                         });
                         const threadObject = buildManagedThreadObject(threadMeta);
                         sendThreadStartedNotification(threadObject);
@@ -175,12 +176,13 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
                             name: nextName,
                             updatedAt: new Date().toISOString(),
                         }));
+                        const stableMeta = updatedMeta || threadMeta;
                         sendNotification("thread/name/updated", {
-                            threadId: updatedMeta.id,
-                            name: updatedMeta.name,
+                            threadId: stableMeta.id,
+                            name: stableMeta.name,
                         });
                         return {
-                            thread: buildManagedThreadObject(updatedMeta),
+                            thread: buildManagedThreadObject(stableMeta),
                         };
                     });
                 case "thread/archive":
@@ -193,8 +195,9 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
                             archived,
                             updatedAt: new Date().toISOString(),
                         }));
+                        const stableMeta = updatedMeta || threadMeta;
                         return {
-                            thread: buildManagedThreadObject(updatedMeta),
+                            thread: buildManagedThreadObject(stableMeta),
                         };
                     });
                 case "turn/start":
@@ -203,12 +206,13 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
                         if (threadMeta.provider === "codex") {
                             await ensureCodexWarm();
                             const result = await codexAdapter.startTurn(stripProviderField(params));
-                            seedCodexHistoryCacheWithUserInput(threadMeta.id, normalizeOptionalString(result?.turnId || result?.turn_id), params);
+                            const turnResult = asObject(result);
+                            seedCodexHistoryCacheWithUserInput(threadMeta.id, normalizeOptionalString(turnResult.turnId || turnResult.turn_id), params);
                             observeCodexThread(threadMeta.id, { immediate: true, reason: "turn-start" });
                             return result;
                         }
                         if (activeRunsByThread.has(threadMeta.id)) {
-                            throw createRuntimeError(ERROR_INVALID_PARAMS, "A turn is already running for this thread");
+                            throw createRuntimeError(types_1.ERROR_INVALID_PARAMS, "A turn is already running for this thread");
                         }
                         const turnContext = createManagedTurnContext(threadMeta, params);
                         const adapter = getManagedProviderAdapter(threadMeta.provider);
@@ -232,9 +236,12 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
                             if (!activeRunsByThread.has(threadMeta.id)) {
                                 return;
                             }
+                            const resultRecord = result && typeof result === "object"
+                                ? result
+                                : {};
                             turnContext.complete({
                                 status: runEntry.stopRequested ? "stopped" : "completed",
-                                usage: result?.usage || null,
+                                usage: resultRecord.usage || null,
                             });
                         })
                             .catch((error) => {
@@ -294,7 +301,7 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
                     });
                 default:
                     if (requestId != null) {
-                        sendApplicationMessage(buildRpcError(requestId, ERROR_METHOD_NOT_FOUND, `Unsupported method: ${method}`));
+                        sendApplicationMessage((0, rpc_client_1.buildRpcError)(requestId, types_1.ERROR_METHOD_NOT_FOUND, `Unsupported method: ${method}`));
                         return true;
                     }
                     return false;
@@ -305,8 +312,8 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
                 console.error(`${logPrefix} ${error.message}`);
                 return true;
             }
-            const code = Number.isInteger(error.code) ? error.code : ERROR_INTERNAL;
-            sendApplicationMessage(buildRpcError(requestId, code, error.message || "Internal runtime error"));
+            const code = Number.isInteger(error.code) ? error.code : types_1.ERROR_INTERNAL;
+            sendApplicationMessage((0, rpc_client_1.buildRpcError)(requestId, code, error.message || "Internal runtime error"));
             return true;
         }
     }
@@ -324,8 +331,9 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
         codexWarm = false;
         codexWarmPromise = null;
         codexHistoryCache.clear();
-        stopAllObservedCodexThreadWatchers(reason || "transport-closed");
-        codexAdapter.handleTransportClosed(reason);
+        const normalizedReason = normalizeOptionalString(reason) || "transport-closed";
+        stopAllObservedCodexThreadWatchers(normalizedReason);
+        codexAdapter.handleTransportClosed(normalizedReason);
     }
     function shutdown() {
         stopAllObservedCodexThreadWatchers("shutdown");
@@ -361,7 +369,7 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
         watcher.lastObservedAt = now;
         codexObservedThreadWatchers.set(normalizedThreadId, watcher);
         scheduleObservedCodexThreadPoll(watcher, immediate ? 0 : codexObservedThreadPollIntervalMs);
-        debugLog(`${logPrefix} [codex-flow] stage=observe thread=${normalizedThreadId} reason=${reason} immediate=${immediate}`);
+        (0, debug_log_1.debugLog)(`${logPrefix} [codex-flow] stage=observe thread=${normalizedThreadId} reason=${reason} immediate=${immediate}`);
     }
     function evictObservedCodexThreadsIfNeeded(preserveThreadId = null) {
         if (codexObservedThreadWatchers.size < codexObservedThreadLimit) {
@@ -370,6 +378,9 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
         const evictionCandidates = observerHelpers.sortObservedThreadEvictionCandidates(codexObservedThreadWatchers, preserveThreadId);
         while (codexObservedThreadWatchers.size >= codexObservedThreadLimit && evictionCandidates.length > 0) {
             const evicted = evictionCandidates.shift();
+            if (!evicted) {
+                break;
+            }
             stopObservedCodexThreadWatcher(evicted.threadId, "evicted");
         }
     }
@@ -392,6 +403,7 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
         if (!watcher || watcher.inFlight) {
             return;
         }
+        const observedThreadId = normalizedThreadId;
         watcher.inFlight = true;
         watcher.lastPollAt = Date.now();
         try {
@@ -413,21 +425,22 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
             primeCodexHistoryCache(normalizedThreadId, decoratedThread);
             watcher.lastSnapshot = nextSnapshot;
             if (historyChange) {
-                debugLog(`${logPrefix} [codex-flow] stage=observed-diff thread=${normalizedThreadId}`
+                (0, debug_log_1.debugLog)(`${logPrefix} [codex-flow] stage=observed-diff thread=${normalizedThreadId}`
                     + ` item=${historyChange.itemId || "none"} cursor=${historyChange.cursor || "none"}`);
                 emitCodexHistoryChangedNotification(historyChange);
             }
         }
         catch (error) {
-            debugError(`${logPrefix} observed thread poll failed thread=${normalizedThreadId}: ${error.message}`);
-            if (codexObservedThreadWatchers.has(normalizedThreadId)) {
+            const errorRecord = asObject(error);
+            (0, debug_log_1.debugError)(`${logPrefix} observed thread poll failed thread=${normalizedThreadId}: ${String(errorRecord.message || error)}`);
+            if (codexObservedThreadWatchers.has(observedThreadId)) {
                 watcher.inFlight = false;
                 scheduleObservedCodexThreadPoll(watcher, codexObservedThreadErrorBackoffMs);
             }
             return;
         }
         watcher.inFlight = false;
-        if (!codexObservedThreadWatchers.has(normalizedThreadId)) {
+        if (!codexObservedThreadWatchers.has(observedThreadId)) {
             return;
         }
         const isStillObserved = (Date.now() - watcher.lastObservedAt) < codexObservedThreadIdleTtlMs;
@@ -450,7 +463,7 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
             clearTimeout(watcher.timer);
         }
         codexObservedThreadWatchers.delete(normalizedThreadId);
-        debugLog(`${logPrefix} [codex-flow] stage=unobserve thread=${normalizedThreadId} reason=${reason}`);
+        (0, debug_log_1.debugLog)(`${logPrefix} [codex-flow] stage=unobserve thread=${normalizedThreadId} reason=${reason}`);
     }
     function stopAllObservedCodexThreadWatchers(reason = "reset") {
         for (const threadId of [...codexObservedThreadWatchers.keys()]) {
@@ -458,12 +471,13 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
         }
     }
     function decorateCodexTransportMessage(rawMessage, parsedMessage) {
-        const method = normalizeOptionalString(parsedMessage?.method);
-        const params = asObject(parsedMessage?.params);
+        const parsedRecord = asObject(parsedMessage);
+        const method = normalizeOptionalString(parsedRecord.method);
+        const params = asObject(parsedRecord.params);
         if (!method) {
             return rawMessage;
         }
-        const normalizedMethod = parsedMessage?.id == null
+        const normalizedMethod = parsedRecord.id == null
             ? (normalizeCodexHistoryEventMethod(method, params) || method)
             : method;
         const decoratedParams = params
@@ -473,7 +487,7 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
             return rawMessage;
         }
         return JSON.stringify({
-            ...parsedMessage,
+            ...parsedRecord,
             method: normalizedMethod,
             params: decoratedParams,
         });
@@ -484,7 +498,8 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
         if (pending) {
             pendingClientRequests.delete(responseKey);
             if (parsed.error) {
-                pending.reject(new Error(parsed.error.message || "Client rejected server request"));
+                const errorRecord = asObject(parsed.error);
+                pending.reject(new Error(normalizeOptionalString(errorRecord.message) || "Client rejected server request"));
             }
             else {
                 pending.resolve(parsed.result);
@@ -509,7 +524,7 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
             return true;
         }
         const result = await handler();
-        sendApplicationMessage(buildRpcSuccess(requestId, result));
+        sendApplicationMessage((0, rpc_client_1.buildRpcSuccess)(requestId, result));
         return true;
     }
     async function ensureCodexWarm(initializeParams = null) {
@@ -551,7 +566,7 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
     }
     async function ensureExternalThreadsIndexed() {
         const now = Date.now();
-        if ((now - lastExternalSyncAt) < EXTERNAL_SYNC_INTERVAL_MS) {
+        if ((now - lastExternalSyncAt) < types_1.EXTERNAL_SYNC_INTERVAL_MS) {
             return;
         }
         lastExternalSyncAt = now;
@@ -580,7 +595,7 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
                 threads: [],
                 nextCursor: null,
                 hasMore: false,
-                pageSize: normalizePositiveInteger(params?.limit) || DEFAULT_THREAD_LIST_PAGE_SIZE,
+                pageSize: normalizePositiveInteger(params?.limit) || types_1.DEFAULT_THREAD_LIST_PAGE_SIZE,
             };
         }
         await ensureCodexWarm();
@@ -588,10 +603,10 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
             ...stripProviderField(params || {}),
         };
         if (normalizePositiveInteger(normalizedParams.limit) == null) {
-            normalizedParams.limit = DEFAULT_THREAD_LIST_PAGE_SIZE;
+            normalizedParams.limit = types_1.DEFAULT_THREAD_LIST_PAGE_SIZE;
         }
         const result = await codexAdapter.listThreads(normalizedParams);
-        const threads = extractThreadArray(result).map((thread) => decorateConversationThread(thread));
+        const threads = extractThreadArray(result).map((thread) => decorateConversationThread(asObject(thread)));
         const filteredThreads = threads.filter((thread) => {
             const overlay = store.getThreadMeta(thread.id);
             const overlayArchived = overlay?.archived;
@@ -620,7 +635,7 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
     async function requireThreadMeta(threadId) {
         const normalizedThreadId = normalizeOptionalString(threadId);
         if (!normalizedThreadId) {
-            throw createRuntimeError(ERROR_INVALID_PARAMS, "threadId is required");
+            throw createRuntimeError(types_1.ERROR_INVALID_PARAMS, "threadId is required");
         }
         const storedMeta = store.getThreadMeta(normalizedThreadId);
         if (storedMeta) {
@@ -632,7 +647,7 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
                 return coderoverThread;
             }
         }
-        throw createRuntimeError(ERROR_THREAD_NOT_FOUND, `Thread not found: ${normalizedThreadId}`);
+        throw createRuntimeError(types_1.ERROR_THREAD_NOT_FOUND, `Thread not found: ${normalizedThreadId}`);
     }
     async function readConversationThreadMeta(threadId) {
         if (!codexAdapter.isAvailable()) {
@@ -681,7 +696,7 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
             const result = await codexAdapter.readThread(stripProviderField(params));
             const threadObject = extractThreadFromResult(result);
             if (!threadObject) {
-                throw createRuntimeError(ERROR_THREAD_NOT_FOUND, `Thread not found: ${threadId}`);
+                throw createRuntimeError(types_1.ERROR_THREAD_NOT_FOUND, `Thread not found: ${threadId}`);
             }
             const decoratedThread = decorateConversationThread(threadObject);
             upsertOverlayFromThread(decoratedThread);
@@ -723,7 +738,7 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
         const result = await codexAdapter.readThread(upstreamParams);
         const threadObject = extractThreadFromResult(result);
         if (!threadObject) {
-            throw createRuntimeError(ERROR_THREAD_NOT_FOUND, `Thread not found: ${threadId}`);
+            throw createRuntimeError(types_1.ERROR_THREAD_NOT_FOUND, `Thread not found: ${threadId}`);
         }
         const decoratedThread = decorateConversationThread(threadObject);
         upsertOverlayFromThread(decoratedThread);
@@ -762,7 +777,7 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
         else {
             anchorIndex = findHistoryRecordIndexByCursor(records, historyRequest.cursor, snapshot.threadId);
             if (anchorIndex < 0) {
-                throw createRuntimeError(ERROR_INVALID_PARAMS, "history.cursor is invalid");
+                throw createRuntimeError(types_1.ERROR_INVALID_PARAMS, "history.cursor is invalid");
             }
             if (historyRequest.mode === "before") {
                 startIndex = Math.max(anchorIndex - limit, 0);
@@ -806,8 +821,8 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
         const snapshot = createHistorySnapshotFromThread(threadObject);
         writeCodexHistoryCache(threadId, {
             ...snapshot,
-            records: snapshot.records.slice(-CODEX_HISTORY_CACHE_MESSAGE_LIMIT),
-            hasOlder: snapshot.records.length > CODEX_HISTORY_CACHE_MESSAGE_LIMIT,
+            records: snapshot.records.slice(-types_1.CODEX_HISTORY_CACHE_MESSAGE_LIMIT),
+            hasOlder: snapshot.records.length > types_1.CODEX_HISTORY_CACHE_MESSAGE_LIMIT,
             hasNewer: false,
         });
     }
@@ -911,9 +926,9 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
             threadId: normalizedThreadId,
             records: [...entry.records]
                 .sort(compareHistoryRecord)
-                .slice(-CODEX_HISTORY_CACHE_MESSAGE_LIMIT),
+                .slice(-types_1.CODEX_HISTORY_CACHE_MESSAGE_LIMIT),
         });
-        while (codexHistoryCache.size > CODEX_HISTORY_CACHE_THREAD_LIMIT) {
+        while (codexHistoryCache.size > types_1.CODEX_HISTORY_CACHE_THREAD_LIMIT) {
             const oldestKey = codexHistoryCache.keys().next().value;
             codexHistoryCache.delete(oldestKey);
         }
@@ -936,6 +951,12 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
                 provider: "codex",
                 providerSessionId: normalizedThreadId,
                 metadata: buildProviderMetadata("codex"),
+                title: null,
+                name: null,
+                preview: null,
+                cwd: null,
+                createdAt: nowIso,
+                updatedAt: nowIso,
             },
             records: [],
             hasOlder: false,
@@ -945,8 +966,8 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
             ...entry.threadBase,
             updatedAt: nowIso,
             preview: inputItems
-                .filter((item) => item.type === "text" && normalizeOptionalString(item.text))
-                .map((item) => item.text)
+                .map((item) => readTextInput(item))
+                .filter(Boolean)
                 .join("\n")
                 .trim() || entry.threadBase.preview || null,
         };
@@ -964,13 +985,16 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
                 role: "user",
                 content: inputItems,
                 text: inputItems
-                    .filter((item) => item.type === "text" && normalizeOptionalString(item.text))
-                    .map((item) => item.text)
+                    .map((item) => readTextInput(item))
+                    .filter(Boolean)
                     .join("\n")
                     .trim() || null,
                 createdAt: nowIso,
             },
             ordinal: nextHistoryOrdinal(entry.records),
+            createdAtMs: Date.parse(nowIso) || Date.now(),
+            turnIndex: 0,
+            itemIndex: 0,
         });
         writeCodexHistoryCache(normalizedThreadId, entry);
     }
@@ -989,14 +1013,14 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
         }
         const method = normalizeCodexHistoryEventMethod(rawMethod, params);
         if (method === "thread/started" && params.thread && typeof params.thread === "object") {
-            const decoratedThread = decorateConversationThread(params.thread);
+            const decoratedThread = decorateConversationThread(asObject(params.thread));
             primeCodexHistoryCache(decoratedThread.id, decoratedThread);
             return null;
         }
         const threadId = extractCodexNotificationThreadId(params);
         if (!threadId) {
             if (shouldInvalidateCodexHistoryCacheForMethod(method)) {
-                debugLog(`${logPrefix} [codex-flow] stage=cache-invalidate scope=global reason=unscoped-event method=${method}`);
+                (0, debug_log_1.debugLog)(`${logPrefix} [codex-flow] stage=cache-invalidate scope=global reason=unscoped-event method=${method}`);
                 codexHistoryCache.clear();
                 return {
                     provider: "codex",
@@ -1240,7 +1264,7 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
         if (previousRecords.length === 0 || nextRecords.length === 0) {
             return null;
         }
-        const comparisonWindowSize = Math.max(previousRecords.length, CODEX_HISTORY_CACHE_MESSAGE_LIMIT);
+        const comparisonWindowSize = Math.max(previousRecords.length, types_1.CODEX_HISTORY_CACHE_MESSAGE_LIMIT);
         const previousTailRecords = previousRecords.slice(-comparisonWindowSize);
         const nextTailRecords = nextRecords.slice(-comparisonWindowSize);
         const previousByItemId = new Map();
@@ -1643,7 +1667,7 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
             didChange = true;
         }
         if (didChange) {
-            debugLog(`${logPrefix} [codex-flow] stage=decorate method=${method}`
+            (0, debug_log_1.debugLog)(`${logPrefix} [codex-flow] stage=decorate method=${method}`
                 + ` thread=${metadata.threadId || "none"}`
                 + ` turn=${metadata.turnId || "none"}`
                 + ` item=${metadata.itemId || "none"}`
@@ -1658,7 +1682,7 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
         if (!summary) {
             return;
         }
-        debugLog(`${logPrefix} [codex-flow] stage=${stage} ${summary}`);
+        (0, debug_log_1.debugLog)(`${logPrefix} [codex-flow] stage=${stage} ${summary}`);
     }
     function summarizeCodexRealtimeMessage(messageLike) {
         let parsed = null;
@@ -1857,11 +1881,14 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
         return record;
     }
     function createManagedTurnContext(threadMeta, params) {
-        const providerDefinition = getRuntimeProvider(threadMeta.provider);
+        const providerDefinition = (0, provider_catalog_1.getRuntimeProvider)(threadMeta.provider);
         const abortController = new AbortController();
         const nowIso = new Date().toISOString();
-        const threadHistory = store.getThreadHistory(threadMeta.id) || { threadId: threadMeta.id, turns: [] };
-        const turnId = randomUUID();
+        const threadHistory = (store.getThreadHistory(threadMeta.id) || {
+            threadId: threadMeta.id,
+            turns: [],
+        });
+        const turnId = (0, crypto_1.randomUUID)();
         const turnRecord = {
             id: turnId,
             createdAt: nowIso,
@@ -1871,13 +1898,13 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
         threadHistory.turns.push(turnRecord);
         const inputItems = normalizeInputItems(params.input);
         const userTextPreview = inputItems
-            .filter((entry) => entry.type === "text" && entry.text)
-            .map((entry) => entry.text)
+            .map((entry) => readTextInput(entry))
+            .filter(Boolean)
             .join("\n")
             .trim();
         if (inputItems.length > 0) {
             turnRecord.items.push({
-                id: randomUUID(),
+                id: (0, crypto_1.randomUUID)(),
                 type: "user_message",
                 role: "user",
                 content: inputItems,
@@ -1902,14 +1929,22 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
             turnId,
         });
         let interruptHandler = null;
-        function ensureItem({ itemId, type, role = null, content = null, defaults = {} }) {
-            const normalizedItemId = normalizeOptionalString(itemId) || randomUUID();
+        function ensureItem({ itemId, type, role = null, content = null, defaults = {}, }) {
+            const normalizedItemId = normalizeOptionalString(itemId) || (0, crypto_1.randomUUID)();
             let item = turnRecord.items.find((entry) => entry.id === normalizedItemId);
             if (!item) {
                 item = {
                     id: normalizedItemId,
                     type,
                     role,
+                    text: null,
+                    message: null,
+                    status: null,
+                    command: null,
+                    metadata: null,
+                    plan: null,
+                    summary: null,
+                    fileChanges: [],
                     content: content ? [...content] : [],
                     createdAt: new Date().toISOString(),
                     ...defaults,
@@ -2102,11 +2137,11 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
         }
         function requestApproval(request) {
             return requestFromClient({
-                method: request.method || "item/tool/requestApproval",
+                method: normalizeOptionalString(request.method) || "item/tool/requestApproval",
                 params: {
                     threadId: threadMeta.id,
                     turnId,
-                    itemId: request.itemId || randomUUID(),
+                    itemId: request.itemId || (0, crypto_1.randomUUID)(),
                     command: normalizeOptionalString(request.command),
                     reason: normalizeOptionalString(request.reason),
                     toolName: normalizeOptionalString(request.toolName),
@@ -2120,7 +2155,7 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
                 params: {
                     threadId: threadMeta.id,
                     turnId,
-                    itemId: request.itemId || randomUUID(),
+                    itemId: request.itemId || (0, crypto_1.randomUUID)(),
                     questions: request.questions,
                 },
                 threadId: threadMeta.id,
@@ -2142,7 +2177,7 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
             });
         }
         function fail(error, { status = "failed" } = {}) {
-            const message = normalizeOptionalString(error?.message) || "Runtime error";
+            const message = normalizeOptionalString(asObject(error).message) || "Runtime error";
             sendNotification("error", {
                 threadId: threadMeta.id,
                 turnId,
@@ -2179,8 +2214,8 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
             },
         };
     }
-    function requestFromClient({ method, params, threadId }) {
-        const requestId = randomUUID();
+    function requestFromClient({ method, params, threadId, }) {
+        const requestId = (0, crypto_1.randomUUID)();
         const requestKey = encodeRequestId(requestId);
         return new Promise((resolve, reject) => {
             pendingClientRequests.set(requestKey, {
@@ -2212,7 +2247,7 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
     }
     function decorateConversationThread(threadObject) {
         const overlay = store.getThreadMeta(threadObject.id) || null;
-        const providerDefinition = getRuntimeProvider("codex");
+        const providerDefinition = (0, provider_catalog_1.getRuntimeProvider)("codex");
         return {
             ...threadObject,
             provider: "codex",
@@ -2227,15 +2262,21 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
             name: overlay?.name || threadObject.name || null,
             preview: overlay?.preview || threadObject.preview || null,
             cwd: overlay?.cwd || threadObject.cwd || threadObject.current_working_directory || threadObject.working_directory || null,
-            createdAt: overlay?.createdAt || threadObject.createdAt || threadObject.created_at || null,
-            updatedAt: overlay?.updatedAt || threadObject.updatedAt || threadObject.updated_at || null,
+            createdAt: overlay?.createdAt
+                || normalizeTimestampString(threadObject.createdAt)
+                || normalizeTimestampString(threadObject.created_at)
+                || new Date().toISOString(),
+            updatedAt: overlay?.updatedAt
+                || normalizeTimestampString(threadObject.updatedAt)
+                || normalizeTimestampString(threadObject.updated_at)
+                || new Date().toISOString(),
         };
     }
     function upsertOverlayFromThread(threadObject) {
         store.upsertThreadMeta(threadObjectToMeta(threadObject));
     }
     function buildManagedThreadObject(threadMeta, turns = null) {
-        return managedRuntimeHelpers.buildManagedThreadObject(threadMeta, turns, getRuntimeProvider);
+        return managedRuntimeHelpers.buildManagedThreadObject(threadMeta, turns, provider_catalog_1.getRuntimeProvider);
     }
     function buildThreadListResult(payload) {
         return managedRuntimeHelpers.buildThreadListResult(payload, normalizePositiveInteger);
@@ -2244,8 +2285,10 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
         return managedRuntimeHelpers.threadObjectToMeta(threadObject, {
             asObject,
             firstNonEmptyString,
-            getRuntimeProvider,
+            getRuntimeProvider: provider_catalog_1.getRuntimeProvider,
             normalizeOptionalString,
+            normalizePositiveInteger,
+            normalizeTimestampString,
             resolveProviderId,
         });
     }
@@ -2304,7 +2347,12 @@ function buildUpstreamHistoryWindowResponse(snapshot, historyRequest, upstreamHi
     return historyHelpers.buildUpstreamHistoryWindowResponse(snapshot, historyRequest, upstreamHistoryWindow, thread, {
         compareHistoryRecord,
         historyCursorForRecord,
-        historyRecordAnchor,
+        historyRecordAnchor(record) {
+            return {
+                threadId: snapshot.threadId,
+                ...historyRecordAnchor(record),
+            };
+        },
     });
 }
 function extractArray(value, candidatePaths) {
@@ -2327,10 +2375,10 @@ function normalizeHistoryRequest(history) {
     if (mode !== "tail" && mode !== "before" && mode !== "after") {
         return null;
     }
-    const limit = normalizePositiveInteger(history.limit) || DEFAULT_HISTORY_WINDOW_LIMIT;
+    const limit = normalizePositiveInteger(history.limit) || types_1.DEFAULT_HISTORY_WINDOW_LIMIT;
     const cursor = normalizeHistoryCursor(history.cursor, history.anchor && typeof history.anchor === "object" ? history.anchor : null);
     if ((mode === "before" || mode === "after") && !cursor) {
-        throw createRuntimeError(ERROR_INVALID_PARAMS, "history.cursor is required for before/after windows");
+        throw createRuntimeError(types_1.ERROR_INVALID_PARAMS, "history.cursor is required for before/after windows");
     }
     return {
         mode,
@@ -2343,7 +2391,7 @@ function normalizeHistoryCursor(rawCursor, legacyAnchor = null) {
     if (normalizedCursor) {
         const decoded = decodeHistoryCursor(normalizedCursor);
         if (!decoded) {
-            throw createRuntimeError(ERROR_INVALID_PARAMS, "history.cursor is invalid");
+            throw createRuntimeError(types_1.ERROR_INVALID_PARAMS, "history.cursor is invalid");
         }
         return decoded;
     }
@@ -2467,7 +2515,7 @@ function historyCursorForRecord(threadId, record) {
         return null;
     }
     const payload = {
-        v: HISTORY_CURSOR_VERSION,
+        v: types_1.HISTORY_CURSOR_VERSION,
         threadId: normalizedThreadId,
         itemId: normalizeOptionalString(record?.itemObject?.id) || null,
         turnId: normalizeOptionalString(record?.turnId) || null,
@@ -2579,7 +2627,7 @@ function buildCommandPreview(command, status, exitCode) {
     return normalizerHelpers.buildCommandPreview(command, status, exitCode);
 }
 function buildProviderMetadata(provider) {
-    return managedRuntimeHelpers.buildProviderMetadata(provider, getRuntimeProvider);
+    return managedRuntimeHelpers.buildProviderMetadata(provider, provider_catalog_1.getRuntimeProvider);
 }
 function resolveProviderId(value) {
     return managedRuntimeHelpers.resolveProviderId(value, normalizeOptionalString);
@@ -2591,7 +2639,7 @@ function defaultInitializeParams() {
     return routingHelpers.defaultInitializeParams();
 }
 function createMethodError(message) {
-    return routingHelpers.createMethodError(ERROR_METHOD_NOT_FOUND, message);
+    return routingHelpers.createMethodError(types_1.ERROR_METHOD_NOT_FOUND, message);
 }
 function createRuntimeError(code, message) {
     return routingHelpers.createRuntimeError(code, message);
@@ -2611,6 +2659,10 @@ function firstNonEmptyString(values) {
 function asObject(value) {
     return normalizerHelpers.asObject(value);
 }
-module.exports = {
-    createRuntimeManager,
-};
+function readTextInput(item) {
+    if (!item || item.type !== "text") {
+        return null;
+    }
+    const text = typeof item.text === "string" ? item.text : "";
+    return normalizeOptionalString(text);
+}

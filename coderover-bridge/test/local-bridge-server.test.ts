@@ -1,8 +1,8 @@
 // FILE: local-bridge-server.test.ts
 // Purpose: Verifies the QR transport candidates stay limited to directly reachable LAN or explicit tailnet endpoints.
 
-import test = require("node:test");
-import assert = require("node:assert/strict");
+import { test } from "node:test";
+import { strict as assert } from "node:assert";
 import * as os from "os";
 import { WebSocket } from "ws";
 

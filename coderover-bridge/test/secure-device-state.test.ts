@@ -1,13 +1,16 @@
 // FILE: secure-device-state.test.ts
 // Purpose: Verifies persisted bridge identity can be read back from Keychain's hex-encoded output.
 
-import test = require("node:test");
-import assert = require("node:assert/strict");
+import { test } from "node:test";
+import { strict as assert } from "node:assert";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import { createRequire } from "node:module";
 
 import { decodeStoredDeviceStateString } from "../src/secure-device-state";
+
+const runtimeRequire = createRequire(__filename);
 
 test("decodeStoredDeviceStateString preserves plain JSON", () => {
   const json = JSON.stringify({ bridgeId: "bridge-1" });
@@ -23,12 +26,12 @@ test("decodeStoredDeviceStateString decodes Keychain hex output", () => {
 test("bridge device state persists trusted phones across reloads", () => {
   const originalHome = process.env.HOME;
   const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "coderover-secure-state-"));
-  const modulePath = require.resolve("../src/secure-device-state");
+  const modulePath = runtimeRequire.resolve("../src/secure-device-state");
 
   try {
     process.env.HOME = tempHome;
-    delete require.cache[modulePath];
-    const secureDeviceState = require("../src/secure-device-state") as typeof import("../src/secure-device-state");
+    delete runtimeRequire.cache[modulePath];
+    const secureDeviceState = runtimeRequire("../src/secure-device-state") as typeof import("../src/secure-device-state");
 
     const initial = secureDeviceState.loadOrCreateBridgeDeviceState();
     const updated = secureDeviceState.rememberTrustedPhone(
@@ -37,8 +40,8 @@ test("bridge device state persists trusted phones across reloads", () => {
       "phone-public-key"
     );
 
-    delete require.cache[modulePath];
-    const reloadedSecureDeviceState = require("../src/secure-device-state") as typeof import("../src/secure-device-state");
+    delete runtimeRequire.cache[modulePath];
+    const reloadedSecureDeviceState = runtimeRequire("../src/secure-device-state") as typeof import("../src/secure-device-state");
     const reloaded = reloadedSecureDeviceState.loadOrCreateBridgeDeviceState();
 
     assert.equal(reloaded.bridgeId, updated.bridgeId);
@@ -48,7 +51,7 @@ test("bridge device state persists trusted phones across reloads", () => {
       "phone-public-key"
     );
   } finally {
-    delete require.cache[modulePath];
+    delete runtimeRequire.cache[modulePath];
     process.env.HOME = originalHome;
     fs.rmSync(tempHome, { recursive: true, force: true });
   }

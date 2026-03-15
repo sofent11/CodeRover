@@ -79,6 +79,7 @@ function threadObjectToMeta(threadObject, helpers) {
             threadObject.current_working_directory,
             threadObject.working_directory,
         ]),
+        model: helpers.normalizeOptionalString(threadObject.model),
         metadata: {
             ...helpers.asObject(threadObject.metadata),
             providerTitle: helpers.getRuntimeProvider(providerId).title,

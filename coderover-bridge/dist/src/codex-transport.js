@@ -4,7 +4,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.createCodexTransport = createCodexTransport;
 const child_process_1 = require("child_process");
-const WebSocket = require("ws");
+const ws_1 = require("ws");
 function createCodexTransport({ endpoint = "", env = process.env } = {}) {
     if (endpoint) {
         return createWebSocketTransport({ endpoint });
@@ -125,7 +125,7 @@ function appendOutputBuffer(buffer, chunk) {
     return next.slice(-4_096);
 }
 function createWebSocketTransport({ endpoint }) {
-    const socket = new WebSocket(endpoint);
+    const socket = new ws_1.WebSocket(endpoint);
     const listeners = createListenerBag();
     socket.on("message", (chunk) => {
         const message = typeof chunk === "string" ? chunk : chunk.toString("utf8");
@@ -144,7 +144,7 @@ function createWebSocketTransport({ endpoint }) {
             return endpoint;
         },
         send(message) {
-            if (socket.readyState !== WebSocket.OPEN) {
+            if (socket.readyState !== ws_1.WebSocket.OPEN) {
                 return;
             }
             socket.send(message);
@@ -159,7 +159,7 @@ function createWebSocketTransport({ endpoint }) {
             listeners.onError = handler;
         },
         shutdown() {
-            if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
+            if (socket.readyState === ws_1.WebSocket.OPEN || socket.readyState === ws_1.WebSocket.CONNECTING) {
                 socket.close();
             }
         },

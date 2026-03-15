@@ -14,7 +14,7 @@ interface CreateCodexAdapterOptions {
   logPrefix?: string;
 }
 
-interface CodexAdapter {
+export interface CodexAdapter {
   attachTransport(transport: CodexTransport | null | undefined): void;
   collaborationModes(params?: Record<string, unknown>): Promise<unknown>;
   compactThread(params?: Record<string, unknown>): Promise<unknown>;

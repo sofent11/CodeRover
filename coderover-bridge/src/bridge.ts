@@ -6,32 +6,19 @@ import {
   readBridgeConfig,
 } from "./coderover-desktop-refresher";
 import { createCodexTransport } from "./codex-transport";
-import { printQR, type PairingPayloadShape } from "./qr";
+import { printQR } from "./qr";
 import { rememberActiveThread } from "./session-state";
 import { handleGitRequest } from "./git-handler";
 import { handleThreadContextRequest } from "./thread-context-handler";
 import { handleWorkspaceRequest } from "./workspace-handler";
 import { loadOrCreateBridgeDeviceState } from "./secure-device-state";
 import { debugLog } from "./debug-log";
+import { createRuntimeManager } from "./runtime-manager";
 import {
   buildTransportCandidates,
   startLocalBridgeServer,
-  type LocalBridgeTransport,
 } from "./local-bridge-server";
 import { createBridgeSecureTransport } from "./secure-transport";
-
-const runtimeManagerModule = require("./runtime-manager") as {
-  createRuntimeManager: (options: {
-    sendApplicationMessage(rawMessage: string): void;
-    logPrefix?: string;
-  }) => {
-    attachCodexTransport(transport: ReturnType<typeof createCodexTransport>): void;
-    handleClientMessage(rawMessage: string): Promise<boolean>;
-    handleCodexTransportClosed(reason?: string): void;
-    handleCodexTransportMessage(rawMessage: string): void;
-    shutdown(): void;
-  };
-};
 
 const PAIRING_QR_REPRINT_INTERVAL_MS = 4 * 60 * 1000;
 
@@ -68,7 +55,7 @@ export function startBridge(): void {
   let codexRestartAttempt = 0;
   let pairingQRRefreshTimer: NodeJS.Timeout | null = null;
   let secureTransport: ReturnType<typeof createBridgeSecureTransport> | null = null;
-  const runtimeManager = runtimeManagerModule.createRuntimeManager({
+  const runtimeManager = createRuntimeManager({
     sendApplicationMessage(rawMessage) {
       sendApplicationResponse(rawMessage);
     },
@@ -98,7 +85,7 @@ export function startBridge(): void {
         onApplicationMessage(plaintextMessage) {
           handleApplicationMessage(plaintextMessage);
         },
-      } as unknown as Parameters<typeof secureTransport.handleIncomingWireMessage>[1]);
+      });
     },
   });
   const transportCandidates = buildTransportCandidates({
@@ -254,7 +241,7 @@ export function startBridge(): void {
 
   function printFreshPairingQR(): void {
     if (secureTransport) {
-      printQR(secureTransport.createPairingPayload() as unknown as PairingPayloadShape);
+      printQR(secureTransport.createPairingPayload());
     }
   }
 
