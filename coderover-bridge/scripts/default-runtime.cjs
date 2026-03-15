@@ -55,10 +55,23 @@ function runStart() {
 
 function runTests() {
   runBuild();
+  const compiledTestDir = path.join(projectRoot, "dist", "test");
+  const compiledTestFiles = fs.existsSync(compiledTestDir)
+    ? fs.readdirSync(compiledTestDir)
+        .filter((entry) => entry.endsWith(".test.js"))
+        .sort()
+        .map((entry) => path.join("dist", "test", entry))
+    : [];
+
+  if (compiledTestFiles.length === 0) {
+    console.error(`[coderover] Could not find compiled bridge tests in ${compiledTestDir}`);
+    process.exit(1);
+  }
+
   const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "coderover-test-home-"));
   run(
     process.execPath,
-    ["--test", "./dist/test/*.test.js"],
+    ["--test", ...compiledTestFiles],
     {
       env: {
         ...process.env,
