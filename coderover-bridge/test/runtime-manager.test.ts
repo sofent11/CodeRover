@@ -1578,3 +1578,122 @@ test("observed Codex threads do not emit repeated thread/history/changed for unc
     fixture.cleanup();
   }
 });
+
+test("Codex overlays keep local naming while refreshing upstream preview and updatedAt", async () => {
+  const threadRef = {
+    current: buildCodexThread({
+      threadId: "codex-overlay-thread",
+      messageCount: 2,
+      turnId: "turn-overlay",
+    }),
+  };
+  const codexAdapter: any = {
+    attachTransport() {},
+    handleIncomingRaw() {},
+    handleTransportClosed() {},
+    isAvailable() {
+      return true;
+    },
+    async request(method) {
+      if (method === "initialize") {
+        return { ok: true };
+      }
+      throw new Error(`unexpected request: ${method}`);
+    },
+    notify() {},
+    sendRaw() {},
+    async collaborationModes() {
+      return {};
+    },
+    async compactThread() {
+      return {};
+    },
+    async fuzzyFileSearch() {
+      return {};
+    },
+    async interruptTurn() {
+      return {};
+    },
+    async listThreads() {
+      return {
+        threads: [{
+          id: threadRef.current.id,
+          title: threadRef.current.title,
+          preview: threadRef.current.preview,
+          createdAt: threadRef.current.createdAt,
+          updatedAt: threadRef.current.updatedAt,
+          cwd: threadRef.current.cwd,
+        }],
+      };
+    },
+    async readThread() {
+      return {
+        thread: JSON.parse(JSON.stringify(threadRef.current)),
+      };
+    },
+    async listModels() {
+      return { items: [] };
+    },
+    async listSkills() {
+      return { skills: [] };
+    },
+    async resumeThread(params) {
+      return { threadId: params.threadId, resumed: true };
+    },
+    async startThread() {
+      return {};
+    },
+    async startTurn() {
+      return {};
+    },
+    async steerTurn() {
+      return {};
+    },
+  };
+  const fixture = createManagerFixtureWithOptions({
+    codexAdapter,
+  });
+
+  try {
+    const initialRead = await request(fixture, "codex-overlay-read-1", "thread/read", {
+      threadId: threadRef.current.id,
+      includeTurns: true,
+    });
+    const initialResponse = responseById(initialRead, "codex-overlay-read-1");
+    assert.ok(initialResponse);
+    assert.equal(initialResponse.result.thread.preview, "message-2");
+
+    const renameMessages = await request(fixture, "codex-overlay-rename", "thread/name/set", {
+      threadId: threadRef.current.id,
+      name: "Pinned Codex Name",
+    });
+    const renameResponse = responseById(renameMessages, "codex-overlay-rename");
+    assert.ok(renameResponse);
+    assert.equal(renameResponse.result.thread.name, "Pinned Codex Name");
+
+    threadRef.current = buildCodexThread({
+      threadId: "codex-overlay-thread",
+      messageCount: 3,
+      turnId: "turn-overlay",
+    });
+
+    const refreshedRead = await request(fixture, "codex-overlay-read-2", "thread/read", {
+      threadId: threadRef.current.id,
+      includeTurns: true,
+    });
+    const refreshedResponse = responseById(refreshedRead, "codex-overlay-read-2");
+    assert.ok(refreshedResponse);
+    assert.equal(refreshedResponse.result.thread.name, "Pinned Codex Name");
+    assert.equal(refreshedResponse.result.thread.preview, "message-3");
+    assert.equal(refreshedResponse.result.thread.updatedAt, threadRef.current.updatedAt);
+
+    const listMessages = await request(fixture, "codex-overlay-list", "thread/list", {});
+    const listResponse = responseById(listMessages, "codex-overlay-list");
+    assert.ok(listResponse);
+    assert.equal(listResponse.result.items[0].name, "Pinned Codex Name");
+    assert.equal(listResponse.result.items[0].preview, "message-3");
+    assert.equal(listResponse.result.items[0].updatedAt, threadRef.current.updatedAt);
+  } finally {
+    fixture.cleanup();
+  }
+});

@@ -29,7 +29,11 @@ jobs:
         working-directory: coderover-bridge
         run: npm ci
 
+      - name: Run bridge tests
+        working-directory: coderover-bridge
+        run: npm test
+
       - name: Verify bridge entrypoints load
         working-directory: coderover-bridge
         run: |
-          node -e "const mod = require('./src'); const names = ['startBridge', 'openLastActiveThread', 'watchThreadRollout']; for (const name of names) { if (typeof mod[name] !== 'function') { throw new Error('Missing export: ' + name); } }"
+          node -e "const mod = require('./dist'); const names = ['startBridge', 'openLastActiveThread', 'watchThreadRollout']; for (const name of names) { if (typeof mod[name] !== 'function') { throw new Error('Missing export: ' + name); } }"

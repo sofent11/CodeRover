@@ -2814,6 +2814,12 @@ export function createRuntimeManager({
   function decorateConversationThread(threadObject: RuntimeThreadShape): RuntimeThreadShape {
     const overlay = store.getThreadMeta(threadObject.id) || null;
     const providerDefinition = getRuntimeProvider("codex");
+    const upstreamCreatedAt = normalizeTimestampString(threadObject.createdAt)
+      || normalizeTimestampString(threadObject.created_at)
+      || null;
+    const upstreamUpdatedAt = normalizeTimestampString(threadObject.updatedAt)
+      || normalizeTimestampString(threadObject.updated_at)
+      || null;
     return {
       ...threadObject,
       provider: "codex",
@@ -2826,15 +2832,13 @@ export function createRuntimeManager({
       },
       title: overlay?.title || threadObject.title || null,
       name: overlay?.name || threadObject.name || null,
-      preview: overlay?.preview || threadObject.preview || null,
+      preview: threadObject.preview || overlay?.preview || null,
       cwd: overlay?.cwd || threadObject.cwd || threadObject.current_working_directory || threadObject.working_directory || null,
-      createdAt: overlay?.createdAt
-        || normalizeTimestampString(threadObject.createdAt)
-        || normalizeTimestampString(threadObject.created_at)
+      createdAt: upstreamCreatedAt
+        || overlay?.createdAt
         || new Date().toISOString(),
-      updatedAt: overlay?.updatedAt
-        || normalizeTimestampString(threadObject.updatedAt)
-        || normalizeTimestampString(threadObject.updated_at)
+      updatedAt: upstreamUpdatedAt
+        || overlay?.updatedAt
         || new Date().toISOString(),
     };
   }
