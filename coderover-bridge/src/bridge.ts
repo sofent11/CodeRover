@@ -139,6 +139,7 @@ export function startBridge(): void {
 
   function sendApplicationResponse(rawMessage: string): void {
     logBridgeFlow("bridge->phone", rawMessage);
+    debugLog(`[coderover] queue outbound application bytes=${Buffer.byteLength(rawMessage, "utf8")}`);
     secureTransport?.queueOutboundApplicationMessage(rawMessage);
   }
 

@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -33,7 +34,10 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -57,130 +61,136 @@ internal fun ComposerPrimaryToolbar(
     selectedModelTitle: String,
     selectedReasoningTitle: String,
     reasoningOptions: List<String>,
+    reasoningMenuDisabled: Boolean,
     supportsPlanMode: Boolean,
     isRunning: Boolean,
-    sendEnabled: Boolean,
+    isSendDisabled: Boolean,
     queuedCount: Int,
     isQueuePaused: Boolean,
     canResumeQueue: Boolean,
     isResumingQueue: Boolean,
     remainingAttachmentSlots: Int,
+    isLoadingModels: Boolean,
     onSelectModel: (String?) -> Unit,
     onSelectReasoning: (String?) -> Unit,
     onTapAddImage: () -> Unit,
     onTapTakePhoto: () -> Unit,
-    onTapPasteImage: () -> Unit,
+    onSetPlanModeArmed: (Boolean) -> Unit,
     onResumeQueue: () -> Unit,
+    onStop: (String?) -> Unit,
     onSend: () -> Unit,
-    onStop: () -> Unit,
+    activeTurnId: String? = null,
 ) {
     val haptic = HapticFeedback.rememberHapticFeedback()
+    val orderedReasoningOptions = remember(reasoningOptions) {
+        orderedReasoningOptions(reasoningOptions)
+    }
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(top = 8.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
+            .padding(horizontal = 16.dp)
+            .padding(top = 10.dp, bottom = 10.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        IconButton(
-            onClick = {
-                haptic.triggerImpactFeedback()
-                turnViewModel.plusMenuExpanded = true
-            },
-            enabled = !isRunning,
-            modifier = Modifier.size(32.dp),
-        ) {
+        // Attachment menu
+        Box {
             Icon(
                 Icons.Outlined.Add,
-                contentDescription = "Composer options",
+                contentDescription = "Attachment and plan options",
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier
+                    .size(22.dp)
+                    .clickable(enabled = !isRunning) {
+                        haptic.triggerImpactFeedback()
+                        turnViewModel.plusMenuExpanded = true
+                    }
             )
             DropdownMenu(
                 expanded = turnViewModel.plusMenuExpanded,
                 onDismissRequest = { turnViewModel.plusMenuExpanded = false },
             ) {
-                DropdownMenuItem(
-                    text = {
-                        Text(
-                            if (remainingAttachmentSlots > 0) {
-                                "Add Image"
-                            } else {
-                                "Image Limit Reached"
-                            },
-                        )
-                    },
-                    enabled = remainingAttachmentSlots > 0,
-                    onClick = {
-                        onTapAddImage()
-                        turnViewModel.plusMenuExpanded = false
-                    },
-                )
-                DropdownMenuItem(
-                    text = {
-                        Text(
-                            if (remainingAttachmentSlots > 0) {
-                                "Take Photo"
-                            } else {
-                                "Image Limit Reached"
-                            },
-                        )
-                    },
-                    enabled = remainingAttachmentSlots > 0,
-                    onClick = {
-                        onTapTakePhoto()
-                        turnViewModel.plusMenuExpanded = false
-                    },
-                )
-                DropdownMenuItem(
-                    text = {
-                        Text(
-                            if (remainingAttachmentSlots > 0) {
-                                "Paste Image"
-                            } else {
-                                "Image Limit Reached"
-                            },
-                        )
-                    },
-                    enabled = remainingAttachmentSlots > 0,
-                    onClick = {
-                        onTapPasteImage()
-                        turnViewModel.plusMenuExpanded = false
-                    },
-                )
                 if (supportsPlanMode) {
                     DropdownMenuItem(
-                        text = { Text(if (turnViewModel.isPlanModeArmed) "Disable Plan Mode" else "Enable Plan Mode") },
+                        text = { Text("Plan mode") },
                         leadingIcon = {
+                            Icon(
+                                androidx.compose.ui.res.painterResource(id = android.R.drawable.ic_menu_agenda),
+                                contentDescription = null
+                            )
+                        },
+                        trailingIcon = {
                             if (turnViewModel.isPlanModeArmed) {
                                 Icon(Icons.Outlined.Check, contentDescription = null)
                             }
                         },
                         onClick = {
-                            turnViewModel.togglePlanMode()
+                            haptic.triggerImpactFeedback(style = HapticFeedback.Style.LIGHT)
+                            onSetPlanModeArmed(!turnViewModel.isPlanModeArmed)
                             turnViewModel.plusMenuExpanded = false
                         },
                     )
                 } else {
                     DropdownMenuItem(
-                        text = { Text("Plan Mode Unavailable") },
+                        text = { Text("Plan mode unavailable") },
+                        leadingIcon = {
+                            Icon(
+                                androidx.compose.ui.res.painterResource(id = android.R.drawable.ic_menu_agenda),
+                                contentDescription = null
+                            )
+                        },
                         enabled = false,
                         onClick = {},
                     )
                 }
+
+                HorizontalDivider()
+
+                DropdownMenuItem(
+                    text = { Text("Photo library") },
+                    enabled = remainingAttachmentSlots > 0,
+                    onClick = {
+                        haptic.triggerImpactFeedback()
+                        onTapAddImage()
+                        turnViewModel.plusMenuExpanded = false
+                    },
+                )
+                DropdownMenuItem(
+                    text = { Text("Take a photo") },
+                    enabled = remainingAttachmentSlots > 0,
+                    onClick = {
+                        haptic.triggerImpactFeedback()
+                        onTapTakePhoto()
+                        turnViewModel.plusMenuExpanded = false
+                    },
+                )
             }
         }
 
+        // Model menu
         Box {
             ComposerMetaButton(
                 title = selectedModelTitle,
                 enabled = true,
                 onClick = { turnViewModel.modelMenuExpanded = true },
+                leadingIcon = null,
             )
             DropdownMenu(
                 expanded = turnViewModel.modelMenuExpanded,
                 onDismissRequest = { turnViewModel.modelMenuExpanded = false },
             ) {
-                if (orderedModels.isEmpty()) {
+                DropdownMenuItem(
+                    text = { Text("Select model") },
+                    enabled = false,
+                    onClick = {},
+                )
+                if (isLoadingModels) {
+                    DropdownMenuItem(
+                        text = { Text("Loading models...") },
+                        enabled = false,
+                        onClick = {},
+                    )
+                } else if (orderedModels.isEmpty()) {
                     DropdownMenuItem(
                         text = { Text("No models available") },
                         enabled = false,
@@ -196,6 +206,7 @@ internal fun ComposerPrimaryToolbar(
                                 null
                             },
                             onClick = {
+                                haptic.triggerImpactFeedback(style = HapticFeedback.Style.LIGHT)
                                 onSelectModel(model.id)
                                 turnViewModel.modelMenuExpanded = false
                             },
@@ -205,33 +216,47 @@ internal fun ComposerPrimaryToolbar(
             }
         }
 
+        // Reasoning menu
         Box {
             ComposerMetaButton(
                 title = selectedReasoningTitle,
-                enabled = true,
+                enabled = !reasoningMenuDisabled,
                 onClick = { turnViewModel.reasoningMenuExpanded = true },
+                leadingIcon = {
+                    Icon(
+                        painter = androidx.compose.ui.res.painterResource(id = android.R.drawable.ic_menu_info_details),
+                        contentDescription = null,
+                        modifier = Modifier.size(12.dp)
+                    )
+                },
             )
             DropdownMenu(
                 expanded = turnViewModel.reasoningMenuExpanded,
                 onDismissRequest = { turnViewModel.reasoningMenuExpanded = false },
             ) {
-                if (reasoningOptions.isEmpty()) {
+                DropdownMenuItem(
+                    text = { Text("Select reasoning") },
+                    enabled = false,
+                    onClick = {},
+                )
+                if (orderedReasoningOptions.isEmpty()) {
                     DropdownMenuItem(
                         text = { Text("No reasoning options") },
                         enabled = false,
                         onClick = {},
                     )
                 } else {
-                    reasoningOptions.forEach { effort ->
+                    orderedReasoningOptions.forEach { option ->
                         DropdownMenuItem(
-                            text = { Text(composerReasoningTitle(effort)) },
-                            leadingIcon = if (state.selectedReasoningEffort == effort) {
+                            text = { Text(option.title) },
+                            leadingIcon = if (state.selectedReasoningEffort == option.effort) {
                                 { Icon(Icons.Outlined.Check, contentDescription = null) }
                             } else {
                                 null
                             },
                             onClick = {
-                                onSelectReasoning(effort)
+                                haptic.triggerImpactFeedback(style = HapticFeedback.Style.LIGHT)
+                                onSelectReasoning(option.effort)
                                 turnViewModel.reasoningMenuExpanded = false
                             },
                         )
@@ -249,19 +274,19 @@ internal fun ComposerPrimaryToolbar(
                     .background(MaterialTheme.colorScheme.outlineVariant)
             )
             Row(
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                horizontalArrangement = Arrangement.spacedBy(5.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.padding(vertical = 6.dp, horizontal = 4.dp)
             ) {
                 Icon(
-                    androidx.compose.ui.res.painterResource(id = android.R.drawable.ic_menu_edit),
+                    androidx.compose.ui.res.painterResource(id = android.R.drawable.ic_menu_agenda),
                     contentDescription = null,
                     tint = PlanAccent,
                     modifier = Modifier.size(12.dp)
                 )
                 Text(
                     text = "Plan",
-                    style = MaterialTheme.typography.bodySmall,
+                    style = MaterialTheme.typography.labelMedium,
                     color = PlanAccent,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
@@ -269,39 +294,23 @@ internal fun ComposerPrimaryToolbar(
             }
         }
 
-        Spacer(Modifier.weight(1f))
-
-        state.contextWindowUsage?.let { usage ->
-            ContextWindowProgressRing(
-                usage = usage,
-            )
-        }
-        Spacer(Modifier.width(4.dp))
+        Spacer(modifier = Modifier.weight(1f))
 
         if (isQueuePaused && queuedCount > 0) {
             IconButton(
-                onClick = onResumeQueue,
-                enabled = canResumeQueue,
+                onClick = {
+                    haptic.triggerImpactFeedback(style = HapticFeedback.Style.LIGHT)
+                    onResumeQueue()
+                },
                 modifier = Modifier
-                    .size(32.dp)
-                    .background(
-                        if (canResumeQueue) {
-                            MaterialTheme.colorScheme.tertiary
-                        } else {
-                            MaterialTheme.colorScheme.surfaceVariant
-                        },
-                        CircleShape,
-                    ),
+                    .size(28.dp)
+                    .background(Color(0xFFFF9800), CircleShape),
             ) {
                 Icon(
                     Icons.Outlined.Refresh,
-                    contentDescription = if (isResumingQueue) "Resuming queued drafts" else "Resume queued drafts",
-                    tint = if (canResumeQueue) {
-                        MaterialTheme.colorScheme.onTertiary
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)
-                    },
-                    modifier = Modifier.size(16.dp),
+                    contentDescription = "Resume queued messages",
+                    tint = MaterialTheme.colorScheme.surface,
+                    modifier = Modifier.size(12.dp),
                 )
             }
         }
@@ -309,61 +318,124 @@ internal fun ComposerPrimaryToolbar(
         if (isRunning) {
             IconButton(
                 onClick = {
-                    haptic.triggerImpactFeedback(HapticFeedback.Style.MEDIUM)
-                    onStop()
+                    haptic.triggerImpactFeedback()
+                    onStop(activeTurnId)
                 },
                 modifier = Modifier
-                    .size(40.dp)
+                    .size(32.dp)
                     .background(MaterialTheme.colorScheme.onSurface, CircleShape),
             ) {
                 Icon(
                     Icons.Outlined.Close,
                     contentDescription = "Stop",
                     tint = MaterialTheme.colorScheme.surface,
-                    modifier = Modifier.size(20.dp),
+                    modifier = Modifier.size(12.dp),
                 )
             }
+        }
+
+        val sendButtonIconColor = if (isSendDisabled) {
+            MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
         } else {
-            IconButton(
-                onClick = {
-                    haptic.triggerImpactFeedback()
-                    onSend()
-                },
-                enabled = sendEnabled,
-                modifier = Modifier
-                    .size(40.dp)
-                    .background(
-                        if (sendEnabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
-                        CircleShape,
-                    ),
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Icon(
-                        Icons.AutoMirrored.Outlined.Send,
-                        contentDescription = "Send",
-                        tint = if (sendEnabled) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
-                        modifier = Modifier.size(20.dp),
+            MaterialTheme.colorScheme.surface
+        }
+        val sendButtonBackgroundColor = if (isSendDisabled) {
+            MaterialTheme.colorScheme.surfaceVariant
+        } else {
+            MaterialTheme.colorScheme.onSurface
+        }
+        IconButton(
+            onClick = {
+                haptic.triggerImpactFeedback()
+                onSend()
+            },
+            enabled = !isSendDisabled,
+            modifier = Modifier
+                .size(32.dp)
+                .background(sendButtonBackgroundColor, CircleShape),
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(
+                    Icons.AutoMirrored.Outlined.Send,
+                    contentDescription = "Send",
+                    tint = sendButtonIconColor,
+                    modifier = Modifier.size(12.dp),
+                )
+                if (queuedCount > 0) {
+                    QueueBadge(
+                        queuedCount = queuedCount,
+                        isQueuePaused = isQueuePaused,
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .offset(x = 8.dp, y = (-8).dp)
                     )
-                    if (queuedCount > 0) {
-                        Surface(
-                            modifier = Modifier
-                                .align(Alignment.TopEnd)
-                                .padding(start = 18.dp, bottom = 18.dp),
-                            shape = CircleShape,
-                            color = MaterialTheme.colorScheme.error,
-                        ) {
-                            Text(
-                                text = queuedCount.toString(),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onError,
-                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp),
-                            )
-                        }
-                    }
                 }
             }
         }
     }
+}
+
+@Composable
+private fun QueueBadge(
+    queuedCount: Int,
+    isQueuePaused: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val badgeColor = if (isQueuePaused) {
+        androidx.compose.ui.graphics.Color(0xFFFF9800)
+    } else {
+        androidx.compose.ui.graphics.Color(0xFF00BCD4)
+    }
+    Surface(
+        modifier = modifier,
+        shape = CircleShape,
+        color = badgeColor,
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+            horizontalArrangement = Arrangement.spacedBy(3.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (isQueuePaused) {
+                Icon(
+                    painter = androidx.compose.ui.res.painterResource(id = android.R.drawable.ic_media_pause),
+                    contentDescription = null,
+                    tint = androidx.compose.ui.graphics.Color.White,
+                    modifier = Modifier.size(8.dp)
+                )
+            }
+            Text(
+                text = queuedCount.toString(),
+                style = MaterialTheme.typography.labelSmall,
+                color = androidx.compose.ui.graphics.Color.White,
+            )
+        }
+    }
+}
+
+private data class ReasoningDisplayOption(
+    val effort: String,
+    val title: String,
+) {
+    val rank: Int
+        get() = when (title) {
+            "Low" -> 0
+            "Medium" -> 1
+            "High" -> 2
+            "Extra High" -> 3
+            else -> 4
+        }
+}
+
+private fun orderedReasoningOptions(efforts: List<String>): List<ReasoningDisplayOption> {
+    return efforts
+        .map { effort ->
+            ReasoningDisplayOption(
+                effort = effort,
+                title = composerReasoningTitle(effort)
+            )
+        }
+        .sortedWith(compareByDescending<ReasoningDisplayOption> { it.rank }.thenByDescending { it.title })
 }
 
 @Composable

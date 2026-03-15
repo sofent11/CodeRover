@@ -121,5 +121,5 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun compactThreadContext(threadId: String) = repository.compactThreadContext(threadId)
 
-    suspend fun performGitAction(cwd: String, action: com.coderover.android.data.model.TurnGitActionKind) = repository.performGitAction(cwd, action)
+    suspend fun performGitAction(cwd: String, action: com.coderover.android.data.model.TurnGitActionKind, threadId: String) = repository.performGitAction(cwd, action, threadId)
 }

@@ -63,6 +63,9 @@ import {
 } from "./types";
 
 type UnknownRecord = Record<string, unknown>;
+const THREAD_LIST_INITIAL_WINDOW_DAYS = 3;
+const THREAD_LIST_INITIAL_PROJECT_CAP = 10;
+const THREAD_LIST_CURSOR_VERSION = 1;
 
 interface RuntimeManager {
   attachCodexTransport(transport: unknown): void;
@@ -351,7 +354,11 @@ export function createRuntimeManager({
               observeCodexThread(threadMeta.id, { immediate: false, reason: "thread-resume" });
               return sanitizeCodexThreadResult(result);
             }
+            await getManagedProviderAdapter(threadMeta.provider).hydrateThread(threadMeta);
+            const refreshedMeta = store.getThreadMeta(threadMeta.id) || threadMeta;
+            const history = store.getThreadHistory(threadMeta.id);
             return {
+              thread: buildManagedThreadObject(refreshedMeta, history?.turns || []),
               threadId: threadMeta.id,
               resumed: true,
             };
@@ -850,50 +857,51 @@ export function createRuntimeManager({
     pageSize: number;
   }> {
     const archived = Boolean(params?.archived);
-    const coderoverPage = await listConversationThreads(params, archived);
+    const requestedLimit = normalizePositiveInteger(params?.limit) || DEFAULT_THREAD_LIST_PAGE_SIZE;
+    const cursor = decodeThreadListCursor(params?.cursor);
+    const codexThreads = await listConversationThreads(params, archived);
     const managedThreads = store.listThreadMetas()
       .filter((entry) => entry.provider !== "codex")
       .filter((entry) => Boolean(entry.archived) === archived)
       .map((entry) => buildManagedThreadObject(entry));
+    const mergedThreads = mergeThreadLists([...codexThreads, ...managedThreads])
+      .map((thread) => summarizeThreadForList(thread));
+    const page = paginateThreadList(mergedThreads, {
+      archived,
+      limit: requestedLimit,
+      cursor,
+    });
 
     return {
-      threads: mergeThreadLists([...coderoverPage.threads, ...managedThreads]),
-      nextCursor: coderoverPage.nextCursor,
-      hasMore: coderoverPage.hasMore,
-      pageSize: coderoverPage.pageSize,
+      threads: page.threads,
+      nextCursor: page.nextCursor,
+      hasMore: page.hasMore,
+      pageSize: page.pageSize,
     };
   }
 
   async function listConversationThreads(
     params: UnknownRecord,
     archived: boolean
-  ): Promise<{
-    threads: RuntimeThreadShape[];
-    nextCursor: string | number | null;
-    hasMore: boolean;
-    pageSize: number;
-  }> {
+  ): Promise<RuntimeThreadShape[]> {
     if (!codexAdapter.isAvailable()) {
-      return {
-        threads: [],
-        nextCursor: null,
-        hasMore: false,
-        pageSize: normalizePositiveInteger(params?.limit) || DEFAULT_THREAD_LIST_PAGE_SIZE,
-      };
+      return [];
     }
 
     await ensureCodexWarm();
     const normalizedParams = {
       ...stripProviderField(params || {}),
     };
-    if (normalizePositiveInteger(normalizedParams.limit) == null) {
-      normalizedParams.limit = DEFAULT_THREAD_LIST_PAGE_SIZE;
-    }
+    delete normalizedParams.cursor;
+    normalizedParams.limit = Math.max(
+      normalizePositiveInteger(normalizedParams.limit) || DEFAULT_THREAD_LIST_PAGE_SIZE,
+      500
+    );
     const result = await codexAdapter.listThreads(normalizedParams);
     const threads = extractThreadArray(result).map((thread) =>
       decorateConversationThread(asObject(thread) as RuntimeThreadShape)
     );
-    const filteredThreads = threads.filter((thread) => {
+    return threads.filter((thread) => {
       const overlay = store.getThreadMeta(thread.id);
       const overlayArchived = overlay?.archived;
       if (overlayArchived != null) {
@@ -901,13 +909,6 @@ export function createRuntimeManager({
       }
       return archived === Boolean(params?.archived);
     });
-    const nextCursor = extractThreadListCursor(result);
-    return {
-      threads: filteredThreads,
-      nextCursor,
-      hasMore: nextCursor != null,
-      pageSize: threads.length,
-    };
   }
 
   async function readThread(params: UnknownRecord): Promise<unknown> {
@@ -2834,7 +2835,9 @@ export function createRuntimeManager({
       },
       title: overlay?.title || threadObject.title || null,
       name: overlay?.name || threadObject.name || null,
-      preview: threadObject.preview || overlay?.preview || null,
+      preview: managedRuntimeHelpers.truncateThreadPreview(
+        threadObject.preview || overlay?.preview || null
+      ),
       cwd: overlay?.cwd || threadObject.cwd || threadObject.current_working_directory || threadObject.working_directory || null,
       createdAt: upstreamCreatedAt
         || overlay?.createdAt
@@ -2966,6 +2969,149 @@ function buildUpstreamHistoryWindowResponse(
       },
     }
   );
+}
+
+function summarizeThreadForList(thread: RuntimeThreadShape): RuntimeThreadShape {
+  const cwd = firstNonEmptyThreadPath([
+    thread.cwd,
+    thread.current_working_directory,
+    thread.working_directory,
+  ]);
+  return {
+    id: normalizeOptionalString(thread.id) || undefined,
+    provider: normalizeOptionalString(thread.provider) || "codex",
+    providerSessionId: normalizeOptionalString(thread.providerSessionId),
+    title: normalizeOptionalString(thread.title),
+    name: normalizeOptionalString(thread.name),
+    preview: managedRuntimeHelpers.truncateThreadPreview(thread.preview),
+    cwd,
+    createdAt: normalizeTimestampString(thread.createdAt) || null,
+    updatedAt: normalizeTimestampString(thread.updatedAt) || null,
+    capabilities: asObject(thread.capabilities),
+    metadata: summarizeThreadMetadata(thread.metadata),
+  };
+}
+
+function summarizeThreadMetadata(metadata: unknown): UnknownRecord | null {
+  const record = asObject(metadata);
+  const providerTitle = normalizeOptionalString(record?.providerTitle);
+  return providerTitle ? { providerTitle } : null;
+}
+
+function paginateThreadList(
+  threads: RuntimeThreadShape[],
+  {
+    archived,
+    limit,
+    cursor,
+  }: {
+    archived: boolean;
+    limit: number;
+    cursor: { offset: number } | null;
+  }
+): {
+  threads: RuntimeThreadShape[];
+  nextCursor: string | null;
+  hasMore: boolean;
+  pageSize: number;
+} {
+  const initialVisibleIds = archived ? new Set<string>() : buildInitialVisibleThreadIds(threads);
+  const remainingThreads = archived
+    ? threads
+    : threads.filter((thread) => !initialVisibleIds.has(normalizeOptionalString(thread.id) || ""));
+  const sourceThreads = cursor
+    ? threads.filter((thread) => !initialVisibleIds.has(normalizeOptionalString(thread.id) || ""))
+    : archived
+      ? threads
+      : threads.filter((thread) => initialVisibleIds.has(normalizeOptionalString(thread.id) || ""));
+  const offset = Math.max(0, cursor?.offset || 0);
+  const pageThreads = sourceThreads.slice(offset, offset + limit);
+  const nextOffset = offset + pageThreads.length;
+  const hasMore = cursor
+    ? nextOffset < sourceThreads.length
+    : remainingThreads.length > 0 || nextOffset < sourceThreads.length;
+
+  return {
+    threads: pageThreads,
+    nextCursor: hasMore ? encodeThreadListCursor(cursor ? nextOffset : 0) : null,
+    hasMore,
+    pageSize: pageThreads.length,
+  };
+}
+
+function buildInitialVisibleThreadIds(threads: RuntimeThreadShape[]): Set<string> {
+  const cutoffMs = Date.now() - (THREAD_LIST_INITIAL_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+  const visibleIds = new Set<string>();
+  collectInitialVisibleThreadIds(threads, visibleIds, (thread) => {
+    const updatedAt = Date.parse(normalizeTimestampString(thread.updatedAt) || "") || 0;
+    return updatedAt >= cutoffMs;
+  });
+
+  if (visibleIds.size > 0) {
+    return visibleIds;
+  }
+
+  collectInitialVisibleThreadIds(threads, visibleIds, () => true);
+  return visibleIds;
+}
+
+function collectInitialVisibleThreadIds(
+  threads: RuntimeThreadShape[],
+  visibleIds: Set<string>,
+  predicate: (thread: RuntimeThreadShape) => boolean
+): void {
+  const countsByProject = new Map<string, number>();
+
+  for (const thread of threads) {
+    const threadId = normalizeOptionalString(thread.id);
+    if (!threadId) {
+      continue;
+    }
+    if (!predicate(thread)) {
+      continue;
+    }
+    const projectKey = threadProjectKey(thread);
+    const currentCount = countsByProject.get(projectKey) || 0;
+    if (currentCount >= THREAD_LIST_INITIAL_PROJECT_CAP) {
+      continue;
+    }
+    countsByProject.set(projectKey, currentCount + 1);
+    visibleIds.add(threadId);
+  }
+}
+
+function threadProjectKey(thread: RuntimeThreadShape): string {
+  return firstNonEmptyThreadPath([
+    thread.cwd,
+    thread.current_working_directory,
+    thread.working_directory,
+  ]) || "__no_project__";
+}
+
+function firstNonEmptyThreadPath(values: unknown[]): string | null {
+  return firstNonEmptyString(values);
+}
+
+function encodeThreadListCursor(offset: number): string {
+  return Buffer.from(JSON.stringify({ v: THREAD_LIST_CURSOR_VERSION, offset }), "utf8").toString("base64url");
+}
+
+function decodeThreadListCursor(value: unknown): { offset: number } | null {
+  const normalized = normalizeOptionalString(value);
+  if (!normalized) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(Buffer.from(normalized, "base64url").toString("utf8")) as UnknownRecord;
+    const version = Number(parsed.v);
+    const offset = Number(parsed.offset);
+    if (version !== THREAD_LIST_CURSOR_VERSION || !Number.isInteger(offset) || offset < 0) {
+      return null;
+    }
+    return { offset };
+  } catch {
+    return null;
+  }
 }
 
 function sanitizeThreadHistoryForTransport(thread: RuntimeThreadShape | null): RuntimeThreadShape | null {

@@ -624,6 +624,7 @@ data class AppState(
     val gitRepoSyncByThread: Map<String, GitRepoSyncResult> = emptyMap(),
     val gitBranchTargetsByThread: Map<String, GitBranchTargets> = emptyMap(),
     val selectedGitBaseBranchByThread: Map<String, String> = emptyMap(),
+    val runningGitActionByThread: Map<String, TurnGitActionKind> = emptyMap(),
     val contextWindowUsageByThread: Map<String, ContextWindowUsage> = emptyMap(),
     val rateLimitBuckets: List<CodeRoverRateLimitBucket> = emptyList(),
     val isLoadingRateLimits: Boolean = false,
@@ -670,6 +671,22 @@ data class AppState(
 
     val activeRuntimeCapabilities: RuntimeCapabilities
         get() = selectedThread?.capabilities ?: activeRuntimeProvider.supports
+
+    val runningGitAction: TurnGitActionKind?
+        get() = selectedThreadId?.let(runningGitActionByThread::get)
+
+    val isRunningGitAction: Boolean
+        get() = runningGitAction != null
+
+    val gitSyncState: String?
+        get() = gitRepoSyncResult?.state
+
+    val shouldShowDiscardRuntimeChangesAndSync: Boolean
+        get() {
+            val sync = gitRepoSyncResult ?: return false
+            val dangerousStates = setOf("dirty", "dirty_and_behind", "diverged")
+            return dangerousStates.contains(sync.state) || (sync.isDirty && sync.state == "no_upstream")
+        }
 }
 
 @Serializable
@@ -797,12 +814,12 @@ data class GitBranchTargets(
 )
 
 enum class TurnGitActionKind(val title: String) {
-    SYNC_NOW("Sync"),
+    SYNC_NOW("Update"),
     COMMIT("Commit"),
     PUSH("Push"),
     COMMIT_AND_PUSH("Commit & Push"),
     CREATE_PR("Create PR"),
-    DISCARD_LOCAL_CHANGES("Discard Runtime Changes & Sync")
+    DISCARD_LOCAL_CHANGES("Discard Local Changes")
 }
 
 @Serializable

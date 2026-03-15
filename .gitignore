@@ -46,3 +46,4 @@ build/
 # VS Code
 .vscode/
 .deriveddata-device/
+coderover-bridge/dist/

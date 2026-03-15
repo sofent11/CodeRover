@@ -31,30 +31,37 @@ internal fun ComposerMetaButton(
     title: String,
     enabled: Boolean,
     onClick: () -> Unit,
+    leadingIcon: (@Composable () -> Unit)? = null,
 ) {
+    val metaLabelColor = MaterialTheme.colorScheme.onSurfaceVariant
     Surface(
         onClick = onClick,
         enabled = enabled,
         shape = RoundedCornerShape(8.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+        color = androidx.compose.ui.graphics.Color.Transparent,
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+            modifier = Modifier.padding(horizontal = 4.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
+            if (leadingIcon != null) {
+                leadingIcon()
+            }
+
             Text(
                 text = title,
                 style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = metaLabelColor,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
+
             Icon(
                 Icons.Default.KeyboardArrowDown,
                 contentDescription = null,
-                modifier = Modifier.size(14.dp),
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(9.dp),
+                tint = metaLabelColor,
             )
         }
     }

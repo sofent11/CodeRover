@@ -143,6 +143,7 @@ export interface ManagedProviderAdapter {
 export interface ManagedProviderAdapterFactoryOptions {
   store: RuntimeStore;
   logPrefix?: string;
+  sdkLoader?: () => Promise<unknown>;
 }
 
 export interface RuntimeNormalizedPlanState extends PlanModeStateShape {}

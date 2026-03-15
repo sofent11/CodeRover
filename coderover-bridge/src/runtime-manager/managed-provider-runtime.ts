@@ -11,6 +11,7 @@ import type { RuntimeThreadShape } from "../bridge-types";
 type ProviderDefinition = ReturnType<RuntimeThreadMetaHelpers["getRuntimeProvider"]>;
 type ProviderResolver = (value: unknown) => string;
 type NormalizePositiveInteger = (value: unknown) => number | null;
+const THREAD_LIST_PREVIEW_LIMIT = 600;
 
 export function buildProviderMetadata(
   provider: unknown,
@@ -54,7 +55,7 @@ export function buildManagedThreadObject(
     id: threadMeta.id,
     title: threadMeta.title,
     name: threadMeta.name,
-    preview: threadMeta.preview,
+    preview: truncateThreadPreview(threadMeta.preview),
     createdAt: threadMeta.createdAt,
     updatedAt: threadMeta.updatedAt,
     cwd: threadMeta.cwd,
@@ -67,6 +68,20 @@ export function buildManagedThreadObject(
     },
     ...(Array.isArray(turns) ? { turns } : {}),
   };
+}
+
+export function truncateThreadPreview(preview: unknown): string | null {
+  if (typeof preview !== "string") {
+    return null;
+  }
+  const normalized = preview.trim();
+  if (!normalized) {
+    return null;
+  }
+  if (normalized.length <= THREAD_LIST_PREVIEW_LIMIT) {
+    return normalized;
+  }
+  return `${normalized.slice(0, THREAD_LIST_PREVIEW_LIMIT - 1)}…`;
 }
 
 export function buildThreadListResult(

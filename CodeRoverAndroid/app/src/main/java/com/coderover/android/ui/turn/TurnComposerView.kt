@@ -208,6 +208,7 @@ internal fun TurnComposerView(
                     sendEnabled = presentation.canSend,
                 )
 
+                val reasoningMenuDisabled = !supportsReasoningOptions || reasoningOptions.isEmpty() || selectedModel == null
                 ComposerPrimaryToolbar(
                     state = state,
                     turnViewModel = turnViewModel,
@@ -216,19 +217,21 @@ internal fun TurnComposerView(
                     selectedModelTitle = selectedModelTitle,
                     selectedReasoningTitle = selectedReasoningTitle,
                     reasoningOptions = if (supportsReasoningOptions) reasoningOptions else emptyList(),
+                    reasoningMenuDisabled = reasoningMenuDisabled,
                     supportsPlanMode = supportsPlanMode,
                     isRunning = isRunning,
-                    sendEnabled = presentation.canSend,
+                    isSendDisabled = !presentation.canSend,
                     queuedCount = queuePresentation.draftCount,
                     isQueuePaused = queuePresentation.isPaused,
                     canResumeQueue = queuePresentation.canResume,
                     isResumingQueue = queuePresentation.isResuming,
                     remainingAttachmentSlots = turnViewModel.remainingAttachmentSlots,
+                    isLoadingModels = false,
                     onSelectModel = onSelectModel,
                     onSelectReasoning = onSelectReasoning,
                     onTapAddImage = onTapAddImage,
                     onTapTakePhoto = onTapTakePhoto,
-                    onTapPasteImage = onTapPasteImage,
+                    onSetPlanModeArmed = { turnViewModel.isPlanModeArmed = it },
                     onResumeQueue = {
                         if (threadIdForQueue != null) {
                             coroutineScope.launch {
@@ -239,6 +242,7 @@ internal fun TurnComposerView(
                             }
                         }
                     },
+                    onStop = { _ -> onStop() },
                     onSend = {
                         if (!presentation.canSend) {
                             return@ComposerPrimaryToolbar
@@ -265,7 +269,7 @@ internal fun TurnComposerView(
                         }
                         turnViewModel.clearComposerSelections()
                     },
-                    onStop = onStop,
+                    activeTurnId = null,
                 )
             }
         }

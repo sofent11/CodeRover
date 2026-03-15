@@ -101,7 +101,7 @@ function readBridgeDeviceState(): BridgeDeviceStateWithMigrationFlag | null {
 
   const fileState = readBridgeDeviceStateRecord(readFileStoredDeviceStateString());
   if (fileState) {
-    if (process.platform === "darwin") {
+    if (isKeychainAvailable()) {
       writeKeychainStateString(JSON.stringify(stripMigrationMarker(fileState), null, 2));
     }
     return fileState;
@@ -134,13 +134,13 @@ function writeBridgeDeviceState(state: BridgeDeviceState): void {
     // Best-effort only on filesystems that support POSIX modes.
   }
 
-  if (process.platform === "darwin") {
+  if (isKeychainAvailable()) {
     writeKeychainStateString(serialized);
   }
 }
 
 function readKeychainStoredDeviceStateString(): string | null {
-  if (process.platform !== "darwin") {
+  if (!isKeychainAvailable()) {
     return null;
   }
 
@@ -196,6 +196,9 @@ export function decodeStoredDeviceStateString(value: unknown): string | null {
 }
 
 function writeKeychainStateString(value: string): boolean {
+  if (!isKeychainAvailable()) {
+    return false;
+  }
   try {
     execFileSync(
       "security",
@@ -223,8 +226,8 @@ function normalizeBridgeDeviceState(rawState: unknown): BridgeDeviceStateWithMig
     : {};
   const rawBridgeId = normalizeNonEmptyString(record.bridgeId);
   const rawMacDeviceId = normalizeNonEmptyString(record.macDeviceId);
-  const bridgeId = isCanonicalUUID(rawBridgeId) ? rawBridgeId : randomUUID();
-  const macDeviceId = isCanonicalUUID(rawMacDeviceId) ? rawMacDeviceId : randomUUID();
+  const bridgeId = rawBridgeId || randomUUID();
+  const macDeviceId = rawMacDeviceId || randomUUID();
   const macIdentityPublicKey = normalizeNonEmptyString(record.macIdentityPublicKey);
   const macIdentityPrivateKey = normalizeNonEmptyString(record.macIdentityPrivateKey);
 
@@ -278,6 +281,15 @@ function looksLikeHexEncodedUTF8(value: string): boolean {
 
 function isCanonicalUUID(value: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value.trim());
+}
+
+function isKeychainAvailable(): boolean {
+  return process.platform === "darwin" && !isTruthyEnv(process.env.CODEROVER_DISABLE_KEYCHAIN);
+}
+
+function isTruthyEnv(value: unknown): boolean {
+  const normalized = normalizeNonEmptyString(value).toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
 }
 
 function stripMigrationMarker(state: BridgeDeviceStateWithMigrationFlag): BridgeDeviceState {

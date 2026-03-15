@@ -113,6 +113,48 @@ final class ThreadHistoryStateTests: XCTestCase {
         XCTAssertEqual(service.historyStateByThread[threadID]?.newestCursor, "cursor-120")
     }
 
+    func testManagedThreadUpdatedAtAdvanceInvalidatesCachedHistory() {
+        let service = makeService()
+        let threadID = "thread-managed-stale-history"
+        let oldUpdatedAt = Date(timeIntervalSince1970: 100)
+        let newUpdatedAt = Date(timeIntervalSince1970: 200)
+
+        service.threads = [
+            ConversationThread(
+                id: threadID,
+                title: "Claude Thread",
+                updatedAt: oldUpdatedAt,
+                provider: "claude"
+            ),
+        ]
+        service.messagesByThread[threadID] = makeMessages(threadID: threadID, range: 1 ... 3)
+        service.historyStateByThread[threadID] = ThreadHistoryState(
+            oldestCursor: "cursor-1",
+            newestCursor: "cursor-3",
+            hasOlderOnServer: false,
+            hasNewerOnServer: false
+        )
+        service.hydratedThreadIDs.insert(threadID)
+        service.resumedThreadIDs.insert(threadID)
+        service.loadingThreadIDs.insert(threadID)
+
+        service.reconcileLocalThreadsWithServer([
+            ConversationThread(
+                id: threadID,
+                title: "Claude Thread",
+                updatedAt: newUpdatedAt,
+                provider: "claude"
+            ),
+        ])
+
+        XCTAssertFalse(service.hydratedThreadIDs.contains(threadID))
+        XCTAssertFalse(service.resumedThreadIDs.contains(threadID))
+        XCTAssertFalse(service.loadingThreadIDs.contains(threadID))
+        XCTAssertNil(service.historyStateByThread[threadID])
+        XCTAssertEqual(service.threads.first?.updatedAt, newUpdatedAt)
+        XCTAssertEqual(service.messagesByThread[threadID]?.map(\.itemId), ["item-1", "item-2", "item-3"])
+    }
+
     func testIncomingDeltaAppendsDirectlyWhenPreviousCursorMatchesTail() async throws {
         let service = makeService()
         let threadID = "thread-direct-append"

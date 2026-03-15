@@ -1300,24 +1300,29 @@ class CodeRoverRepository(context: Context) {
         activeClient().sendRequest("git/commit", params)
     }
     
-    suspend fun performGitAction(cwd: String, action: com.coderover.android.data.model.TurnGitActionKind) {
+    suspend fun performGitAction(cwd: String, action: com.coderover.android.data.model.TurnGitActionKind, threadId: String) {
         val params = buildJsonObject("cwd" to JsonPrimitive(cwd))
-        when (action) {
-            com.coderover.android.data.model.TurnGitActionKind.DISCARD_LOCAL_CHANGES -> {
-                activeClient().sendRequest("git/discard", params)
-                activeClient().sendRequest("git/sync", params)
-            }
-            else -> {
-                val method = when (action) {
-                    com.coderover.android.data.model.TurnGitActionKind.SYNC_NOW -> "git/sync"
-                    com.coderover.android.data.model.TurnGitActionKind.PUSH -> "git/push"
-                    com.coderover.android.data.model.TurnGitActionKind.COMMIT -> "git/commit"
-                    com.coderover.android.data.model.TurnGitActionKind.COMMIT_AND_PUSH -> "git/commitAndPush"
-                    com.coderover.android.data.model.TurnGitActionKind.CREATE_PR -> "git/createPR"
-                    com.coderover.android.data.model.TurnGitActionKind.DISCARD_LOCAL_CHANGES -> error("unreachable")
+        updateState { copy(runningGitActionByThread = runningGitActionByThread + (threadId to action)) }
+        try {
+            when (action) {
+                com.coderover.android.data.model.TurnGitActionKind.DISCARD_LOCAL_CHANGES -> {
+                    activeClient().sendRequest("git/discard", params)
+                    activeClient().sendRequest("git/sync", params)
                 }
-                activeClient().sendRequest(method, params)
+                else -> {
+                    val method = when (action) {
+                        com.coderover.android.data.model.TurnGitActionKind.SYNC_NOW -> "git/sync"
+                        com.coderover.android.data.model.TurnGitActionKind.PUSH -> "git/push"
+                        com.coderover.android.data.model.TurnGitActionKind.COMMIT -> "git/commit"
+                        com.coderover.android.data.model.TurnGitActionKind.COMMIT_AND_PUSH -> "git/commitAndPush"
+                        com.coderover.android.data.model.TurnGitActionKind.CREATE_PR -> "git/createPR"
+                        com.coderover.android.data.model.TurnGitActionKind.DISCARD_LOCAL_CHANGES -> error("unreachable")
+                    }
+                    activeClient().sendRequest(method, params)
+                }
             }
+        } finally {
+            updateState { copy(runningGitActionByThread = runningGitActionByThread - threadId) }
         }
     }
 

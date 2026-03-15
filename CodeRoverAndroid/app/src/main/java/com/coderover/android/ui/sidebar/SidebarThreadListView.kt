@@ -3,6 +3,7 @@ package com.coderover.android.ui.sidebar
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -19,7 +20,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Archive
 import androidx.compose.material.icons.outlined.Delete
@@ -29,7 +30,6 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -46,7 +46,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.sp
 import com.coderover.android.data.model.ThreadSummary
 import com.coderover.android.data.model.ThreadRunBadgeState
 import com.coderover.android.data.model.ThreadSyncState
@@ -54,7 +53,6 @@ import com.coderover.android.ui.shared.HapticFeedback
 import com.coderover.android.ui.shared.relativeTimeLabel
 import com.coderover.android.ui.shared.StatusTag
 import com.coderover.android.ui.theme.Danger
-import com.coderover.android.ui.theme.PlanAccent
 import com.coderover.android.ui.theme.monoFamily
 import com.coderover.android.ui.turn.TurnSessionDiffTotals
 
@@ -148,13 +146,21 @@ fun SidebarThreadListView(
                                 )
                             }
                             if (group.hasMoreThreads) {
-                                TextButton(
-                                    onClick = { onLoadMoreProjectGroup(group) },
+                                val haptic = HapticFeedback.rememberHapticFeedback()
+                                androidx.compose.foundation.layout.Box(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .padding(start = 8.dp, end = 8.dp, bottom = 6.dp),
+                                        .clickable {
+                                            haptic.triggerImpactFeedback()
+                                            onLoadMoreProjectGroup(group)
+                                        }
+                                        .padding(horizontal = 18.dp, vertical = 8.dp),
                                 ) {
-                                    Text("More")
+                                    Text(
+                                        text = "More",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
                                 }
                             }
                         }
@@ -212,22 +218,23 @@ private fun SidebarProjectGroupHeader(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .combinedClickable(
-                onClick = {
-                    haptic.triggerImpactFeedback()
-                    onToggle()
-                },
-                onLongClick = {
-                    haptic.triggerImpactFeedback(HapticFeedback.Style.MEDIUM)
-                    onToggle()
-                },
-            )
-            .padding(horizontal = 16.dp, vertical = 10.dp),
+            .padding(start = 16.dp, top = 18.dp, end = 16.dp, bottom = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Row(
-            modifier = Modifier.weight(1f),
+            modifier = Modifier
+                .weight(1f)
+                .combinedClickable(
+                    onClick = {
+                        haptic.triggerImpactFeedback()
+                        onToggle()
+                    },
+                    onLongClick = {
+                        haptic.triggerImpactFeedback(HapticFeedback.Style.MEDIUM)
+                        onToggle()
+                    },
+                ),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
@@ -240,15 +247,8 @@ private fun SidebarProjectGroupHeader(
                 text = label,
                 style = MaterialTheme.typography.bodyMedium,
                 fontWeight = FontWeight.SemiBold,
-                modifier = Modifier.weight(1f),
-            )
-            Icon(
-                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier
-                    .size(18.dp)
-                    .graphicsLayer { rotationZ = if (expanded) 90f else 0f },
+                maxLines = 1,
+                modifier = Modifier.weight(1f, fill = false),
             )
         }
         Icon(
@@ -257,7 +257,10 @@ private fun SidebarProjectGroupHeader(
             tint = MaterialTheme.colorScheme.onSurface,
             modifier = Modifier
                 .size(30.dp)
-                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f), RoundedCornerShape(999.dp))
+                .background(
+                    MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f),
+                    RoundedCornerShape(999.dp)
+                )
                 .padding(6.dp)
                 .combinedClickable(
                     onClick = {
@@ -279,11 +282,21 @@ private fun SidebarArchivedGroupHeader(
     expanded: Boolean,
     onToggle: () -> Unit,
 ) {
+    val haptic = HapticFeedback.rememberHapticFeedback()
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .combinedClickable(onClick = onToggle, onLongClick = onToggle)
-            .padding(horizontal = 16.dp, vertical = 10.dp),
+            .combinedClickable(
+                onClick = {
+                    haptic.triggerImpactFeedback()
+                    onToggle()
+                },
+                onLongClick = {
+                    haptic.triggerImpactFeedback(HapticFeedback.Style.LIGHT)
+                    onToggle()
+                },
+            )
+            .padding(start = 16.dp, top = 18.dp, end = 16.dp, bottom = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
@@ -296,10 +309,12 @@ private fun SidebarArchivedGroupHeader(
             text = "Archived",
             style = MaterialTheme.typography.bodyMedium,
             fontWeight = FontWeight.SemiBold,
-            modifier = Modifier.weight(1f),
+            maxLines = 1,
+            modifier = Modifier.weight(1f, fill = false),
         )
+        Spacer(modifier = Modifier.weight(1f))
         Icon(
-            imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+            imageVector = Icons.AutoMirrored.Outlined.KeyboardArrowRight,
             contentDescription = null,
             tint = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier
@@ -326,9 +341,17 @@ private fun SidebarThreadRowView(
 ) {
     val haptic = HapticFeedback.rememberHapticFeedback()
     Box {
-        Row(
+        androidx.compose.foundation.layout.Box(
             modifier = Modifier
-                .fillMaxWidth()
+                .padding(horizontal = 16.dp)
+                .background(
+                    if (isSelected) {
+                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.8f)
+                    } else {
+                        Color.Transparent
+                    },
+                    shape = RoundedCornerShape(14.dp),
+                )
                 .combinedClickable(
                     onClick = {
                         haptic.triggerImpactFeedback()
@@ -339,73 +362,57 @@ private fun SidebarThreadRowView(
                         onExpandMenu()
                     },
                 )
-                .background(
-                    if (isSelected) MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.32f) else Color.Transparent,
-                )
-                .padding(vertical = 12.dp),
-            verticalAlignment = Alignment.Top,
+                .padding(vertical = 12.dp, horizontal = 16.dp),
         ) {
-            Box(
-                modifier = Modifier
-                    .width(2.dp)
-                    .height(52.dp)
-                    .background(
-                        if (isSelected) MaterialTheme.colorScheme.primary else Color.Transparent,
-                    ),
-            )
-            Column(
-                modifier = Modifier
-                    .weight(1f)
-                    .padding(start = 14.dp, end = 16.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.weight(1f),
                 ) {
                     if (runBadgeState != null) {
                         SidebarThreadRunBadgeView(state = runBadgeState)
                     }
                     Text(
                         text = thread.displayTitle,
-                        style = MaterialTheme.typography.bodyLarge,
+                        style = MaterialTheme.typography.bodyMedium,
                         fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f),
+                        color = MaterialTheme.colorScheme.onSurface,
                     )
-                    relativeTimeLabel(thread.updatedAt ?: thread.createdAt)?.let { label ->
-                        Text(
-                            text = label,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
                 }
 
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                // Status badges on the right
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
                     StatusTag(
                         text = thread.providerBadgeTitle,
-                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.75f),
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant,
                         contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     if (thread.syncState == ThreadSyncState.ARCHIVED_LOCAL) {
                         Text(
                             text = "Archived",
-                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Medium),
-                            color = MaterialTheme.colorScheme.tertiary,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Medium,
+                            color = androidx.compose.ui.graphics.Color(0xFFFF9800),
                             modifier = Modifier
                                 .background(
-                                    MaterialTheme.colorScheme.tertiary.copy(alpha = 0.12f),
+                                    androidx.compose.ui.graphics.Color(0xFFFF9800).copy(alpha = 0.12f),
                                     RoundedCornerShape(999.dp),
                                 )
-                                .padding(horizontal = 6.dp, vertical = 2.dp),
+                                .padding(horizontal = 5.dp, vertical = 2.dp),
                         )
                     }
-
                     if (diffTotals != null) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(3.dp)) {
                             Text(
                                 text = "+${diffTotals.additions}",
                                 style = MaterialTheme.typography.labelSmall.copy(fontFamily = monoFamily),
@@ -418,25 +425,14 @@ private fun SidebarThreadRowView(
                             )
                         }
                     }
-
-                    Text(
-                        text = thread.projectDisplayName,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f),
-                    )
-                }
-
-                thread.preview?.takeIf { it.isNotBlank() }?.let { preview ->
-                    Text(
-                        text = preview.replace('\n', ' '),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = if (isSelected) 2 else 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
+                    relativeTimeLabel(thread.updatedAt ?: thread.createdAt)?.let { label ->
+                        Text(
+                            text = label,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                        )
+                    }
                 }
             }
         }

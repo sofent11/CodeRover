@@ -3,8 +3,10 @@ package com.coderover.android.ui.screens
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
@@ -121,6 +123,7 @@ fun SidebarScreen(
                     }
                 },
             )
+            Spacer(modifier = Modifier.height(6.dp))
             SidebarThreadListView(
                 groups = groups,
                 selectedThreadId = state.selectedThreadId,

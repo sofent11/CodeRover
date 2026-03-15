@@ -1,17 +1,17 @@
 package com.coderover.android.ui.turn
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Tune
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -26,8 +26,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
+import com.coderover.android.R
 import com.coderover.android.data.model.ContextWindowUsage
 import com.coderover.android.data.model.GitDiffTotals
 import com.coderover.android.data.model.GitRepoSyncResult
@@ -37,6 +40,9 @@ import com.coderover.android.ui.theme.monoFamily
 @Composable
 internal fun TurnTopBarActions(
     gitRepoSyncResult: GitRepoSyncResult?,
+    gitSyncState: String?,
+    isRunningGitAction: Boolean,
+    showsDiscardRuntimeChangesAndSync: Boolean,
     contextWindowUsage: ContextWindowUsage?,
     enabled: Boolean,
     onShowRepoDiff: () -> Unit,
@@ -62,6 +68,9 @@ internal fun TurnTopBarActions(
         if (gitRepoSyncResult != null) {
             TurnGitActionsMenu(
                 gitRepoSyncResult = gitRepoSyncResult,
+                gitSyncState = gitSyncState,
+                isRunningGitAction = isRunningGitAction,
+                showsDiscardRuntimeChangesAndSync = showsDiscardRuntimeChangesAndSync,
                 enabled = enabled,
                 onSelect = onSelectGitAction,
             )
@@ -75,12 +84,15 @@ private fun TurnToolbarDiffPill(
     onClick: () -> Unit,
 ) {
     Surface(
-        onClick = onClick,
-        shape = RoundedCornerShape(999.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
-        modifier = Modifier.padding(end = 8.dp),
+        modifier = Modifier
+            .padding(end = 10.dp)
+            .clickable(onClick = onClick),
+        shape = CircleShape,
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f),
     ) {
-        Row(modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)) {
+        Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+        ) {
             Text(
                 text = "+${totals.additions}",
                 color = MaterialTheme.colorScheme.primary,
@@ -105,6 +117,9 @@ private fun TurnToolbarDiffPill(
 @Composable
 private fun TurnGitActionsMenu(
     gitRepoSyncResult: GitRepoSyncResult,
+    gitSyncState: String?,
+    isRunningGitAction: Boolean,
+    showsDiscardRuntimeChangesAndSync: Boolean,
     enabled: Boolean,
     onSelect: (TurnGitActionKind) -> Unit,
 ) {
@@ -114,25 +129,55 @@ private fun TurnGitActionsMenu(
             shape = CircleShape,
             color = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f),
         ) {
-            IconButton(onClick = { expanded = true }) {
+            IconButton(
+                onClick = { expanded = true },
+                enabled = enabled,
+            ) {
                 Box(contentAlignment = Alignment.Center) {
-                    Icon(
-                        imageVector = Icons.Outlined.Tune,
-                        contentDescription = "Git actions",
-                        tint = if (enabled) {
-                            MaterialTheme.colorScheme.onSurface
-                        } else {
-                            MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
-                        },
-                    )
-                    if (gitRepoSyncResult.state in setOf("behind_only", "diverged", "dirty_and_behind")) {
-                        Box(
-                            modifier = Modifier
-                                .align(Alignment.TopEnd)
-                                .offset(x = 2.dp, y = (-2).dp)
-                                .size(8.dp)
-                                .background(MaterialTheme.colorScheme.tertiary, CircleShape),
+                    if (isRunningGitAction) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(24.dp),
+                            strokeWidth = 2.dp,
+                            color = MaterialTheme.colorScheme.primary,
                         )
+                    } else {
+                        Icon(
+                            painter = painterResource(id = R.drawable.git_commit),
+                            contentDescription = "Git actions",
+                            tint = if (enabled) {
+                                MaterialTheme.colorScheme.onSurface
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                            },
+                            modifier = Modifier.size(22.dp),
+                        )
+                        val syncStatusColor = when (gitSyncState) {
+                            "behind_only", "diverged", "dirty_and_behind" -> Color(0xFFFF9800)
+                            else -> null
+                        }
+                        if (syncStatusColor != null) {
+                            Box(
+                                modifier = Modifier
+                                    .align(Alignment.TopEnd)
+                                    .offset(x = 2.dp, y = (-2).dp)
+                                    .size(8.dp)
+                                    .background(syncStatusColor, CircleShape)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .padding(1.5.dp)
+                                        .background(MaterialTheme.colorScheme.surface, CircleShape)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .padding(1.5.dp)
+                                            .background(syncStatusColor, CircleShape)
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -167,7 +212,7 @@ private fun TurnGitActionsMenu(
                     enabled = enabled,
                 )
             }
-            if (gitRepoSyncResult.state in setOf("dirty", "dirty_and_behind", "diverged", "no_upstream")) {
+            if (showsDiscardRuntimeChangesAndSync) {
                 GitMenuHeader("Recovery")
                 DropdownMenuItem(
                     text = { Text(TurnGitActionKind.DISCARD_LOCAL_CHANGES.title) },

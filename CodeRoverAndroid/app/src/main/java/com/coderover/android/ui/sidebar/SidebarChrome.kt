@@ -101,16 +101,16 @@ fun SidebarSearchField(
         Box(
             modifier = Modifier
                 .weight(1f)
-                .height(40.dp)
                 .background(
-                    MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                    RoundedCornerShape(20.dp),
+                    MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.8f),
+                    RoundedCornerShape(14.dp),
                 ),
             contentAlignment = Alignment.CenterStart,
         ) {
             Row(
-                modifier = Modifier.padding(horizontal = 12.dp),
+                modifier = Modifier.padding(start = 10.dp, end = 16.dp, top = 12.dp, bottom = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
                 Icon(
                     imageVector = Icons.Outlined.Search,
@@ -118,7 +118,6 @@ fun SidebarSearchField(
                     modifier = Modifier.size(18.dp),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                Spacer(Modifier.width(8.dp))
                 BasicTextField(
                     value = value,
                     onValueChange = onValueChange,
@@ -151,7 +150,6 @@ fun SidebarSearchField(
                     },
                 )
                 if (value.isNotEmpty()) {
-                    Spacer(Modifier.width(8.dp))
                     Icon(
                         imageVector = Icons.Outlined.Close,
                         contentDescription = "Clear search",
@@ -189,19 +187,19 @@ fun SidebarFloatingSettingsButton(
     Surface(
         onClick = onClick,
         shape = CircleShape,
-        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
-        border = androidx.compose.foundation.BorderStroke(1.dp, Border.copy(alpha = 0.65f)),
-        shadowElevation = 8.dp,
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f),
+        shadowElevation = 4.dp,
         modifier = modifier,
     ) {
         Box(
-            modifier = Modifier.size(52.dp),
+            modifier = Modifier.size(44.dp),
             contentAlignment = Alignment.Center,
         ) {
             Icon(
                 imageVector = Icons.Filled.Settings,
                 contentDescription = "Settings",
                 tint = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.size(20.dp),
             )
         }
     }

@@ -188,7 +188,7 @@ private fun CodeRoverAppShell(
 
     val density = LocalDensity.current
     val screenWidth = LocalConfiguration.current.screenWidthDp.dp
-    val effectiveSidebarWidthDp = if (isSidebarSearchActive) screenWidth else 280.dp
+    val effectiveSidebarWidthDp = if (isSidebarSearchActive) screenWidth else 330.dp
     val effectiveSidebarWidthPx = with(density) { effectiveSidebarWidthDp.toPx() }
 
     val animatedOffset = remember { Animatable(0f) }
@@ -197,11 +197,13 @@ private fun CodeRoverAppShell(
         val target = if (isSidebarOpen) effectiveSidebarWidthPx else 0f
         animatedOffset.animateTo(
             targetValue = target,
-            animationSpec = spring(stiffness = Spring.StiffnessMediumLow, dampingRatio = 0.85f)
+            animationSpec = spring(stiffness = 350f, dampingRatio = 0.85f)
         )
     }
 
     val edgeDragWidthPx = with(density) { 30.dp.toPx() }
+    var dragStartX by remember { mutableStateOf(0f) }
+    var dragTotalAmount by remember { mutableStateOf(0f) }
     var dragStartedValidly by remember { mutableStateOf(false) }
 
     Box(
@@ -210,24 +212,29 @@ private fun CodeRoverAppShell(
             .pointerInput(isSidebarOpen, effectiveSidebarWidthPx) {
                 detectHorizontalDragGestures(
                     onDragStart = { offset ->
+                        dragStartX = offset.x
+                        dragTotalAmount = 0f
                         dragStartedValidly = isSidebarOpen || offset.x < edgeDragWidthPx
                     },
                     onDragEnd = {
                         if (!dragStartedValidly) return@detectHorizontalDragGestures
                         coroutineScope.launch {
                             val threshold = effectiveSidebarWidthPx * 0.4f
+                            val predictedVelocityThreshold = effectiveSidebarWidthPx * 0.5f
                             val currentOffset = animatedOffset.value
                             if (!isSidebarOpen) {
-                                if (currentOffset > threshold) {
+                                val shouldOpen = currentOffset > threshold || dragTotalAmount > predictedVelocityThreshold
+                                if (shouldOpen) {
                                     isSidebarOpen = true
                                 } else {
-                                    animatedOffset.animateTo(0f, spring(stiffness = Spring.StiffnessMediumLow, dampingRatio = 0.85f))
+                                    animatedOffset.animateTo(0f, spring(stiffness = 350f, dampingRatio = 0.85f))
                                 }
                             } else {
-                                if (effectiveSidebarWidthPx - currentOffset > threshold) {
+                                val shouldClose = (effectiveSidebarWidthPx - currentOffset) > threshold || -dragTotalAmount > predictedVelocityThreshold
+                                if (shouldClose) {
                                     isSidebarOpen = false
                                 } else {
-                                    animatedOffset.animateTo(effectiveSidebarWidthPx, spring(stiffness = Spring.StiffnessMediumLow, dampingRatio = 0.85f))
+                                    animatedOffset.animateTo(effectiveSidebarWidthPx, spring(stiffness = 350f, dampingRatio = 0.85f))
                                 }
                             }
                         }
@@ -237,15 +244,20 @@ private fun CodeRoverAppShell(
                         coroutineScope.launch {
                             animatedOffset.animateTo(
                                 targetValue = if (isSidebarOpen) effectiveSidebarWidthPx else 0f,
-                                animationSpec = spring(stiffness = Spring.StiffnessMediumLow, dampingRatio = 0.85f)
+                                animationSpec = spring(stiffness = 350f, dampingRatio = 0.85f)
                             )
                         }
                     },
                     onHorizontalDrag = { change, dragAmount ->
                         if (!dragStartedValidly) return@detectHorizontalDragGestures
                         change.consume()
+                        dragTotalAmount += dragAmount
                         coroutineScope.launch {
-                            val newOffset = max(0f, min(effectiveSidebarWidthPx, animatedOffset.value + dragAmount))
+                            val newOffset = if (isSidebarOpen) {
+                                max(0f, min(effectiveSidebarWidthPx, effectiveSidebarWidthPx + dragTotalAmount))
+                            } else {
+                                max(0f, min(effectiveSidebarWidthPx, dragTotalAmount))
+                            }
                             animatedOffset.snapTo(newOffset)
                         }
                     }
@@ -361,10 +373,14 @@ private fun CodeRoverAppShell(
                             if (shellContent == AppShellContent.THREAD) {
                                 TurnTopBarActions(
                                     gitRepoSyncResult = state.gitRepoSyncResult,
+                                    gitSyncState = state.gitSyncState,
+                                    isRunningGitAction = state.isRunningGitAction,
+                                    showsDiscardRuntimeChangesAndSync = state.shouldShowDiscardRuntimeChangesAndSync,
                                     contextWindowUsage = state.contextWindowUsage,
                                     enabled = state.isConnected &&
                                         selectedThread?.cwd != null &&
-                                        !isSelectedThreadRunning,
+                                        !isSelectedThreadRunning &&
+                                        !state.isRunningGitAction,
                                     onShowRepoDiff = {
                                         val cwd = selectedThread?.cwd ?: return@TurnTopBarActions
                                         coroutineScope.launch {
@@ -373,8 +389,9 @@ private fun CodeRoverAppShell(
                                     },
                                     onSelectGitAction = { action ->
                                         val cwd = selectedThread?.cwd ?: return@TurnTopBarActions
+                                        val threadId = selectedThread?.id ?: return@TurnTopBarActions
                                         coroutineScope.launch {
-                                            viewModel.performGitAction(cwd, action)
+                                            viewModel.performGitAction(cwd, action, threadId)
                                             viewModel.gitStatus(cwd)
                                         }
                                     },

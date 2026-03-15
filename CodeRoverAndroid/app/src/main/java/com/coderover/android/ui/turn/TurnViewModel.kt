@@ -107,6 +107,10 @@ class TurnViewModel {
     var slashCommandPanelState by mutableStateOf<TurnComposerSlashCommandPanelState>(TurnComposerSlashCommandPanelState.Hidden)
     var visibleTailCount by mutableStateOf(40)
 
+    var runningGitAction: com.coderover.android.data.model.TurnGitActionKind? by mutableStateOf(null)
+    val isRunningGitAction: Boolean
+        get() = runningGitAction != null
+
     val hasConfirmedReviewSelection: Boolean
         get() = composerReviewSelection?.target != null
 
@@ -235,6 +239,7 @@ class TurnViewModel {
         shouldAnchorToAssistantResponse = false
         isScrolledToBottom = true
         composerNoticeMessage = null
+        runningGitAction = null
         clearComposerSelections()
         resetSlashCommandState(clearPendingSelection = true, clearConfirmedSelection = true)
     }

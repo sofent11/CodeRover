@@ -13,6 +13,7 @@ import * as path from "path";
 import { createRuntimeManager } from "../src/runtime-manager";
 import type { JsonRpcId, RuntimeThreadShape } from "../src/bridge-types";
 import type { CodexAdapter } from "../src/providers/codex-adapter";
+import { createRuntimeStore } from "../src/runtime-store";
 import type {
   ManagedProviderAdapter,
   ManagedProviderTurnContext,
@@ -301,6 +302,31 @@ test("thread archive overlays and turn/steer capability gating work for managed 
   }
 });
 
+test("thread/resume returns a managed thread snapshot for Claude threads", async () => {
+  const fixture = createManagerFixture();
+
+  try {
+    const startMessages = await request(fixture, "thread-start-resume-managed", "thread/start", {
+      provider: "claude",
+      cwd: "/tmp/claude-project",
+    });
+    const threadId = responseById(startMessages, "thread-start-resume-managed").result.thread.id;
+
+    const resumeMessages = await request(fixture, "thread-resume-managed", "thread/resume", {
+      threadId,
+    });
+    const resumeResponse = responseById(resumeMessages, "thread-resume-managed");
+    assert.ok(resumeResponse);
+    assert.equal(resumeResponse.result.threadId, threadId);
+    assert.equal(resumeResponse.result.resumed, true);
+    assert.equal(resumeResponse.result.thread.id, threadId);
+    assert.equal(resumeResponse.result.thread.provider, "claude");
+    assert.ok(Array.isArray(resumeResponse.result.thread.turns));
+  } finally {
+    fixture.cleanup();
+  }
+});
+
 function createCodexAdapterFixture({
   threads = [],
 }: {
@@ -551,23 +577,207 @@ function createDefaultCodexTransportFixture(manager: RuntimeManager, {
   };
 }
 
-test("thread/list forwards Codex cursor metadata while merging thread arrays", async () => {
+test("thread/list returns bridge-managed pagination metadata while merging thread arrays", async () => {
   const codexFixture = createCodexAdapterFixture({
-    threads: [buildCodexThread({ threadId: "codex-thread-list", messageCount: 4 })],
+    threads: [
+      buildCodexThread({ threadId: "codex-thread-list-1", messageCount: 4 }),
+      buildCodexThread({ threadId: "codex-thread-list-2", messageCount: 4 }),
+    ],
   });
   const fixture = createManagerFixtureWithOptions({
     codexAdapter: codexFixture.adapter,
   });
 
   try {
-    const messages = await request(fixture, "thread-list-cursor", "thread/list", {});
+    const messages = await request(fixture, "thread-list-cursor", "thread/list", { limit: 1 });
     const response = responseById(messages, "thread-list-cursor");
     assert.ok(response);
-    assert.equal(response.result.nextCursor, "cursor-2");
+    assert.equal(typeof response.result.nextCursor, "string");
     assert.equal(response.result.hasMore, true);
     assert.equal(response.result.pageSize, 1);
     assert.equal(response.result.items.length, 1);
     assert.equal(response.result.items[0].provider, "codex");
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("thread/list truncates oversized previews from Codex and managed overlays", async () => {
+  const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "coderover-runtime-manager-"));
+  const store = createRuntimeStore({ baseDir });
+  const giantPreview = "A".repeat(8_000);
+  store.createThread({
+    id: "gemini:preview-heavy",
+    provider: "gemini",
+    preview: giantPreview,
+    name: "preview-heavy",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+  });
+  store.shutdown();
+
+  const fixture = createManagerFixtureWithOptions({
+    runtimeOptions: { storeBaseDir: baseDir },
+    codexAdapter: createCodexAdapterStub({
+      async request() {
+        return {};
+      },
+      notify() {},
+      async listThreads() {
+        return {
+          threads: [
+            {
+              id: "codex-preview-heavy",
+              title: "Codex preview heavy",
+              preview: giantPreview,
+              createdAt: "2026-01-02T00:00:00.000Z",
+              updatedAt: "2026-01-02T00:00:00.000Z",
+              cwd: "/tmp",
+            },
+          ],
+        };
+      },
+    }),
+  });
+
+  try {
+    const messages = await request(fixture, "thread-list-preview-cap", "thread/list", {});
+    const response = responseById(messages, "thread-list-preview-cap");
+    const threads = response.result.items as Array<Record<string, unknown>>;
+    const codexThread = threads.find((thread) => thread.id === "codex-preview-heavy");
+    const managedThread = threads.find((thread) => thread.id === "gemini:preview-heavy");
+
+    assert.equal(typeof codexThread?.preview, "string");
+    assert.equal(typeof managedThread?.preview, "string");
+    assert.ok(String(codexThread?.preview).length <= 600);
+    assert.ok(String(managedThread?.preview).length <= 600);
+    assert.ok(String(codexThread?.preview).endsWith("…"));
+    assert.ok(String(managedThread?.preview).endsWith("…"));
+  } finally {
+    fixture.cleanup();
+    fs.rmSync(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("thread/list returns summarized thread entries without heavy history fields", async () => {
+  const fixture = createManagerFixtureWithOptions({
+    codexAdapter: createCodexAdapterStub({
+      async request() {
+        return {};
+      },
+      notify() {},
+      async listThreads() {
+        return {
+          threads: [
+            {
+              id: "codex-summary-thread",
+              title: "Summary Thread",
+              preview: "hello",
+              createdAt: "2026-01-02T00:00:00.000Z",
+              updatedAt: "2026-01-02T00:00:00.000Z",
+              cwd: "/tmp/project",
+              turns: [{ id: "turn-1", items: [{ id: "item-1" }] }],
+              gitInfo: { branch: "main" },
+              status: "completed",
+              path: "/tmp/project",
+              cliVersion: "1.0.0",
+            },
+          ],
+        };
+      },
+    }),
+  });
+
+  try {
+    const messages = await request(fixture, "thread-list-summary", "thread/list", {});
+    const response = responseById(messages, "thread-list-summary");
+    const thread = response.result.items[0] as Record<string, unknown>;
+
+    assert.deepEqual(
+      Object.keys(thread).sort(),
+      [
+        "capabilities",
+        "createdAt",
+        "cwd",
+        "id",
+        "metadata",
+        "name",
+        "preview",
+        "provider",
+        "providerSessionId",
+        "title",
+        "updatedAt",
+      ].sort()
+    );
+    assert.equal(thread.id, "codex-summary-thread");
+    assert.equal(thread.cwd, "/tmp/project");
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("thread/list initial page keeps only recent threads with a per-project cap and paginates the rest", async () => {
+  const now = Date.now();
+  const iso = (msAgo: number) => new Date(now - msAgo).toISOString();
+  const codexThreads = [
+    ...Array.from({ length: 12 }, (_, index) => ({
+      id: `codex-recent-${index}`,
+      title: `Recent ${index}`,
+      preview: `recent-${index}`,
+      createdAt: iso(1_000 + index),
+      updatedAt: iso(1_000 + index),
+      cwd: "/tmp/project-a",
+    })),
+    {
+      id: "codex-old-0",
+      title: "Old 0",
+      preview: "old-0",
+      createdAt: iso(5 * 24 * 60 * 60 * 1000),
+      updatedAt: iso(5 * 24 * 60 * 60 * 1000),
+      cwd: "/tmp/project-a",
+    },
+    {
+      id: "codex-recent-other-project",
+      title: "Recent Other",
+      preview: "recent-other",
+      createdAt: iso(2_000),
+      updatedAt: iso(2_000),
+      cwd: "/tmp/project-b",
+    },
+  ];
+
+  const fixture = createManagerFixtureWithOptions({
+    codexAdapter: createCodexAdapterStub({
+      async request() {
+        return {};
+      },
+      notify() {},
+      async listThreads() {
+        return { threads: codexThreads };
+      },
+    }),
+  });
+
+  try {
+    const firstMessages = await request(fixture, "thread-list-page-1", "thread/list", { limit: 50 });
+    const firstResponse = responseById(firstMessages, "thread-list-page-1");
+    const firstPage = firstResponse.result.items as Array<Record<string, unknown>>;
+
+    assert.equal(firstPage.filter((thread) => thread.cwd === "/tmp/project-a").length, 10);
+    assert.ok(firstPage.some((thread) => thread.id === "codex-recent-other-project"));
+    assert.ok(!firstPage.some((thread) => thread.id === "codex-old-0"));
+    assert.equal(typeof firstResponse.result.nextCursor, "string");
+
+    const secondMessages = await request(fixture, "thread-list-page-2", "thread/list", {
+      limit: 50,
+      cursor: firstResponse.result.nextCursor,
+    });
+    const secondResponse = responseById(secondMessages, "thread-list-page-2");
+    const secondPage = secondResponse.result.items as Array<Record<string, unknown>>;
+
+    assert.ok(secondPage.some((thread) => thread.id === "codex-recent-10"));
+    assert.ok(secondPage.some((thread) => thread.id === "codex-recent-11"));
+    assert.ok(secondPage.some((thread) => thread.id === "codex-old-0"));
   } finally {
     fixture.cleanup();
   }

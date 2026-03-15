@@ -8,6 +8,7 @@ import type { AddressInfo } from "net";
 import { WebSocketServer, WebSocket } from "ws";
 
 import type { TransportCandidateShape } from "./bridge-types";
+import { debugError, debugLog } from "./debug-log";
 
 const CLOSE_CODE_INVALID_ROUTE = 4000;
 const CLOSE_CODE_IPHONE_REPLACED = 4003;
@@ -174,16 +175,38 @@ export function startLocalBridgeServer({
 
     bridgeSocket.on("message", (data) => {
       const message = typeof data === "string" ? data : data.toString("utf8");
+      debugLog(
+        `${logPrefix} local client message (${transportId}) bytes=${Buffer.byteLength(message, "utf8")}`
+      );
       onMessage?.(message, {
         transportId,
         sendControlMessage(controlMessage: Record<string, unknown>) {
           if (bridgeSocket.readyState === WebSocket.OPEN) {
-            bridgeSocket.send(JSON.stringify(controlMessage));
+            const payload = JSON.stringify(controlMessage);
+            debugLog(
+              `${logPrefix} send control (${transportId}) bytes=${Buffer.byteLength(payload, "utf8")}`
+            );
+            try {
+              bridgeSocket.send(payload);
+            } catch (error) {
+              debugError(
+                `${logPrefix} send control failed (${transportId}): ${getErrorMessage(error)}`
+              );
+            }
           }
         },
         sendWireMessage(wireMessage: string) {
           if (bridgeSocket.readyState === WebSocket.OPEN) {
-            bridgeSocket.send(wireMessage);
+            debugLog(
+              `${logPrefix} send wire (${transportId}) bytes=${Buffer.byteLength(wireMessage, "utf8")}`
+            );
+            try {
+              bridgeSocket.send(wireMessage);
+            } catch (error) {
+              debugError(
+                `${logPrefix} send wire failed (${transportId}): ${getErrorMessage(error)}`
+              );
+            }
           }
         },
         closeTransport(
@@ -191,6 +214,7 @@ export function startLocalBridgeServer({
           reason = "Replaced by newer iPhone connection"
         ) {
           try {
+            debugLog(`${logPrefix} close transport (${transportId}) code=${code} reason=${reason}`);
             bridgeSocket.close(code, reason);
           } catch {
             // Best-effort cleanup only.
@@ -199,10 +223,13 @@ export function startLocalBridgeServer({
       });
     });
 
-    bridgeSocket.on("close", () => {
+    bridgeSocket.on("close", (code, reasonBuffer) => {
       clients.delete(transportId);
       onClientClose?.({ transportId });
-      console.log(`${logPrefix} local client disconnected (${transportId})`);
+      const reason = reasonBuffer.toString("utf8");
+      console.log(
+        `${logPrefix} local client disconnected (${transportId}) code=${code} reason=${reason || "none"}`
+      );
     });
 
     bridgeSocket.on("error", (error) => {
@@ -271,6 +298,10 @@ export function startLocalBridgeServer({
       server.close();
     },
   };
+}
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 interface BuildTransportCandidatesOptions {

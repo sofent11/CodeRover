@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 const { spawnSync } = require("child_process");
 
@@ -14,10 +15,11 @@ function commandExists(command, args = ["--version"]) {
   return result.status === 0;
 }
 
-function run(command, args) {
+function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
     cwd: projectRoot,
     stdio: "inherit",
+    ...options,
   });
   if (result.error) {
     throw result.error;
@@ -53,7 +55,18 @@ function runStart() {
 
 function runTests() {
   runBuild();
-  run(process.execPath, ["--test", "./dist/test/*.test.js"]);
+  const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "coderover-test-home-"));
+  run(
+    process.execPath,
+    ["--test", "./dist/test/*.test.js"],
+    {
+      env: {
+        ...process.env,
+        HOME: tempHome,
+        CODEROVER_DISABLE_KEYCHAIN: "1",
+      },
+    }
+  );
 }
 
 const mode = process.argv[2];

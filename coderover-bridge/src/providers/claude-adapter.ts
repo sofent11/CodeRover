@@ -137,6 +137,7 @@ interface StructuredInputRequest extends UnknownRecord {
 export function createClaudeAdapter({
   store,
   logPrefix = "[coderover]",
+  sdkLoader,
 }: ManagedProviderAdapterFactoryOptions): ManagedProviderAdapter {
   void logPrefix;
   let sdkModulePromise: Promise<ClaudeSdkModule> | null = null;
@@ -152,6 +153,8 @@ export function createClaudeAdapter({
       }
 
       const existingThreadId = store.findThreadIdByProviderSession("claude", session.sessionId);
+      const existingThreadMeta = existingThreadId ? store.getThreadMeta(existingThreadId) : null;
+      const sessionLastModified = toIsoDateString(session.lastModified);
       const nextMeta = {
         id: existingThreadId || `claude:${randomUUID()}`,
         provider: "claude",
@@ -161,11 +164,13 @@ export function createClaudeAdapter({
         preview: normalizeOptionalString(session.firstPrompt || session.summary),
         cwd: normalizeOptionalString(session.cwd),
         metadata: {
+          ...(existingThreadMeta?.metadata || {}),
           providerTitle: providerDefinition.title,
+          claudeSessionLastModified: sessionLastModified,
         },
         capabilities: providerDefinition.supports,
-        createdAt: toIsoDateString(session.lastModified),
-        updatedAt: toIsoDateString(session.lastModified),
+        createdAt: existingThreadMeta?.createdAt || sessionLastModified,
+        updatedAt: sessionLastModified,
         archived: false,
       };
 
@@ -182,15 +187,16 @@ export function createClaudeAdapter({
       return;
     }
 
+    const currentThreadMeta = store.getThreadMeta(threadMeta.id) || threadMeta;
     const existingHistory = store.getThreadHistory(threadMeta.id);
-    if (existingHistory?.turns?.length) {
+    if (!shouldRefreshClaudeHistory(currentThreadMeta, existingHistory)) {
       return;
     }
 
     const sdk = await loadSdkModule();
     const messages = await sdk.getSessionMessages(
-      threadMeta.providerSessionId,
-      threadMeta.cwd ? { dir: threadMeta.cwd } : undefined
+      currentThreadMeta.providerSessionId,
+      currentThreadMeta.cwd ? { dir: currentThreadMeta.cwd } : undefined
     ).catch(() => []);
 
     const turns: RuntimeStoreTurn[] = [];
@@ -211,44 +217,26 @@ export function createClaudeAdapter({
         turns.push(currentTurn);
       }
 
-      const item: RuntimeStoreItem = role === "user"
-        ? {
-          id: message.uuid || randomUUID(),
-          type: "user_message",
-          role: "user",
-          createdAt: new Date().toISOString(),
-          content: buildClaudeHistoryContent(message.message),
-          text: extractClaudeMessageText(message.message),
-          message: null,
-          status: null,
-          command: null,
-          metadata: null,
-          plan: null,
-          summary: null,
-          fileChanges: [],
-        }
-        : {
-          id: message.uuid || randomUUID(),
-          type: "agent_message",
-          role: "assistant",
-          createdAt: new Date().toISOString(),
-          content: [{ type: "text", text: extractClaudeMessageText(message.message) }],
-          text: extractClaudeMessageText(message.message),
-          message: null,
-          status: null,
-          command: null,
-          metadata: null,
-          plan: null,
-          summary: null,
-          fileChanges: [],
-        };
-      currentTurn.items.push(item);
+      currentTurn.items.push(
+        ...buildClaudeHistoryItems({
+          role,
+          messageId: message.uuid,
+          message: message.message,
+        })
+      );
     }
 
     store.saveThreadHistory(threadMeta.id, {
       threadId: threadMeta.id,
       turns,
     });
+    store.updateThreadMeta(threadMeta.id, (entry) => ({
+      ...entry,
+      metadata: {
+        ...(entry.metadata || {}),
+        claudeHistorySyncedAt: resolveClaudeHistorySyncTimestamp(currentThreadMeta),
+      },
+    }));
   }
 
   async function startTurn({
@@ -442,7 +430,8 @@ export function createClaudeAdapter({
 
   async function loadSdkModule() {
     if (!sdkModulePromise) {
-      sdkModulePromise = import("@anthropic-ai/claude-agent-sdk");
+      const loadModule = sdkLoader || (() => import("@anthropic-ai/claude-agent-sdk"));
+      sdkModulePromise = loadModule().then((module) => module as ClaudeSdkModule);
     }
     return sdkModulePromise;
   }
@@ -452,6 +441,50 @@ export function createClaudeAdapter({
     startTurn,
     syncImportedThreads,
   };
+}
+
+function shouldRefreshClaudeHistory(
+  threadMeta: RuntimeThreadMeta,
+  existingHistory: { turns?: RuntimeStoreTurn[] } | null
+): boolean {
+  if (!existingHistory?.turns?.length) {
+    return true;
+  }
+
+  const sessionLastModified = normalizeMetadataTimestamp(
+    threadMeta.metadata,
+    "claudeSessionLastModified"
+  );
+  const historySyncedAt = normalizeMetadataTimestamp(
+    threadMeta.metadata,
+    "claudeHistorySyncedAt"
+  );
+
+  if (!sessionLastModified) {
+    return false;
+  }
+  if (!historySyncedAt) {
+    return true;
+  }
+
+  return Date.parse(historySyncedAt) < Date.parse(sessionLastModified);
+}
+
+function resolveClaudeHistorySyncTimestamp(threadMeta: RuntimeThreadMeta): string {
+  return normalizeMetadataTimestamp(threadMeta.metadata, "claudeSessionLastModified")
+    || toIsoDateString(Date.now());
+}
+
+function normalizeMetadataTimestamp(
+  metadata: UnknownRecord | null | undefined,
+  key: string
+): string | null {
+  if (!metadata || typeof metadata[key] !== "string") {
+    return null;
+  }
+
+  const trimmed = String(metadata[key]).trim();
+  return trimmed || null;
 }
 
 function handleClaudeStreamEvent(
@@ -727,6 +760,85 @@ function buildClaudeHistoryContent(message: unknown): RuntimeStoreItem["content"
   return text ? [{ type: "text", text }] : [];
 }
 
+function buildClaudeHistoryItems({
+  role,
+  messageId,
+  message,
+}: {
+  role: string;
+  messageId: string | undefined;
+  message: unknown;
+}): RuntimeStoreItem[] {
+  const createdAt = new Date().toISOString();
+  const normalizedMessageId = normalizeOptionalString(messageId) || randomUUID();
+
+  if (role === "user") {
+    const text = extractClaudeMessageText(message);
+    return [{
+      id: normalizedMessageId,
+      type: "user_message",
+      role: "user",
+      createdAt,
+      content: buildClaudeHistoryContent(message),
+      text,
+      message: null,
+      status: null,
+      command: null,
+      metadata: null,
+      plan: null,
+      summary: null,
+      fileChanges: [],
+    }];
+  }
+
+  const items: RuntimeStoreItem[] = [];
+  const contentBlocks = extractClaudeContentBlocks(message);
+  const thinkingText = contentBlocks
+    .filter((block) => block.type === "thinking")
+    .map((block) => normalizeOptionalString(block.thinking) || "")
+    .filter(Boolean)
+    .join("\n\n")
+    .trim();
+  if (thinkingText) {
+    items.push({
+      id: `${normalizedMessageId}:thinking`,
+      type: "reasoning",
+      role: null,
+      createdAt,
+      content: [],
+      text: thinkingText,
+      message: null,
+      status: null,
+      command: null,
+      metadata: null,
+      plan: null,
+      summary: null,
+      fileChanges: [],
+    });
+  }
+
+  const assistantText = extractClaudeMessageText(message);
+  if (assistantText) {
+    items.push({
+      id: normalizedMessageId,
+      type: "agent_message",
+      role: "assistant",
+      createdAt,
+      content: [{ type: "text", text: assistantText }],
+      text: assistantText,
+      message: null,
+      status: null,
+      command: null,
+      metadata: null,
+      plan: null,
+      summary: null,
+      fileChanges: [],
+    });
+  }
+
+  return items;
+}
+
 function extractClaudeAssistantText(message: unknown): string {
   return extractClaudeMessageText(message);
 }
@@ -735,11 +847,6 @@ function extractClaudeMessageText(message: unknown): string {
   const messageObject = asRecord(message);
   if (!messageObject) {
     return "";
-  }
-
-  const directContent = normalizeOptionalString(messageObject.content);
-  if (directContent) {
-    return directContent;
   }
 
   const directText = normalizeOptionalString(messageObject.text);
@@ -756,12 +863,6 @@ function extractClaudeMessageText(message: unknown): string {
       }
       if (contentBlock.type === "text") {
         return normalizeOptionalString(contentBlock.text) || "";
-      }
-      if (contentBlock.type === "thinking") {
-        return normalizeOptionalString(contentBlock.thinking) || "";
-      }
-      if (contentBlock.type === "tool_result") {
-        return normalizeOptionalString(contentBlock.content) || "";
       }
       return "";
     })

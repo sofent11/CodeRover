@@ -21,7 +21,7 @@ import {
   rememberTrustedPhone,
   type BridgeDeviceState,
 } from "./secure-device-state";
-import { debugLog } from "./debug-log";
+import { debugError, debugLog } from "./debug-log";
 
 export const PAIRING_QR_VERSION = 3;
 export const SECURE_PROTOCOL_VERSION = 1;
@@ -267,6 +267,10 @@ export function createBridgeSecureTransport({
     nextBridgeOutboundSeq += 1;
     outboundBuffer.push(bufferEntry);
     outboundBufferBytes += bufferEntry.sizeBytes;
+    debugSecureLog(
+      `queue outbound seq=${bufferEntry.bridgeOutboundSeq} bytes=${bufferEntry.sizeBytes} `
+      + `buffered=${outboundBuffer.length} bufferBytes=${outboundBufferBytes}`
+    );
     trimOutboundBuffer();
 
     for (const activeSession of activeSessions.values()) {
@@ -590,6 +594,10 @@ export function createBridgeSecureTransport({
     const lastAppliedBridgeOutboundSeq = Number(message.lastAppliedBridgeOutboundSeq) || 0;
     const resumeFloor = Math.max(lastAppliedBridgeOutboundSeq, activeSession.minBridgeOutboundSeq - 1);
     const missingEntries = outboundBuffer.filter((entry) => entry.bridgeOutboundSeq > resumeFloor);
+    debugSecureLog(
+      `resumeState transport=${shortId(transportId)} keyEpoch=${keyEpoch} `
+      + `lastApplied=${lastAppliedBridgeOutboundSeq} pending=${missingEntries.length}`
+    );
     activeSession.isResumed = true;
     for (const entry of missingEntries) {
       sendBufferedEntry(entry, activeSession);
@@ -661,6 +669,7 @@ export function createBridgeSecureTransport({
   }
 
   function handleTransportClosed(transportId: string): void {
+    debugSecureLog(`transport closed transport=${shortId(transportId)}`);
     pendingHandshakes.delete(transportId);
     removeActiveSession(transportId);
   }
@@ -706,7 +715,21 @@ export function createBridgeSecureTransport({
       activeSession.keyEpoch
     );
     activeSession.nextOutboundCounter += 1;
-    activeSession.sendWireMessage?.(JSON.stringify(envelope));
+    const wireMessage = JSON.stringify(envelope);
+    debugSecureLog(
+      `send envelope transport=${shortId(activeSession.transportId)} seq=${entry.bridgeOutboundSeq} `
+      + `payloadBytes=${entry.sizeBytes} wireBytes=${Buffer.byteLength(wireMessage, "utf8")}`
+    );
+    try {
+      activeSession.sendWireMessage?.(wireMessage);
+    } catch (error) {
+      debugError(
+        `[coderover][secure] send failed transport=${shortId(activeSession.transportId)} `
+        + `seq=${entry.bridgeOutboundSeq} error=${getErrorMessage(error)}`
+      );
+      activeSession.closeTransport?.(1011, "Bridge send failed");
+      removeActiveSession(activeSession.transportId);
+    }
   }
 
   return {
@@ -739,6 +762,10 @@ function shortFingerprint(publicKeyBase64: string): string {
 
 function transcriptDigest(transcriptBytes: Buffer): string {
   return createHash("sha256").update(transcriptBytes).digest("hex").slice(0, 16);
+}
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function encryptEnvelopePayload(

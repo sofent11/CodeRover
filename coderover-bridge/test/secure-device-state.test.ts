@@ -109,3 +109,43 @@ test("bridge device state falls back to file when keychain payload is invalid", 
     fs.rmSync(tempHome, { recursive: true, force: true });
   }
 });
+
+test("bridge device state preserves legacy non-UUID bridge identity fields", () => {
+  const originalHome = process.env.HOME;
+  const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "coderover-secure-state-"));
+  const modulePath = runtimeRequire.resolve("../src/secure-device-state");
+  const legacyState = {
+    version: 1,
+    bridgeId: "bridge-local-macbook",
+    macDeviceId: "macbook-pro-local",
+    macIdentityPublicKey: "public-key",
+    macIdentityPrivateKey: "private-key",
+    trustedPhones: {
+      "11111111-1111-4111-8111-111111111111": "phone-public-key",
+    },
+  };
+
+  try {
+    process.env.HOME = tempHome;
+    fs.mkdirSync(path.join(tempHome, ".coderover"), { recursive: true });
+    fs.writeFileSync(
+      path.join(tempHome, ".coderover", "device-state.json"),
+      JSON.stringify(legacyState, null, 2)
+    );
+
+    delete runtimeRequire.cache[modulePath];
+    const secureDeviceState = runtimeRequire("../src/secure-device-state") as typeof import("../src/secure-device-state");
+    const loaded = secureDeviceState.loadOrCreateBridgeDeviceState();
+
+    assert.equal(loaded.bridgeId, legacyState.bridgeId);
+    assert.equal(loaded.macDeviceId, legacyState.macDeviceId);
+    assert.equal(
+      loaded.trustedPhones["11111111-1111-4111-8111-111111111111"],
+      "phone-public-key"
+    );
+  } finally {
+    delete runtimeRequire.cache[modulePath];
+    process.env.HOME = originalHome;
+    fs.rmSync(tempHome, { recursive: true, force: true });
+  }
+});

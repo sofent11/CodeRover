@@ -132,6 +132,7 @@ extension CodeRoverService {
         let serverArchivedIDs = Set(serverArchivedThreads.map(\.id))
 
         var merged: [String: ConversationThread] = [:]
+        var invalidatedManagedHistoryThreadIDs: [String] = []
 
         // Merge active server threads.
         for serverThread in serverThreads {
@@ -142,6 +143,10 @@ extension CodeRoverService {
             var liveThread = serverThread
 
             if let localThread = localByID[liveThread.id] {
+                if shouldInvalidateManagedHistory(localThread: localThread, serverThread: serverThread) {
+                    invalidateCachedHistory(for: liveThread.id)
+                    invalidatedManagedHistoryThreadIDs.append(liveThread.id)
+                }
                 liveThread.syncState = localThread.syncState
                 if liveThread.title == nil { liveThread.title = localThread.title }
                 if liveThread.name == nil { liveThread.name = localThread.name }
@@ -175,6 +180,10 @@ extension CodeRoverService {
             archivedThread.syncState = .archivedLocal
 
             if let localThread = localByID[archivedThread.id] {
+                if shouldInvalidateManagedHistory(localThread: localThread, serverThread: serverThread) {
+                    invalidateCachedHistory(for: archivedThread.id)
+                    invalidatedManagedHistoryThreadIDs.append(archivedThread.id)
+                }
                 if archivedThread.title == nil { archivedThread.title = localThread.title }
                 if archivedThread.name == nil { archivedThread.name = localThread.name }
                 if archivedThread.preview == nil { archivedThread.preview = localThread.preview }
@@ -204,9 +213,45 @@ extension CodeRoverService {
 
         threads = sortThreads(Array(merged.values))
 
+        if !invalidatedManagedHistoryThreadIDs.isEmpty {
+            messagePersistence.save(
+                messagesByThread: messagesByThread,
+                historyStateByThread: historyStateByThread
+            )
+            debugSyncLog(
+                "invalidated managed history cache threads=\(invalidatedManagedHistoryThreadIDs.joined(separator: ","))"
+            )
+        }
+
         if activeThreadId == nil {
             activeThreadId = threads.first(where: { $0.syncState == .live })?.id
         }
+    }
+
+    private func shouldInvalidateManagedHistory(
+        localThread: ConversationThread,
+        serverThread: ConversationThread
+    ) -> Bool {
+        let provider = serverThread.provider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard provider != "codex" else {
+            return false
+        }
+
+        switch (localThread.updatedAt, serverThread.updatedAt) {
+        case let (localDate?, serverDate?):
+            return serverDate > localDate
+        case (nil, .some):
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func invalidateCachedHistory(for threadId: String) {
+        hydratedThreadIDs.remove(threadId)
+        loadingThreadIDs.remove(threadId)
+        resumedThreadIDs.remove(threadId)
+        historyStateByThread.removeValue(forKey: threadId)
     }
 
     func handleMissingThread(_ threadId: String) {
