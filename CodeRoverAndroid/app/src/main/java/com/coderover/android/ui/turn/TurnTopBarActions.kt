@@ -5,12 +5,12 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.CapsuleShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -26,9 +26,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import com.coderover.android.R
 import com.coderover.android.data.model.ContextWindowUsage
@@ -86,8 +86,9 @@ private fun TurnToolbarDiffPill(
     Surface(
         modifier = Modifier
             .padding(end = 10.dp)
+            .clip(CapsuleShape)
             .clickable(onClick = onClick),
-        shape = CircleShape,
+        shape = CapsuleShape,
         color = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f),
     ) {
         Row(
@@ -95,17 +96,17 @@ private fun TurnToolbarDiffPill(
         ) {
             Text(
                 text = "+${totals.additions}",
-                color = MaterialTheme.colorScheme.primary,
+                color = Color(0xFF34C759),
                 style = MaterialTheme.typography.labelMedium.copy(fontFamily = monoFamily),
             )
             Text(
-                text = " -${totals.deletions}",
-                color = MaterialTheme.colorScheme.error,
+                text = "-${totals.deletions}",
+                color = Color(0xFFFF3B30),
                 style = MaterialTheme.typography.labelMedium.copy(fontFamily = monoFamily),
             )
             if (totals.binaryFiles > 0) {
                 Text(
-                    text = " B${totals.binaryFiles}",
+                    text = "B${totals.binaryFiles}",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     style = MaterialTheme.typography.labelMedium.copy(fontFamily = monoFamily),
                 )
@@ -125,22 +126,19 @@ private fun TurnGitActionsMenu(
 ) {
     var expanded by remember { mutableStateOf(false) }
     Box {
-        Surface(
-            shape = CircleShape,
-            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f),
+        IconButton(
+            onClick = { expanded = true },
+            enabled = enabled,
         ) {
-            IconButton(
-                onClick = { expanded = true },
-                enabled = enabled,
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    if (isRunningGitAction) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(24.dp),
-                            strokeWidth = 2.dp,
-                            color = MaterialTheme.colorScheme.primary,
-                        )
-                    } else {
+            Box(contentAlignment = Alignment.Center) {
+                if (isRunningGitAction) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(24.dp),
+                        strokeWidth = 2.dp,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                } else {
+                    Box {
                         Icon(
                             painter = painterResource(id = R.drawable.git_commit),
                             contentDescription = "Git actions",
@@ -149,7 +147,7 @@ private fun TurnGitActionsMenu(
                             } else {
                                 MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
                             },
-                            modifier = Modifier.size(22.dp),
+                            modifier = Modifier.size(24.dp),
                         )
                         val syncStatusColor = when (gitSyncState) {
                             "behind_only", "diverged", "dirty_and_behind" -> Color(0xFFFF9800)
@@ -168,14 +166,7 @@ private fun TurnGitActionsMenu(
                                         .fillMaxSize()
                                         .padding(1.5.dp)
                                         .background(MaterialTheme.colorScheme.surface, CircleShape)
-                                ) {
-                                    Box(
-                                        modifier = Modifier
-                                            .fillMaxSize()
-                                            .padding(1.5.dp)
-                                            .background(syncStatusColor, CircleShape)
-                                    )
-                                }
+                                )
                             }
                         }
                     }
@@ -189,6 +180,14 @@ private fun TurnGitActionsMenu(
         ) {
             GitMenuHeader("Update")
             DropdownMenuItem(
+                leadingIcon = {
+                    Icon(
+                        painter = painterResource(id = R.drawable.git_arrow_sync),
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.size(20.dp),
+                    )
+                },
                 text = { Text(TurnGitActionKind.SYNC_NOW.title) },
                 onClick = {
                     expanded = false
@@ -198,12 +197,20 @@ private fun TurnGitActionsMenu(
             )
             GitMenuHeader("Write")
             listOf(
-                TurnGitActionKind.COMMIT,
-                TurnGitActionKind.PUSH,
-                TurnGitActionKind.COMMIT_AND_PUSH,
-                TurnGitActionKind.CREATE_PR,
-            ).forEach { action ->
+                TurnGitActionKind.COMMIT to R.drawable.git_commit,
+                TurnGitActionKind.PUSH to R.drawable.git_arrow_up_circle,
+                TurnGitActionKind.COMMIT_AND_PUSH to R.drawable.git_cloud_upload,
+                TurnGitActionKind.CREATE_PR to R.drawable.git_github,
+            ).forEach { (action, iconRes) ->
                 DropdownMenuItem(
+                    leadingIcon = {
+                        Icon(
+                            painter = painterResource(id = iconRes),
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.size(20.dp),
+                        )
+                    },
                     text = { Text(action.title) },
                     onClick = {
                         expanded = false
@@ -215,6 +222,14 @@ private fun TurnGitActionsMenu(
             if (showsDiscardRuntimeChangesAndSync) {
                 GitMenuHeader("Recovery")
                 DropdownMenuItem(
+                    leadingIcon = {
+                        Icon(
+                            painter = painterResource(id = R.drawable.git_trash_circle),
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.size(20.dp),
+                        )
+                    },
                     text = { Text(TurnGitActionKind.DISCARD_LOCAL_CHANGES.title) },
                     onClick = {
                         expanded = false
