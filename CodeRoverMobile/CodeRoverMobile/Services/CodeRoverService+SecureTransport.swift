@@ -398,13 +398,26 @@ private extension CodeRoverService {
         // No active session yet (handshake in progress) — silently drop stale envelopes.
         guard var secureSession else { return }
 
-        guard let envelope = try? decodeSecureControl(SecureEnvelope.self, from: text),
-              envelope.sessionId == secureSession.sessionId,
+        guard let envelope = try? decodeSecureControl(SecureEnvelope.self, from: text) else {
+            debugSecureLog("dropping malformed encryptedEnvelope")
+            return
+        }
+
+        guard envelope.sessionId == secureSession.sessionId,
               envelope.keyEpoch == secureSession.keyEpoch,
-              envelope.sender == "mac",
-              envelope.counter > secureSession.lastInboundCounter else {
-            lastErrorMessage = "The secure CodeRover payload could not be verified."
-            secureConnectionState = .rePairRequired
+              envelope.sender == "mac" else {
+            debugSecureLog(
+                "dropping stale encryptedEnvelope session=\(shortSecureId(envelope.sessionId)) "
+                    + "expected=\(shortSecureId(secureSession.sessionId)) keyEpoch=\(envelope.keyEpoch)"
+            )
+            return
+        }
+
+        guard envelope.counter > secureSession.lastInboundCounter else {
+            debugSecureLog(
+                "dropping replayed encryptedEnvelope counter=\(envelope.counter) "
+                    + "lastInbound=\(secureSession.lastInboundCounter)"
+            )
             return
         }
 

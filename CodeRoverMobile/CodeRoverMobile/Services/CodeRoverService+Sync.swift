@@ -37,6 +37,7 @@ extension CodeRoverService {
 
         isAppInForeground = isForeground
         if isForeground {
+            _ = reloadSavedBridgePairingsFromSecureStoreIfNeeded()
             if isConnected && isInitialized {
                 startSyncLoop()
                 requestImmediateSync(threadId: activeThreadId)

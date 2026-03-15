@@ -80,6 +80,9 @@ enum SecureStore {
 
         var query = baseQuery(for: key)
         query[kSecValueData as String] = value
+        // Keep bridge pairing and identity data readable after the first device unlock so
+        // notification-driven relaunches from the lock screen do not temporarily lose state.
+        query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
 
         SecItemAdd(query as CFDictionary, nil)
     }

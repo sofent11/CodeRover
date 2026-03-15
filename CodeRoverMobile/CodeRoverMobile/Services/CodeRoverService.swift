@@ -484,32 +484,11 @@ final class CodeRoverService {
         self.selectedAccessMode = .onRequest
         self.syncRuntimeSelectionContext()
 
-        // Restore saved Mac pairings. Legacy single-pairing keys are migrated into the
-        // new multi-pairing store the first time a newer client launches.
-        let storedPairings = SecureStore.readCodable(
-            [CodeRoverBridgePairingRecord].self,
-            for: CodeRoverSecureKeys.pairingRecords
-        ) ?? []
-        let normalizedStoredPairings = Self.normalizedSavedBridgePairings(storedPairings)
-        let storedActivePairingMacDeviceId = SecureStore.readString(
-            for: CodeRoverSecureKeys.pairingActiveMacDeviceId
-        )?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
-        var shouldPersistNormalizedPairings = normalizedStoredPairings.count != storedPairings.count
-
-        if normalizedStoredPairings.isEmpty,
-           let legacyPairing = Self.loadLegacySavedBridgePairingFromSecureStore() {
-            self.savedBridgePairings = [legacyPairing]
-            self.activePairingMacDeviceId = legacyPairing.macDeviceId
-            shouldPersistNormalizedPairings = true
-        } else {
-            self.savedBridgePairings = normalizedStoredPairings
-            self.activePairingMacDeviceId = storedActivePairingMacDeviceId
-        }
-
-        applyResolvedActiveSavedBridgePairing()
-
-        if shouldPersistNormalizedPairings || activePairingMacDeviceId != storedActivePairingMacDeviceId {
-            persistSavedBridgePairings()
+        // Restore saved Mac pairings. The restore path is intentionally non-destructive:
+        // if secure storage is temporarily unavailable during a lock-screen relaunch, do not
+        // overwrite the remembered pairing with an empty in-memory state.
+        if !reloadSavedBridgePairingsFromSecureStoreIfNeeded(force: true) {
+            applyResolvedActiveSavedBridgePairing()
         }
     }
 

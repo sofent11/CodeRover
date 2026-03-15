@@ -12,6 +12,12 @@ private func normalizedNonEmptyString(_ value: String?) -> String? {
 }
 
 extension CodeRoverService {
+    struct SavedBridgePairingsRestoreResult {
+        let pairings: [CodeRoverBridgePairingRecord]
+        let activePairingMacDeviceId: String?
+        let shouldPersistNormalizedPairings: Bool
+    }
+
     func resolveThreadID(_ preferredThreadID: String?) async throws -> String {
         if let preferredThreadID, !preferredThreadID.isEmpty {
             return preferredThreadID
@@ -195,6 +201,57 @@ extension CodeRoverService {
         }
 
         syncLegacySavedBridgePairingMirror()
+    }
+
+    func restoredSavedBridgePairingsFromSecureStore() -> SavedBridgePairingsRestoreResult? {
+        let storedPairings = SecureStore.readCodable(
+            [CodeRoverBridgePairingRecord].self,
+            for: CodeRoverSecureKeys.pairingRecords
+        ) ?? []
+        let normalizedStoredPairings = Self.normalizedSavedBridgePairings(storedPairings)
+        let storedActivePairingMacDeviceId = normalizedNonEmptyString(
+            SecureStore.readString(for: CodeRoverSecureKeys.pairingActiveMacDeviceId)
+        )
+
+        if normalizedStoredPairings.isEmpty {
+            guard let legacyPairing = Self.loadLegacySavedBridgePairingFromSecureStore() else {
+                return nil
+            }
+
+            return SavedBridgePairingsRestoreResult(
+                pairings: [legacyPairing],
+                activePairingMacDeviceId: legacyPairing.macDeviceId,
+                shouldPersistNormalizedPairings: true
+            )
+        }
+
+        return SavedBridgePairingsRestoreResult(
+            pairings: normalizedStoredPairings,
+            activePairingMacDeviceId: storedActivePairingMacDeviceId,
+            shouldPersistNormalizedPairings: normalizedStoredPairings.count != storedPairings.count
+        )
+    }
+
+    @discardableResult
+    func reloadSavedBridgePairingsFromSecureStoreIfNeeded(force: Bool = false) -> Bool {
+        guard force || !hasSavedBridgePairing else {
+            return false
+        }
+
+        guard let restored = restoredSavedBridgePairingsFromSecureStore() else {
+            return false
+        }
+
+        savedBridgePairings = restored.pairings
+        activePairingMacDeviceId = restored.activePairingMacDeviceId
+        applyResolvedActiveSavedBridgePairing()
+
+        if restored.shouldPersistNormalizedPairings
+            || activePairingMacDeviceId != restored.activePairingMacDeviceId {
+            persistSavedBridgePairings()
+        }
+
+        return true
     }
 
     func syncLegacySavedBridgePairingMirror() {

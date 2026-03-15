@@ -481,10 +481,14 @@ extension CodeRoverService {
                 from: paramsObject,
                 turnFailureMessage: turnFailureMessage
             )
+            let hasPendingStructuredInput = hasPendingStructuredUserInputPrompt(
+                threadId: threadId,
+                turnId: resolvedTurnID
+            )
             recordTurnTerminalState(threadId: threadId, turnId: resolvedTurnID, state: terminalState)
             noteTurnFinished(turnId: resolvedTurnID)
             markTurnCompleted(threadId: threadId, turnId: resolvedTurnID)
-            if terminalState == .completed {
+            if terminalState == .completed, !hasPendingStructuredInput {
                 markReadyIfUnread(threadId: threadId)
                 notifyRunCompletionIfNeeded(threadId: threadId, turnId: resolvedTurnID, result: .completed)
             } else if terminalState == .failed {
@@ -619,7 +623,11 @@ extension CodeRoverService {
                     state: terminalState
                 )
                 noteTurnFinished(turnId: activeTurnIdForThread)
-                if let completionResult = runCompletionResult(for: terminalState) {
+                if let completionResult = runCompletionResult(for: terminalState),
+                   !hasPendingStructuredUserInputPrompt(
+                        threadId: threadId,
+                        turnId: activeTurnIdForThread
+                   ) {
                     notifyRunCompletionIfNeeded(
                         threadId: threadId,
                         turnId: activeTurnIdForThread,

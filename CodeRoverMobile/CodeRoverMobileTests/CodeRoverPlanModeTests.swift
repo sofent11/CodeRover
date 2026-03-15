@@ -5,12 +5,31 @@
 // Depends on: XCTest, CodeRoverMobile
 
 import XCTest
+import UserNotifications
 @testable import CodeRoverMobile
 
 @MainActor
 final class CodeRoverPlanModeTests: XCTestCase {
     private static var retainedServices: [CodeRoverService] = []
     private static var retainedViewModels: [TurnViewModel] = []
+
+    private final class MockNotificationCenter: CodeRoverUserNotificationCentering {
+        var delegate: UNUserNotificationCenterDelegate?
+        var status: UNAuthorizationStatus = .authorized
+        private(set) var addedRequests: [UNNotificationRequest] = []
+
+        func requestAuthorization(options: UNAuthorizationOptions) async throws -> Bool {
+            true
+        }
+
+        func add(_ request: UNNotificationRequest) async throws {
+            addedRequests.append(request)
+        }
+
+        func authorizationStatus() async -> UNAuthorizationStatus {
+            status
+        }
+    }
 
     func testSendTurnUsesPlanModeOnceAndThenResets() async {
         let service = makeService()
@@ -292,6 +311,97 @@ final class CodeRoverPlanModeTests: XCTestCase {
         XCTAssertTrue(service.messages(for: threadID).filter { $0.kind == .userInputPrompt }.isEmpty)
     }
 
+    func testStructuredUserInputRequestSchedulesBackgroundPromptNotification() async {
+        let notificationCenter = MockNotificationCenter()
+        let service = makeService(userNotificationCenter: notificationCenter)
+        let threadID = "thread-\(UUID().uuidString)"
+        let turnID = "turn-\(UUID().uuidString)"
+        let requestID: JSONValue = .string("request-\(UUID().uuidString)")
+        service.threads = [ConversationThread(id: threadID, title: "Plan Thread")]
+        service.isAppInForeground = false
+
+        service.handleIncomingRPCMessage(
+            RPCMessage(
+                id: requestID,
+                method: "item/tool/requestUserInput",
+                params: .object([
+                    "threadId": .string(threadID),
+                    "turnId": .string(turnID),
+                    "questions": .array([
+                        .object([
+                            "id": .string("mode"),
+                            "header": .string("Direction"),
+                            "question": .string("Which path should we take?"),
+                            "options": .array([
+                                .object([
+                                    "label": .string("Ship it"),
+                                    "description": .string("Build the fastest version"),
+                                ]),
+                            ]),
+                        ]),
+                    ]),
+                ]),
+                includeJSONRPC: false
+            )
+        )
+
+        await Task.yield()
+        await Task.yield()
+
+        XCTAssertEqual(notificationCenter.addedRequests.count, 1)
+        XCTAssertEqual(notificationCenter.addedRequests[0].content.title, "Plan Thread")
+        XCTAssertEqual(notificationCenter.addedRequests[0].content.body, "Plan mode needs your input")
+    }
+
+    func testPendingStructuredUserInputSuppressesRunCompletionNotification() async {
+        let notificationCenter = MockNotificationCenter()
+        let service = makeService(userNotificationCenter: notificationCenter)
+        let threadID = "thread-\(UUID().uuidString)"
+        let turnID = "turn-\(UUID().uuidString)"
+        let requestID: JSONValue = .string("request-\(UUID().uuidString)")
+        service.threads = [ConversationThread(id: threadID, title: "Plan Thread")]
+        service.isAppInForeground = false
+
+        service.handleIncomingRPCMessage(
+            RPCMessage(
+                id: requestID,
+                method: "item/tool/requestUserInput",
+                params: .object([
+                    "threadId": .string(threadID),
+                    "turnId": .string(turnID),
+                    "questions": .array([
+                        .object([
+                            "id": .string("mode"),
+                            "header": .string("Direction"),
+                            "question": .string("Which path should we take?"),
+                            "options": .array([
+                                .object([
+                                    "label": .string("Ship it"),
+                                    "description": .string("Build the fastest version"),
+                                ]),
+                            ]),
+                        ]),
+                    ]),
+                ]),
+                includeJSONRPC: false
+            )
+        )
+        service.handleNotification(
+            method: "turn/completed",
+            params: .object([
+                "threadId": .string(threadID),
+                "turnId": .string(turnID),
+            ])
+        )
+
+        await Task.yield()
+        await Task.yield()
+
+        XCTAssertEqual(notificationCenter.addedRequests.count, 1)
+        XCTAssertEqual(notificationCenter.addedRequests[0].content.body, "Plan mode needs your input")
+        XCTAssertFalse(service.readyThreadIDs.contains(threadID))
+    }
+
     func testStructuredUserInputPromptDoesNotPersistAcrossRelaunch() {
         let suiteName = "CodeRoverPlanModeTests.Persistence.\(UUID().uuidString)"
         let threadID = "thread-\(UUID().uuidString)"
@@ -405,13 +515,17 @@ final class CodeRoverPlanModeTests: XCTestCase {
 
     private func makeService(
         suiteName: String = "CodeRoverPlanModeTests.\(UUID().uuidString)",
-        reset: Bool = true
+        reset: Bool = true,
+        userNotificationCenter: CodeRoverUserNotificationCentering? = nil
     ) -> CodeRoverService {
         let defaults = UserDefaults(suiteName: suiteName) ?? .standard
         if reset {
             defaults.removePersistentDomain(forName: suiteName)
         }
-        let service = CodeRoverService(defaults: defaults)
+        let service = CodeRoverService(
+            defaults: defaults,
+            userNotificationCenter: userNotificationCenter ?? MockNotificationCenter()
+        )
         if reset {
             service.messagesByThread = [:]
         }

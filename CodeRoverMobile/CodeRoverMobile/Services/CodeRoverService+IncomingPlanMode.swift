@@ -80,6 +80,11 @@ extension CodeRoverService {
                 questions: questions
             )
         )
+        notifyStructuredUserInputIfNeeded(
+            threadId: threadId,
+            turnId: turnId,
+            requestID: requestID
+        )
     }
 
     // Removes inline question cards once the server confirms the request was resolved.

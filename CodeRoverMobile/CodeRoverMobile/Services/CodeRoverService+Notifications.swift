@@ -9,6 +9,7 @@ import UserNotifications
 
 private enum CodeRoverNotificationSource {
     static let runCompletion = "coderover.runCompletion"
+    static let structuredUserInput = "coderover.structuredUserInput"
 }
 
 protocol CodeRoverUserNotificationCentering: AnyObject {
@@ -45,7 +46,7 @@ final class CodeRoverNotificationCenterDelegateProxy: NSObject, UNUserNotificati
         didReceive response: UNNotificationResponse
     ) async {
         guard let service,
-              let payload = CodeRoverRunCompletionNotificationPayload(from: response.notification.request.content.userInfo) else {
+              let payload = CodeRoverThreadNotificationPayload(from: response.notification.request.content.userInfo) else {
             return
         }
 
@@ -55,13 +56,14 @@ final class CodeRoverNotificationCenterDelegateProxy: NSObject, UNUserNotificati
     }
 }
 
-private struct CodeRoverRunCompletionNotificationPayload {
+private struct CodeRoverThreadNotificationPayload {
     let threadId: String
     let turnId: String?
 
     init?(from userInfo: [AnyHashable: Any]) {
         guard let source = userInfo[CodeRoverNotificationPayloadKeys.source] as? String,
-              source == CodeRoverNotificationSource.runCompletion,
+              source == CodeRoverNotificationSource.runCompletion
+                || source == CodeRoverNotificationSource.structuredUserInput,
               let threadId = userInfo[CodeRoverNotificationPayloadKeys.threadId] as? String,
               !threadId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return nil
@@ -134,6 +136,24 @@ extension CodeRoverService {
         }
     }
 
+    func notifyStructuredUserInputIfNeeded(
+        threadId: String,
+        turnId: String?,
+        requestID: JSONValue
+    ) {
+        guard !isAppInForeground else {
+            return
+        }
+
+        Task { @MainActor [weak self] in
+            await self?.scheduleStructuredUserInputNotificationIfNeeded(
+                threadId: threadId,
+                turnId: turnId,
+                requestID: requestID
+            )
+        }
+    }
+
     func handleNotificationOpen(threadId: String, turnId: String?) {
         let normalizedThreadId = threadId.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalizedThreadId.isEmpty else {
@@ -201,14 +221,7 @@ private extension CodeRoverService {
         runCompletionNotificationDedupedAt[dedupeKey] = now
 
         let title = threads.first(where: { $0.id == threadId })?.displayTitle ?? "Conversation"
-        let body: String = {
-            switch result {
-            case .completed:
-                "Risposta pronta"
-            case .failed:
-                "Run non completata"
-            }
-        }()
+        let body = runCompletionNotificationBody(for: result)
 
         let content = UNMutableNotificationContent()
         content.title = title
@@ -232,6 +245,44 @@ private extension CodeRoverService {
             try await userNotificationCenter.add(request)
         } catch {
             debugRuntimeLog("failed to schedule local notification: \(error.localizedDescription)")
+        }
+    }
+
+    func scheduleStructuredUserInputNotificationIfNeeded(
+        threadId: String,
+        turnId: String?,
+        requestID: JSONValue
+    ) async {
+        await refreshNotificationAuthorizationStatus()
+        guard canScheduleRunCompletionNotifications else {
+            return
+        }
+
+        let title = threads.first(where: { $0.id == threadId })?.displayTitle ?? "Conversation"
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = "Plan mode needs your input"
+        content.sound = .default
+        content.threadIdentifier = threadId
+        content.userInfo = [
+            CodeRoverNotificationPayloadKeys.source: CodeRoverNotificationSource.structuredUserInput,
+            CodeRoverNotificationPayloadKeys.threadId: threadId,
+            CodeRoverNotificationPayloadKeys.turnId: turnId ?? "",
+        ]
+
+        let request = UNNotificationRequest(
+            identifier: structuredUserInputNotificationIdentifier(
+                threadId: threadId,
+                requestID: requestID
+            ),
+            content: content,
+            trigger: nil
+        )
+
+        do {
+            try await userNotificationCenter.add(request)
+        } catch {
+            debugRuntimeLog("failed to schedule structured input notification: \(error.localizedDescription)")
         }
     }
 
@@ -268,9 +319,27 @@ private extension CodeRoverService {
         return "coderover.runCompletion.\(sanitized)"
     }
 
+    func structuredUserInputNotificationIdentifier(threadId: String, requestID: JSONValue) -> String {
+        let rawIdentifier = "\(threadId)|\(idKey(from: requestID))"
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_."))
+        let sanitized = String(rawIdentifier.unicodeScalars.map { scalar in
+            allowed.contains(scalar) ? Character(scalar) : "_"
+        })
+        return "coderover.structuredUserInput.\(sanitized)"
+    }
+
     func pruneRunCompletionNotificationDedupe(now: Date) {
         runCompletionNotificationDedupedAt = runCompletionNotificationDedupedAt.filter { _, timestamp in
             now.timeIntervalSince(timestamp) <= 60
+        }
+    }
+
+    func runCompletionNotificationBody(for result: CodeRoverRunCompletionResult) -> String {
+        switch result {
+        case .completed:
+            return "Response ready"
+        case .failed:
+            return "Run failed"
         }
     }
 

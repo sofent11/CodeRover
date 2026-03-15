@@ -132,6 +132,21 @@ extension CodeRoverService {
         }
     }
 
+    func hasPendingStructuredUserInputPrompt(threadId: String, turnId: String? = nil) -> Bool {
+        let normalizedTurnId = normalizedIdentifier(turnId)
+        return messages(for: threadId).contains { message in
+            guard message.kind == .userInputPrompt else {
+                return false
+            }
+
+            if let normalizedTurnId {
+                return normalizedIdentifier(message.turnId) == normalizedTurnId
+            }
+
+            return true
+        }
+    }
+
     // Records the final run outcome so UI can distinguish completed vs interrupted turns.
     func recordTurnTerminalState(
         threadId: String,
