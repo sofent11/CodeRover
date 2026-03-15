@@ -2,17 +2,18 @@
   "name": "coderover",
   "version": "1.1.2",
   "description": "Local bridge between CodeRover and the CodeRover mobile app. Run `coderover up` to start.",
-  "main": "src/index.js",
+  "main": "dist/index.js",
   "bin": {
     "coderover": "./bin/coderover.js"
   },
   "files": [
     "bin/",
-    "src/"
+    "dist/"
   ],
   "scripts": {
-    "start": "node ./bin/coderover.js up",
-    "test": "node --test ./test/*.test.js"
+    "build": "node ./scripts/default-runtime.cjs build",
+    "start": "node ./scripts/default-runtime.cjs start",
+    "test": "node ./scripts/default-runtime.cjs test"
   },
   "keywords": [
     "coderover",
@@ -28,5 +29,10 @@
     "qrcode-terminal": "^0.12.0",
     "uuid": "^13.0.0",
     "ws": "^8.19.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.5.2",
+    "@types/ws": "^8.18.1",
+    "typescript": "^5.9.2"
   }
 }

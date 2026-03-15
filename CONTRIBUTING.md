@@ -51,10 +51,10 @@ git clone https://github.com/Emanuele-web04/coderover.git
 cd coderover/coderover-bridge
 
 # Install dependencies
-npm install
+bun install
 
 # Start the bridge
-npm start
+bun run start
 ```
 
 This runs `coderover up`, which:
@@ -79,7 +79,7 @@ The app uses SwiftUI and the current project target is iOS 18.6. No CocoaPods or
 
 ### Testing a full local session
 
-1. Start the bridge: `cd coderover-bridge && npm start`
+1. Start the bridge: `cd coderover-bridge && bun run start`
 2. Open the iOS app and scan the QR code
 3. Create a new thread from the app
 4. Send a message — you should see CodeRover respond in real-time
@@ -94,19 +94,19 @@ All optional. Override defaults as needed:
 # CODEROVER_LOCAL_PORT=8765
 
 # Connect to an existing CodeRover instance instead of spawning one
-CODEROVER_ENDPOINT=ws://localhost:8080 npm start
+CODEROVER_ENDPOINT=ws://localhost:8080 bun run start
 
 # Add a tailnet fallback candidate
-CODEROVER_TAILNET_URL=wss://my-mac.tailnet.example npm start
+CODEROVER_TAILNET_URL=wss://my-mac.tailnet.example bun run start
 
 # Add one explicit relay candidate to the QR payload
-CODEROVER_RELAY_URL=wss://relay.example.com npm start
+CODEROVER_RELAY_URL=wss://relay.example.com bun run start
 
 # Or advertise multiple relay candidates
-CODEROVER_RELAY_URLS=wss://relay-a.example.com,wss://relay-b.example.com/coderover npm start
+CODEROVER_RELAY_URLS=wss://relay-a.example.com,wss://relay-b.example.com/coderover bun run start
 
 # Enable auto-refresh of CodeRover.app on Mac
-CODEROVER_REFRESH_ENABLED=true npm start
+CODEROVER_REFRESH_ENABLED=true bun run start
 ```
 
 ### Project structure
@@ -148,7 +148,7 @@ coderover/
 
 ### Code style
 
-- **Bridge**: CommonJS, no transpilation, no TypeScript. Keep it simple.
+- **Bridge**: TypeScript source compiled to CommonJS in `dist/`. Keep runtime behavior simple and local-first.
 - **iOS**: SwiftUI, async/await, MainActor isolation. Follow existing patterns.
 - No linter or formatter is enforced — just match what's already there.
 

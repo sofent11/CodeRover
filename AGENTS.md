@@ -42,5 +42,6 @@ This repo is local-first now. Do not reintroduce hosted-service assumptions, rem
 
 ```bash
 cd coderover-bridge
-npm start
+bun install
+bun run start
 ```

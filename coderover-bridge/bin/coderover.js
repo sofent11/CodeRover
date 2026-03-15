@@ -3,9 +3,9 @@
 // Purpose: CLI surface for starting the local CodeRover bridge, reopening the latest active thread, and tailing its rollout file.
 // Layer: CLI binary
 // Exports: none
-// Depends on: ../src
+// Depends on: ../dist
 
-const { startBridge, openLastActiveThread, watchThreadRollout } = require("../src");
+const { startBridge, openLastActiveThread, watchThreadRollout } = require("../dist");
 
 const command = process.argv[2] || "up";
 

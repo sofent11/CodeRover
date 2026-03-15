@@ -99,8 +99,15 @@ Open the CodeRover app, follow the onboarding flow, then scan the QR code from i
 
 ```sh
 cd coderover-bridge
-npm install
-npm start
+bun install
+bun run start
+```
+
+The bridge source now lives in `src/**/*.ts` and is compiled to CommonJS output in `dist/`.
+
+```sh
+bun run build
+bun run test
 ```
 
 ## Commands
