@@ -99,9 +99,10 @@ fun TurnScreen(
     val turnViewModel = rememberTurnViewModel(thread.id)
     val coroutineScope = rememberCoroutineScope()
     var isShowingStatusSheet by remember(thread.id) { mutableStateOf(false) }
-    val messages = remember(state.messagesByThread, thread.id) {
+    val rawThreadMessages = state.messagesByThread[thread.id].orEmpty()
+    val messages = remember(rawThreadMessages) {
         projectTimelineMessages(
-            state.messagesByThread[thread.id].orEmpty().sortedBy(ChatMessage::orderIndex),
+            rawThreadMessages.sortedBy(ChatMessage::orderIndex),
         )
     }
     val visibleMessages = remember(messages, turnViewModel.visibleTailCount) {

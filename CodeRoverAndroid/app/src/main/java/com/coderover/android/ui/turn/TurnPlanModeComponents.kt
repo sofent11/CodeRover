@@ -1,5 +1,6 @@
 package com.coderover.android.ui.turn
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -11,7 +12,10 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
@@ -23,13 +27,52 @@ import com.coderover.android.data.model.ChatMessage
 import com.coderover.android.data.model.PlanStepStatus
 import com.coderover.android.ui.theme.CommandAccent
 import com.coderover.android.ui.theme.PlanAccent
+import com.coderover.android.ui.theme.monoFamily
+
+@Composable
+internal fun TurnSystemCard(
+    title: String,
+    showsProgress: Boolean,
+    content: @Composable () -> Unit,
+) {
+    Surface(
+        shape = RoundedCornerShape(24.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.78f),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.08f)),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.labelMedium.copy(fontFamily = monoFamily),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (showsProgress) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(12.dp),
+                        strokeWidth = 1.5.dp,
+                    )
+                }
+            }
+
+            content()
+        }
+    }
+}
 
 @Composable
 internal fun PlanMessageContent(message: ChatMessage) {
     val plan = remember(message.id, message.text, message.planState) {
         message.planState?.let { state ->
             PlanSummaryUi(
-                explanation = state.explanation,
+                explanation = state.explanation?.trim()?.takeIf(String::isNotEmpty),
                 steps = state.steps.map { step ->
                     PlanStepUi(
                         text = step.step,
@@ -43,44 +86,61 @@ internal fun PlanMessageContent(message: ChatMessage) {
             )
         } ?: parsePlanSummary(message.text)
     }
-    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    TurnSystemCard(
+        title = "Plan",
+        showsProgress = message.isStreaming,
+    ) {
         plan.explanation?.let {
-            Text(
+            RichMessageText(
                 text = it,
-                style = MaterialTheme.typography.bodyMedium,
+                textColor = MaterialTheme.colorScheme.onSurface,
+                textStyle = MaterialTheme.typography.bodyMedium,
             )
         }
+
         if (plan.steps.isNotEmpty()) {
-            plan.steps.forEach { step ->
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.Top,
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .padding(top = 6.dp)
-                            .size(8.dp)
-                            .background(planStatusAccentColor(step.statusLabel), CircleShape),
-                    )
-                    Spacer(Modifier.size(10.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = step.text,
-                            style = MaterialTheme.typography.bodyMedium,
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                plan.steps.forEach { step ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        verticalAlignment = Alignment.Top,
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .padding(top = 4.dp)
+                                .size(8.dp)
+                                .background(planStatusAccentColor(step.statusLabel), CircleShape),
                         )
-                        Spacer(Modifier.height(2.dp))
-                        Text(
-                            text = step.statusLabel,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(4.dp),
+                        ) {
+                            Text(
+                                text = step.text,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurface,
+                            )
+                            Surface(
+                                shape = RoundedCornerShape(999.dp),
+                                color = planStatusAccentColor(step.statusLabel).copy(alpha = 0.12f),
+                            ) {
+                                Text(
+                                    text = step.statusLabel,
+                                    style = MaterialTheme.typography.labelSmall.copy(fontFamily = monoFamily),
+                                    color = planStatusAccentColor(step.statusLabel),
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                )
+                            }
+                        }
                     }
                 }
             }
         } else if (message.text.isNotBlank()) {
-            Text(
+            RichMessageText(
                 text = message.text.trim(),
-                style = MaterialTheme.typography.bodyMedium,
+                textColor = MaterialTheme.colorScheme.onSurface,
+                textStyle = MaterialTheme.typography.bodyMedium,
             )
         }
     }
@@ -156,6 +216,6 @@ private fun planStatusAccentColor(statusLabel: String): Color {
     return when (statusLabel) {
         "Completed" -> CommandAccent
         "In progress" -> PlanAccent
-        else -> MaterialTheme.colorScheme.outline
+        else -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f)
     }
 }

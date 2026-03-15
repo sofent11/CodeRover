@@ -1550,24 +1550,6 @@ class CodeRoverRepository(context: Context) {
     }
 
     private suspend fun loadThreadHistory(threadId: String) {
-        val resumedThreadObject = runCatching {
-            val resumeResult = activeClient().sendRequest(
-                method = "thread/resume",
-                params = buildJsonObject(
-                    "threadId" to JsonPrimitive(threadId),
-                    "model" to state.value.selectedModelId?.let(::JsonPrimitive),
-                ),
-            )?.jsonObjectOrNull()
-            resumeResult?.threadPayload()
-        }.getOrNull()
-        resumedThreadObject?.let { threadObject ->
-            ThreadSummary.fromJson(threadObject)?.let { thread ->
-                updateState {
-                    copy(threads = upsertThread(threads, thread.copy(syncState = ThreadSyncState.LIVE)))
-                }
-            }
-        }
-
         val currentState = state.value
         val hasLocalMessages = currentState.messagesByThread[threadId].orEmpty().isNotEmpty()
         val newestCursor = normalizedHistoryCursor(currentState.historyStateByThread[threadId]?.newestCursor)
@@ -1576,13 +1558,13 @@ class CodeRoverRepository(context: Context) {
                 threadId = threadId,
                 initialCursor = newestCursor,
                 allowTailFallback = true,
-                fallbackThreadObject = resumedThreadObject,
+                fallbackThreadObject = null,
             )
         } else {
             loadTailThreadHistory(
                 threadId = threadId,
                 replaceLocalHistory = hasLocalMessages && newestCursor == null,
-                fallbackThreadObject = resumedThreadObject,
+                fallbackThreadObject = null,
             )
         }
     }

@@ -12,6 +12,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -29,12 +31,12 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.unit.dp
 import com.coderover.android.data.model.AssistantRevertPresentation
 import com.coderover.android.data.model.ChatMessage
 import com.coderover.android.data.model.CommandPhase
 import com.coderover.android.data.model.MessageRole
+import com.coderover.android.ui.theme.Border
 import kotlinx.coroutines.launch
 
 private enum class TurnAutoScrollMode {
@@ -135,8 +137,8 @@ internal fun TurnTimeline(
         LazyColumn(
             state = listState,
             modifier = Modifier.fillMaxSize(),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-            contentPadding = PaddingValues(start = 18.dp, end = 18.dp, top = 8.dp, bottom = 148.dp),
+            verticalArrangement = Arrangement.spacedBy(20.dp),
+            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 148.dp),
         ) {
             if (messages.isEmpty()) {
                 item {
@@ -182,14 +184,15 @@ internal fun TurnTimeline(
 
         if (renderItems.isNotEmpty() && !isNearBottom) {
             Surface(
-                shape = RoundedCornerShape(999.dp),
-                tonalElevation = 6.dp,
-                shadowElevation = 6.dp,
+                shape = CircleShape,
+                tonalElevation = 4.dp,
+                shadowElevation = 4.dp,
                 color = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
+                border = BorderStroke(1.dp, Border.copy(alpha = 0.45f)),
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .navigationBarsPadding()
-                    .padding(bottom = 78.dp),
+                    .padding(bottom = 74.dp),
             ) {
                 IconButton(
                     onClick = {
@@ -203,6 +206,7 @@ internal fun TurnTimeline(
                     Icon(
                         Icons.Outlined.KeyboardArrowDown,
                         contentDescription = "Scroll to latest message",
+                        modifier = Modifier.padding(1.dp),
                     )
                 }
             }

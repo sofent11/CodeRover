@@ -65,65 +65,92 @@ internal fun FileChangeMessageContent(message: ChatMessage) {
     val diffFiles = remember(message.id, message.text, message.fileChanges) {
         buildDiffDetailFiles(message)
     }
+    val totalAdditions = remember(entries) { entries.sumOf { it.additions } }
+    val totalDeletions = remember(entries) { entries.sumOf { it.deletions } }
+
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         if (entries.isNotEmpty()) {
             groupedEntries.forEach { group ->
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text(
                         text = group.actionLabel,
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
                     )
                     group.entries.take(6).forEach { entry ->
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
                         ) {
-                            val accent = fileChangeAccentColor(entry.actionLabel)
-                            StatusTag(
-                                text = entry.actionLabel.take(1),
-                                containerColor = accent.copy(alpha = 0.12f),
-                                contentColor = accent,
-                            )
-                            Spacer(Modifier.size(10.dp))
                             Text(
-                                text = entry.path,
-                                style = MaterialTheme.typography.bodyMedium.copy(fontFamily = monoFamily),
+                                text = compactFileChangePath(entry.path),
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.primary,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                                 modifier = Modifier.weight(1f),
                             )
                             if (entry.additions > 0 || entry.deletions > 0) {
-                                Spacer(Modifier.size(8.dp))
-                                Text(
-                                    text = buildString {
-                                        if (entry.additions > 0) append("+${entry.additions}")
-                                        if (entry.deletions > 0) {
-                                            if (isNotEmpty()) append(" ")
-                                            append("-${entry.deletions}")
-                                        }
-                                    },
-                                    style = MaterialTheme.typography.labelMedium.copy(fontFamily = monoFamily),
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
+                                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    if (entry.additions > 0) {
+                                        Text(
+                                            text = "+${entry.additions}",
+                                            style = MaterialTheme.typography.labelMedium.copy(fontFamily = monoFamily),
+                                            color = CommandAccent,
+                                        )
+                                    }
+                                    if (entry.deletions > 0) {
+                                        Text(
+                                            text = "-${entry.deletions}",
+                                            style = MaterialTheme.typography.labelMedium.copy(fontFamily = monoFamily),
+                                            color = Danger,
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
                     if (group.entries.size > 6) {
                         Text(
                             text = "+${group.entries.size - 6} more ${group.actionLabel.lowercase()} files",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
                         )
                     }
                 }
             }
-            if (message.fileChanges.any { it.diff.isNotBlank() }) {
-                OutlinedButton(
-                    onClick = { showDiffDetails = true },
-                    shape = RoundedCornerShape(999.dp),
+            if (diffFiles.isNotEmpty() && !message.isStreaming) {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                    border = androidx.compose.foundation.BorderStroke(
+                        1.dp,
+                        MaterialTheme.colorScheme.outline.copy(alpha = 0.10f),
+                    ),
+                    modifier = Modifier.clickable { showDiffDetails = true },
                 ) {
-                    Text("View diff")
+                    Row(
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = "Diff",
+                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = monoFamily),
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                        Text(
+                            text = "+$totalAdditions",
+                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = monoFamily),
+                            color = CommandAccent,
+                        )
+                        Text(
+                            text = "-$totalDeletions",
+                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = monoFamily),
+                            color = Danger,
+                        )
+                    }
                 }
             }
         } else if (message.text.isNotBlank()) {
@@ -143,6 +170,11 @@ internal fun FileChangeMessageContent(message: ChatMessage) {
             onDismiss = { showDiffDetails = false },
         )
     }
+}
+
+private fun compactFileChangePath(path: String): String {
+    val normalized = path.trim().removePrefix("a/").removePrefix("b/")
+    return normalized.substringAfterLast('/').ifEmpty { normalized }
 }
 
 @Composable
