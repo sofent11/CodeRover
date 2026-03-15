@@ -20,7 +20,7 @@ export interface RuntimeStoreItem {
   status: string | null;
   command: string | null;
   metadata: UnknownRecord | null;
-  plan: UnknownRecord | null;
+  plan: UnknownRecord[] | UnknownRecord | null;
   summary: string | null;
   fileChanges: UnknownRecord[];
 }
@@ -226,7 +226,11 @@ export function createRuntimeStore({ baseDir = DEFAULT_STORE_DIR }: { baseDir?: 
       normalized.providerSessionId
     );
     scheduleIndexWrite();
-    return { ...indexState.threads[normalized.id] };
+    const storedEntry = indexState.threads[normalized.id];
+    if (!storedEntry) {
+      return { ...normalized };
+    }
+    return { ...storedEntry };
   }
 
   function updateThreadMeta(
@@ -463,7 +467,9 @@ function normalizeItem(input: UnknownRecord): RuntimeStoreItem {
     status: normalizeOptionalString(input.status),
     command: normalizeOptionalString(input.command),
     metadata: normalizeObject(input.metadata),
-    plan: normalizeObject(input.plan),
+    plan: Array.isArray(input.plan)
+      ? input.plan.map((entry) => normalizeObject(entry) || {})
+      : normalizeObject(input.plan),
     summary: normalizeOptionalString(input.summary),
     fileChanges: Array.isArray(input.fileChanges)
       ? input.fileChanges.map((entry) => normalizeObject(entry) || {})

@@ -11,31 +11,60 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const runtime_manager_1 = require("../src/runtime-manager");
+function createUnavailableCodexAdapter() {
+    const unavailable = async () => {
+        throw new Error("Codex transport is not available");
+    };
+    return {
+        attachTransport() { },
+        collaborationModes: unavailable,
+        compactThread: unavailable,
+        fuzzyFileSearch: unavailable,
+        handleIncomingRaw() { },
+        handleTransportClosed() { },
+        interruptTurn: unavailable,
+        isAvailable() {
+            return false;
+        },
+        listModels: unavailable,
+        listSkills: unavailable,
+        listThreads: unavailable,
+        notify() { },
+        readThread: unavailable,
+        request: unavailable,
+        resumeThread: unavailable,
+        sendRaw() { },
+        startThread: unavailable,
+        startTurn: unavailable,
+        steerTurn: unavailable,
+    };
+}
+function createManagedAdapterStub() {
+    const noopAsync = async () => { };
+    return {
+        syncImportedThreads: noopAsync,
+        hydrateThread: noopAsync,
+        startTurn: noopAsync,
+    };
+}
+function createCodexAdapterStub(overrides) {
+    return {
+        ...createUnavailableCodexAdapter(),
+        isAvailable() {
+            return true;
+        },
+        ...overrides,
+    };
+}
 function createManagerFixture() {
     return createManagerFixtureWithOptions({});
 }
 function createManagerFixtureWithOptions({ codexAdapter: providedCodexAdapter = null, claudeAdapter: providedClaudeAdapter = null, geminiAdapter: providedGeminiAdapter = null, useDefaultCodexAdapter = false, runtimeOptions = {}, } = {}) {
     const messages = [];
     const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "coderover-runtime-manager-"));
-    const noopAsync = async () => { };
-    const codexAdapter = providedCodexAdapter || (useDefaultCodexAdapter ? null : {
-        attachTransport() { },
-        handleIncomingRaw() { },
-        handleTransportClosed() { },
-        isAvailable() {
-            return false;
-        },
-    });
-    const claudeAdapter = providedClaudeAdapter || {
-        syncImportedThreads: noopAsync,
-        hydrateThread: noopAsync,
-        startTurn: noopAsync,
-    };
-    const geminiAdapter = providedGeminiAdapter || {
-        syncImportedThreads: noopAsync,
-        hydrateThread: noopAsync,
-        startTurn: noopAsync,
-    };
+    const codexAdapter = providedCodexAdapter || (useDefaultCodexAdapter ? null : createUnavailableCodexAdapter());
+    const claudeAdapter = providedClaudeAdapter || createManagedAdapterStub();
+    const geminiAdapter = providedGeminiAdapter || createManagedAdapterStub();
     const manager = (0, runtime_manager_1.createRuntimeManager)({
         sendApplicationMessage(message) {
             messages.push(JSON.parse(message));
@@ -73,7 +102,9 @@ async function request(fixture, id, method, params) {
     return fixture.messages.slice(beforeCount);
 }
 function responseById(messages, id) {
-    return messages.find((message) => message.id === id);
+    const response = messages.find((message) => message.id === id);
+    node_assert_1.strict.ok(response, `expected response for id ${String(id)}`);
+    return response;
 }
 (0, node_test_1.test)("runtime/provider/list advertises Codex, Claude, and Gemini capabilities", async () => {
     const fixture = createManagerFixture();
@@ -160,8 +191,9 @@ function createCodexAdapterFixture({ threads = [], } = {}) {
     }
     return {
         adapter: {
+            ...createUnavailableCodexAdapter(),
             attachTransport(transport) {
-                attachedTransport = transport;
+                attachedTransport = transport || null;
             },
             handleIncomingRaw() { },
             handleTransportClosed() {
@@ -191,8 +223,8 @@ function createCodexAdapterFixture({ threads = [], } = {}) {
                     nextCursor: "cursor-2",
                 };
             },
-            async readThread(params) {
-                const threadId = params.threadId;
+            async readThread(params = {}) {
+                const threadId = String(params.threadId || "");
                 readCountsByThread.set(threadId, (readCountsByThread.get(threadId) || 0) + 1);
                 const thread = findThread(threadId);
                 if (!thread) {
@@ -210,7 +242,7 @@ function createCodexAdapterFixture({ threads = [], } = {}) {
                     thread: JSON.parse(JSON.stringify(thread)),
                 };
             },
-            async startTurn(params) {
+            async startTurn(params = {}) {
                 return {
                     threadId: params.threadId,
                     turnId: "turn-started",
@@ -253,7 +285,12 @@ function buildCodexThread({ threadId = "codex-thread-1", messageCount = 180, tur
 function buildCodexHistoryResult(thread, history) {
     const snapshot = JSON.parse(JSON.stringify(thread));
     const turns = Array.isArray(snapshot.turns) ? snapshot.turns : [];
-    const turn = turns[0] || { items: [] };
+    const turn = turns[0] || {
+        id: "turn-1",
+        createdAt: snapshot.createdAt,
+        status: "completed",
+        items: [],
+    };
     const items = Array.isArray(turn.items) ? turn.items : [];
     const mode = history?.mode || "tail";
     const limit = Math.max(Number(history?.limit) || items.length || 0, 1);
@@ -326,9 +363,9 @@ function createDefaultCodexTransportFixture(manager, { threadRef, } = {}) {
                     return;
                 }
                 if (parsed.method === "thread/read") {
-                    const threadId = parsed.params?.threadId;
+                    const threadId = String(parsed.params?.threadId || "");
                     readCountsByThread.set(threadId, (readCountsByThread.get(threadId) || 0) + 1);
-                    const thread = threadRef.current && threadRef.current.id === threadId
+                    const thread = threadRef?.current && threadRef.current.id === threadId
                         ? JSON.parse(JSON.stringify(threadRef.current))
                         : null;
                     let result = {};
@@ -442,21 +479,13 @@ function createDefaultCodexTransportFixture(manager, { threadRef, } = {}) {
         messageCount: 5,
     });
     const readParams = [];
-    const codexAdapter = {
-        attachTransport() { },
-        handleIncomingRaw() { },
-        handleTransportClosed() { },
-        isAvailable() {
-            return true;
-        },
+    const codexAdapter = createCodexAdapterStub({
         async request(method) {
             if (method === "initialize") {
                 return { ok: true };
             }
             throw new Error(`unexpected request: ${method}`);
         },
-        notify() { },
-        sendRaw() { },
         async listThreads() {
             return {
                 threads: [{
@@ -469,7 +498,7 @@ function createDefaultCodexTransportFixture(manager, { threadRef, } = {}) {
                     }],
             };
         },
-        async readThread(params) {
+        async readThread(params = {}) {
             readParams.push(JSON.parse(JSON.stringify(params)));
             if (params.includeTurns === false) {
                 const metaThread = JSON.parse(JSON.stringify(thread));
@@ -493,13 +522,13 @@ function createDefaultCodexTransportFixture(manager, { threadRef, } = {}) {
                 },
             };
         },
-        async startTurn(params) {
+        async startTurn(params = {}) {
             return {
                 threadId: params.threadId,
                 turnId: "turn-started",
             };
         },
-    };
+    });
     const fixture = createManagerFixtureWithOptions({ codexAdapter });
     try {
         const tailMessages = await request(fixture, "thread-read-upstream-tail", "thread/read", {
@@ -516,6 +545,8 @@ function createDefaultCodexTransportFixture(manager, { threadRef, } = {}) {
         node_assert_1.strict.equal(tailResponse.result.thread.turns[0].items.length, 3);
         node_assert_1.strict.deepEqual(tailResponse.result.thread.turns[0].items.map((item) => item.id), ["item-3", "item-4", "item-5"]);
         node_assert_1.strict.equal(readParams.length, 2);
+        node_assert_1.strict.ok(readParams[0]);
+        node_assert_1.strict.ok(readParams[1]);
         node_assert_1.strict.equal(readParams[0].includeTurns, false);
         node_assert_1.strict.deepEqual(readParams[1].history, {
             mode: "tail",
@@ -1101,6 +1132,8 @@ function createDefaultCodexTransportFixture(manager, { threadRef, } = {}) {
             .slice(beforeCount)
             .filter((message) => message.method === "item/agentMessage/delta");
         node_assert_1.strict.equal(itemNotifications.length, 2);
+        node_assert_1.strict.ok(itemNotifications[0]);
+        node_assert_1.strict.ok(itemNotifications[1]);
         node_assert_1.strict.ok(itemNotifications[0].params.cursor);
         node_assert_1.strict.equal(itemNotifications[0].params.previousCursor, undefined);
         node_assert_1.strict.ok(itemNotifications[1].params.cursor);
@@ -1180,21 +1213,13 @@ function createDefaultCodexTransportFixture(manager, { threadRef, } = {}) {
         }),
     };
     const readCountsByThread = new Map();
-    const codexAdapter = {
-        attachTransport() { },
-        handleIncomingRaw() { },
-        handleTransportClosed() { },
-        isAvailable() {
-            return true;
-        },
+    const codexAdapter = createCodexAdapterStub({
         async request(method) {
             if (method === "initialize") {
                 return { ok: true };
             }
             throw new Error(`unexpected request: ${method}`);
         },
-        notify() { },
-        sendRaw() { },
         async listThreads() {
             return {
                 threads: [{
@@ -1207,20 +1232,20 @@ function createDefaultCodexTransportFixture(manager, { threadRef, } = {}) {
                     }],
             };
         },
-        async readThread(params) {
-            const threadId = params.threadId;
+        async readThread(params = {}) {
+            const threadId = String(params.threadId || "");
             readCountsByThread.set(threadId, (readCountsByThread.get(threadId) || 0) + 1);
             return {
                 thread: JSON.parse(JSON.stringify(threadRef.current)),
             };
         },
-        async resumeThread(params) {
+        async resumeThread(params = {}) {
             return {
                 threadId: params.threadId,
                 resumed: true,
             };
         },
-    };
+    });
     const fixture = createManagerFixtureWithOptions({
         codexAdapter,
         runtimeOptions: {
@@ -1252,7 +1277,7 @@ function createDefaultCodexTransportFixture(manager, { threadRef, } = {}) {
         node_assert_1.strict.equal(historyChanged.params.rawMethod, "thread/read");
         node_assert_1.strict.equal(historyChanged.params.itemId, "item-3");
         node_assert_1.strict.ok(historyChanged.params.cursor);
-        node_assert_1.strict.ok(readCountsByThread.get(threadRef.current.id) >= 2);
+        node_assert_1.strict.ok((readCountsByThread.get(threadRef.current.id) || 0) >= 2);
     }
     finally {
         fixture.cleanup();
@@ -1266,21 +1291,13 @@ function createDefaultCodexTransportFixture(manager, { threadRef, } = {}) {
             turnId: "turn-observed-stable",
         }),
     };
-    const codexAdapter = {
-        attachTransport() { },
-        handleIncomingRaw() { },
-        handleTransportClosed() { },
-        isAvailable() {
-            return true;
-        },
+    const codexAdapter = createCodexAdapterStub({
         async request(method) {
             if (method === "initialize") {
                 return { ok: true };
             }
             throw new Error(`unexpected request: ${method}`);
         },
-        notify() { },
-        sendRaw() { },
         async listThreads() {
             return {
                 threads: [{
@@ -1298,7 +1315,7 @@ function createDefaultCodexTransportFixture(manager, { threadRef, } = {}) {
                 thread: JSON.parse(JSON.stringify(threadRef.current)),
             };
         },
-    };
+    });
     const fixture = createManagerFixtureWithOptions({
         codexAdapter,
         runtimeOptions: {

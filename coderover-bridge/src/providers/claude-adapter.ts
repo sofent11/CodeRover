@@ -188,9 +188,10 @@ export function createClaudeAdapter({
     }
 
     const sdk = await loadSdkModule();
-    const messages = await sdk.getSessionMessages(threadMeta.providerSessionId, {
-      dir: threadMeta.cwd || undefined,
-    }).catch(() => []);
+    const messages = await sdk.getSessionMessages(
+      threadMeta.providerSessionId,
+      threadMeta.cwd ? { dir: threadMeta.cwd } : undefined
+    ).catch(() => []);
 
     const turns: RuntimeStoreTurn[] = [];
     let currentTurn: RuntimeStoreTurn | null = null;
@@ -270,7 +271,6 @@ export function createClaudeAdapter({
       options: {
         cwd: threadMeta.cwd || process.cwd(),
         model: normalizeOptionalString(params.model) || threadMeta.model || getRuntimeProvider("claude").defaultModelId,
-        resume: threadMeta.providerSessionId || undefined,
         includePartialMessages: true,
         tools: {
           type: "preset",
@@ -337,6 +337,7 @@ export function createClaudeAdapter({
             message: "User denied tool use",
           };
         },
+        ...(threadMeta.providerSessionId ? { resume: threadMeta.providerSessionId } : {}),
       },
     });
 
@@ -441,7 +442,7 @@ export function createClaudeAdapter({
 
   async function loadSdkModule() {
     if (!sdkModulePromise) {
-      sdkModulePromise = import("@anthropic-ai/claude-agent-sdk") as unknown as Promise<ClaudeSdkModule>;
+      sdkModulePromise = import("@anthropic-ai/claude-agent-sdk");
     }
     return sdkModulePromise;
   }
@@ -577,6 +578,9 @@ async function materializeImage(source: unknown, cwd: string | null | undefined)
 
   const mimeType = match[1];
   const base64 = match[2];
+  if (!mimeType || !base64) {
+    return normalized;
+  }
   const extension = mimeType.split("/")[1] || "png";
   const tempDir = path.join(cwd || os.tmpdir(), ".coderover", "claude-images");
   fs.mkdirSync(tempDir, { recursive: true });

@@ -59,10 +59,20 @@ function createBridgeSecureTransport({ sessionId, deviceState, transportCandidat
         }
         switch (kind) {
             case "clientHello":
-                handleClientHello(parsed, { transportId, sendControlMessage, sendWireMessage, closeTransport });
+                handleClientHello(parsed, {
+                    transportId,
+                    sendControlMessage,
+                    ...(sendWireMessage ? { sendWireMessage } : {}),
+                    ...(closeTransport ? { closeTransport } : {}),
+                });
                 return true;
             case "clientAuth":
-                handleClientAuth(parsed, { transportId, sendControlMessage, sendWireMessage, closeTransport });
+                handleClientAuth(parsed, {
+                    transportId,
+                    sendControlMessage,
+                    ...(sendWireMessage ? { sendWireMessage } : {}),
+                    ...(closeTransport ? { closeTransport } : {}),
+                });
                 return true;
             case "resumeState":
                 handleResumeState(parsed, transportId);
@@ -205,8 +215,8 @@ function createBridgeSecureTransport({ sessionId, deviceState, transportCandidat
             macEphemeralPublicKey: base64UrlToBase64(macEphemeralPublicKey),
             transcriptBytes,
             expiresAtForTranscript,
-            sendWireMessage,
-            closeTransport,
+            ...(sendWireMessage ? { sendWireMessage } : {}),
+            ...(closeTransport ? { closeTransport } : {}),
         });
         removeActiveSession(transportId);
         const pendingHandshake = pendingHandshakes.get(transportId);
@@ -309,8 +319,12 @@ function createBridgeSecureTransport({ sessionId, deviceState, transportCandidat
             nextOutboundCounter: 0,
             isResumed: false,
             minBridgeOutboundSeq: pendingHandshake.handshakeMode === exports.HANDSHAKE_MODE_QR_BOOTSTRAP ? nextBridgeOutboundSeq : 1,
-            sendWireMessage: sendWireMessage || pendingHandshake.sendWireMessage,
-            closeTransport: closeTransport || pendingHandshake.closeTransport,
+            ...((sendWireMessage || pendingHandshake.sendWireMessage)
+                ? { sendWireMessage: sendWireMessage || pendingHandshake.sendWireMessage }
+                : {}),
+            ...((closeTransport || pendingHandshake.closeTransport)
+                ? { closeTransport: closeTransport || pendingHandshake.closeTransport }
+                : {}),
         };
         activeSessions.set(transportId, activeSession);
         activeTransportIdByPhone.set(activeSession.phoneDeviceId, transportId);

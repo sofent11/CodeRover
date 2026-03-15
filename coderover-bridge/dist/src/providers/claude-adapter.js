@@ -56,9 +56,7 @@ function createClaudeAdapter({ store, logPrefix = "[coderover]", }) {
             return;
         }
         const sdk = await loadSdkModule();
-        const messages = await sdk.getSessionMessages(threadMeta.providerSessionId, {
-            dir: threadMeta.cwd || undefined,
-        }).catch(() => []);
+        const messages = await sdk.getSessionMessages(threadMeta.providerSessionId, threadMeta.cwd ? { dir: threadMeta.cwd } : undefined).catch(() => []);
         const turns = [];
         let currentTurn = null;
         for (const message of messages) {
@@ -128,7 +126,6 @@ function createClaudeAdapter({ store, logPrefix = "[coderover]", }) {
             options: {
                 cwd: threadMeta.cwd || process.cwd(),
                 model: normalizeOptionalString(params.model) || threadMeta.model || (0, provider_catalog_1.getRuntimeProvider)("claude").defaultModelId,
-                resume: threadMeta.providerSessionId || undefined,
                 includePartialMessages: true,
                 tools: {
                     type: "preset",
@@ -189,6 +186,7 @@ function createClaudeAdapter({ store, logPrefix = "[coderover]", }) {
                         message: "User denied tool use",
                     };
                 },
+                ...(threadMeta.providerSessionId ? { resume: threadMeta.providerSessionId } : {}),
             },
         });
         turnContext.setInterruptHandler(async () => {
@@ -391,6 +389,9 @@ async function materializeImage(source, cwd) {
     }
     const mimeType = match[1];
     const base64 = match[2];
+    if (!mimeType || !base64) {
+        return normalized;
+    }
     const extension = mimeType.split("/")[1] || "png";
     const tempDir = path.join(cwd || os.tmpdir(), ".coderover", "claude-images");
     fs.mkdirSync(tempDir, { recursive: true });

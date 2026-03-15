@@ -43,7 +43,10 @@ async function handleThreadContextRead(params) {
         throw threadContextError("missing_thread_id", "thread/contextWindow/read requires a threadId.");
     }
     const turnId = readString(params.turnId) || readString(params.turn_id);
-    const result = (0, rollout_watch_1.readLatestContextWindowUsage)({ threadId, turnId: turnId ?? undefined });
+    const result = (0, rollout_watch_1.readLatestContextWindowUsage)({
+        threadId,
+        ...(turnId ? { turnId } : {}),
+    });
     return {
         threadId,
         usage: result?.usage ?? null,

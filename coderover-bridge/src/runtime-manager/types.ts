@@ -6,6 +6,7 @@ import type {
   JsonRpcEnvelope,
   PlanModeStateShape,
   RuntimeInputItem,
+  RuntimeItemShape,
   RuntimeThreadShape,
   RuntimeTurnShape,
 } from "../bridge-types";
@@ -27,7 +28,8 @@ export const CODEX_OBSERVED_THREAD_ERROR_BACKOFF_MS = 5_000;
 export const CODEX_OBSERVED_THREAD_LIMIT = 3;
 
 export type RuntimeRpcEnvelope = JsonRpcEnvelope;
-export type RuntimeHistoryCursor = HistoryCursorShape;
+export type RuntimeHistoryCursor =
+  Omit<HistoryCursorShape, "threadId"> & { threadId?: string };
 
 export interface RuntimeHistoryRequest {
   mode: "tail" | "before" | "after";
@@ -38,7 +40,7 @@ export interface RuntimeHistoryRequest {
 export interface RuntimeHistoryRecord {
   turnId: string;
   turnMeta: RuntimeTurnShape & { id: string; createdAt: string };
-  itemObject: Record<string, unknown>;
+  itemObject: RuntimeItemShape & Record<string, unknown>;
   createdAt: string;
   createdAtMs: number;
   ordinal: number;

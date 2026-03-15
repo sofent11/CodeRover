@@ -132,8 +132,8 @@ async function gitCommit(cwd, params) {
     await git(cwd, "add", "-A");
     const output = await git(cwd, "commit", "-m", message);
     const hashMatch = output.match(/\[(\S+)\s+([a-f0-9]+)\]/);
-    const hash = hashMatch ? hashMatch[2] : "";
-    const branch = hashMatch ? hashMatch[1] : "";
+    const hash = hashMatch?.[2] ?? "";
+    const branch = hashMatch?.[1] ?? "";
     const summaryMatch = output.match(/\d+ files? changed/);
     const summary = summaryMatch ? summaryMatch[0] : output.split("\n").pop()?.trim() || "";
     return { hash, branch, summary };
@@ -316,7 +316,7 @@ async function gitRemoteUrl(cwd) {
 }
 function parseOwnerRepo(remoteUrl) {
     const match = remoteUrl.match(/[:/]([^/]+\/[^/]+?)(?:\.git)?$/);
-    return match ? match[1] : null;
+    return match?.[1] ?? null;
 }
 async function gitBranchesWithStatus(cwd) {
     const [branchResult, statusResult] = await Promise.all([
@@ -388,8 +388,8 @@ function parseNumstatTotals(output) {
         .filter(Boolean)
         .reduce((aggregate, line) => {
         const [rawAdditions, rawDeletions] = line.split("\t");
-        const additions = Number.parseInt(rawAdditions, 10);
-        const deletions = Number.parseInt(rawDeletions, 10);
+        const additions = Number.parseInt(rawAdditions ?? "", 10);
+        const deletions = Number.parseInt(rawDeletions ?? "", 10);
         const isBinary = !Number.isFinite(additions) || !Number.isFinite(deletions);
         return {
             additions: aggregate.additions + (Number.isFinite(additions) ? additions : 0),
@@ -446,8 +446,8 @@ async function revListCounts(cwd) {
     const output = await git(cwd, "rev-list", "--left-right", "--count", "HEAD...@{u}");
     const parts = output.trim().split(/\s+/);
     return {
-        ahead: Number.parseInt(parts[0], 10) || 0,
-        behind: Number.parseInt(parts[1], 10) || 0,
+        ahead: Number.parseInt(parts[0] ?? "", 10) || 0,
+        behind: Number.parseInt(parts[1] ?? "", 10) || 0,
     };
 }
 function parseBranchFromStatus(line) {
@@ -455,7 +455,7 @@ function parseBranchFromStatus(line) {
     if (!match) {
         return null;
     }
-    const branch = match[1].trim();
+    const branch = (match[1] ?? "").trim();
     if (branch === "HEAD (no branch)" || branch.includes("HEAD detached")) {
         return null;
     }
@@ -463,7 +463,7 @@ function parseBranchFromStatus(line) {
 }
 function parseTrackingFromStatus(line) {
     const match = line.match(/\.{3}(.+?)(?:\s|$)/);
-    return match ? match[1].trim() : null;
+    return match?.[1]?.trim() ?? null;
 }
 function computeState(dirty, ahead, behind, detached, noUpstream) {
     if (detached)

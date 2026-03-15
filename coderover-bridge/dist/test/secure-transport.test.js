@@ -9,10 +9,18 @@ const node_test_1 = require("node:test");
 const node_assert_1 = require("node:assert");
 const crypto_1 = require("crypto");
 const secure_transport_1 = require("../src/secure-transport");
+function isServerHelloMessage(message) {
+    return Boolean(message && message.kind === "serverHello");
+}
+function isSecureReadyMessage(message) {
+    return Boolean(message && message.kind === "secureReady");
+}
 (0, node_test_1.test)("secure transport rejects plaintext JSON-RPC before the secure handshake", () => {
     const { privateKey, publicKey } = (0, crypto_1.generateKeyPairSync)("ed25519");
     const privateJwk = privateKey.export({ format: "jwk" });
     const publicJwk = publicKey.export({ format: "jwk" });
+    node_assert_1.strict.ok(privateJwk.d);
+    node_assert_1.strict.ok(publicJwk.x);
     const secureTransport = (0, secure_transport_1.createBridgeSecureTransport)({
         sessionId: "session-1",
         deviceState: createBridgeDeviceState({
@@ -81,7 +89,7 @@ const secure_transport_1 = require("../src/secure-transport");
         },
     });
     const serverHello = controlMessages.find((message) => message.kind === "serverHello");
-    node_assert_1.strict.ok(serverHello, "expected serverHello");
+    node_assert_1.strict.ok(isServerHelloMessage(serverHello), "expected serverHello");
     const transcriptBytes = buildTranscriptBytes({
         sessionId: "session-2",
         protocolVersion: 1,
@@ -126,7 +134,7 @@ const secure_transport_1 = require("../src/secure-transport");
         },
     });
     const secureReady = controlMessages.find((message) => message.kind === "secureReady");
-    node_assert_1.strict.ok(secureReady, "expected secureReady");
+    node_assert_1.strict.ok(isSecureReadyMessage(secureReady), "expected secureReady");
     const sharedSecret = (0, crypto_1.diffieHellman)({
         privateKey: (0, crypto_1.createPrivateKey)({
             key: {
@@ -166,6 +174,7 @@ const secure_transport_1 = require("../src/secure-transport");
     });
     secureTransport.queueOutboundApplicationMessage(JSON.stringify({ id: "response-1", result: { ok: true } }));
     node_assert_1.strict.equal(wireMessages.length, 1);
+    node_assert_1.strict.ok(wireMessages[0]);
     const outboundEnvelope = JSON.parse(wireMessages[0]);
     const outboundPayload = decryptEnvelope(outboundEnvelope, macToPhoneKey);
     node_assert_1.strict.equal(outboundPayload.bridgeOutboundSeq, 1);
@@ -248,6 +257,8 @@ const secure_transport_1 = require("../src/secure-transport");
         serverHello: secondHandshake.serverHello,
         transcriptBytes: secondHandshake.transcriptBytes,
     });
+    node_assert_1.strict.ok(firstWireMessages[0]);
+    node_assert_1.strict.ok(secondWireMessages[0]);
     const firstPayload = decryptEnvelope(JSON.parse(firstWireMessages[0]), firstKeys.macToPhoneKey);
     const secondPayload = decryptEnvelope(JSON.parse(secondWireMessages[0]), secondKeys.macToPhoneKey);
     node_assert_1.strict.equal(firstPayload.bridgeOutboundSeq, 1);
@@ -302,7 +313,7 @@ const secure_transport_1 = require("../src/secure-transport");
         },
     });
     const serverHello = controlMessages.find((message) => message.kind === "serverHello");
-    node_assert_1.strict.ok(serverHello, "expected serverHello for replacement bootstrap");
+    node_assert_1.strict.ok(isServerHelloMessage(serverHello), "expected serverHello for replacement bootstrap");
     secureTransport.handleIncomingWireMessage(JSON.stringify({
         kind: "clientAuth",
         sessionId: "session-3",
@@ -344,7 +355,7 @@ const secure_transport_1 = require("../src/secure-transport");
         },
     });
     const secureReady = controlMessages.find((message) => message.kind === "secureReady");
-    node_assert_1.strict.ok(secureReady, "expected secureReady after second phone bootstrap");
+    node_assert_1.strict.ok(isSecureReadyMessage(secureReady), "expected secureReady after second phone bootstrap");
     const reconnectMessages = [];
     secureTransport.handleIncomingWireMessage(JSON.stringify({
         kind: "clientHello",
@@ -437,7 +448,7 @@ function finishHandshake({ secureTransport, transportId = "transport-unknown", s
         },
     });
     const serverHello = controlMessages.find((message) => message.kind === "serverHello");
-    node_assert_1.strict.ok(serverHello, "expected serverHello");
+    node_assert_1.strict.ok(isServerHelloMessage(serverHello), "expected serverHello");
     const transcriptBytes = buildTranscriptBytes({
         sessionId,
         protocolVersion: 1,
@@ -485,7 +496,7 @@ function finishHandshake({ secureTransport, transportId = "transport-unknown", s
         },
     });
     const secureReady = controlMessages.find((message) => message.kind === "secureReady");
-    node_assert_1.strict.ok(secureReady, "expected secureReady");
+    node_assert_1.strict.ok(isSecureReadyMessage(secureReady), "expected secureReady");
     secureTransport.handleIncomingWireMessage(JSON.stringify({
         kind: "resumeState",
         sessionId,
@@ -543,9 +554,13 @@ function deriveSessionKeys({ sessionId, macDeviceId, phoneDeviceId, phoneEphemer
     };
 }
 function createOkpKeyPair(type) {
-    const { privateKey, publicKey } = (0, crypto_1.generateKeyPairSync)(type);
+    const { privateKey, publicKey } = type === "ed25519"
+        ? (0, crypto_1.generateKeyPairSync)("ed25519")
+        : (0, crypto_1.generateKeyPairSync)("x25519");
     const privateJwk = privateKey.export({ format: "jwk" });
     const publicJwk = publicKey.export({ format: "jwk" });
+    node_assert_1.strict.ok(privateJwk.d);
+    node_assert_1.strict.ok(publicJwk.x);
     return {
         privateKey: base64UrlToBase64(privateJwk.d),
         publicKey: base64UrlToBase64(publicJwk.x),

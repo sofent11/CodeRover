@@ -11,10 +11,141 @@ import * as os from "os";
 import * as path from "path";
 
 import { createRuntimeManager } from "../src/runtime-manager";
+import type { JsonRpcId, RuntimeThreadShape } from "../src/bridge-types";
+import type { CodexAdapter } from "../src/providers/codex-adapter";
+import type {
+  ManagedProviderAdapter,
+  ManagedProviderTurnContext,
+} from "../src/runtime-manager/types";
 
-type MutableThreadRef = { current: any };
+type RuntimeManager = ReturnType<typeof createRuntimeManager>;
+type UnknownRecord = Record<string, unknown>;
 
-function createManagerFixture() {
+interface HistoryAnchorLike {
+  itemId?: string;
+  item_id?: string;
+  createdAt?: string;
+  created_at?: string;
+}
+
+interface HistoryRequestLike {
+  mode?: string;
+  limit?: number;
+  anchor?: HistoryAnchorLike;
+  cursor?: string;
+}
+
+interface ThreadReadParams extends UnknownRecord {
+  threadId?: string;
+  includeTurns?: boolean;
+  history?: HistoryRequestLike;
+}
+
+interface ThreadActionParams extends UnknownRecord {
+  threadId?: string;
+}
+
+interface RpcMessage {
+  id?: JsonRpcId;
+  method?: string;
+  params: Record<string, any>;
+  result?: any;
+  error?: any;
+  [key: string]: any;
+}
+
+type CodexThreadItem = Record<string, unknown> & {
+  id: string;
+  type: string;
+  role: string;
+  text: string;
+  content: Array<{ type: "text"; text: string }>;
+  createdAt: string;
+};
+
+type CodexThreadTurn = Record<string, unknown> & {
+  id: string;
+  createdAt: string;
+  status: string;
+  items: CodexThreadItem[];
+};
+
+type CodexThread = RuntimeThreadShape & {
+  id: string;
+  title: string;
+  preview: string;
+  cwd: string;
+  createdAt: string;
+  updatedAt: string;
+  turns: CodexThreadTurn[];
+};
+
+type MutableThreadRef = { current: CodexThread | null };
+
+interface ManagerFixture {
+  manager: RuntimeManager;
+  messages: RpcMessage[];
+  cleanup(): void;
+}
+
+interface ManagerFixtureOptions {
+  codexAdapter?: CodexAdapter | null;
+  claudeAdapter?: ManagedProviderAdapter | null;
+  geminiAdapter?: ManagedProviderAdapter | null;
+  useDefaultCodexAdapter?: boolean;
+  runtimeOptions?: Partial<Parameters<typeof createRuntimeManager>[0]>;
+}
+
+function createUnavailableCodexAdapter(): CodexAdapter {
+  const unavailable = async (): Promise<unknown> => {
+    throw new Error("Codex transport is not available");
+  };
+
+  return {
+    attachTransport() {},
+    collaborationModes: unavailable,
+    compactThread: unavailable,
+    fuzzyFileSearch: unavailable,
+    handleIncomingRaw() {},
+    handleTransportClosed() {},
+    interruptTurn: unavailable,
+    isAvailable() {
+      return false;
+    },
+    listModels: unavailable,
+    listSkills: unavailable,
+    listThreads: unavailable,
+    notify() {},
+    readThread: unavailable,
+    request: unavailable,
+    resumeThread: unavailable,
+    sendRaw() {},
+    startThread: unavailable,
+    startTurn: unavailable,
+    steerTurn: unavailable,
+  };
+}
+
+function createManagedAdapterStub(): ManagedProviderAdapter {
+  const noopAsync = async (): Promise<void> => {};
+  return {
+    syncImportedThreads: noopAsync,
+    hydrateThread: noopAsync,
+    startTurn: noopAsync,
+  };
+}
+
+function createCodexAdapterStub(overrides: Partial<CodexAdapter>): CodexAdapter {
+  return {
+    ...createUnavailableCodexAdapter(),
+    isAvailable() {
+      return true;
+    },
+    ...overrides,
+  };
+}
+
+function createManagerFixture(): ManagerFixture {
   return createManagerFixtureWithOptions({});
 }
 
@@ -24,31 +155,15 @@ function createManagerFixtureWithOptions({
   geminiAdapter: providedGeminiAdapter = null,
   useDefaultCodexAdapter = false,
   runtimeOptions = {},
-} = {}) {
-  const messages = [];
+}: ManagerFixtureOptions = {}): ManagerFixture {
+  const messages: RpcMessage[] = [];
   const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "coderover-runtime-manager-"));
-  const noopAsync = async () => {};
-  const codexAdapter = providedCodexAdapter || (useDefaultCodexAdapter ? null : {
-    attachTransport() {},
-    handleIncomingRaw() {},
-    handleTransportClosed() {},
-    isAvailable() {
-      return false;
-    },
-  });
-  const claudeAdapter = providedClaudeAdapter || {
-    syncImportedThreads: noopAsync,
-    hydrateThread: noopAsync,
-    startTurn: noopAsync,
-  };
-  const geminiAdapter = providedGeminiAdapter || {
-    syncImportedThreads: noopAsync,
-    hydrateThread: noopAsync,
-    startTurn: noopAsync,
-  };
+  const codexAdapter = providedCodexAdapter || (useDefaultCodexAdapter ? null : createUnavailableCodexAdapter());
+  const claudeAdapter = providedClaudeAdapter || createManagedAdapterStub();
+  const geminiAdapter = providedGeminiAdapter || createManagedAdapterStub();
   const manager = createRuntimeManager({
     sendApplicationMessage(message) {
-      messages.push(JSON.parse(message));
+      messages.push(JSON.parse(message) as RpcMessage);
     },
     storeBaseDir: baseDir,
     codexAdapter,
@@ -72,11 +187,16 @@ async function drainMicrotasks() {
   await new Promise((resolve) => setImmediate(resolve));
 }
 
-async function sleep(ms) {
+async function sleep(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function request(fixture, id, method, params) {
+async function request(
+  fixture: ManagerFixture,
+  id: JsonRpcId,
+  method: string,
+  params: Record<string, unknown>
+): Promise<RpcMessage[]> {
   const beforeCount = fixture.messages.length;
   await fixture.manager.handleClientMessage(JSON.stringify({
     jsonrpc: "2.0",
@@ -87,8 +207,10 @@ async function request(fixture, id, method, params) {
   return fixture.messages.slice(beforeCount);
 }
 
-function responseById(messages, id) {
-  return messages.find((message) => message.id === id);
+function responseById(messages: RpcMessage[], id: JsonRpcId): RpcMessage {
+  const response = messages.find((message) => message.id === id);
+  assert.ok(response, `expected response for id ${String(id)}`);
+  return response;
 }
 
 test("runtime/provider/list advertises Codex, Claude, and Gemini capabilities", async () => {
@@ -99,7 +221,7 @@ test("runtime/provider/list advertises Codex, Claude, and Gemini capabilities", 
     const response = responseById(messages, "providers-1");
     assert.ok(response);
     assert.deepEqual(
-      response.result.providers.map((provider) => provider.id),
+      response.result.providers.map((provider: { id: string }) => provider.id),
       ["codex", "claude", "gemini"]
     );
     assert.equal(response.result.providers[1].supports.turnSteer, false);
@@ -125,7 +247,7 @@ test("thread/start creates and lists managed Claude threads with provider metada
     assert.equal(startedThread.provider, "claude");
     assert.equal(startedThread.capabilities.turnSteer, false);
     assert.equal(startedThread.metadata.providerTitle, "Claude Code");
-    assert.ok(startMessages.some((message) => message.method === "thread/started"));
+    assert.ok(startMessages.some((message: RpcMessage) => message.method === "thread/started"));
 
     const listMessages = await request(fixture, "thread-list-1", "thread/list", {});
     const listResponse = responseById(listMessages, "thread-list-1");
@@ -181,18 +303,24 @@ test("thread archive overlays and turn/steer capability gating work for managed 
 
 function createCodexAdapterFixture({
   threads = [],
-} = {}) {
-  const readCountsByThread = new Map();
-  let attachedTransport = null;
+}: {
+  threads?: CodexThread[];
+} = {}): {
+  adapter: CodexAdapter;
+  readCountsByThread: Map<string, number>;
+} {
+  const readCountsByThread = new Map<string, number>();
+  let attachedTransport: { send(message: string): void } | null = null;
 
-  function findThread(threadId) {
+  function findThread(threadId: string): CodexThread | null {
     return threads.find((thread) => thread.id === threadId) || null;
   }
 
   return {
     adapter: {
+      ...createUnavailableCodexAdapter(),
       attachTransport(transport) {
-        attachedTransport = transport;
+        attachedTransport = transport || null;
       },
       handleIncomingRaw() {},
       handleTransportClosed() {
@@ -201,7 +329,7 @@ function createCodexAdapterFixture({
       isAvailable() {
         return true;
       },
-      async request(method) {
+      async request(method: string) {
         if (method === "initialize") {
           return { ok: true };
         }
@@ -222,8 +350,8 @@ function createCodexAdapterFixture({
           nextCursor: "cursor-2",
         };
       },
-      async readThread(params) {
-        const threadId = params.threadId;
+      async readThread(params: ThreadReadParams = {}) {
+        const threadId = String(params.threadId || "");
         readCountsByThread.set(threadId, (readCountsByThread.get(threadId) || 0) + 1);
         const thread = findThread(threadId);
         if (!thread) {
@@ -241,7 +369,7 @@ function createCodexAdapterFixture({
           thread: JSON.parse(JSON.stringify(thread)),
         };
       },
-      async startTurn(params) {
+      async startTurn(params: ThreadActionParams = {}) {
         return {
           threadId: params.threadId,
           turnId: "turn-started",
@@ -256,9 +384,13 @@ function buildCodexThread({
   threadId = "codex-thread-1",
   messageCount = 180,
   turnId = "turn-1",
-} = {}) {
+}: {
+  threadId?: string;
+  messageCount?: number;
+  turnId?: string;
+} = {}): CodexThread {
   const createdAtBase = Date.parse("2026-03-14T00:00:00.000Z");
-  const items = [];
+  const items: CodexThreadItem[] = [];
   for (let index = 1; index <= messageCount; index += 1) {
     items.push({
       id: `item-${index}`,
@@ -287,10 +419,18 @@ function buildCodexThread({
   };
 }
 
-function buildCodexHistoryResult(thread, history) {
-  const snapshot = JSON.parse(JSON.stringify(thread));
+function buildCodexHistoryResult(
+  thread: CodexThread,
+  history: HistoryRequestLike | null | undefined
+): Record<string, unknown> {
+  const snapshot = JSON.parse(JSON.stringify(thread)) as CodexThread;
   const turns = Array.isArray(snapshot.turns) ? snapshot.turns : [];
-  const turn = turns[0] || { items: [] };
+  const turn: CodexThreadTurn = turns[0] || {
+    id: "turn-1",
+    createdAt: snapshot.createdAt,
+    status: "completed",
+    items: [],
+  };
   const items = Array.isArray(turn.items) ? turn.items : [];
   const mode = history?.mode || "tail";
   const limit = Math.max(Number(history?.limit) || items.length || 0, 1);
@@ -303,7 +443,7 @@ function buildCodexHistoryResult(thread, history) {
     startIndex = Math.max(items.length - limit, 0);
     endIndexExclusive = items.length;
   } else {
-    const anchorIndex = items.findIndex((item) => (
+    const anchorIndex = items.findIndex((item: CodexThreadItem) => (
       (anchorItemId && item.id === anchorItemId)
       || (!anchorItemId && anchorCreatedAt && item.createdAt === anchorCreatedAt)
     ));
@@ -349,15 +489,15 @@ function buildCodexHistoryResult(thread, history) {
   };
 }
 
-function createDefaultCodexTransportFixture(manager, {
+function createDefaultCodexTransportFixture(manager: RuntimeManager, {
   threadRef,
 }: { threadRef?: MutableThreadRef } = {}) {
-  const readCountsByThread = new Map();
-  const sentMethods = [];
+  const readCountsByThread = new Map<string, number>();
+  const sentMethods: string[] = [];
 
   const transport = {
-    send(message) {
-      const parsed = JSON.parse(message);
+    send(message: string) {
+      const parsed = JSON.parse(message) as RpcMessage;
       sentMethods.push(parsed.method || "response");
 
       setImmediate(() => {
@@ -371,9 +511,9 @@ function createDefaultCodexTransportFixture(manager, {
         }
 
         if (parsed.method === "thread/read") {
-          const threadId = parsed.params?.threadId;
+          const threadId = String(parsed.params?.threadId || "");
           readCountsByThread.set(threadId, (readCountsByThread.get(threadId) || 0) + 1);
-          const thread = threadRef.current && threadRef.current.id === threadId
+          const thread = threadRef?.current && threadRef.current.id === threadId
             ? JSON.parse(JSON.stringify(threadRef.current))
             : null;
           let result = {};
@@ -491,22 +631,14 @@ test("thread/read forwards uncached Codex history windows upstream before fallin
     threadId: "codex-thread-upstream-history",
     messageCount: 5,
   });
-  const readParams = [];
-  const codexAdapter = {
-    attachTransport() {},
-    handleIncomingRaw() {},
-    handleTransportClosed() {},
-    isAvailable() {
-      return true;
-    },
-    async request(method) {
+  const readParams: ThreadReadParams[] = [];
+  const codexAdapter = createCodexAdapterStub({
+    async request(method: string) {
       if (method === "initialize") {
         return { ok: true };
       }
       throw new Error(`unexpected request: ${method}`);
     },
-    notify() {},
-    sendRaw() {},
     async listThreads() {
       return {
         threads: [{
@@ -519,7 +651,7 @@ test("thread/read forwards uncached Codex history windows upstream before fallin
         }],
       };
     },
-    async readThread(params) {
+    async readThread(params: ThreadReadParams = {}) {
       readParams.push(JSON.parse(JSON.stringify(params)));
       if (params.includeTurns === false) {
         const metaThread = JSON.parse(JSON.stringify(thread));
@@ -543,13 +675,13 @@ test("thread/read forwards uncached Codex history windows upstream before fallin
         },
       };
     },
-    async startTurn(params) {
+    async startTurn(params: ThreadActionParams = {}) {
       return {
         threadId: params.threadId,
         turnId: "turn-started",
       };
     },
-  };
+  });
   const fixture = createManagerFixtureWithOptions({ codexAdapter });
 
   try {
@@ -566,10 +698,12 @@ test("thread/read forwards uncached Codex history windows upstream before fallin
     assert.equal(tailResponse.result.historyWindow.pageSize, 3);
     assert.equal(tailResponse.result.thread.turns[0].items.length, 3);
     assert.deepEqual(
-      tailResponse.result.thread.turns[0].items.map((item) => item.id),
+      tailResponse.result.thread.turns[0].items.map((item: { id: string }) => item.id),
       ["item-3", "item-4", "item-5"]
     );
     assert.equal(readParams.length, 2);
+    assert.ok(readParams[0]);
+    assert.ok(readParams[1]);
     assert.equal(readParams[0].includeTurns, false);
     assert.deepEqual(readParams[1].history, {
       mode: "tail",
@@ -772,7 +906,7 @@ test("legacy Codex event notifications invalidate stale history windows so after
     assert.ok(tailResponse);
     assert.equal(tailResponse.result.historyWindow.servedFromCache, false);
     assert.deepEqual(
-      tailResponse.result.thread.turns[0].items.map((item) => item.id),
+      tailResponse.result.thread.turns[0].items.map((item: { id: string }) => item.id),
       ["item-1", "item-2", "item-3"]
     );
 
@@ -817,7 +951,7 @@ test("legacy Codex event notifications invalidate stale history windows so after
     assert.ok(afterResponse);
     assert.equal(afterResponse.result.historyWindow.servedFromCache, false);
     assert.deepEqual(
-      afterResponse.result.thread.turns[0].items.map((item) => item.id),
+      afterResponse.result.thread.turns[0].items.map((item: { id: string }) => item.id),
       ["item-4"]
     );
     assert.equal(transportFixture.readCountsByThread.get(threadRef.current.id), 3);
@@ -887,7 +1021,7 @@ test("codex/event legacy notifications invalidate stale history windows so after
     assert.ok(afterResponse);
     assert.equal(afterResponse.result.historyWindow.servedFromCache, false);
     assert.deepEqual(
-      afterResponse.result.thread.turns[0].items.map((item) => item.id),
+      afterResponse.result.thread.turns[0].items.map((item: { id: string }) => item.id),
       ["item-4"]
     );
   } finally {
@@ -949,7 +1083,7 @@ test("Codex delta notifications without threadId still advance cache windows via
     assert.ok(afterResponse);
     assert.equal(afterResponse.result.historyWindow.servedFromCache, true);
     assert.deepEqual(
-      afterResponse.result.thread.turns[0].items.map((item) => item.id),
+      afterResponse.result.thread.turns[0].items.map((item: { id: string }) => item.id),
       ["item-4"]
     );
   } finally {
@@ -1068,7 +1202,7 @@ test("unscoped Codex history events invalidate cache so reopen fetches upstream"
     assert.ok(afterResponse);
     assert.equal(afterResponse.result.historyWindow.servedFromCache, false);
     assert.deepEqual(
-      afterResponse.result.thread.turns[0].items.map((item) => item.id),
+      afterResponse.result.thread.turns[0].items.map((item: { id: string }) => item.id),
       ["item-4"]
     );
   } finally {
@@ -1116,7 +1250,7 @@ test("managed thread/read history windows expose the same cursor shape as Codex"
   const claudeAdapter = {
     syncImportedThreads: async () => {},
     hydrateThread: async () => {},
-    async startTurn({ turnContext }) {
+    async startTurn({ turnContext }: { turnContext: ManagedProviderTurnContext }) {
       turnContext.appendAgentDelta("message-1", { itemId: "item-1" });
       turnContext.appendAgentDelta("message-2", { itemId: "item-2" });
       turnContext.appendAgentDelta("message-3", { itemId: "item-3" });
@@ -1152,7 +1286,7 @@ test("managed thread/read history windows expose the same cursor shape as Codex"
     assert.ok(tailResponse.result.historyWindow.olderCursor);
     assert.ok(tailResponse.result.historyWindow.newerCursor);
     assert.deepEqual(
-      tailResponse.result.thread.turns[0].items.map((item) => item.id),
+      tailResponse.result.thread.turns[0].items.map((item: { id: string }) => item.id),
       ["item-2", "item-3"]
     );
 
@@ -1166,7 +1300,7 @@ test("managed thread/read history windows expose the same cursor shape as Codex"
     });
     const beforeResponse = responseById(beforeMessages, "managed-thread-before");
     assert.deepEqual(
-      beforeResponse.result.thread.turns[0].items.map((item) => item.id),
+      beforeResponse.result.thread.turns[0].items.map((item: { id: string }) => item.id),
       ["item-1"]
     );
     assert.equal(beforeResponse.result.historyWindow.hasOlder, false);
@@ -1182,7 +1316,7 @@ test("managed thread/read history windows expose the same cursor shape as Codex"
     });
     const afterResponse = responseById(afterMessages, "managed-thread-after");
     assert.deepEqual(
-      afterResponse.result.thread.turns[0].items.map((item) => item.id),
+      afterResponse.result.thread.turns[0].items.map((item: { id: string }) => item.id),
       ["item-3"]
     );
     assert.equal(afterResponse.result.historyWindow.hasOlder, true);
@@ -1196,7 +1330,7 @@ test("managed realtime notifications include cursor and previousCursor metadata"
   const geminiAdapter = {
     syncImportedThreads: async () => {},
     hydrateThread: async () => {},
-    async startTurn({ turnContext }) {
+    async startTurn({ turnContext }: { turnContext: ManagedProviderTurnContext }) {
       turnContext.appendAgentDelta("message-1", { itemId: "item-1" });
       turnContext.appendAgentDelta("message-2", { itemId: "item-2" });
       return {};
@@ -1220,8 +1354,10 @@ test("managed realtime notifications include cursor and previousCursor metadata"
 
     const itemNotifications = fixture.messages
       .slice(beforeCount)
-      .filter((message) => message.method === "item/agentMessage/delta");
+      .filter((message: RpcMessage) => message.method === "item/agentMessage/delta");
     assert.equal(itemNotifications.length, 2);
+    assert.ok(itemNotifications[0]);
+    assert.ok(itemNotifications[1]);
     assert.ok(itemNotifications[0].params.cursor);
     assert.equal(itemNotifications[0].params.previousCursor, undefined);
     assert.ok(itemNotifications[1].params.cursor);
@@ -1306,22 +1442,14 @@ test("observed Codex threads emit thread/history/changed after bridge-side threa
       turnId: "turn-observed",
     }),
   };
-  const readCountsByThread = new Map();
-  const codexAdapter = {
-    attachTransport() {},
-    handleIncomingRaw() {},
-    handleTransportClosed() {},
-    isAvailable() {
-      return true;
-    },
-    async request(method) {
+  const readCountsByThread = new Map<string, number>();
+  const codexAdapter = createCodexAdapterStub({
+    async request(method: string) {
       if (method === "initialize") {
         return { ok: true };
       }
       throw new Error(`unexpected request: ${method}`);
     },
-    notify() {},
-    sendRaw() {},
     async listThreads() {
       return {
         threads: [{
@@ -1334,20 +1462,20 @@ test("observed Codex threads emit thread/history/changed after bridge-side threa
         }],
       };
     },
-    async readThread(params) {
-      const threadId = params.threadId;
+    async readThread(params: ThreadReadParams = {}) {
+      const threadId = String(params.threadId || "");
       readCountsByThread.set(threadId, (readCountsByThread.get(threadId) || 0) + 1);
       return {
         thread: JSON.parse(JSON.stringify(threadRef.current)),
       };
     },
-    async resumeThread(params) {
+    async resumeThread(params: ThreadActionParams = {}) {
       return {
         threadId: params.threadId,
         resumed: true,
       };
     },
-  };
+  });
   const fixture = createManagerFixtureWithOptions({
     codexAdapter,
     runtimeOptions: {
@@ -1376,14 +1504,14 @@ test("observed Codex threads emit thread/history/changed after bridge-side threa
     await sleep(80);
 
     const newMessages = fixture.messages.slice(beforeCount);
-    const historyChanged = newMessages.find((message) => message.method === "thread/history/changed");
+    const historyChanged = newMessages.find((message: RpcMessage) => message.method === "thread/history/changed");
     assert.ok(historyChanged);
     assert.equal(historyChanged.params.threadId, threadRef.current.id);
     assert.equal(historyChanged.params.sourceMethod, "thread/read");
     assert.equal(historyChanged.params.rawMethod, "thread/read");
     assert.equal(historyChanged.params.itemId, "item-3");
     assert.ok(historyChanged.params.cursor);
-    assert.ok(readCountsByThread.get(threadRef.current.id) >= 2);
+    assert.ok((readCountsByThread.get(threadRef.current.id) || 0) >= 2);
   } finally {
     fixture.cleanup();
   }
@@ -1397,21 +1525,13 @@ test("observed Codex threads do not emit repeated thread/history/changed for unc
       turnId: "turn-observed-stable",
     }),
   };
-  const codexAdapter = {
-    attachTransport() {},
-    handleIncomingRaw() {},
-    handleTransportClosed() {},
-    isAvailable() {
-      return true;
-    },
-    async request(method) {
+  const codexAdapter = createCodexAdapterStub({
+    async request(method: string) {
       if (method === "initialize") {
         return { ok: true };
       }
       throw new Error(`unexpected request: ${method}`);
     },
-    notify() {},
-    sendRaw() {},
     async listThreads() {
       return {
         threads: [{
@@ -1429,7 +1549,7 @@ test("observed Codex threads do not emit repeated thread/history/changed for unc
         thread: JSON.parse(JSON.stringify(threadRef.current)),
       };
     },
-  };
+  });
   const fixture = createManagerFixtureWithOptions({
     codexAdapter,
     runtimeOptions: {
@@ -1452,7 +1572,7 @@ test("observed Codex threads do not emit repeated thread/history/changed for unc
     await sleep(80);
 
     const newMessages = fixture.messages.slice(beforeCount);
-    const historyChangedMessages = newMessages.filter((message) => message.method === "thread/history/changed");
+    const historyChangedMessages = newMessages.filter((message: RpcMessage) => message.method === "thread/history/changed");
     assert.equal(historyChangedMessages.length, 0);
   } finally {
     fixture.cleanup();

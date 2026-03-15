@@ -25,10 +25,85 @@ import {
 } from "../src/secure-transport";
 import type { BridgeDeviceState } from "../src/secure-device-state";
 
+type BridgeSecureTransport = ReturnType<typeof createBridgeSecureTransport>;
+type HandshakeMode =
+  | typeof HANDSHAKE_MODE_QR_BOOTSTRAP
+  | typeof HANDSHAKE_MODE_TRUSTED_RECONNECT;
+type SecureSender = "mac" | "iphone";
+
+interface OkpKeyPair {
+  privateKey: string;
+  publicKey: string;
+}
+
+interface SecureErrorMessage {
+  kind: "secureError";
+  code: string;
+  message?: string;
+  [key: string]: unknown;
+}
+
+interface ServerHelloMessage {
+  kind: "serverHello";
+  keyEpoch: number;
+  macEphemeralPublicKey: string;
+  serverNonce: string;
+  expiresAtForTranscript: number;
+  [key: string]: unknown;
+}
+
+interface SecureReadyMessage {
+  kind: "secureReady";
+  sessionId: string;
+  keyEpoch: number;
+  macDeviceId: string;
+  [key: string]: unknown;
+}
+
+type ControlMessage =
+  | SecureErrorMessage
+  | SecureReadyMessage
+  | ServerHelloMessage
+  | Record<string, unknown>;
+
+interface EncryptedEnvelope {
+  kind: "encryptedEnvelope";
+  v: number;
+  sessionId: string;
+  keyEpoch: number;
+  sender: SecureSender;
+  counter: number;
+  ciphertext: string;
+  tag: string;
+}
+
+interface EncryptedPayload {
+  bridgeOutboundSeq?: number;
+  payloadText?: string;
+  [key: string]: unknown;
+}
+
+interface HandshakeResult {
+  applicationMessages: string[];
+  controlMessages: ControlMessage[];
+  serverHello: ServerHelloMessage;
+  transcriptBytes: Buffer;
+}
+
+function isServerHelloMessage(message: ControlMessage | undefined): message is ServerHelloMessage {
+  return Boolean(message && message.kind === "serverHello");
+}
+
+function isSecureReadyMessage(message: ControlMessage | undefined): message is SecureReadyMessage {
+  return Boolean(message && message.kind === "secureReady");
+}
+
 test("secure transport rejects plaintext JSON-RPC before the secure handshake", () => {
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
   const privateJwk = privateKey.export({ format: "jwk" });
   const publicJwk = publicKey.export({ format: "jwk" });
+  assert.ok(privateJwk.d);
+  assert.ok(publicJwk.x);
   const secureTransport = createBridgeSecureTransport({
     sessionId: "session-1",
     deviceState: createBridgeDeviceState({
@@ -39,7 +114,7 @@ test("secure transport rejects plaintext JSON-RPC before the secure handshake", 
     }),
   });
 
-  const controlMessages = [];
+  const controlMessages: ControlMessage[] = [];
   const handled = secureTransport.handleIncomingWireMessage(
     JSON.stringify({
       id: "1",
@@ -78,9 +153,9 @@ test("secure transport round-trips encrypted payloads after a trusted reconnect 
     }),
   });
 
-  const controlMessages = [];
-  const applicationMessages = [];
-  const wireMessages = [];
+  const controlMessages: ControlMessage[] = [];
+  const applicationMessages: string[] = [];
+  const wireMessages: string[] = [];
 
   const clientNonce = Buffer.alloc(32, 7);
   secureTransport.handleIncomingWireMessage(
@@ -109,7 +184,7 @@ test("secure transport round-trips encrypted payloads after a trusted reconnect 
   );
 
   const serverHello = controlMessages.find((message) => message.kind === "serverHello");
-  assert.ok(serverHello, "expected serverHello");
+  assert.ok(isServerHelloMessage(serverHello), "expected serverHello");
 
   const transcriptBytes = buildTranscriptBytes({
     sessionId: "session-2",
@@ -164,7 +239,7 @@ test("secure transport round-trips encrypted payloads after a trusted reconnect 
   );
 
   const secureReady = controlMessages.find((message) => message.kind === "secureReady");
-  assert.ok(secureReady, "expected secureReady");
+  assert.ok(isSecureReadyMessage(secureReady), "expected secureReady");
 
   const sharedSecret = diffieHellman({
     privateKey: createPrivateKey({
@@ -216,8 +291,9 @@ test("secure transport round-trips encrypted payloads after a trusted reconnect 
     JSON.stringify({ id: "response-1", result: { ok: true } })
   );
   assert.equal(wireMessages.length, 1);
+  assert.ok(wireMessages[0]);
 
-  const outboundEnvelope = JSON.parse(wireMessages[0]);
+  const outboundEnvelope = JSON.parse(wireMessages[0]) as EncryptedEnvelope;
   const outboundPayload = decryptEnvelope(outboundEnvelope, macToPhoneKey);
   assert.equal(outboundPayload.bridgeOutboundSeq, 1);
   assert.equal(outboundPayload.payloadText, JSON.stringify({ id: "response-1", result: { ok: true } }));
@@ -256,8 +332,8 @@ test("secure transport broadcasts outbound messages to multiple resumed phones",
   const firstPhoneEphemeral = createOkpKeyPair("x25519");
   const secondPhoneIdentity = createOkpKeyPair("ed25519");
   const secondPhoneEphemeral = createOkpKeyPair("x25519");
-  const firstWireMessages = [];
-  const secondWireMessages = [];
+  const firstWireMessages: string[] = [];
+  const secondWireMessages: string[] = [];
   const secureTransport = createBridgeSecureTransport({
     sessionId: "session-multi",
     deviceState: createBridgeDeviceState({
@@ -319,8 +395,10 @@ test("secure transport broadcasts outbound messages to multiple resumed phones",
     transcriptBytes: secondHandshake.transcriptBytes,
   });
 
-  const firstPayload = decryptEnvelope(JSON.parse(firstWireMessages[0]), firstKeys.macToPhoneKey);
-  const secondPayload = decryptEnvelope(JSON.parse(secondWireMessages[0]), secondKeys.macToPhoneKey);
+  assert.ok(firstWireMessages[0]);
+  assert.ok(secondWireMessages[0]);
+  const firstPayload = decryptEnvelope(JSON.parse(firstWireMessages[0]) as EncryptedEnvelope, firstKeys.macToPhoneKey);
+  const secondPayload = decryptEnvelope(JSON.parse(secondWireMessages[0]) as EncryptedEnvelope, secondKeys.macToPhoneKey);
 
   assert.equal(firstPayload.bridgeOutboundSeq, 1);
   assert.equal(secondPayload.bridgeOutboundSeq, 1);
@@ -357,7 +435,7 @@ test("qr bootstrap keeps previously paired phones trusted when a second phone sc
     lastAppliedBridgeOutboundSeq: 0,
   });
 
-  const controlMessages = [];
+  const controlMessages: ControlMessage[] = [];
   secureTransport.handleIncomingWireMessage(
     JSON.stringify({
       kind: "clientHello",
@@ -381,7 +459,7 @@ test("qr bootstrap keeps previously paired phones trusted when a second phone sc
   );
 
   const serverHello = controlMessages.find((message) => message.kind === "serverHello");
-  assert.ok(serverHello, "expected serverHello for replacement bootstrap");
+  assert.ok(isServerHelloMessage(serverHello), "expected serverHello for replacement bootstrap");
 
   secureTransport.handleIncomingWireMessage(
     JSON.stringify({
@@ -432,9 +510,9 @@ test("qr bootstrap keeps previously paired phones trusted when a second phone sc
   );
 
   const secureReady = controlMessages.find((message) => message.kind === "secureReady");
-  assert.ok(secureReady, "expected secureReady after second phone bootstrap");
+  assert.ok(isSecureReadyMessage(secureReady), "expected secureReady after second phone bootstrap");
 
-  const reconnectMessages = [];
+  const reconnectMessages: ControlMessage[] = [];
   secureTransport.handleIncomingWireMessage(
     JSON.stringify({
       kind: "clientHello",
@@ -465,7 +543,7 @@ test("qr bootstrap starts a fresh replay window instead of leaking buffered mess
   const phoneIdentity = createOkpKeyPair("ed25519");
   const firstEphemeral = createOkpKeyPair("x25519");
   const secondEphemeral = createOkpKeyPair("x25519");
-  const wireMessages = [];
+  const wireMessages: string[] = [];
   const secureTransport = createBridgeSecureTransport({
     sessionId: "session-4",
     deviceState: createBridgeDeviceState({
@@ -524,9 +602,21 @@ function finishHandshake({
   handshakeMode,
   lastAppliedBridgeOutboundSeq,
   wireMessages = [],
-}) {
-  const controlMessages = [];
-  const applicationMessages = [];
+}: {
+  secureTransport: BridgeSecureTransport;
+  transportId?: string;
+  sessionId: string;
+  macDeviceId: string;
+  phoneDeviceId: string;
+  macIdentity: OkpKeyPair;
+  phoneIdentity: OkpKeyPair;
+  phoneEphemeral: OkpKeyPair;
+  handshakeMode: HandshakeMode;
+  lastAppliedBridgeOutboundSeq: number;
+  wireMessages?: string[];
+}): HandshakeResult {
+  const controlMessages: ControlMessage[] = [];
+  const applicationMessages: string[] = [];
   const clientNonce = Buffer.alloc(32, 7);
 
   secureTransport.handleIncomingWireMessage(
@@ -555,7 +645,7 @@ function finishHandshake({
   );
 
   const serverHello = controlMessages.find((message) => message.kind === "serverHello");
-  assert.ok(serverHello, "expected serverHello");
+  assert.ok(isServerHelloMessage(serverHello), "expected serverHello");
 
   const transcriptBytes = buildTranscriptBytes({
     sessionId,
@@ -613,7 +703,7 @@ function finishHandshake({
   );
 
   const secureReady = controlMessages.find((message) => message.kind === "secureReady");
-  assert.ok(secureReady, "expected secureReady");
+  assert.ok(isSecureReadyMessage(secureReady), "expected secureReady");
 
   secureTransport.handleIncomingWireMessage(
     JSON.stringify({
@@ -669,7 +759,14 @@ function deriveSessionKeys({
   phoneEphemeral,
   serverHello,
   transcriptBytes,
-}) {
+}: {
+  sessionId: string;
+  macDeviceId: string;
+  phoneDeviceId: string;
+  phoneEphemeral: OkpKeyPair;
+  serverHello: ServerHelloMessage;
+  transcriptBytes: Buffer;
+}): { phoneToMacKey: Buffer; macToPhoneKey: Buffer } {
   const sharedSecret = diffieHellman({
     privateKey: createPrivateKey({
       key: {
@@ -702,10 +799,14 @@ function deriveSessionKeys({
   };
 }
 
-function createOkpKeyPair(type) {
-  const { privateKey, publicKey } = generateKeyPairSync(type);
+function createOkpKeyPair(type: "ed25519" | "x25519"): OkpKeyPair {
+  const { privateKey, publicKey } = type === "ed25519"
+    ? generateKeyPairSync("ed25519")
+    : generateKeyPairSync("x25519");
   const privateJwk = privateKey.export({ format: "jwk" });
   const publicJwk = publicKey.export({ format: "jwk" });
+  assert.ok(privateJwk.d);
+  assert.ok(publicJwk.x);
   return {
     privateKey: base64UrlToBase64(privateJwk.d),
     publicKey: base64UrlToBase64(publicJwk.x),
@@ -726,7 +827,21 @@ function buildTranscriptBytes({
   clientNonce,
   serverNonce,
   expiresAtForTranscript,
-}) {
+}: {
+  sessionId: string;
+  protocolVersion: number;
+  handshakeMode: HandshakeMode;
+  keyEpoch: number;
+  macDeviceId: string;
+  phoneDeviceId: string;
+  macIdentityPublicKey: string;
+  phoneIdentityPublicKey: string;
+  macEphemeralPublicKey: string;
+  phoneEphemeralPublicKey: string;
+  clientNonce: Buffer;
+  serverNonce: Buffer;
+  expiresAtForTranscript: number;
+}): Buffer {
   return Buffer.concat([
     encodeLengthPrefixedUTF8("coderover-e2ee-v1"),
     encodeLengthPrefixedUTF8(sessionId),
@@ -745,17 +860,24 @@ function buildTranscriptBytes({
   ]);
 }
 
-function encodeLengthPrefixedUTF8(value) {
+function encodeLengthPrefixedUTF8(value: string): Buffer {
   return encodeLengthPrefixedBuffer(Buffer.from(value, "utf8"));
 }
 
-function encodeLengthPrefixedBuffer(buffer) {
+function encodeLengthPrefixedBuffer(buffer: Buffer): Buffer {
   const length = Buffer.allocUnsafe(4);
   length.writeUInt32BE(buffer.length, 0);
   return Buffer.concat([length, buffer]);
 }
 
-function encryptEnvelope(payloadObject, key, sender, counter, sessionId, keyEpoch) {
+function encryptEnvelope(
+  payloadObject: Record<string, unknown>,
+  key: Buffer,
+  sender: SecureSender,
+  counter: number,
+  sessionId: string,
+  keyEpoch: number
+): EncryptedEnvelope {
   const nonce = nonceForDirection(sender, counter);
   const cipher = createCipheriv("aes-256-gcm", key, nonce);
   const ciphertext = Buffer.concat([
@@ -774,7 +896,7 @@ function encryptEnvelope(payloadObject, key, sender, counter, sessionId, keyEpoc
   };
 }
 
-function decryptEnvelope(envelope, key) {
+function decryptEnvelope(envelope: EncryptedEnvelope, key: Buffer): EncryptedPayload {
   const nonce = nonceForDirection(envelope.sender, envelope.counter);
   const decipher = createDecipheriv("aes-256-gcm", key, nonce);
   decipher.setAuthTag(Buffer.from(envelope.tag, "base64"));
@@ -785,11 +907,11 @@ function decryptEnvelope(envelope, key) {
   return JSON.parse(plaintext.toString("utf8"));
 }
 
-function base64UrlToBase64(value) {
+function base64UrlToBase64(value: string): string {
   const padded = `${value}${"=".repeat((4 - (value.length % 4 || 4)) % 4)}`;
   return padded.replace(/-/g, "+").replace(/_/g, "/");
 }
 
-function base64ToBase64Url(value) {
+function base64ToBase64Url(value: string): string {
   return value.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 }

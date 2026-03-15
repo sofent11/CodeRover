@@ -300,14 +300,18 @@ function isPrivateIPv4(address) {
     if (octets[0] === 192 && octets[1] === 168) {
         return true;
     }
-    return octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31;
+    const firstOctet = octets[0];
+    const secondOctet = octets[1];
+    return firstOctet === 172 && secondOctet != null && secondOctet >= 16 && secondOctet <= 31;
 }
 function isTailnetCarrierIPv4(address) {
     const octets = parseIpv4Octets(address);
     if (!octets) {
         return false;
     }
-    return octets[0] === 100 && octets[1] >= 64 && octets[1] <= 127;
+    const firstOctet = octets[0];
+    const secondOctet = octets[1];
+    return firstOctet === 100 && secondOctet != null && secondOctet >= 64 && secondOctet <= 127;
 }
 function parseIpv4Octets(address) {
     if (typeof address !== "string") {

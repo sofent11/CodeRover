@@ -24,7 +24,7 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
     if (typeof sendApplicationMessage !== "function") {
         throw new Error("createRuntimeManager requires sendApplicationMessage");
     }
-    const store = providedStore || (0, runtime_store_1.createRuntimeStore)({ baseDir: storeBaseDir });
+    const store = providedStore || (0, runtime_store_1.createRuntimeStore)(storeBaseDir ? { baseDir: storeBaseDir } : {});
     const pendingClientRequests = new Map();
     const activeRunsByThread = new Map();
     const codexHistoryCache = new Map();
@@ -399,11 +399,14 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
     }
     async function pollObservedCodexThread(threadId) {
         const normalizedThreadId = normalizeOptionalString(threadId);
-        const watcher = normalizedThreadId ? codexObservedThreadWatchers.get(normalizedThreadId) : null;
-        if (!watcher || watcher.inFlight) {
+        if (!normalizedThreadId) {
             return;
         }
         const observedThreadId = normalizedThreadId;
+        const watcher = codexObservedThreadWatchers.get(observedThreadId) || null;
+        if (!watcher || watcher.inFlight) {
+            return;
+        }
         watcher.inFlight = true;
         watcher.lastPollAt = Date.now();
         try {
@@ -628,7 +631,7 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
         const threadMeta = await requireThreadMeta(threadId);
         const historyRequest = normalizeHistoryRequest(params?.history);
         if (threadMeta.provider === "codex") {
-            return readCodexThread(threadId, params, historyRequest);
+            return readCodexThread(threadMeta.id, params, historyRequest);
         }
         return readManagedThread(threadMeta, params, historyRequest);
     }
@@ -827,10 +830,11 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
         });
     }
     function createHistorySnapshotFromThread(threadObject) {
+        const threadId = normalizeOptionalString(threadObject.id) || "";
         const threadBase = cloneThreadBase(threadObject);
         const records = flattenThreadHistory(threadObject);
         return {
-            threadId: threadObject.id,
+            threadId,
             threadBase,
             records,
             hasOlder: false,
@@ -930,6 +934,9 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
         });
         while (codexHistoryCache.size > types_1.CODEX_HISTORY_CACHE_THREAD_LIMIT) {
             const oldestKey = codexHistoryCache.keys().next().value;
+            if (!oldestKey) {
+                break;
+            }
             codexHistoryCache.delete(oldestKey);
         }
     }
@@ -983,7 +990,7 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
                 id: `local:${normalizedTurnId}:user`,
                 type: "user_message",
                 role: "user",
-                content: inputItems,
+                content: inputItems.map((item) => ({ ...asObject(item) })),
                 text: inputItems
                     .map((item) => readTextInput(item))
                     .filter(Boolean)
@@ -1014,7 +1021,10 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
         const method = normalizeCodexHistoryEventMethod(rawMethod, params);
         if (method === "thread/started" && params.thread && typeof params.thread === "object") {
             const decoratedThread = decorateConversationThread(asObject(params.thread));
-            primeCodexHistoryCache(decoratedThread.id, decoratedThread);
+            const decoratedThreadId = normalizeOptionalString(decoratedThread.id);
+            if (decoratedThreadId) {
+                primeCodexHistoryCache(decoratedThreadId, decoratedThread);
+            }
             return null;
         }
         const threadId = extractCodexNotificationThreadId(params);
@@ -1110,7 +1120,9 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
                 } : null,
                 changes: Array.isArray(params.changes)
                     ? params.changes
-                    : (Array.isArray(asObject(params.item).changes) ? asObject(params.item).changes : []),
+                    : (Array.isArray(asObject(params.item).changes)
+                        ? asObject(params.item).changes
+                        : []),
             });
             writeCodexHistoryCache(threadId, entry);
             return buildCodexHistoryChangedPayload({
@@ -1275,16 +1287,16 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
             }
         });
         let latestChangedRecord = null;
-        nextTailRecords.forEach((record) => {
+        for (const record of nextTailRecords) {
             const itemId = normalizeOptionalString(record?.itemObject?.id);
             if (!itemId) {
-                return;
+                continue;
             }
             const previousRecord = previousByItemId.get(itemId);
             if (!previousRecord || historyRecordContentSignature(previousRecord) !== historyRecordContentSignature(record)) {
                 latestChangedRecord = record;
             }
-        });
+        }
         if (!latestChangedRecord) {
             return null;
         }
@@ -1613,13 +1625,13 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
             .slice()
             .sort((left, right) => (left.ordinal || 0) - (right.ordinal || 0))
             .map((record) => normalizeOptionalString(record?.itemObject?.id))
-            .filter(Boolean);
+            .filter((itemId) => Boolean(itemId));
         if (orderedItemIds.length === 0) {
             return null;
         }
         const existingIndex = orderedItemIds.lastIndexOf(normalizedItemId);
         if (existingIndex > 0) {
-            return orderedItemIds[existingIndex - 1];
+            return orderedItemIds[existingIndex - 1] ?? null;
         }
         if (existingIndex === -1) {
             return orderedItemIds[orderedItemIds.length - 1] || null;
@@ -1695,7 +1707,7 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
             }
         }
         else if (messageLike && typeof messageLike === "object") {
-            parsed = messageLike;
+            parsed = asObject(messageLike);
         }
         else {
             return null;
@@ -1733,13 +1745,17 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
                 parts.push(`previousCursor=${normalizeOptionalString(params.previousCursor || params.previous_cursor)}`);
             }
         }
-        if (parsed?.error?.message) {
-            parts.push(`error=${JSON.stringify(parsed.error.message)}`);
+        const errorRecord = asObject(parsed?.error);
+        if (errorRecord.message) {
+            parts.push(`error=${JSON.stringify(errorRecord.message)}`);
         }
         return parts.join(" ");
     }
     function historyMetadataForItem(snapshot, itemId) {
-        const normalizedThreadId = normalizeOptionalString(snapshot?.threadId);
+        if (!snapshot) {
+            return null;
+        }
+        const normalizedThreadId = normalizeOptionalString(snapshot.threadId);
         const normalizedItemId = normalizeOptionalString(itemId);
         if (!normalizedThreadId || !normalizedItemId) {
             return null;
@@ -1752,6 +1768,9 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
             return null;
         }
         const currentRecord = records[currentIndex];
+        if (!currentRecord) {
+            return null;
+        }
         const previousRecord = currentIndex > 0 ? records[currentIndex - 1] : null;
         return {
             threadId: normalizedThreadId,
@@ -1813,12 +1832,12 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
             if (record.turnId === normalizedTurnId) {
                 record.turnMeta = {
                     ...record.turnMeta,
-                    status,
+                    status: normalizeOptionalString(status),
                 };
             }
         });
     }
-    function upsertHistoryCacheTextItem(entry, { turnId, itemId, type, role = null, delta, metadata = null, changes = null }) {
+    function upsertHistoryCacheTextItem(entry, { turnId, itemId, type, role = null, delta, metadata = null, changes = null, }) {
         const record = ensureHistoryRecord(entry, {
             turnId,
             itemId,
@@ -1843,7 +1862,7 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
         }
         if (metadata) {
             record.itemObject.metadata = {
-                ...(record.itemObject.metadata || {}),
+                ...asObject(record.itemObject.metadata),
                 ...metadata,
             };
         }
@@ -1867,7 +1886,11 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
         const record = {
             turnId: normalizedTurnId,
             createdAt: nowIso,
-            turnMeta,
+            turnMeta: turnMeta || {
+                id: normalizedTurnId,
+                createdAt: nowIso,
+                status: "running",
+            },
             itemObject: {
                 id: normalizedItemId,
                 type,
@@ -1876,6 +1899,9 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
                 ...defaults,
             },
             ordinal: nextHistoryOrdinal(entry.records),
+            createdAtMs: Date.parse(nowIso) || Date.now(),
+            turnIndex: 0,
+            itemIndex: entry.records.length,
         };
         entry.records.push(record);
         return record;
@@ -1907,7 +1933,7 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
                 id: (0, crypto_1.randomUUID)(),
                 type: "user_message",
                 role: "user",
-                content: inputItems,
+                content: inputItems.map((item) => ({ ...asObject(item) })),
                 text: userTextPreview || null,
                 createdAt: nowIso,
             });
@@ -1966,10 +1992,10 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
                 return;
             }
             const item = ensureItem({
-                itemId,
                 type: "agent_message",
                 role: "assistant",
                 content: [{ type: "text", text: "" }],
+                ...(itemId ? { itemId } : {}),
             });
             const firstText = item.content.find((entry) => entry.type === "text");
             if (firstText) {
@@ -1996,9 +2022,9 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
                 return;
             }
             const item = ensureItem({
-                itemId,
                 type: "reasoning",
                 defaults: { text: "" },
+                ...(itemId ? { itemId } : {}),
             });
             item.text = `${item.text || ""}${normalizedDelta}`;
             persistThreadHistory();
@@ -2012,13 +2038,13 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
         function appendToolCallDelta(delta, { itemId, toolName, fileChanges, completed = false, } = {}) {
             const normalizedDelta = normalizeOptionalString(delta);
             const item = ensureItem({
-                itemId,
                 type: "tool_call",
                 defaults: {
                     text: "",
                     metadata: {},
                     changes: [],
                 },
+                ...(itemId ? { itemId } : {}),
             });
             if (normalizedDelta) {
                 item.text = `${item.text || ""}${normalizedDelta}`;
@@ -2044,7 +2070,6 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
         }
         function updateCommandExecution({ itemId, command, cwd, status, exitCode, durationMs, outputDelta, }) {
             const item = ensureItem({
-                itemId,
                 type: "command_execution",
                 defaults: {
                     command: null,
@@ -2054,6 +2079,7 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
                     durationMs: null,
                     text: "",
                 },
+                ...(itemId ? { itemId } : {}),
             });
             item.command = normalizeOptionalString(command) || item.command || null;
             item.cwd = normalizeOptionalString(cwd) || item.cwd || null;
@@ -2082,7 +2108,6 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
         }
         function upsertPlan(planState, { itemId, deltaText } = {}) {
             const item = ensureItem({
-                itemId,
                 type: "plan",
                 defaults: {
                     explanation: null,
@@ -2090,11 +2115,12 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
                     plan: [],
                     text: "",
                 },
+                ...(itemId ? { itemId } : {}),
             });
             const normalizedPlan = normalizePlanState(planState);
             item.explanation = normalizedPlan.explanation;
             item.summary = normalizedPlan.explanation;
-            item.plan = normalizedPlan.steps;
+            item.plan = normalizedPlan.steps.map((step) => ({ ...step }));
             item.text = normalizeOptionalString(deltaText)
                 || normalizedPlan.explanation
                 || item.text
@@ -2162,7 +2188,9 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
             });
         }
         function setInterruptHandler(handler) {
-            interruptHandler = typeof handler === "function" ? handler : null;
+            interruptHandler = typeof handler === "function"
+                ? handler
+                : null;
         }
         function complete({ status = "completed", usage = null } = {}) {
             turnRecord.status = status;
@@ -2251,7 +2279,7 @@ function createRuntimeManager({ sendApplicationMessage, logPrefix = "[coderover]
         return {
             ...threadObject,
             provider: "codex",
-            providerSessionId: overlay?.providerSessionId || threadObject.id,
+            providerSessionId: overlay?.providerSessionId ?? threadObject.id ?? null,
             capabilities: providerDefinition.supports,
             metadata: {
                 ...(asObject(threadObject.metadata) || {}),
@@ -2371,12 +2399,15 @@ function normalizeHistoryRequest(history) {
     if (!history || typeof history !== "object" || Array.isArray(history)) {
         return null;
     }
-    const mode = normalizeOptionalString(history.mode)?.toLowerCase();
+    const historyRecord = asObject(history);
+    const mode = normalizeOptionalString(historyRecord.mode)?.toLowerCase();
     if (mode !== "tail" && mode !== "before" && mode !== "after") {
         return null;
     }
-    const limit = normalizePositiveInteger(history.limit) || types_1.DEFAULT_HISTORY_WINDOW_LIMIT;
-    const cursor = normalizeHistoryCursor(history.cursor, history.anchor && typeof history.anchor === "object" ? history.anchor : null);
+    const limit = normalizePositiveInteger(historyRecord.limit) || types_1.DEFAULT_HISTORY_WINDOW_LIMIT;
+    const cursor = normalizeHistoryCursor(historyRecord.cursor, historyRecord.anchor && typeof historyRecord.anchor === "object"
+        ? asObject(historyRecord.anchor)
+        : null);
     if ((mode === "before" || mode === "after") && !cursor) {
         throw createRuntimeError(types_1.ERROR_INVALID_PARAMS, "history.cursor is required for before/after windows");
     }
@@ -2495,8 +2526,8 @@ function cloneTurnMeta(turnObject, turnId) {
     return clone;
 }
 function compareHistoryRecord(left, right) {
-    const leftTimestamp = Number.isFinite(left?.createdAtMs) ? left.createdAtMs : (Date.parse(left?.createdAt || 0) || 0);
-    const rightTimestamp = Number.isFinite(right?.createdAtMs) ? right.createdAtMs : (Date.parse(right?.createdAt || 0) || 0);
+    const leftTimestamp = Number.isFinite(left?.createdAtMs) ? left.createdAtMs : (Date.parse(left?.createdAt || "") || 0);
+    const rightTimestamp = Number.isFinite(right?.createdAtMs) ? right.createdAtMs : (Date.parse(right?.createdAt || "") || 0);
     if (leftTimestamp !== rightTimestamp) {
         return leftTimestamp - rightTimestamp;
     }

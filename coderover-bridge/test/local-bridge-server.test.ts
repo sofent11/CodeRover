@@ -262,6 +262,8 @@ test("startLocalBridgeServer keeps multiple clients connected at the same time",
   assert.equal(firstClient.readyState, WebSocket.OPEN);
   assert.equal(secondClient.readyState, WebSocket.OPEN);
   assert.equal(received.length, 2);
+  assert.ok(received[0]);
+  assert.ok(received[1]);
   assert.notEqual(received[0].transportId, received[1].transportId);
 
   firstClient.terminate();

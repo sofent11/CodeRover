@@ -65,7 +65,10 @@ async function handleThreadContextRead(params: ThreadContextReadParams) {
   }
 
   const turnId = readString(params.turnId) || readString(params.turn_id);
-  const result = readLatestContextWindowUsage({ threadId, turnId: turnId ?? undefined });
+  const result = readLatestContextWindowUsage({
+    threadId,
+    ...(turnId ? { turnId } : {}),
+  });
 
   return {
     threadId,

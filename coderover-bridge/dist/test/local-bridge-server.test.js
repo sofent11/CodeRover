@@ -225,6 +225,8 @@ function mockNetworkInterfaces(mock) {
     node_assert_1.strict.equal(firstClient.readyState, ws_1.WebSocket.OPEN);
     node_assert_1.strict.equal(secondClient.readyState, ws_1.WebSocket.OPEN);
     node_assert_1.strict.equal(received.length, 2);
+    node_assert_1.strict.ok(received[0]);
+    node_assert_1.strict.ok(received[1]);
     node_assert_1.strict.notEqual(received[0].transportId, received[1].transportId);
     firstClient.terminate();
     secondClient.terminate();

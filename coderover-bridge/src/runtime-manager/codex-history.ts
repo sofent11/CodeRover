@@ -1,11 +1,9 @@
 // FILE: runtime-manager/codex-history.ts
 // Purpose: Typed history-window and cursor helpers for Codex-backed thread reads.
 
+import type { RuntimeThreadShape } from "../bridge-types";
 import type {
-  HistoryCursorShape,
-  RuntimeThreadShape,
-} from "../bridge-types";
-import type {
+  RuntimeHistoryCursor,
   RuntimeHistoryRecord,
   RuntimeHistoryRequest,
   RuntimeHistorySnapshot,
@@ -13,7 +11,7 @@ import type {
 } from "./types";
 
 type UnknownRecord = Record<string, unknown>;
-type StripProviderField = <TValue>(params: TValue) => TValue;
+type StripProviderField = <TValue>(params: TValue) => Omit<TValue, "provider"> | TValue;
 type NormalizeOptionalString = (value: unknown) => string | null;
 
 interface ThreadListLike {
@@ -33,8 +31,8 @@ interface UpstreamHistoryWindowResponse {
     mode: RuntimeHistoryRequest["mode"];
     olderCursor: string | null;
     newerCursor: string | null;
-    oldestAnchor: HistoryCursorShape | null;
-    newestAnchor: HistoryCursorShape | null;
+    oldestAnchor: RuntimeHistoryCursor | null;
+    newestAnchor: RuntimeHistoryCursor | null;
     hasOlder: boolean;
     hasNewer: boolean;
     isPartial: true;

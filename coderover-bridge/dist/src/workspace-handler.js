@@ -226,7 +226,7 @@ function extractPatchPath(lines) {
         if (line.startsWith("diff --git ")) {
             const components = line.trim().split(/\s+/);
             if (components.length >= 4) {
-                return normalizeDiffPath(components[3]);
+                return normalizeDiffPath(components[3] ?? "");
             }
         }
     }
@@ -296,10 +296,10 @@ function parseApplyConflicts(stderr) {
         const patchFailedMatch = line.match(/^error:\s+patch failed:\s+(.+?):\d+$/i);
         const doesNotApplyMatch = line.match(/^error:\s+(.+?):\s+patch does not apply$/i);
         if (patchFailedMatch) {
-            filePath = patchFailedMatch[1];
+            filePath = patchFailedMatch[1] ?? filePath;
         }
         else if (doesNotApplyMatch) {
-            filePath = doesNotApplyMatch[1];
+            filePath = doesNotApplyMatch[1] ?? filePath;
         }
         if (!conflictsByPath.has(filePath)) {
             conflictsByPath.set(filePath, { path: filePath, message: line });

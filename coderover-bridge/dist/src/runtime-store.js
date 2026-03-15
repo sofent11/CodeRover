@@ -101,7 +101,11 @@ function createRuntimeStore({ baseDir = DEFAULT_STORE_DIR } = {}) {
         }
         syncProviderSessionIndex(normalized.id, normalized.provider, normalized.providerSessionId);
         scheduleIndexWrite();
-        return { ...indexState.threads[normalized.id] };
+        const storedEntry = indexState.threads[normalized.id];
+        if (!storedEntry) {
+            return { ...normalized };
+        }
+        return { ...storedEntry };
     }
     function updateThreadMeta(threadId, updater) {
         const existing = getThreadMeta(threadId);
@@ -306,7 +310,9 @@ function normalizeItem(input) {
         status: normalizeOptionalString(input.status),
         command: normalizeOptionalString(input.command),
         metadata: normalizeObject(input.metadata),
-        plan: normalizeObject(input.plan),
+        plan: Array.isArray(input.plan)
+            ? input.plan.map((entry) => normalizeObject(entry) || {})
+            : normalizeObject(input.plan),
         summary: normalizeOptionalString(input.summary),
         fileChanges: Array.isArray(input.fileChanges)
             ? input.fileChanges.map((entry) => normalizeObject(entry) || {})

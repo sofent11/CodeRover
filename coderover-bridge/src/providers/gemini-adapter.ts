@@ -490,6 +490,9 @@ async function materializeImage(source: string, cwd: string | null): Promise<str
 
   const mimeType = match[1];
   const base64 = match[2];
+  if (!mimeType || !base64) {
+    return normalized;
+  }
   const extension = mimeType.split("/")[1] || "png";
   const tempDir = path.join(cwd || os.tmpdir(), ".coderover", "gemini-images");
   fs.mkdirSync(tempDir, { recursive: true });
