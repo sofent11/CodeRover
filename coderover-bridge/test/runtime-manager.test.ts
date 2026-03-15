@@ -84,6 +84,7 @@ type CodexThread = RuntimeThreadShape & {
 type MutableThreadRef = { current: CodexThread | null };
 
 interface ManagerFixture {
+  baseDir: string;
   manager: RuntimeManager;
   messages: RpcMessage[];
   cleanup(): void;
@@ -174,6 +175,7 @@ function createManagerFixtureWithOptions({
   });
 
   return {
+    baseDir,
     manager,
     messages,
     cleanup() {
@@ -227,6 +229,61 @@ test("runtime/provider/list advertises Codex, Claude, and Gemini capabilities", 
     );
     assert.equal(response.result.providers[1].supports.turnSteer, false);
     assert.equal(response.result.providers[2].supports.reasoningOptions, false);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("managed provider turns persist thread session ownership metadata", async () => {
+  const claudeAdapter: ManagedProviderAdapter = {
+    async hydrateThread() {},
+    async syncImportedThreads() {},
+    async startTurn({ turnContext }) {
+      turnContext.bindProviderSession("claude-session-1");
+      turnContext.appendAgentDelta("Working on it");
+      turnContext.updatePreview("Working on it");
+      return {
+        usage: { outputTokens: 12 },
+      };
+    },
+  };
+  const fixture = createManagerFixtureWithOptions({
+    claudeAdapter,
+  });
+
+  try {
+    const startMessages = await request(fixture, "managed-thread-start", "thread/start", {
+      provider: "claude",
+      cwd: "/tmp/session-owner-demo",
+      model: "sonnet",
+    });
+    const startResponse = responseById(startMessages, "managed-thread-start");
+    const threadId = startResponse.result.thread.id as string;
+
+    await request(fixture, "managed-turn-start", "turn/start", {
+      threadId,
+      input: [{ type: "text", text: "Investigate the issue" }],
+    });
+    await drainMicrotasks();
+
+    const sessionIndexPath = path.join(fixture.baseDir, "thread-session-index.json");
+    for (let attempt = 0; attempt < 20 && !fs.existsSync(sessionIndexPath); attempt += 1) {
+      await sleep(10);
+    }
+    const indexPayload = JSON.parse(fs.readFileSync(sessionIndexPath, "utf8")) as {
+      sessions: Record<string, {
+        provider: string;
+        ownerState: string;
+        providerSessionId: string | null;
+        activeTurnId: string | null;
+      }>;
+    };
+    const record = indexPayload.sessions[threadId];
+    assert.ok(record, "expected persisted session index record");
+    assert.equal(record.provider, "claude");
+    assert.equal(record.providerSessionId, "claude-session-1");
+    assert.equal(record.ownerState, "idle");
+    assert.equal(record.activeTurnId, null);
   } finally {
     fixture.cleanup();
   }

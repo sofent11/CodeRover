@@ -33,6 +33,17 @@ import {
 import { createCodexAdapter, type CodexAdapter } from "../providers/codex-adapter";
 import { createClaudeAdapter } from "../providers/claude-adapter";
 import { createGeminiAdapter } from "../providers/gemini-adapter";
+import {
+  projectRuntimeEventToMobileProtocol,
+  type ProjectedMobileProtocolMessage,
+} from "../runtime-engine/mobile-protocol-projector";
+import { createCodexRuntimeEngine } from "../runtime-engine/codex-engine";
+import { createManagedProviderRuntimeEngine } from "../runtime-engine/managed-provider-engine";
+import {
+  createThreadSessionIndex,
+  type ThreadSessionIndex,
+} from "../runtime-engine/thread-session-index";
+import type { ProviderRuntimeEngine, RuntimeEvent } from "../runtime-engine/types";
 import * as historyHelpers from "./codex-history";
 import * as routingHelpers from "./client-routing";
 import * as observerHelpers from "./codex-observer";
@@ -181,6 +192,7 @@ interface CreateRuntimeManagerOptions {
   logPrefix?: string;
   storeBaseDir?: string;
   store?: RuntimeStore | null;
+  threadSessionIndex?: ThreadSessionIndex | null;
   codexAdapter?: ReturnType<typeof createCodexAdapter> | null;
   claudeAdapter?: ReturnType<typeof createClaudeAdapter> | null;
   geminiAdapter?: ReturnType<typeof createGeminiAdapter> | null;
@@ -195,6 +207,7 @@ export function createRuntimeManager({
   logPrefix = "[coderover]",
   storeBaseDir,
   store: providedStore = null,
+  threadSessionIndex: providedThreadSessionIndex = null,
   codexAdapter: providedCodexAdapter = null,
   claudeAdapter: providedClaudeAdapter = null,
   geminiAdapter: providedGeminiAdapter = null,
@@ -210,6 +223,9 @@ export function createRuntimeManager({
   const store = providedStore || createRuntimeStore(
     storeBaseDir ? { baseDir: storeBaseDir } : {}
   );
+  const threadSessionIndex = providedThreadSessionIndex || createThreadSessionIndex({
+    baseDir: store.baseDir,
+  });
   const pendingClientRequests = new Map<string, PendingClientRequest>();
   const activeRunsByThread = new Map<string, ActiveRunEntry>();
   const codexHistoryCache = new Map<string, CodexHistorySnapshot>();
@@ -233,6 +249,49 @@ export function createRuntimeManager({
   const geminiAdapter = providedGeminiAdapter || createGeminiAdapter({
     logPrefix,
     store,
+  });
+  const codexEngine = createCodexRuntimeEngine({
+    codexAdapter,
+    decorateConversationThread,
+    ensureCodexWarm,
+    extractThreadFromResult,
+    normalizeModelListResult,
+    observeCodexThread,
+    sanitizeCodexThreadResult,
+    seedCodexHistoryCacheWithUserInput,
+    sendThreadStartedNotification,
+    stripProviderField,
+    syncThreadSessionFromMeta,
+    updateThreadSessionOwnerState,
+    upsertOverlayFromThread,
+  });
+  const claudeEngine = createManagedProviderRuntimeEngine({
+    activeRunsByThread,
+    adapter: claudeAdapter,
+    buildManagedThreadObject,
+    buildProviderMetadata,
+    createRuntimeError,
+    createTurnContext: createManagedTurnContext,
+    firstNonEmptyString,
+    normalizeOptionalString,
+    providerId: "claude",
+    sendThreadStartedNotification,
+    store,
+    syncThreadSessionFromMeta,
+  });
+  const geminiEngine = createManagedProviderRuntimeEngine({
+    activeRunsByThread,
+    adapter: geminiAdapter,
+    buildManagedThreadObject,
+    buildProviderMetadata,
+    createRuntimeError,
+    createTurnContext: createManagedTurnContext,
+    firstNonEmptyString,
+    normalizeOptionalString,
+    providerId: "gemini",
+    sendThreadStartedNotification,
+    store,
+    syncThreadSessionFromMeta,
   });
 
   async function handleClientMessage(rawMessage: string): Promise<boolean> {
@@ -258,7 +317,7 @@ export function createRuntimeManager({
     try {
       switch (method) {
         case "initialize":
-          await ensureCodexWarm(params);
+          await codexEngine.initialize(params);
           if (requestId != null) {
             sendApplicationMessage(buildRpcSuccess(requestId, { bridgeManaged: true }));
           }
@@ -279,14 +338,7 @@ export function createRuntimeManager({
           return await handleRequestWithResponse(requestId, async () => {
             await ensureExternalThreadsIndexed();
             const provider = resolveProviderId(params);
-            if (provider === "codex") {
-              await ensureCodexWarm();
-              const result = await codexAdapter.listModels(stripProviderField(params));
-              return normalizeModelListResult(result);
-            }
-            return {
-              items: listStaticModelsForProvider(provider),
-            };
+            return getProviderEngine(provider).listModels(params);
           });
 
         case "collaborationMode/list":
@@ -317,61 +369,23 @@ export function createRuntimeManager({
         case "thread/start":
           return await handleRequestWithResponse(requestId, async () => {
             const provider = resolveProviderId(params);
-            if (provider === "codex") {
-              await ensureCodexWarm();
-              const result = await codexAdapter.startThread(stripProviderField(params));
-              const thread = extractThreadFromResult(result);
-              if (thread) {
-                const decorated = decorateConversationThread(thread);
-                upsertOverlayFromThread(decorated);
-                sendThreadStartedNotification(decorated);
-                return { thread: decorated };
-              }
-              return result || {};
-            }
-
-            const threadMeta = store.createThread({
-              provider,
-              cwd: firstNonEmptyString([params.cwd, params.current_working_directory, params.working_directory]),
-              model: normalizeOptionalString(params.model),
-              title: null,
-              name: null,
-              preview: null,
-              metadata: buildProviderMetadata(provider),
-              capabilities: getRuntimeProvider(provider).supports,
-            });
-            const threadObject = buildManagedThreadObject(threadMeta);
-            sendThreadStartedNotification(threadObject);
-            return { thread: threadObject };
+            return getProviderEngine(provider).startThread(params);
           });
 
         case "thread/resume":
           return await handleRequestWithResponse(requestId, async () => {
             const threadMeta = await requireThreadMeta(params.threadId || params.thread_id);
-            if (threadMeta.provider === "codex") {
-              await ensureCodexWarm();
-              const result = await codexAdapter.resumeThread(stripProviderField(params));
-              observeCodexThread(threadMeta.id, { immediate: false, reason: "thread-resume" });
-              return sanitizeCodexThreadResult(result);
-            }
-            await getManagedProviderAdapter(threadMeta.provider).hydrateThread(threadMeta);
-            const refreshedMeta = store.getThreadMeta(threadMeta.id) || threadMeta;
-            const history = store.getThreadHistory(threadMeta.id);
-            return {
-              thread: buildManagedThreadObject(refreshedMeta, history?.turns || []),
-              threadId: threadMeta.id,
-              resumed: true,
-            };
+            return getProviderEngine(threadMeta.provider).resumeThread(threadMeta, params);
           });
 
         case "thread/compact/start":
           return await handleRequestWithResponse(requestId, async () => {
             const threadMeta = await requireThreadMeta(params.threadId || params.thread_id);
-            if (threadMeta.provider !== "codex") {
+            const engine = getProviderEngine(threadMeta.provider);
+            if (!engine.compactThread) {
               throw createMethodError("thread/compact/start is only available for Codex threads");
             }
-            await ensureCodexWarm();
-            return codexAdapter.compactThread(stripProviderField(params));
+            return engine.compactThread(threadMeta, params);
           });
 
         case "thread/name/set":
@@ -413,71 +427,7 @@ export function createRuntimeManager({
         case "turn/start":
           return await handleRequestWithResponse(requestId, async () => {
             const threadMeta = await requireThreadMeta(params.threadId || params.thread_id);
-            if (threadMeta.provider === "codex") {
-              await ensureCodexWarm();
-              const result = await codexAdapter.startTurn(stripProviderField(params));
-              const turnResult = asObject(result);
-              seedCodexHistoryCacheWithUserInput(
-                threadMeta.id,
-                normalizeOptionalString(turnResult.turnId || turnResult.turn_id),
-                params
-              );
-              observeCodexThread(threadMeta.id, { immediate: true, reason: "turn-start" });
-              return result;
-            }
-
-            if (activeRunsByThread.has(threadMeta.id)) {
-              throw createRuntimeError(ERROR_INVALID_PARAMS, "A turn is already running for this thread");
-            }
-
-            const turnContext = createManagedTurnContext(threadMeta, params);
-            const adapter = getManagedProviderAdapter(threadMeta.provider);
-            const runEntry = {
-              provider: threadMeta.provider,
-              threadId: threadMeta.id,
-              turnId: turnContext.turnId,
-              stopRequested: false,
-              interrupt() {
-                turnContext.interrupt();
-              },
-            };
-            activeRunsByThread.set(threadMeta.id, runEntry);
-
-            Promise.resolve()
-              .then(() => adapter.startTurn({
-                params,
-                threadMeta,
-                turnContext,
-              }))
-              .then((result) => {
-                if (!activeRunsByThread.has(threadMeta.id)) {
-                  return;
-                }
-                const resultRecord = result && typeof result === "object"
-                  ? (result as Record<string, unknown>)
-                  : {};
-                turnContext.complete({
-                  status: runEntry.stopRequested ? "stopped" : "completed",
-                  usage: resultRecord.usage || null,
-                });
-              })
-              .catch((error) => {
-                if (!activeRunsByThread.has(threadMeta.id)) {
-                  return;
-                }
-                const aborted = turnContext.abortController.signal.aborted || runEntry.stopRequested;
-                turnContext.fail(error, {
-                  status: aborted ? "stopped" : "failed",
-                });
-              })
-              .finally(() => {
-                activeRunsByThread.delete(threadMeta.id);
-              });
-
-            return {
-              threadId: threadMeta.id,
-              turnId: turnContext.turnId,
-            };
+            return getProviderEngine(threadMeta.provider).startTurn(threadMeta, params);
           });
 
         case "turn/interrupt":
@@ -485,29 +435,17 @@ export function createRuntimeManager({
             const threadId = normalizeOptionalString(params.threadId || params.thread_id)
               || findThreadIdByTurnId(params.turnId || params.turn_id);
             const threadMeta = await requireThreadMeta(threadId);
-            if (threadMeta.provider === "codex") {
-              await ensureCodexWarm();
-              return codexAdapter.interruptTurn(stripProviderField(params));
-            }
-
-            const activeRun = activeRunsByThread.get(threadMeta.id);
-            if (!activeRun) {
-              return {};
-            }
-
-            activeRun.stopRequested = true;
-            activeRun.interrupt();
-            return {};
+            return getProviderEngine(threadMeta.provider).interruptTurn(threadMeta, params);
           });
 
         case "turn/steer":
           return await handleRequestWithResponse(requestId, async () => {
             const threadMeta = await requireThreadMeta(params.threadId || params.thread_id);
-            if (threadMeta.provider !== "codex") {
+            const engine = getProviderEngine(threadMeta.provider);
+            if (!engine.steerTurn) {
               throw createMethodError("turn/steer is only available for Codex threads");
             }
-            await ensureCodexWarm();
-            return codexAdapter.steerTurn(stripProviderField(params));
+            return engine.steerTurn(threadMeta, params);
           });
 
         case "skills/list":
@@ -566,6 +504,10 @@ export function createRuntimeManager({
 
   function shutdown(): void {
     stopAllObservedCodexThreadWatchers("shutdown");
+    codexEngine.shutdown();
+    claudeEngine.shutdown();
+    geminiEngine.shutdown();
+    threadSessionIndex.shutdown();
     store.shutdown();
   }
 
@@ -974,6 +916,20 @@ export function createRuntimeManager({
       return geminiAdapter;
     }
     throw createMethodError(`Managed adapter unavailable for provider: ${provider}`);
+  }
+
+  function getProviderEngine(provider: unknown): ProviderRuntimeEngine {
+    const normalizedProvider = resolveProviderId(provider);
+    if (normalizedProvider === "codex") {
+      return codexEngine;
+    }
+    if (normalizedProvider === "claude") {
+      return claudeEngine;
+    }
+    if (normalizedProvider === "gemini") {
+      return geminiEngine;
+    }
+    throw createMethodError(`Runtime engine unavailable for provider: ${normalizedProvider}`);
   }
 
   async function readManagedThread(
@@ -1419,6 +1375,9 @@ export function createRuntimeManager({
         });
         entry.threadBase.updatedAt = new Date().toISOString();
         writeCodexHistoryCache(threadId, entry);
+        updateThreadSessionOwnerState(threadId, "running", {
+          activeTurnId: turnId,
+        });
       }
       return null;
     }
@@ -1429,6 +1388,9 @@ export function createRuntimeManager({
         updateHistoryTurnStatus(entry, turnId, normalizeOptionalString(params.status) || "completed");
         entry.threadBase.updatedAt = new Date().toISOString();
         writeCodexHistoryCache(threadId, entry);
+        updateThreadSessionOwnerState(threadId, "idle", {
+          activeTurnId: null,
+        });
       }
       return null;
     }
@@ -2417,7 +2379,15 @@ export function createRuntimeManager({
       capabilities: providerDefinition.supports,
     }));
 
-    sendNotification("turn/started", {
+    syncThreadSessionFromMeta(threadMeta, {
+      engineSessionId: threadMeta.providerSessionId || threadMeta.id,
+    });
+    updateThreadSessionOwnerState(threadMeta.id, "running", {
+      activeTurnId: turnId,
+    });
+
+    emitRuntimeEvent({
+      kind: "turn_started",
       threadId: threadMeta.id,
       turnId,
     });
@@ -2491,7 +2461,8 @@ export function createRuntimeManager({
         .map((entry) => entry.text || "")
         .join("");
       persistThreadHistory();
-      sendNotification("item/agentMessage/delta", {
+      emitRuntimeEvent({
+        kind: "assistant_delta",
         threadId: threadMeta.id,
         turnId,
         itemId: item.id,
@@ -2511,7 +2482,8 @@ export function createRuntimeManager({
       });
       item.text = `${item.text || ""}${normalizedDelta}`;
       persistThreadHistory();
-      sendNotification("item/reasoning/textDelta", {
+      emitRuntimeEvent({
+        kind: "reasoning_delta",
         threadId: threadMeta.id,
         turnId,
         itemId: item.id,
@@ -2556,13 +2528,15 @@ export function createRuntimeManager({
         item.changes = fileChanges;
       }
       persistThreadHistory();
-      sendNotification(completed ? "item/toolCall/completed" : "item/toolCall/outputDelta", {
+      emitRuntimeEvent({
+        kind: "tool_delta",
         threadId: threadMeta.id,
         turnId,
         itemId: item.id,
         delta: normalizedDelta || "",
-        toolName,
-        changes: item.changes,
+        toolName: normalizeOptionalString(toolName),
+        changes: Array.isArray(item.changes) ? item.changes : [],
+        completed,
       });
     }
 
@@ -2608,7 +2582,8 @@ export function createRuntimeManager({
         item.text = buildCommandPreview(item.command, item.status, item.exitCode);
       }
       persistThreadHistory();
-      sendNotification("item/commandExecution/outputDelta", {
+      emitRuntimeEvent({
+        kind: "command_delta",
         threadId: threadMeta.id,
         turnId,
         itemId: item.id,
@@ -2644,7 +2619,8 @@ export function createRuntimeManager({
         || item.text
         || "Planning...";
       persistThreadHistory();
-      sendNotification("turn/plan/updated", {
+      emitRuntimeEvent({
+        kind: "plan_update",
         threadId: threadMeta.id,
         turnId,
         itemId: item.id,
@@ -2660,15 +2636,21 @@ export function createRuntimeManager({
         return;
       }
       store.bindProviderSession(threadMeta.id, threadMeta.provider, sessionId);
+      updateThreadSessionOwnerState(threadMeta.id, "running", {
+        activeTurnId: turnId,
+        providerSessionId: normalizeOptionalString(sessionId),
+        engineSessionId: normalizeOptionalString(sessionId),
+      });
     }
 
     function updateTokenUsage(usage: unknown): void {
       if (!usage || typeof usage !== "object") {
         return;
       }
-      sendNotification("thread/tokenUsage/updated", {
+      emitRuntimeEvent({
+        kind: "token_usage",
         threadId: threadMeta.id,
-        usage,
+        usage: usage as Record<string, unknown>,
       });
     }
 
@@ -2684,30 +2666,39 @@ export function createRuntimeManager({
     }
 
     function requestApproval(request: UnknownRecord): Promise<unknown> {
-      return requestFromClient({
-        method: normalizeOptionalString(request.method) || "item/tool/requestApproval",
-        params: {
-          threadId: threadMeta.id,
-          turnId,
-          itemId: request.itemId || randomUUID(),
-          command: normalizeOptionalString(request.command),
-          reason: normalizeOptionalString(request.reason),
-          toolName: normalizeOptionalString(request.toolName),
-        },
+      updateThreadSessionOwnerState(threadMeta.id, "waiting_for_client", {
+        activeTurnId: turnId,
+      });
+      return requestFromRuntimeEvent({
+        kind: "approval_request",
         threadId: threadMeta.id,
+        turnId,
+        itemId: normalizeOptionalString(request.itemId) || randomUUID(),
+        method: normalizeOptionalString(request.method) || "item/tool/requestApproval",
+        command: normalizeOptionalString(request.command),
+        reason: normalizeOptionalString(request.reason),
+        toolName: normalizeOptionalString(request.toolName),
+      }).finally(() => {
+        updateThreadSessionOwnerState(threadMeta.id, "running", {
+          activeTurnId: turnId,
+        });
       });
     }
 
     function requestStructuredInput(request: UnknownRecord): Promise<unknown> {
-      return requestFromClient({
-        method: "item/tool/requestUserInput",
-        params: {
-          threadId: threadMeta.id,
-          turnId,
-          itemId: request.itemId || randomUUID(),
-          questions: request.questions,
-        },
+      updateThreadSessionOwnerState(threadMeta.id, "waiting_for_client", {
+        activeTurnId: turnId,
+      });
+      return requestFromRuntimeEvent({
+        kind: "user_input_request",
         threadId: threadMeta.id,
+        turnId,
+        itemId: normalizeOptionalString(request.itemId) || randomUUID(),
+        questions: request.questions,
+      }).finally(() => {
+        updateThreadSessionOwnerState(threadMeta.id, "running", {
+          activeTurnId: turnId,
+        });
       });
     }
 
@@ -2723,7 +2714,11 @@ export function createRuntimeManager({
       if (usage) {
         updateTokenUsage(usage);
       }
-      sendNotification("turn/completed", {
+      updateThreadSessionOwnerState(threadMeta.id, "idle", {
+        activeTurnId: null,
+      });
+      emitRuntimeEvent({
+        kind: "turn_completed",
         threadId: threadMeta.id,
         turnId,
         status,
@@ -2732,7 +2727,8 @@ export function createRuntimeManager({
 
     function fail(error: unknown, { status = "failed" }: { status?: string } = {}): void {
       const message = normalizeOptionalString(asObject(error).message) || "Runtime error";
-      sendNotification("error", {
+      emitRuntimeEvent({
+        kind: "runtime_error",
         threadId: threadMeta.id,
         turnId,
         message,
@@ -2797,8 +2793,151 @@ export function createRuntimeManager({
     });
   }
 
+  function projectRuntimeEvent(event: RuntimeEvent): ProjectedMobileProtocolMessage {
+    return projectRuntimeEventToMobileProtocol(event);
+  }
+
+  function emitRuntimeEvent(event: RuntimeEvent): void {
+    const projected = projectRuntimeEvent(event);
+    if (projected.kind !== "notification") {
+      throw new Error(`Runtime event ${event.kind} requires a request handler`);
+    }
+    sendNotification(projected.method, projected.params);
+  }
+
+  function requestFromRuntimeEvent(event: RuntimeEvent): Promise<unknown> {
+    const projected = projectRuntimeEvent(event);
+    if (projected.kind !== "request") {
+      throw new Error(`Runtime event ${event.kind} does not project to a client request`);
+    }
+    return requestFromClient({
+      method: projected.method,
+      params: projected.params,
+      threadId: readRuntimeEventThreadId(event),
+    });
+  }
+
+  function readRuntimeEventThreadId(event: RuntimeEvent): string | null {
+    return "threadId" in event
+      ? normalizeOptionalString(event.threadId)
+      : normalizeOptionalString(event.thread?.id);
+  }
+
+  function upsertThreadSessionRecord({
+    threadId,
+    provider,
+    engineSessionId = null,
+    providerSessionId = null,
+    cwd = null,
+    mode = null,
+    model = null,
+    ownerState = "idle",
+    activeTurnId = null,
+  }: {
+    threadId: string;
+    provider: string;
+    engineSessionId?: string | null;
+    providerSessionId?: string | null;
+    cwd?: string | null;
+    mode?: string | null;
+    model?: string | null;
+    ownerState?: "idle" | "running" | "waiting_for_client" | "closed";
+    activeTurnId?: string | null;
+  }): void {
+    if (!threadId) {
+      return;
+    }
+    threadSessionIndex.upsert({
+      threadId,
+      provider,
+      engineSessionId,
+      providerSessionId,
+      cwd,
+      mode,
+      model,
+      ownerState,
+      activeTurnId,
+    });
+  }
+
+  function syncThreadSessionFromMeta(
+    threadMeta: RuntimeThreadMeta,
+    overrides: {
+      engineSessionId?: string | null;
+      ownerState?: "idle" | "running" | "waiting_for_client" | "closed";
+      activeTurnId?: string | null;
+      mode?: string | null;
+    } = {}
+  ): void {
+    if (!threadMeta?.id) {
+      return;
+    }
+    upsertThreadSessionRecord({
+      threadId: threadMeta.id,
+      provider: threadMeta.provider,
+      engineSessionId: overrides.engineSessionId ?? threadMeta.providerSessionId ?? threadMeta.id,
+      providerSessionId: threadMeta.providerSessionId,
+      cwd: threadMeta.cwd,
+      model: threadMeta.model,
+      mode: overrides.mode ?? null,
+      ownerState: overrides.ownerState ?? "idle",
+      activeTurnId: overrides.activeTurnId ?? null,
+    });
+  }
+
+  function syncThreadSessionFromThreadObject(threadObject: RuntimeThreadShape): void {
+    const threadId = normalizeOptionalString(threadObject.id);
+    if (!threadId) {
+      return;
+    }
+    const provider = normalizeOptionalString(threadObject.provider) || "codex";
+    upsertThreadSessionRecord({
+      threadId,
+      provider,
+      engineSessionId: normalizeOptionalString(threadObject.providerSessionId)
+        || normalizeOptionalString(threadObject.id),
+      providerSessionId: normalizeOptionalString(threadObject.providerSessionId)
+        || normalizeOptionalString(threadObject.id),
+      cwd: firstNonEmptyString([
+        threadObject.cwd,
+        threadObject.current_working_directory,
+        threadObject.working_directory,
+      ]),
+      model: normalizeOptionalString(threadObject.model),
+      ownerState: "idle",
+    });
+  }
+
+  function updateThreadSessionOwnerState(
+    threadId: unknown,
+    ownerState: "idle" | "running" | "waiting_for_client" | "closed",
+    options: {
+      activeTurnId?: string | null;
+      providerSessionId?: string | null;
+      engineSessionId?: string | null;
+    } = {}
+  ): void {
+    const normalizedThreadId = normalizeOptionalString(threadId);
+    if (!normalizedThreadId) {
+      return;
+    }
+    const existing = threadSessionIndex.get(normalizedThreadId);
+    if (!existing) {
+      return;
+    }
+    threadSessionIndex.upsert({
+      ...existing,
+      ownerState,
+      activeTurnId: options.activeTurnId !== undefined ? options.activeTurnId : existing.activeTurnId,
+      providerSessionId: options.providerSessionId !== undefined ? options.providerSessionId : existing.providerSessionId,
+      engineSessionId: options.engineSessionId !== undefined ? options.engineSessionId : existing.engineSessionId,
+      updatedAt: new Date().toISOString(),
+    });
+  }
+
   function sendThreadStartedNotification(threadObject: RuntimeThreadShape): void {
-    sendNotification("thread/started", {
+    emitRuntimeEvent({
+      kind: "thread_started",
       thread: threadObject,
     });
   }
@@ -2850,6 +2989,7 @@ export function createRuntimeManager({
 
   function upsertOverlayFromThread(threadObject: RuntimeThreadShape): void {
     store.upsertThreadMeta(threadObjectToMeta(threadObject));
+    syncThreadSessionFromThreadObject(threadObject);
   }
 
   function buildManagedThreadObject(
