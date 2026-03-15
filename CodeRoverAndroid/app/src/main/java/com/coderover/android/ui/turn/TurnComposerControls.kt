@@ -24,6 +24,7 @@ import androidx.compose.ui.unit.dp
 import com.coderover.android.data.model.AppState
 import com.coderover.android.data.model.ConnectionPhase
 import com.coderover.android.data.model.ModelOption
+import com.coderover.android.data.model.ThreadHistoryState
 
 @Composable
 internal fun ComposerMetaButton(
@@ -147,14 +148,57 @@ internal fun composerReasoningTitle(effort: String): String {
     }
 }
 
-internal fun composerConnectionMessage(state: AppState): String {
-    return when (state.connectionPhase) {
-        ConnectionPhase.CONNECTING -> "Reconnecting to your Mac bridge..."
-        ConnectionPhase.LOADING_CHATS -> "Connected securely. Loading conversation history."
-        ConnectionPhase.SYNCING -> "Connected securely. Syncing recent thread state from your Mac."
-        ConnectionPhase.CONNECTED -> "Connected to your paired Mac."
-        ConnectionPhase.OFFLINE -> "History is available offline. Reconnect before sending new messages."
+internal fun composerConnectionMessage(state: AppState, threadId: String? = state.selectedThreadId): String {
+    val currentThreadId = threadId ?: state.selectedThreadId
+    val historyState = currentThreadId?.let(state.historyStateByThread::get)
+    val hasLocalHistory = currentThreadId?.let { state.messagesByThread[it].orEmpty().isNotEmpty() } == true
+    return when {
+        historyState.shouldDescribeThreadRefresh() -> {
+            if (hasLocalHistory) {
+                "Connected securely. Refreshing this conversation."
+            } else {
+                "Connected securely. Loading this conversation."
+            }
+        }
+        state.connectionPhase == ConnectionPhase.CONNECTING -> {
+            if (hasLocalHistory) {
+                "Reconnecting to your Mac bridge. Local conversation history is still available."
+            } else {
+                "Reconnecting to your Mac bridge..."
+            }
+        }
+        state.connectionPhase == ConnectionPhase.LOADING_CHATS -> {
+            if (hasLocalHistory) {
+                "Connected securely. Refreshing this conversation in the background."
+            } else {
+                "Connected securely. Loading this conversation."
+            }
+        }
+        state.connectionPhase == ConnectionPhase.SYNCING -> {
+            if (hasLocalHistory) {
+                "Connected securely. Restoring this conversation."
+            } else {
+                "Connected securely. Syncing recent thread state from your Mac."
+            }
+        }
+        state.connectionPhase == ConnectionPhase.CONNECTED -> "Connected to your paired Mac."
+        state.connectionPhase == ConnectionPhase.OFFLINE -> "History is available offline. Reconnect before sending new messages."
+        else -> "Connected to your paired Mac."
     }
+}
+
+internal fun isComposerReconnectInFlight(state: AppState): Boolean {
+    return when (state.connectionPhase) {
+        ConnectionPhase.CONNECTING,
+        ConnectionPhase.LOADING_CHATS,
+        ConnectionPhase.SYNCING -> true
+        ConnectionPhase.CONNECTED,
+        ConnectionPhase.OFFLINE -> false
+    }
+}
+
+private fun ThreadHistoryState?.shouldDescribeThreadRefresh(): Boolean {
+    return this?.isTailRefreshing == true
 }
 
 @Composable

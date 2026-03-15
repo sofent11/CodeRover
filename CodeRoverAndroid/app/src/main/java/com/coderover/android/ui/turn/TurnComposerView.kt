@@ -85,6 +85,7 @@ internal fun TurnComposerView(
         AnimatedVisibility(visible = !state.isConnected) {
             ComposerDisconnectedBanner(
                 state = state,
+                threadId = threadIdForQueue,
                 onReconnect = onReconnect,
             )
         }

@@ -340,6 +340,9 @@ class CodeRoverRepository(context: Context) {
                     updateError("Phone identity is missing.")
                     return@launch
                 }
+                val preferredThreadId = currentState.selectedThreadId
+                    ?.takeIf { threadId -> currentState.threads.any { it.id == threadId } }
+                val isForegroundThreadReconnect = preferredThreadId != null
 
                 updateState {
                     copy(
@@ -374,22 +377,23 @@ class CodeRoverRepository(context: Context) {
                         )
                         Log.d(TAG, "websocket+handshake ok epoch=$epoch url=$url")
                         rememberSuccessfulTransport(url)
-                        initializeSession()
+                        initializeSession(updatePhase = !isForegroundThreadReconnect)
                         Log.d(TAG, "initialize ok epoch=$epoch")
                         listProviders()
                         Log.d(TAG, "runtime/provider/list ok epoch=$epoch")
-                        listThreads()
-                        Log.d(TAG, "thread/list ok epoch=$epoch")
-                        syncRuntimeSelectionContext(currentRuntimeProviderId(), refreshModels = true)
-                        Log.d(TAG, "model/list ok epoch=$epoch provider=${currentRuntimeProviderId()}")
+                        syncRuntimeSelectionContext(currentRuntimeProviderId(), refreshModels = false)
+                        Log.d(TAG, "runtime selection restored epoch=$epoch provider=${currentRuntimeProviderId()}")
+                        val reconnectThreadId = preferredThreadId
+                            ?: state.value.selectedThreadId
+                            ?: state.value.threads.firstOrNull()?.id
                         updateState {
                             copy(
                                 connectionPhase = ConnectionPhase.CONNECTED,
                                 lastErrorMessage = null,
-                                selectedThreadId = selectedThreadId ?: threads.firstOrNull()?.id,
+                                selectedThreadId = reconnectThreadId ?: selectedThreadId ?: threads.firstOrNull()?.id,
                             )
                         }
-                        state.value.selectedThreadId?.let { threadId ->
+                        reconnectThreadId?.let { threadId ->
                             runCatching {
                                 refreshThreadHistory(threadId, reason = "initial-connect")
                             }.onFailure { failure ->
@@ -397,6 +401,7 @@ class CodeRoverRepository(context: Context) {
                                 scheduleThreadHistoryRetry(threadId, "initial-connect")
                             }
                         }
+                        launchPostConnectBootstrap(epoch, reconnectThreadId)
                         return@launch
                     } catch (failure: Throwable) {
                         Log.e(TAG, "connectActivePairing failed epoch=$epoch url=$url", failure)
@@ -418,6 +423,38 @@ class CodeRoverRepository(context: Context) {
                 }
             } finally {
                 isConnectInFlight.set(false)
+            }
+        }
+    }
+
+    private fun launchPostConnectBootstrap(epoch: Long, foregroundThreadId: String?) {
+        scope.launch {
+            runCatching {
+                listThreads(updatePhase = false)
+                Log.d(TAG, "thread/list ok epoch=$epoch")
+            }.onFailure { failure ->
+                Log.w(TAG, "thread/list failed after connect epoch=$epoch", failure)
+            }
+
+            val providerId = currentRuntimeProviderId()
+            runCatching {
+                syncRuntimeSelectionContext(providerId, refreshModels = true)
+                Log.d(TAG, "model/list ok epoch=$epoch provider=$providerId")
+            }.onFailure { failure ->
+                Log.w(TAG, "model/list failed after connect epoch=$epoch provider=$providerId", failure)
+            }
+
+            val selectedThreadId = state.value.selectedThreadId
+            if (selectedThreadId != null &&
+                selectedThreadId != foregroundThreadId &&
+                state.value.messagesByThread[selectedThreadId].orEmpty().isEmpty()
+            ) {
+                runCatching {
+                    refreshThreadHistory(selectedThreadId, reason = "post-connect-selection")
+                }.onFailure { failure ->
+                    Log.w(TAG, "post-connect thread/read failed epoch=$epoch threadId=$selectedThreadId", failure)
+                    scheduleThreadHistoryRetry(selectedThreadId, "post-connect-selection")
+                }
             }
         }
     }
@@ -1240,8 +1277,10 @@ class CodeRoverRepository(context: Context) {
     }
 
 
-    private suspend fun initializeSession() {
-        updateState { copy(connectionPhase = ConnectionPhase.SYNCING) }
+    private suspend fun initializeSession(updatePhase: Boolean = true) {
+        if (updatePhase) {
+            updateState { copy(connectionPhase = ConnectionPhase.SYNCING) }
+        }
         val client = activeClient()
         val clientInfo = JsonObject(
             mapOf(

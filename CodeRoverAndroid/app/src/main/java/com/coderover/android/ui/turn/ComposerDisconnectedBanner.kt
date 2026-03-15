@@ -20,8 +20,10 @@ import com.coderover.android.ui.shared.GlassCard
 @Composable
 internal fun ComposerDisconnectedBanner(
     state: AppState,
+    threadId: String?,
     onReconnect: () -> Unit,
 ) {
+    val reconnectInFlight = isComposerReconnectInFlight(state)
     GlassCard(
         modifier = Modifier.fillMaxWidth(),
         cornerRadius = 22.dp,
@@ -37,7 +39,7 @@ internal fun ComposerDisconnectedBanner(
             ) {
                 Text("Disconnected", style = MaterialTheme.typography.labelLarge)
                 Text(
-                    text = composerConnectionMessage(state),
+                    text = composerConnectionMessage(state, threadId),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 2,
@@ -47,11 +49,11 @@ internal fun ComposerDisconnectedBanner(
             if (state.activePairing != null) {
                 TextButton(
                     onClick = onReconnect,
-                    enabled = state.connectionPhase != ConnectionPhase.CONNECTING,
+                    enabled = !reconnectInFlight,
                     modifier = Modifier.widthIn(min = 88.dp),
                 ) {
                     Text(
-                        text = if (state.connectionPhase == ConnectionPhase.CONNECTING) "Reconnecting..." else "Reconnect",
+                        text = if (reconnectInFlight) "Reconnecting..." else "Reconnect",
                         maxLines = 1,
                         overflow = TextOverflow.Clip,
                     )
