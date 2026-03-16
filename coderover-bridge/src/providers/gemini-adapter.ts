@@ -5,9 +5,10 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { spawn } from "child_process";
-import { randomUUID } from "crypto";
+import { createHash, randomUUID } from "crypto";
 
 import { getRuntimeProvider } from "../provider-catalog";
+import { normalizeTimestampString } from "../runtime-manager/normalizers";
 import type { RuntimeInputItem } from "../bridge-types";
 import type {
   RuntimeStore,
@@ -26,6 +27,7 @@ type ProviderRole = "user" | "assistant";
 interface GeminiHistoryMessage {
   role: ProviderRole;
   text: string;
+  createdAt?: string | null;
 }
 
 interface GeminiDiscoveredThread {
@@ -87,14 +89,22 @@ export function createGeminiAdapter({
       return;
     }
 
+    const currentThreadMeta = store.getThreadMeta(threadMeta.id) || threadMeta;
     const existingHistory = store.getThreadHistory(threadMeta.id);
-    if (existingHistory?.turns?.length) {
+    if (!shouldRefreshGeminiHistory(currentThreadMeta, existingHistory)) {
       return;
     }
 
     const messages = loadGeminiHistoryMessages(threadMeta.providerSessionId);
     const history = buildGeminiHistory(threadMeta.id, messages);
     store.saveThreadHistory(threadMeta.id, history);
+    store.updateThreadMeta(threadMeta.id, (entry) => ({
+      ...entry,
+      metadata: {
+        ...(entry.metadata || {}),
+        geminiHistorySyncedAt: toIsoDateString(Date.now()),
+      },
+    }));
   }
 
   async function startTurn({
@@ -190,12 +200,27 @@ export function createGeminiAdapter({
 function buildGeminiHistory(threadId: string, messages: GeminiHistoryMessage[]): RuntimeThreadHistory {
   const turns: RuntimeThreadHistory["turns"] = [];
   let currentTurn: RuntimeThreadHistory["turns"][number] | null = null;
+  
+  // Start with a base time and increment it for each Turn and Item to ensure strictly
+  // increasing timestamps, even if real timestamps are missing or have collisions.
+  let virtualTimeMs = Date.now() - (messages.length * 3 * 1000);
 
-  for (const message of messages) {
+  messages.forEach((message, index) => {
+    const messageTimeMs = message.createdAt ? Date.parse(message.createdAt) : null;
+    if (messageTimeMs && messageTimeMs > virtualTimeMs) {
+      virtualTimeMs = messageTimeMs;
+    } else {
+      virtualTimeMs += 1;
+    }
+
+    const deterministicId = createHash("md5")
+      .update(`${index}-${message.role}-${message.text}`)
+      .digest("hex");
+
     if (message.role === "user" || !currentTurn) {
       currentTurn = {
-        id: randomUUID(),
-        createdAt: new Date().toISOString(),
+        id: `turn-${deterministicId}`,
+        createdAt: new Date(virtualTimeMs++).toISOString(),
         status: "completed",
         items: [],
       };
@@ -203,10 +228,10 @@ function buildGeminiHistory(threadId: string, messages: GeminiHistoryMessage[]):
     }
 
     currentTurn.items.push({
-      id: randomUUID(),
+      id: `item-${deterministicId}`,
       type: message.role === "user" ? "user_message" : "agent_message",
       role: message.role === "user" ? "user" : "assistant",
-      createdAt: new Date().toISOString(),
+      createdAt: new Date(virtualTimeMs++).toISOString(),
       content: [{ type: "text", text: message.text }],
       text: message.text,
       message: null,
@@ -217,9 +242,43 @@ function buildGeminiHistory(threadId: string, messages: GeminiHistoryMessage[]):
       summary: null,
       fileChanges: [],
     });
-  }
+  });
 
   return { threadId, turns };
+}
+
+function shouldRefreshGeminiHistory(
+  threadMeta: RuntimeThreadMeta,
+  existingHistory: { turns?: unknown[] } | null
+): boolean {
+  if (!existingHistory?.turns?.length) {
+    return true;
+  }
+
+  const historySyncedAt = normalizeMetadataTimestamp(
+    threadMeta.metadata,
+    "geminiHistorySyncedAt"
+  );
+
+  if (!historySyncedAt) {
+    return true;
+  }
+
+  // Gemini history files are updated frequently; refresh if it's been more than 5 seconds
+  // or if we're explicitly asked to hydrate.
+  return Date.now() - Date.parse(historySyncedAt) > 5000;
+}
+
+function normalizeMetadataTimestamp(
+  metadata: Record<string, unknown> | null | undefined,
+  key: string
+): string | null {
+  if (!metadata || typeof metadata[key] !== "string") {
+    return null;
+  }
+
+  const trimmed = String(metadata[key]).trim();
+  return trimmed || null;
 }
 
 function discoverGeminiChatFiles(): GeminiDiscoveredThread[] {
@@ -302,25 +361,34 @@ function loadGeminiHistoryMessages(chatFile: string): GeminiHistoryMessage[] {
 }
 
 export function extractGeminiMessages(parsed: unknown): GeminiHistoryMessage[] {
+  let messages: GeminiHistoryMessage[] = [];
+
   if (Array.isArray(parsed)) {
-    return parsed
+    messages = parsed
       .map((entry) => normalizeGeminiMessage(entry))
       .filter((entry): entry is GeminiHistoryMessage => Boolean(entry));
-  }
-
-  if (parsed && typeof parsed === "object") {
+  } else if (parsed && typeof parsed === "object") {
     const root = parsed as JsonRecord;
     const candidateArrays = [root.messages, root.entries, root.history, root.chat];
     for (const candidate of candidateArrays) {
       if (Array.isArray(candidate)) {
-        return candidate
+        messages = candidate
           .map((entry) => normalizeGeminiMessage(entry))
           .filter((entry): entry is GeminiHistoryMessage => Boolean(entry));
+        break;
       }
     }
   }
 
-  return [];
+  if (messages.length > 0 && messages.some((m) => m.createdAt)) {
+    messages.sort((a, b) => {
+      const aTime = a.createdAt ? Date.parse(a.createdAt) : 0;
+      const bTime = b.createdAt ? Date.parse(b.createdAt) : 0;
+      return aTime - bTime;
+    });
+  }
+
+  return messages;
 }
 
 export function normalizeGeminiMessage(entry: unknown): GeminiHistoryMessage | null {
@@ -336,7 +404,11 @@ export function normalizeGeminiMessage(entry: unknown): GeminiHistoryMessage | n
     return null;
   }
 
-  return { role, text };
+  const createdAt = normalizeTimestampString(
+    root.createdAt || root.created_at || root.timestamp || root.time || root.at
+  );
+
+  return { role, text, createdAt };
 }
 
 function normalizeGeminiRole(rawRole: string | null): ProviderRole | null {
@@ -599,6 +671,30 @@ function resolveFullAccess(params: GeminiStartTurnParams): boolean {
   return approvalPolicy === "never"
     || sandbox === "dangerFullAccess"
     || sandboxType === "dangerFullAccess";
+}
+
+function toIsoDateString(value: unknown): string {
+  if (!value) {
+    return new Date().toISOString();
+  }
+
+  if (typeof value === "string") {
+    const parsed = Date.parse(value);
+    if (!Number.isNaN(parsed)) {
+      return new Date(parsed).toISOString();
+    }
+  }
+
+  if (typeof value === "number") {
+    const milliseconds = value > 10_000_000_000 ? value : value * 1000;
+    return new Date(milliseconds).toISOString();
+  }
+
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+
+  return new Date().toISOString();
 }
 
 function safeReaddir(directory: string): string[] {

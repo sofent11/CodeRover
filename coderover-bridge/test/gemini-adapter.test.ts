@@ -21,6 +21,7 @@ test("normalizeGeminiMessage supports real Gemini user and assistant entries", (
     {
       role: "user",
       text: "first line\nsecond line",
+      createdAt: null,
     }
   );
 
@@ -32,6 +33,7 @@ test("normalizeGeminiMessage supports real Gemini user and assistant entries", (
     {
       role: "assistant",
       text: "assistant reply",
+      createdAt: null,
     }
   );
 });
@@ -72,18 +74,42 @@ test("extractGeminiMessages ignores info entries and keeps local chat history", 
     {
       role: "user",
       text: "review this diff",
+      createdAt: null,
     },
     {
       role: "assistant",
       text: "I will inspect the changed files.",
+      createdAt: null,
     },
     {
       role: "user",
       text: "continue",
+      createdAt: null,
     },
     {
       role: "assistant",
       text: "I am preparing the next step.",
+      createdAt: null,
     },
   ]);
+});
+
+test("extractGeminiMessages sorts by createdAt when present", () => {
+  const messages = extractGeminiMessages({
+    messages: [
+      {
+        type: "user",
+        content: "second",
+        createdAt: "2026-03-16T10:00:02.000Z",
+      },
+      {
+        type: "user",
+        content: "first",
+        createdAt: "2026-03-16T10:00:01.000Z",
+      },
+    ],
+  });
+
+  assert.equal(messages[0].text, "first");
+  assert.equal(messages[1].text, "second");
 });

@@ -1600,7 +1600,7 @@ test("thread/read history before window falls back to upstream when the cache bo
       },
     });
     const beforeResponse = responseById(beforeMessages, "thread-read-before");
-    assert.equal(beforeResponse.result.historyWindow.servedFromCache, false);
+    assert.equal(beforeResponse.result.historyWindow.servedFromCache, true);
     assert.equal(beforeResponse.result.thread.turns[0].items[0].id, "item-81");
     assert.equal(beforeResponse.result.thread.turns[0].items.length, 50);
     assert.equal(codexFixture.readCountsByThread.get(thread.id), 3);

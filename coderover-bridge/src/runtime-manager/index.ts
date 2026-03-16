@@ -1217,39 +1217,75 @@ export function createRuntimeManager({
     }
 
     const previousByProviderItemId = new Map<string, RuntimeHistoryRecord>();
+    const previousByTimelineItemId = new Map<string, RuntimeHistoryRecord>();
     const previousProvisionalByTurnAndKind = new Map<string, RuntimeHistoryRecord[]>();
 
     previousEntry.records.forEach((record) => {
       syncCanonicalFieldsOnRecord(record);
       const providerItemId = readHistoryRecordProviderItemId(record);
+      const timelineItemId = readHistoryRecordTimelineItemId(record);
       if (providerItemId) {
         previousByProviderItemId.set(providerItemId, record);
-        return;
       }
-      const key = `${record.turnId}|${canonicalKindForHistoryRecord(record)}`;
-      previousProvisionalByTurnAndKind.set(key, [
-        ...(previousProvisionalByTurnAndKind.get(key) || []),
-        record,
-      ]);
+      if (timelineItemId) {
+        previousByTimelineItemId.set(timelineItemId, record);
+      }
+      if (!providerItemId) {
+        const key = `${record.turnId}|${canonicalKindForHistoryRecord(record)}`;
+        previousProvisionalByTurnAndKind.set(key, [
+          ...(previousProvisionalByTurnAndKind.get(key) || []),
+          record,
+        ]);
+      }
+    });
+
+    const mergedRecords = new Map<string, RuntimeHistoryRecord>();
+    const provisionalRecords: RuntimeHistoryRecord[] = [];
+
+    // Start with all previous records
+    previousEntry.records.forEach((record) => {
+      const providerItemId = readHistoryRecordProviderItemId(record);
+      if (providerItemId) {
+        mergedRecords.set(providerItemId, record);
+      } else {
+        provisionalRecords.push(record);
+      }
     });
 
     nextEntry.records.forEach((record) => {
       syncCanonicalFieldsOnRecord(record);
       const providerItemId = readHistoryRecordProviderItemId(record);
+      const turnAndKindKey = `${record.turnId}|${canonicalKindForHistoryRecord(record)}`;
+      
+      const previousRecord = (providerItemId ? previousByProviderItemId.get(providerItemId) : null)
+        || previousProvisionalByTurnAndKind.get(turnAndKindKey)?.shift()
+        || null;
+
+      const previousTimelineItemId = readHistoryRecordTimelineItemId(previousRecord);
+      if (previousTimelineItemId) {
+        record.itemObject.id = previousTimelineItemId;
+        record.itemObject.timelineItemId = previousTimelineItemId;
+      }
+
       if (providerItemId) {
-        const previousRecord = previousByProviderItemId.get(providerItemId)
-          || previousProvisionalByTurnAndKind.get(`${record.turnId}|${canonicalKindForHistoryRecord(record)}`)?.shift()
-          || null;
-        const previousTimelineItemId = readHistoryRecordTimelineItemId(previousRecord);
-        if (previousTimelineItemId) {
-          record.itemObject.id = previousTimelineItemId;
-          record.itemObject.timelineItemId = previousTimelineItemId;
+        mergedRecords.set(providerItemId, record);
+        // If we matched a provisional record, remove it from the provisional list
+        if (previousRecord && !readHistoryRecordProviderItemId(previousRecord)) {
+          const pIndex = provisionalRecords.indexOf(previousRecord);
+          if (pIndex >= 0) {
+            provisionalRecords.splice(pIndex, 1);
+          }
         }
+      } else {
+        provisionalRecords.push(record);
       }
       syncCanonicalFieldsOnRecord(record);
     });
 
-    return nextEntry;
+    return {
+      ...nextEntry,
+      records: [...mergedRecords.values(), ...provisionalRecords],
+    };
   }
 
   function seedCodexHistoryCacheWithUserInput(
@@ -3747,6 +3783,7 @@ function normalizeHistoryRequest(history: unknown): RuntimeHistoryRequest | null
     mode,
     limit,
     cursor,
+    rawCursor: normalizeOptionalString(historyRecord.cursor),
   };
 }
 
@@ -3998,7 +4035,10 @@ function historyCursorMatchesRecord(
     return cursor.itemId === recordItemId;
   }
   const recordTurnId = normalizeOptionalString(record.turnId);
-  return Boolean(cursor.turnId && recordTurnId && cursor.turnId === recordTurnId);
+  if (cursor.turnId && recordTurnId) {
+    return cursor.turnId === recordTurnId;
+  }
+  return !cursor.itemId && !cursor.turnId;
 }
 
 function findHistoryRecordIndexByCursor(

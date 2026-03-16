@@ -9,7 +9,7 @@ export {};
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { randomUUID } from "crypto";
+import { createHash, randomUUID } from "crypto";
 
 import { getRuntimeProvider } from "../provider-catalog";
 import type {
@@ -201,16 +201,22 @@ export function createClaudeAdapter({
 
     const turns: RuntimeStoreTurn[] = [];
     let currentTurn: RuntimeStoreTurn | null = null;
-    for (const message of messages) {
+    let virtualTimeMs = Date.now() - (messages.length * 2 * 1000);
+
+    messages.forEach((message, index) => {
       const role = normalizeOptionalString(message?.type);
       if (!role) {
-        continue;
+        return;
       }
+
+      const deterministicId = createHash("md5")
+        .update(`${index}-${role}-${message.uuid || ""}`)
+        .digest("hex");
 
       if (role === "user" || !currentTurn) {
         currentTurn = {
-          id: randomUUID(),
-          createdAt: new Date().toISOString(),
+          id: `turn-${deterministicId}`,
+          createdAt: new Date(virtualTimeMs++).toISOString(),
           status: "completed",
           items: [],
         };
@@ -220,11 +226,12 @@ export function createClaudeAdapter({
       currentTurn.items.push(
         ...buildClaudeHistoryItems({
           role,
-          messageId: message.uuid,
+          messageId: message.uuid || `item-${deterministicId}`,
           message: message.message,
+          createdAt: new Date(virtualTimeMs++).toISOString(),
         })
       );
-    }
+    });
 
     store.saveThreadHistory(threadMeta.id, {
       threadId: threadMeta.id,
@@ -764,12 +771,13 @@ function buildClaudeHistoryItems({
   role,
   messageId,
   message,
+  createdAt,
 }: {
   role: string;
   messageId: string | undefined;
   message: unknown;
+  createdAt: string;
 }): RuntimeStoreItem[] {
-  const createdAt = new Date().toISOString();
   const normalizedMessageId = normalizeOptionalString(messageId) || randomUUID();
 
   if (role === "user") {

@@ -20,7 +20,7 @@ export const EXTERNAL_SYNC_INTERVAL_MS = 10_000;
 export const DEFAULT_HISTORY_WINDOW_LIMIT = 50;
 export const DEFAULT_THREAD_LIST_PAGE_SIZE = 60;
 export const CODEX_HISTORY_CACHE_THREAD_LIMIT = 20;
-export const CODEX_HISTORY_CACHE_MESSAGE_LIMIT = 50;
+export const CODEX_HISTORY_CACHE_MESSAGE_LIMIT = 500;
 export const HISTORY_CURSOR_VERSION = 1;
 export const CODEX_OBSERVED_THREAD_POLL_INTERVAL_MS = 2_000;
 export const CODEX_OBSERVED_THREAD_IDLE_TTL_MS = 10 * 60 * 1000;
@@ -35,6 +35,7 @@ export interface RuntimeHistoryRequest {
   mode: "tail" | "before" | "after";
   limit: number;
   cursor: RuntimeHistoryCursor | null;
+  rawCursor?: string | null;
 }
 
 export interface RuntimeHistoryRecord {

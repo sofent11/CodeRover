@@ -84,9 +84,13 @@ export function buildUpstreamCodexHistoryParams(
     mode: historyRequest.mode,
     limit: historyRequest.limit,
   };
-  if (historyRequest.mode !== "tail" && historyRequest.cursor) {
-    (upstreamParams.history as Record<string, unknown>).anchor = historyRequest.cursor;
-    delete (upstreamParams.history as Record<string, unknown>).cursor;
+  if (historyRequest.mode !== "tail") {
+    if (historyRequest.rawCursor) {
+      (upstreamParams.history as Record<string, unknown>).cursor = historyRequest.rawCursor;
+    }
+    if (historyRequest.cursor) {
+      (upstreamParams.history as Record<string, unknown>).anchor = historyRequest.cursor;
+    }
   }
   return upstreamParams;
 }
