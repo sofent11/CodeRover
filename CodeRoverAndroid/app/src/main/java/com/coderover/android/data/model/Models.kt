@@ -2,6 +2,7 @@ package com.coderover.android.data.model
 
 import java.time.Instant
 import java.time.format.DateTimeParseException
+import java.util.Comparator
 import java.util.UUID
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -506,9 +507,59 @@ data class ChatMessage(
     val commandState: CommandState? = null,
     val planState: PlanState? = null,
     val structuredUserInputRequest: StructuredUserInputRequest? = null,
+    val providerItemId: String? = null,
+    val timelineOrdinal: Int? = null,
+    val timelineStatus: String? = null,
 ) {
     val stableStreamKey: String
         get() = itemId ?: turnId ?: "$threadId:$role:$kind"
+
+    val timelineItemId: String
+        get() = id
+}
+
+data class ThreadTimelineState(
+    private val itemsById: MutableMap<String, ChatMessage> = linkedMapOf(),
+    private val orderedItemIds: MutableList<String> = mutableListOf(),
+) {
+    constructor(messages: List<ChatMessage>) : this() {
+        replaceAll(messages)
+    }
+
+    fun replaceAll(messages: List<ChatMessage>) {
+        itemsById.clear()
+        orderedItemIds.clear()
+        messages.forEach(::upsert)
+    }
+
+    fun upsert(message: ChatMessage) {
+        itemsById[message.id] = message
+        if (!orderedItemIds.contains(message.id)) {
+            orderedItemIds += message.id
+        }
+        orderedItemIds.sortWith(
+            Comparator { lhs, rhs ->
+                compareTimelineMessages(itemsById[lhs], itemsById[rhs])
+            },
+        )
+    }
+
+    fun message(id: String): ChatMessage? = itemsById[id]
+
+    fun renderedMessages(): List<ChatMessage> = orderedItemIds.mapNotNull(itemsById::get)
+
+    private fun compareTimelineMessages(lhs: ChatMessage?, rhs: ChatMessage?): Int {
+        if (lhs == null || rhs == null) {
+            return (lhs?.id ?: "").compareTo(rhs?.id ?: "")
+        }
+        val lhsOrder = lhs.timelineOrdinal ?: lhs.orderIndex
+        val rhsOrder = rhs.timelineOrdinal ?: rhs.orderIndex
+        return when {
+            lhsOrder != rhsOrder -> lhsOrder.compareTo(rhsOrder)
+            lhs.createdAt != rhs.createdAt -> lhs.createdAt.compareTo(rhs.createdAt)
+            else -> lhs.id.compareTo(rhs.id)
+        }
+    }
 }
 
 data class ModelOption(

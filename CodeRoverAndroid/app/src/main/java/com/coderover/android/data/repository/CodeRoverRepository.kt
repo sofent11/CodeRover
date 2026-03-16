@@ -41,6 +41,7 @@ import com.coderover.android.data.model.ThreadHistorySegment
 import com.coderover.android.data.model.ThreadHistoryState
 import com.coderover.android.data.model.ThreadSummary
 import com.coderover.android.data.model.ThreadSyncState
+import com.coderover.android.data.model.ThreadTimelineState
 import com.coderover.android.data.model.TrustedMacRecord
 import com.coderover.android.data.model.ThreadRunBadgeState
 import com.coderover.android.data.model.TrustedMacRegistry
@@ -61,6 +62,7 @@ import com.coderover.android.data.network.SecureCrypto
 import com.coderover.android.data.network.TransportCandidatePrioritizer
 import com.coderover.android.data.storage.PairingStore
 import com.coderover.android.data.storage.UserPreferencesStore
+import java.util.Comparator
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
@@ -86,6 +88,12 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 
 class CodeRoverRepository(context: Context) {
+    private enum class CanonicalTimelineEventKind {
+        STARTED,
+        TEXT_UPDATED,
+        COMPLETED,
+    }
+
     private companion object {
         const val TAG = "CodeRoverRepo"
     }
@@ -125,6 +133,7 @@ class CodeRoverRepository(context: Context) {
     private val connectionEpoch = AtomicLong(0)
     private val isConnectInFlight = AtomicBoolean(false)
     private val streamingMessageIdsByKey = mutableMapOf<String, String>()
+    internal val threadTimelineStateByThread = mutableMapOf<String, ThreadTimelineState>()
     private val threadHistoryRefreshInFlight = mutableSetOf<String>()
     private val threadHistoryRefreshPending = mutableSetOf<String>()
     private val pendingRealtimeHistoryCatchUpThreadIds = mutableSetOf<String>()
@@ -182,6 +191,12 @@ class CodeRoverRepository(context: Context) {
     init {
         val currentState = _state.value
         val activePairing = currentState.pairings.firstOrNull { it.macDeviceId == currentState.activePairingMacDeviceId }
+        currentState.messagesByThread.forEach { (threadId, messages) ->
+            val canonicalMessages = messages.filter(::isCanonicalTimelineMessage)
+            if (canonicalMessages.isNotEmpty()) {
+                threadTimelineStateByThread[threadId] = ThreadTimelineState(canonicalMessages)
+            }
+        }
         _state.value = currentState.copy(
             activePairingMacDeviceId = activePairing?.macDeviceId
                 ?: currentState.pairings.maxByOrNull(PairingRecord::lastPairedAt)?.macDeviceId,
@@ -1778,13 +1793,30 @@ class CodeRoverRepository(context: Context) {
     ) {
         val currentState = state.value
         val existingMessages = currentState.messagesByThread[threadId].orEmpty()
-        val mergedHistory = if (replaceLocalHistory) {
-            history
+        val renderedMessages = if (history.any(::isCanonicalTimelineMessage)) {
+            val canonicalMessages = if (replaceLocalHistory) {
+                synchronizeThreadTimelineState(
+                    threadId = threadId,
+                    canonicalMessages = history,
+                )
+            } else {
+                mergeCanonicalHistoryIntoTimelineState(
+                    threadId = threadId,
+                    historyMessages = history,
+                    activeThreadIds = currentState.activeTurnIdByThread.keys,
+                    runningThreadIds = currentState.runningThreadIds,
+                )
+            }
+            canonicalMessages
         } else {
-            mergeHistoryMessages(existingMessages, history)
+            if (replaceLocalHistory) {
+                history
+            } else {
+                mergeHistoryMessages(existingMessages, history)
+            }
         }
         val nextMessages = if (replaceLocalHistory || history.isNotEmpty()) {
-            currentState.messagesByThread + (threadId to mergedHistory)
+            currentState.messagesByThread + (threadId to renderedMessages)
         } else {
             currentState.messagesByThread
         }
@@ -2336,11 +2368,22 @@ class CodeRoverRepository(context: Context) {
         fun decodeMessage(turn: JsonObject, item: JsonObject): ChatMessage? {
             val type = item.string("type")?.lowercase()?.replace("_", "") ?: return null
             val turnId = turn.string("id")
+            val itemId = item.string("id")
             val turnTimestamp = turn.timestamp("createdAt", "created_at", "updatedAt", "updated_at")
             val timestamp = item.timestamp("createdAt", "created_at")
                 ?: turnTimestamp
                 ?: (baseTimestamp + offset)
             offset += 1
+            val providerItemId = firstNonBlank(
+                item.string("providerItemId"),
+                item.string("provider_item_id"),
+            )
+            val timelineOrdinal = item.int("ordinal")
+            val timelineStatus = firstNonBlank(
+                item.string("status"),
+                item["result"]?.jsonObjectOrNull()?.string("status"),
+                item["output"]?.jsonObjectOrNull()?.string("status"),
+            )
             val role = when (type) {
                 "usermessage" -> MessageRole.USER
                 "agentmessage", "assistantmessage" -> MessageRole.ASSISTANT
@@ -2384,17 +2427,21 @@ class CodeRoverRepository(context: Context) {
                 return null
             }
             return ChatMessage(
+                id = itemId ?: UUID.randomUUID().toString(),
                 threadId = threadId,
                 role = role,
                 kind = kind,
                 text = text,
                 createdAt = timestamp,
                 turnId = turnId,
-                itemId = item.string("id"),
-                orderIndex = nextOrderIndex(),
+                itemId = itemId,
+                orderIndex = timelineOrdinal ?: nextOrderIndex(),
                 fileChanges = fileChanges,
                 commandState = commandState,
                 planState = planState,
+                providerItemId = providerItemId,
+                timelineOrdinal = timelineOrdinal,
+                timelineStatus = timelineStatus,
             )
         }
 
@@ -2413,8 +2460,7 @@ class CodeRoverRepository(context: Context) {
             }
             return messages
                 .asReversed()
-                .sortedBy(ChatMessage::createdAt)
-                .mapIndexed { index, message -> message.copy(orderIndex = index) }
+                .sortedWith(Comparator(::compareRenderedTimelineMessages))
         }
 
         turns.forEach { turnElement ->
@@ -2425,7 +2471,7 @@ class CodeRoverRepository(context: Context) {
                 decodeMessage(turn, item)?.let(messages::add)
             }
         }
-        return messages.sortedBy(ChatMessage::createdAt)
+        return messages.sortedWith(Comparator(::compareRenderedTimelineMessages))
     }
 
     private fun decodeItemText(item: JsonObject): String {
@@ -2932,6 +2978,123 @@ class CodeRoverRepository(context: Context) {
         }
     }
 
+    private fun canonicalTimelineRole(rawValue: String?): MessageRole {
+        return when (normalizeMethodToken(rawValue.orEmpty())) {
+            "user" -> MessageRole.USER
+            "assistant" -> MessageRole.ASSISTANT
+            else -> MessageRole.SYSTEM
+        }
+    }
+
+    private fun canonicalTimelineKind(rawValue: String?): MessageKind {
+        return when (normalizeMethodToken(rawValue.orEmpty())) {
+            "thinking", "reasoning" -> MessageKind.THINKING
+            "filechange", "toolcall", "diff" -> MessageKind.FILE_CHANGE
+            "commandexecution" -> MessageKind.COMMAND_EXECUTION
+            "plan" -> MessageKind.PLAN
+            "userinputprompt" -> MessageKind.USER_INPUT_PROMPT
+            else -> MessageKind.CHAT
+        }
+    }
+
+    private fun canonicalTimelineTextMode(rawValue: String?): String {
+        return if (normalizeMethodToken(rawValue.orEmpty()) == "append") "append" else "replace"
+    }
+
+    private fun canonicalTimelineIsStreaming(
+        status: String?,
+        eventKind: CanonicalTimelineEventKind,
+    ): Boolean {
+        if (eventKind == CanonicalTimelineEventKind.COMPLETED) {
+            return false
+        }
+        val normalizedStatus = normalizeMethodToken(status.orEmpty())
+        return normalizedStatus !in setOf("completed", "failed", "stopped")
+    }
+
+    private fun canonicalTimelineText(
+        payload: JsonObject,
+        kind: MessageKind,
+        planState: PlanState?,
+        commandState: CommandState?,
+        fileChanges: List<FileChangeEntry>,
+    ): String {
+        return when (kind) {
+            MessageKind.FILE_CHANGE -> decodeFileChangeText(payload, fileChanges)
+            MessageKind.COMMAND_EXECUTION -> decodeCommandExecutionText(payload, commandState)
+            MessageKind.PLAN -> decodePlanText(payload, planState)
+            else -> payload.deltaText()
+        }
+    }
+
+    private fun upsertCanonicalTimelineMessage(
+        threadId: String,
+        turnId: String?,
+        timelineItemId: String,
+        providerItemId: String?,
+        role: MessageRole,
+        kind: MessageKind,
+        incomingText: String,
+        textMode: String,
+        isStreaming: Boolean,
+        timelineOrdinal: Int?,
+        timelineStatus: String?,
+        fileChanges: List<FileChangeEntry>,
+        commandState: CommandState?,
+        planState: PlanState?,
+    ) {
+        val existingCanonicalMessage = threadTimelineStateByThread[threadId]?.message(timelineItemId)
+            ?: state.value.messagesByThread[threadId].orEmpty().firstOrNull { it.id == timelineItemId }
+        val existingText = existingCanonicalMessage?.text.orEmpty()
+        val nextText = when {
+            textMode == "append" -> existingText + incomingText
+            incomingText.isBlank() -> existingText
+            else -> incomingText
+        }
+        val message = (existingCanonicalMessage ?: ChatMessage(
+            id = timelineItemId,
+            threadId = threadId,
+            role = role,
+            kind = kind,
+            text = nextText,
+            turnId = turnId,
+            itemId = timelineItemId,
+            isStreaming = isStreaming,
+            orderIndex = timelineOrdinal ?: nextOrderIndex(),
+            fileChanges = fileChanges,
+            commandState = commandState,
+            planState = planState,
+            providerItemId = providerItemId,
+            timelineOrdinal = timelineOrdinal,
+            timelineStatus = timelineStatus,
+        )).copy(
+            role = role,
+            kind = kind,
+            text = nextText,
+            turnId = turnId ?: existingCanonicalMessage?.turnId,
+            itemId = timelineItemId,
+            isStreaming = isStreaming,
+            orderIndex = timelineOrdinal ?: existingCanonicalMessage?.orderIndex ?: nextOrderIndex(),
+            fileChanges = if (fileChanges.isEmpty()) {
+                existingCanonicalMessage?.fileChanges.orEmpty()
+            } else {
+                fileChanges
+            },
+            commandState = mergeCommandState(existingCanonicalMessage?.commandState, commandState),
+            planState = planState ?: existingCanonicalMessage?.planState,
+            providerItemId = providerItemId ?: existingCanonicalMessage?.providerItemId,
+            timelineOrdinal = timelineOrdinal ?: existingCanonicalMessage?.timelineOrdinal,
+            timelineStatus = timelineStatus ?: existingCanonicalMessage?.timelineStatus,
+        )
+        val renderedMessages = upsertThreadTimelineMessage(message)
+        updateState {
+            copy(
+                messagesByThread = messagesByThread + (threadId to renderedMessages),
+                threads = threads.refreshThreadSummaryFromMessages(threadId, renderedMessages),
+            )
+        }
+    }
+
     private fun upsertStreamingMessage(
         threadId: String,
         role: MessageRole,
@@ -3141,6 +3304,22 @@ class CodeRoverRepository(context: Context) {
 
             "account/rateLimits/updated" -> {
                 handleRateLimitsUpdated(params)
+            }
+
+            "timeline/turnUpdated" -> {
+                handleCanonicalTimelineTurnUpdated(params)
+            }
+
+            "timeline/itemStarted" -> {
+                handleCanonicalTimelineItemEvent(params, CanonicalTimelineEventKind.STARTED)
+            }
+
+            "timeline/itemTextUpdated" -> {
+                handleCanonicalTimelineItemEvent(params, CanonicalTimelineEventKind.TEXT_UPDATED)
+            }
+
+            "timeline/itemCompleted" -> {
+                handleCanonicalTimelineItemEvent(params, CanonicalTimelineEventKind.COMPLETED)
             }
 
             "turn/started" -> {
@@ -3508,6 +3687,86 @@ class CodeRoverRepository(context: Context) {
         }
     }
 
+    private suspend fun handleCanonicalTimelineTurnUpdated(params: JsonObject?) {
+        val payload = params ?: return
+        val normalizedState = normalizeMethodToken(payload.string("state").orEmpty())
+        if (normalizedState == "running") {
+            val threadId = state.value.resolveRealtimeThreadId(payload) ?: return
+            markRealtimeTurnStarted(threadId = threadId, turnId = payload.resolveTurnId())
+            return
+        }
+
+        val synthesized = if (payload["status"] == null && normalizedState.isNotBlank()) {
+            JsonObject(payload + ("status" to JsonPrimitive(normalizedState)))
+        } else {
+            payload
+        }
+        handleNotification("turn/completed", synthesized)
+    }
+
+    private fun handleCanonicalTimelineItemEvent(
+        params: JsonObject?,
+        eventKind: CanonicalTimelineEventKind,
+    ) {
+        val payload = params ?: return
+        val threadId = state.value.resolveRealtimeThreadId(payload) ?: return
+        val timelineItemId = payload.resolveTimelineItemId() ?: return
+        val turnId = payload.resolveTurnId() ?: state.value.activeTurnIdByThread[threadId]
+        if (!handleRealtimeHistoryEvent(
+                threadId = threadId,
+                turnId = turnId,
+                itemId = timelineItemId,
+                previousItemId = payload.resolvePreviousItemId(),
+                cursor = payload.resolveCursor(),
+                previousCursor = payload.resolvePreviousCursor(),
+            )
+        ) {
+            return
+        }
+
+        markRealtimeTurnStarted(threadId = threadId, turnId = turnId)
+        val role = canonicalTimelineRole(payload.string("role"))
+        val kind = canonicalTimelineKind(payload.string("kind"))
+        val textMode = canonicalTimelineTextMode(payload.string("textMode") ?: payload.string("text_mode"))
+        val providerItemId = firstNonBlank(
+            payload.string("providerItemId"),
+            payload.string("provider_item_id"),
+        )
+        val timelineOrdinal = payload.int("ordinal")
+        val timelineStatus = normalizedIdentifier(payload.string("status"))
+        val planState = if (kind == MessageKind.PLAN) decodePlanState(payload) else null
+        val commandState = if (kind == MessageKind.COMMAND_EXECUTION) {
+            decodeCommandState(payload, completedFallback = eventKind == CanonicalTimelineEventKind.COMPLETED)
+        } else {
+            null
+        }
+        val fileChanges = if (kind == MessageKind.FILE_CHANGE) decodeFileChangeEntries(payload) else emptyList()
+        val resolvedText = canonicalTimelineText(
+            payload = payload,
+            kind = kind,
+            planState = planState,
+            commandState = commandState,
+            fileChanges = fileChanges,
+        )
+
+        upsertCanonicalTimelineMessage(
+            threadId = threadId,
+            turnId = turnId,
+            timelineItemId = timelineItemId,
+            providerItemId = providerItemId,
+            role = role,
+            kind = kind,
+            incomingText = resolvedText,
+            textMode = textMode,
+            isStreaming = canonicalTimelineIsStreaming(timelineStatus, eventKind),
+            timelineOrdinal = timelineOrdinal,
+            timelineStatus = timelineStatus,
+            fileChanges = fileChanges,
+            commandState = commandState,
+            planState = planState,
+        )
+    }
+
     private fun handleThreadStatusChanged(params: JsonObject?) {
         val threadId = params.resolveThreadId() ?: return
         val payload = params ?: return
@@ -3524,6 +3783,10 @@ class CodeRoverRepository(context: Context) {
             return
         }
         if (normalizedStatus in setOf("idle", "notloaded", "completed", "done", "finished", "stopped", "systemerror")) {
+            val hasStreamingMessage = state.value.messagesByThread[threadId].orEmpty().any(ChatMessage::isStreaming)
+            if (state.value.activeTurnIdByThread[threadId] != null || hasStreamingMessage) {
+                return
+            }
             updateState {
                 copy(
                     runningThreadIds = runningThreadIds - threadId,
@@ -4489,6 +4752,7 @@ class CodeRoverRepository(context: Context) {
         if (resetThreadSession) {
             activeThreadListNextCursor = JsonNull
             activeThreadListHasMore = false
+            threadTimelineStateByThread.clear()
             store.saveCachedThreads(emptyList())
             store.saveCachedSelectedThreadId(null)
             store.saveCachedMessagesByThread(emptyMap())
@@ -4637,20 +4901,34 @@ internal fun JsonObject?.resolveItemId(): String? {
     val envelopeEvent = payload.envelopeEventObject()
     val nestedEvent = payload["event"]?.jsonObjectOrNull()
     return firstNonBlank(
+        payload.normalizedIdentifier("timelineItemId"),
+        payload.normalizedIdentifier("timeline_item_id"),
         payload.normalizedIdentifier("itemId"),
         payload.normalizedIdentifier("item_id"),
         payload.normalizedIdentifier("id"),
         payload["item"]?.jsonObjectOrNull()?.normalizedIdentifier("id"),
+        payload["item"]?.jsonObjectOrNull()?.normalizedIdentifier("timelineItemId"),
+        payload["item"]?.jsonObjectOrNull()?.normalizedIdentifier("timeline_item_id"),
+        envelopeEvent?.normalizedIdentifier("timelineItemId"),
+        envelopeEvent?.normalizedIdentifier("timeline_item_id"),
         envelopeEvent?.normalizedIdentifier("itemId"),
         envelopeEvent?.normalizedIdentifier("item_id"),
         envelopeEvent?.normalizedIdentifier("id"),
         envelopeEvent?.get("item")?.jsonObjectOrNull()?.normalizedIdentifier("id"),
+        envelopeEvent?.get("item")?.jsonObjectOrNull()?.normalizedIdentifier("timelineItemId"),
+        envelopeEvent?.get("item")?.jsonObjectOrNull()?.normalizedIdentifier("timeline_item_id"),
+        nestedEvent?.normalizedIdentifier("timelineItemId"),
+        nestedEvent?.normalizedIdentifier("timeline_item_id"),
         nestedEvent?.normalizedIdentifier("itemId"),
         nestedEvent?.normalizedIdentifier("item_id"),
         nestedEvent?.normalizedIdentifier("id"),
         nestedEvent?.get("item")?.jsonObjectOrNull()?.normalizedIdentifier("id"),
+        nestedEvent?.get("item")?.jsonObjectOrNull()?.normalizedIdentifier("timelineItemId"),
+        nestedEvent?.get("item")?.jsonObjectOrNull()?.normalizedIdentifier("timeline_item_id"),
     )
 }
+
+internal fun JsonObject?.resolveTimelineItemId(): String? = resolveItemId()
 
 internal fun JsonObject?.resolvePreviousItemId(): String? {
     val payload = this ?: return null
@@ -4759,6 +5037,122 @@ private fun parseHistoryAnchor(json: JsonObject?): ThreadHistoryAnchor? {
         itemId = payload.string("itemId") ?: payload.string("item_id"),
         createdAt = createdAt,
         turnId = payload.string("turnId") ?: payload.string("turn_id"),
+    )
+}
+
+private fun compareRenderedTimelineMessages(lhs: ChatMessage, rhs: ChatMessage): Int {
+    val lhsOrder = lhs.timelineOrdinal ?: lhs.orderIndex
+    val rhsOrder = rhs.timelineOrdinal ?: rhs.orderIndex
+    return when {
+        lhsOrder != rhsOrder -> lhsOrder.compareTo(rhsOrder)
+        lhs.createdAt != rhs.createdAt -> lhs.createdAt.compareTo(rhs.createdAt)
+        else -> lhs.id.compareTo(rhs.id)
+    }
+}
+
+private fun isCanonicalTimelineMessage(message: ChatMessage): Boolean {
+    val normalizedId = normalizedIdentifier(message.id) ?: return false
+    val normalizedItemId = normalizedIdentifier(message.itemId) ?: return false
+    return normalizedId == normalizedItemId
+}
+
+private fun mergeRenderedTimelineMessages(
+    canonicalMessages: List<ChatMessage>,
+    overlayMessages: List<ChatMessage>,
+): List<ChatMessage> {
+    val canonicalIds = canonicalMessages.mapTo(mutableSetOf(), ChatMessage::id)
+    return (canonicalMessages + overlayMessages.filterNot { it.id in canonicalIds })
+        .sortedWith(Comparator(::compareRenderedTimelineMessages))
+}
+
+private fun CodeRoverRepository.synchronizeThreadTimelineState(
+    threadId: String,
+    canonicalMessages: List<ChatMessage>,
+    preservingOverlayMessages: List<ChatMessage>? = null,
+): List<ChatMessage> {
+    val overlayMessages = preservingOverlayMessages
+        ?: state.value.messagesByThread[threadId].orEmpty().filterNot(::isCanonicalTimelineMessage)
+    val nextState = ThreadTimelineState(canonicalMessages)
+    threadTimelineStateByThread[threadId] = nextState
+    return mergeRenderedTimelineMessages(nextState.renderedMessages(), overlayMessages)
+}
+
+private fun CodeRoverRepository.upsertThreadTimelineMessage(message: ChatMessage): List<ChatMessage> {
+    val threadId = message.threadId
+    val overlayMessages = state.value.messagesByThread[threadId].orEmpty().filterNot(::isCanonicalTimelineMessage)
+    val timelineState = threadTimelineStateByThread[threadId]
+        ?: ThreadTimelineState(
+            state.value.messagesByThread[threadId].orEmpty().filter(::isCanonicalTimelineMessage),
+        )
+    timelineState.upsert(message)
+    threadTimelineStateByThread[threadId] = timelineState
+    return mergeRenderedTimelineMessages(timelineState.renderedMessages(), overlayMessages)
+}
+
+private fun CodeRoverRepository.mergeCanonicalHistoryIntoTimelineState(
+    threadId: String,
+    historyMessages: List<ChatMessage>,
+    activeThreadIds: Set<String>,
+    runningThreadIds: Set<String>,
+): List<ChatMessage> {
+    val overlayMessages = state.value.messagesByThread[threadId].orEmpty().filterNot(::isCanonicalTimelineMessage)
+    val timelineState = threadTimelineStateByThread[threadId]
+        ?: ThreadTimelineState(
+            state.value.messagesByThread[threadId].orEmpty().filter(::isCanonicalTimelineMessage),
+        )
+    historyMessages.forEach { message ->
+        val reconciled = timelineState.message(message.id)?.let { existing ->
+            reconcileExistingTimelineMessage(
+                localMessage = existing,
+                serverMessage = message,
+                activeThreadIds = activeThreadIds,
+                runningThreadIds = runningThreadIds,
+            )
+        } ?: message
+        timelineState.upsert(reconciled)
+    }
+    threadTimelineStateByThread[threadId] = timelineState
+    return mergeRenderedTimelineMessages(timelineState.renderedMessages(), overlayMessages)
+}
+
+private fun reconcileExistingTimelineMessage(
+    localMessage: ChatMessage,
+    serverMessage: ChatMessage,
+    activeThreadIds: Set<String>,
+    runningThreadIds: Set<String>,
+): ChatMessage {
+    val threadIsActive = localMessage.threadId in activeThreadIds || localMessage.threadId in runningThreadIds
+    val preservesRunningPresentation = threadIsActive &&
+        (localMessage.turnId == null || serverMessage.turnId == null || localMessage.turnId == serverMessage.turnId)
+
+    val mergedText = when {
+        serverMessage.text.isBlank() -> localMessage.text
+        preservesRunningPresentation && localMessage.isStreaming -> {
+            if (serverMessage.text.length >= localMessage.text.length) serverMessage.text else localMessage.text
+        }
+        else -> serverMessage.text
+    }
+
+    return localMessage.copy(
+        role = if (localMessage.role == MessageRole.ASSISTANT || serverMessage.role != MessageRole.SYSTEM) serverMessage.role else localMessage.role,
+        kind = if (localMessage.kind == MessageKind.CHAT) serverMessage.kind else localMessage.kind,
+        text = mergedText,
+        turnId = localMessage.turnId ?: serverMessage.turnId,
+        itemId = localMessage.itemId ?: serverMessage.itemId,
+        isStreaming = if (preservesRunningPresentation) {
+            localMessage.isStreaming || serverMessage.isStreaming || localMessage.threadId in runningThreadIds
+        } else {
+            false
+        },
+        attachments = if (localMessage.attachments.isEmpty()) serverMessage.attachments else localMessage.attachments,
+        fileChanges = if (localMessage.fileChanges.isEmpty()) serverMessage.fileChanges else localMessage.fileChanges,
+        commandState = localMessage.commandState ?: serverMessage.commandState,
+        planState = localMessage.planState ?: serverMessage.planState,
+        structuredUserInputRequest = localMessage.structuredUserInputRequest ?: serverMessage.structuredUserInputRequest,
+        providerItemId = localMessage.providerItemId ?: serverMessage.providerItemId,
+        timelineOrdinal = localMessage.timelineOrdinal ?: serverMessage.timelineOrdinal,
+        timelineStatus = localMessage.timelineStatus ?: serverMessage.timelineStatus,
+        orderIndex = localMessage.timelineOrdinal ?: serverMessage.timelineOrdinal ?: localMessage.orderIndex,
     )
 }
 
@@ -5051,6 +5445,22 @@ internal fun AppState.resolveRealtimeThreadId(payload: JsonObject?): String? {
     }
 
     return threads.singleOrNull()?.id
+}
+
+internal fun AppState.selectedCodexThreadIdForTailSync(): String? {
+    if (connectionPhase != ConnectionPhase.CONNECTED) {
+        return null
+    }
+    val selectedId = selectedThreadId ?: return null
+    val selectedThread = threads.firstOrNull { it.id == selectedId } ?: return null
+    return if (
+        threadHasActiveOrRunningTurn(selectedId) ||
+        selectedThread.provider.equals("codex", ignoreCase = true)
+    ) {
+        selectedId
+    } else {
+        null
+    }
 }
 
 internal fun List<ChatMessage>.hasOptimisticLocalUserTailMessage(turnId: String): Boolean {

@@ -55,6 +55,27 @@ class IncomingEventResolversTest {
     }
 
     @Test
+    fun resolveTimelineItemIdPrefersCanonicalKeys() {
+        val payload = JsonObject(
+            mapOf(
+                "timelineItemId" to JsonPrimitive("timeline-item-1"),
+                "event" to JsonObject(
+                    mapOf(
+                        "item" to JsonObject(
+                            mapOf(
+                                "timeline_item_id" to JsonPrimitive("timeline-item-2"),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+        assertEquals("timeline-item-1", payload.resolveTimelineItemId())
+        assertEquals("timeline-item-1", payload.resolveItemId())
+    }
+
+    @Test
     fun resolvePreviousItemIdReadsEnvelopeAndNestedItemShapes() {
         val payload = JsonObject(
             mapOf(
