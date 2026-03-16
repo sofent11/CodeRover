@@ -25,7 +25,7 @@ interface RolloutStat {
   mtimeMs?: number;
 }
 
-interface RolloutScanFsModule {
+export interface RolloutScanFsModule {
   existsSync(filePath: string): boolean;
   readdirSync(filePath: string, options: { withFileTypes: true }): RolloutDirectoryEntry[];
   statSync(filePath: string): RolloutStat;

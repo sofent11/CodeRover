@@ -227,6 +227,7 @@ data class RuntimeCapabilities(
     val turnSteer: Boolean = true,
     val reasoningOptions: Boolean = true,
     val desktopRefresh: Boolean = true,
+    val desktopRestart: Boolean = true,
 ) {
     companion object {
         val CODEX_DEFAULT = RuntimeCapabilities()
@@ -242,6 +243,7 @@ data class RuntimeCapabilities(
                 turnSteer = json.bool("turnSteer") ?: CODEX_DEFAULT.turnSteer,
                 reasoningOptions = json.bool("reasoningOptions") ?: CODEX_DEFAULT.reasoningOptions,
                 desktopRefresh = json.bool("desktopRefresh") ?: CODEX_DEFAULT.desktopRefresh,
+                desktopRestart = json.bool("desktopRestart") ?: CODEX_DEFAULT.desktopRestart,
             )
         }
     }

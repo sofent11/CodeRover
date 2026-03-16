@@ -11,6 +11,7 @@ import { rememberActiveThread } from "./session-state";
 import { handleGitRequest } from "./git-handler";
 import { handleThreadContextRequest } from "./thread-context-handler";
 import { handleWorkspaceRequest } from "./workspace-handler";
+import { handleDesktopRequest } from "./desktop-handler";
 import { loadOrCreateBridgeDeviceState } from "./secure-device-state";
 import { debugLog } from "./debug-log";
 import { createRuntimeManager } from "./runtime-manager";
@@ -38,7 +39,7 @@ interface BridgeConfigShape {
 }
 
 export function startBridge(): void {
-  const config = readBridgeConfig() as BridgeConfigShape;
+    const config = readBridgeConfig() as BridgeConfigShape;
   const deviceState = loadOrCreateBridgeDeviceState();
   const bridgeId = deviceState.bridgeId || deviceState.macDeviceId;
   const desktopRefresher = new CodeRoverDesktopRefresher({
@@ -120,11 +121,14 @@ export function startBridge(): void {
     localServer.stop();
   }));
 
-  function handleApplicationMessage(rawMessage: string): void {
-    logBridgeFlow("phone->bridge", rawMessage);
-    if (handleThreadContextRequest(rawMessage, sendApplicationResponse)) {
-      return;
-    }
+    function handleApplicationMessage(rawMessage: string): void {
+      logBridgeFlow("phone->bridge", rawMessage);
+      if (handleDesktopRequest(rawMessage, sendApplicationResponse, { env: process.env })) {
+        return;
+      }
+      if (handleThreadContextRequest(rawMessage, sendApplicationResponse)) {
+        return;
+      }
     if (handleWorkspaceRequest(rawMessage, sendApplicationResponse)) {
       return;
     }

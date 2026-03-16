@@ -57,6 +57,7 @@ import com.coderover.android.data.model.string
 import com.coderover.android.data.model.stringOrNull
 import com.coderover.android.data.model.timestamp
 import com.coderover.android.data.model.ChatMessage
+import com.coderover.android.data.network.CodeRoverServiceException
 import com.coderover.android.data.network.SecureBridgeClient
 import com.coderover.android.data.network.SecureCrypto
 import com.coderover.android.data.network.TransportCandidatePrioritizer
@@ -67,6 +68,7 @@ import java.util.UUID
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -1337,6 +1339,51 @@ class CodeRoverRepository(context: Context) {
             }
         } finally {
             updateState { copy(runningGitActionByThread = runningGitActionByThread - threadId) }
+        }
+    }
+
+    suspend fun restartDesktopApp(providerId: String, threadId: String) {
+        val normalizedProviderId = normalizeProviderId(providerId)
+        val normalizedThreadId = threadId.trim()
+        if (normalizedThreadId.isEmpty()) {
+            val message = "This chat does not have a valid thread id yet."
+            updateError(message)
+            throw IllegalArgumentException(message)
+        }
+
+        val client = try {
+            activeClient()
+        } catch (error: IllegalStateException) {
+            val message = "Not connected to your Mac."
+            updateError(message)
+            throw IllegalStateException(message, error)
+        }
+
+        val params = buildJsonObject(
+            "provider" to JsonPrimitive(normalizedProviderId),
+            "threadId" to JsonPrimitive(normalizedThreadId),
+        )
+
+        try {
+            val response = client.sendRequest("desktop/restartApp", params)?.jsonObjectOrNull()
+                ?: throw IllegalStateException("The Mac bridge did not return a valid response.")
+            if (response.bool("success") != true) {
+                throw IllegalStateException("The Mac bridge did not return a valid response.")
+            }
+        } catch (error: CodeRoverServiceException) {
+            val message = desktopRestartErrorMessage(
+                errorCode = error.data?.string("errorCode"),
+                fallback = error.message,
+            )
+            updateError(message)
+            throw IllegalStateException(message, error)
+        } catch (error: TimeoutCancellationException) {
+            val message = "The Mac bridge did not respond in time. Reconnect and try again."
+            updateError(message)
+            throw IllegalStateException(message, error)
+        } catch (error: IllegalStateException) {
+            updateError(error.message ?: "Could not restart the desktop app on your Mac.")
+            throw error
         }
     }
 
@@ -3996,6 +4043,16 @@ class CodeRoverRepository(context: Context) {
 
     private fun updateError(message: String) {
         updateState { copy(lastErrorMessage = message) }
+    }
+
+    private fun desktopRestartErrorMessage(errorCode: String?, fallback: String?): String {
+        return when (errorCode) {
+            "missing_thread_id" -> "This chat does not have a valid thread id yet."
+            "unsupported_platform" -> "Desktop restart works only when the bridge is running on macOS."
+            "unsupported_provider" -> fallback ?: "This provider does not support desktop restart."
+            "restart_failed", "restart_timeout" -> fallback ?: "Could not restart the Codex desktop app on your Mac."
+            else -> fallback ?: "Could not restart the desktop app on your Mac."
+        }
     }
 
     private fun rejectScan(code: String, message: String, resetScanLock: (() -> Unit)?) {

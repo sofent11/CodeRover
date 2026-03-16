@@ -22,6 +22,9 @@ struct TurnView: View {
     @State private var alertApprovalRequest: CodeRoverApprovalRequest?
     @State private var reconnectCoordinator = ContentViewModel()
     @State private var isReconnectInFlight = false
+    @State private var isShowingDesktopRestartConfirmation = false
+    @State private var isRestartingDesktopApp = false
+    @State private var desktopRestartErrorMessage: String?
 
     // ─── ENTRY POINT ─────────────────────────────────────────────
     var body: some View {
@@ -29,6 +32,9 @@ struct TurnView: View {
         let gitWorkingDirectory = thread.gitWorkingDirectory
         let isThreadRunning = activeTurnID != nil || coderover.runningThreadIDs.contains(thread.id)
         let showsGitControls = coderover.isConnected && gitWorkingDirectory != nil
+        let threadCapabilities = thread.capabilities ?? coderover.currentRuntimeProvider().supports
+        let isCodexThread = coderover.runtimeProviderID(for: thread.provider) == "codex"
+        let showsDesktopRestart = coderover.isConnected && isCodexThread && threadCapabilities.desktopRestart
         let latestTurnTerminalState = coderover.latestTurnTerminalState(for: thread.id)
         let stoppedTurnIDs = coderover.stoppedTurnIDs(for: thread.id)
         let rawMessages = coderover.messages(for: thread.id)
@@ -145,6 +151,8 @@ struct TurnView: View {
                 displayTitle: thread.displayTitle,
                 providerTitle: thread.providerBadgeTitle,
                 navigationContext: threadNavigationContext,
+                showsDesktopRestart: showsDesktopRestart,
+                isRestartingDesktopApp: isRestartingDesktopApp,
                 repoDiffTotals: viewModel.gitRepoSync?.repoDiffTotals,
                 isLoadingRepoDiff: isLoadingRepositoryDiff,
                 showsGitActions: showsGitControls,
@@ -156,6 +164,9 @@ struct TurnView: View {
                 showsDiscardRuntimeChangesAndSync: viewModel.shouldShowDiscardRuntimeChangesAndSync,
                 gitSyncState: viewModel.gitSyncState,
                 contextWindowUsage: coderover.contextWindowUsageByThread[thread.id],
+                onTapDesktopRestart: showsDesktopRestart ? {
+                    isShowingDesktopRestartConfirmation = true
+                } : nil,
                 onCompactContext: {
                     Task {
                         try? await coderover.compactContext(threadId: thread.id)
@@ -298,6 +309,8 @@ struct TurnView: View {
             alertApprovalRequest: $alertApprovalRequest,
             isShowingNothingToCommitAlert: isShowingNothingToCommitAlertBinding,
             gitSyncAlert: gitSyncAlertBinding,
+            isShowingDesktopRestartConfirmation: $isShowingDesktopRestartConfirmation,
+            desktopRestartErrorMessage: $desktopRestartErrorMessage,
             onDeclineApproval: {
                 viewModel.decline(coderover: coderover)
             },
@@ -312,8 +325,27 @@ struct TurnView: View {
                     threadID: thread.id,
                     activeTurnID: coderover.activeTurnID(for: thread.id)
                 )
+            },
+            onConfirmDesktopRestart: {
+                restartDesktopApp()
             }
         )
+    }
+
+    private func restartDesktopApp() {
+        guard !isRestartingDesktopApp else { return }
+        isRestartingDesktopApp = true
+
+        Task { @MainActor in
+            defer { isRestartingDesktopApp = false }
+
+            do {
+                let service = DesktopAppRestartService(coderover: coderover)
+                try await service.restartApp(provider: thread.provider, threadId: thread.id)
+            } catch {
+                desktopRestartErrorMessage = error.localizedDescription
+            }
+        }
     }
 
     // MARK: - Bindings

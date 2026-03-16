@@ -122,4 +122,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun compactThreadContext(threadId: String) = repository.compactThreadContext(threadId)
 
     suspend fun performGitAction(cwd: String, action: com.coderover.android.data.model.TurnGitActionKind, threadId: String) = repository.performGitAction(cwd, action, threadId)
+
+    suspend fun restartDesktopApp(providerId: String, threadId: String) = repository.restartDesktopApp(providerId, threadId)
 }

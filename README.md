@@ -155,6 +155,8 @@ All optional. Sensible defaults are provided.
 | `CODEROVER_REFRESH_COMMAND` | — | Custom shell command to run instead of the built-in AppleScript refresh |
 | `CODEROVER_BUNDLE_ID` | `com.sofent.CodeRover` | macOS bundle ID of the CodeRover app |
 | `CODEROVER_HOME` | `~/.coderover` | CodeRover data directory (used here for `sessions/` rollout files) |
+| `CODEX_DESKTOP_BUNDLE_ID` | `com.openai.codex` | Optional macOS bundle ID override for the Codex desktop app restart action |
+| `CODEX_DESKTOP_APP_PATH` | `/Applications/Codex.app` | Optional macOS app-path override for the Codex desktop app restart action |
 
 ```sh
 # Enable desktop refresh explicitly
@@ -246,6 +248,8 @@ CODEROVER_REFRESH_ENABLED=true coderover up
 ```
 
 This triggers a debounced deep-link bounce (`coderover://settings` → `coderover://threads/<id>`) that forces the desktop app to remount the current thread without interrupting any running tasks. While a turn is running, CodeRover also watches the persisted rollout for that thread and issues occasional throttled refreshes so long responses become visible on Mac without a full app relaunch. If the local desktop path is unavailable, the bridge self-disables desktop refresh for the rest of that run instead of retrying noisily forever.
+
+For Codex threads, the iPhone turn view also exposes a manual restart entry that calls `desktop/restartApp`. On macOS the bridge force-restarts `Codex.app`, waits briefly for the target thread rollout to materialize if needed, and then deep-links back into that thread. The protocol is generic so other providers can adopt it later, but this build only surfaces the UI for Codex and returns an explicit unsupported error for other providers.
 
 ## Connection Resilience
 

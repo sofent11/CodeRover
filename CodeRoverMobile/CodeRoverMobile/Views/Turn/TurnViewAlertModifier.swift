@@ -10,10 +10,13 @@ private struct TurnViewAlertModifier: ViewModifier {
     @Binding var alertApprovalRequest: CodeRoverApprovalRequest?
     @Binding var isShowingNothingToCommitAlert: Bool
     @Binding var gitSyncAlert: TurnGitSyncAlert?
+    @Binding var isShowingDesktopRestartConfirmation: Bool
+    @Binding var desktopRestartErrorMessage: String?
 
     let onDeclineApproval: () -> Void
     let onApproveApproval: () -> Void
     let onConfirmGitSyncAction: (TurnGitSyncAlertAction) -> Void
+    let onConfirmDesktopRestart: () -> Void
 
     func body(content: Content) -> some View {
         content
@@ -61,6 +64,25 @@ private struct TurnViewAlertModifier: ViewModifier {
             } message: { alert in
                 Text(alert.message)
             }
+            .alert("Restart Codex Desktop App", isPresented: $isShowingDesktopRestartConfirmation) {
+                Button("Cancel", role: .cancel) {}
+                Button("Restart") {
+                    onConfirmDesktopRestart()
+                }
+            } message: {
+                Text("Force close and reopen the Codex desktop app on your Mac, then reopen this conversation there.")
+            }
+            .alert(
+                "Desktop Restart Failed",
+                isPresented: desktopRestartErrorIsPresented,
+                presenting: desktopRestartErrorMessage
+            ) { _ in
+                Button("OK", role: .cancel) {
+                    desktopRestartErrorMessage = nil
+                }
+            } message: { message in
+                Text(message)
+            }
     }
 
     private var approvalAlertIsPresented: Binding<Bool> {
@@ -80,6 +102,17 @@ private struct TurnViewAlertModifier: ViewModifier {
             set: { isPresented in
                 if !isPresented {
                     gitSyncAlert = nil
+                }
+            }
+        )
+    }
+
+    private var desktopRestartErrorIsPresented: Binding<Bool> {
+        Binding(
+            get: { desktopRestartErrorMessage != nil },
+            set: { isPresented in
+                if !isPresented {
+                    desktopRestartErrorMessage = nil
                 }
             }
         )
@@ -111,18 +144,24 @@ extension View {
         alertApprovalRequest: Binding<CodeRoverApprovalRequest?>,
         isShowingNothingToCommitAlert: Binding<Bool>,
         gitSyncAlert: Binding<TurnGitSyncAlert?>,
+        isShowingDesktopRestartConfirmation: Binding<Bool>,
+        desktopRestartErrorMessage: Binding<String?>,
         onDeclineApproval: @escaping () -> Void,
         onApproveApproval: @escaping () -> Void,
-        onConfirmGitSyncAction: @escaping (TurnGitSyncAlertAction) -> Void
+        onConfirmGitSyncAction: @escaping (TurnGitSyncAlertAction) -> Void,
+        onConfirmDesktopRestart: @escaping () -> Void
     ) -> some View {
         modifier(
             TurnViewAlertModifier(
                 alertApprovalRequest: alertApprovalRequest,
                 isShowingNothingToCommitAlert: isShowingNothingToCommitAlert,
                 gitSyncAlert: gitSyncAlert,
+                isShowingDesktopRestartConfirmation: isShowingDesktopRestartConfirmation,
+                desktopRestartErrorMessage: desktopRestartErrorMessage,
                 onDeclineApproval: onDeclineApproval,
                 onApproveApproval: onApproveApproval,
-                onConfirmGitSyncAction: onConfirmGitSyncAction
+                onConfirmGitSyncAction: onConfirmGitSyncAction,
+                onConfirmDesktopRestart: onConfirmDesktopRestart
             )
         )
     }

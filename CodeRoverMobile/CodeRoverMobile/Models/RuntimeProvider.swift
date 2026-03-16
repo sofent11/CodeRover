@@ -13,6 +13,7 @@ struct RuntimeCapabilities: Codable, Hashable, Sendable {
     let turnSteer: Bool
     let reasoningOptions: Bool
     let desktopRefresh: Bool
+    let desktopRestart: Bool
 
     static let codexDefault = RuntimeCapabilities(
         planMode: true,
@@ -20,7 +21,8 @@ struct RuntimeCapabilities: Codable, Hashable, Sendable {
         inlineApproval: true,
         turnSteer: true,
         reasoningOptions: true,
-        desktopRefresh: true
+        desktopRefresh: true,
+        desktopRestart: true
     )
 
     private enum CodingKeys: String, CodingKey {
@@ -30,6 +32,7 @@ struct RuntimeCapabilities: Codable, Hashable, Sendable {
         case turnSteer
         case reasoningOptions
         case desktopRefresh
+        case desktopRestart
     }
 }
 

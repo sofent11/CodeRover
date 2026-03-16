@@ -52,6 +52,7 @@ export interface RuntimeCapabilities extends Record<string, boolean> {
   turnSteer: boolean;
   reasoningOptions: boolean;
   desktopRefresh: boolean;
+  desktopRestart: boolean;
 }
 
 export interface RuntimeProviderShape {

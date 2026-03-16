@@ -1,5 +1,7 @@
 package com.coderover.android.ui.turn
 
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -40,17 +42,48 @@ import com.coderover.android.ui.theme.monoFamily
 
 @Composable
 internal fun TurnTopBarActions(
+    showsDesktopRestart: Boolean,
+    isRestartingDesktopApp: Boolean,
     gitRepoSyncResult: GitRepoSyncResult?,
     gitSyncState: String?,
     isRunningGitAction: Boolean,
     showsDiscardRuntimeChangesAndSync: Boolean,
     contextWindowUsage: ContextWindowUsage?,
     enabled: Boolean,
+    onTapDesktopRestart: () -> Unit,
     onShowRepoDiff: () -> Unit,
     onSelectGitAction: (TurnGitActionKind) -> Unit,
     onCompactContext: () -> Unit,
 ) {
     Row(verticalAlignment = Alignment.CenterVertically) {
+        if (showsDesktopRestart) {
+            Surface(
+                modifier = Modifier.padding(end = 10.dp),
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f),
+            ) {
+                IconButton(
+                    onClick = onTapDesktopRestart,
+                    enabled = !isRestartingDesktopApp,
+                ) {
+                    if (isRestartingDesktopApp) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(20.dp),
+                            strokeWidth = 2.dp,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                    } else {
+                        Icon(
+                            imageVector = Icons.Outlined.Refresh,
+                            contentDescription = "Restart Codex desktop app",
+                            tint = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.size(22.dp),
+                        )
+                    }
+                }
+            }
+        }
+
         contextWindowUsage?.let { usage ->
             ContextWindowProgressRing(
                 usage = usage,

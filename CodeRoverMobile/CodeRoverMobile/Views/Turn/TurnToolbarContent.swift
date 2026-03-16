@@ -15,6 +15,8 @@ struct TurnToolbarContent: ToolbarContent {
     let displayTitle: String
     let providerTitle: String?
     let navigationContext: TurnThreadNavigationContext?
+    let showsDesktopRestart: Bool
+    let isRestartingDesktopApp: Bool
     let repoDiffTotals: GitDiffTotals?
     let isLoadingRepoDiff: Bool
     let showsGitActions: Bool
@@ -23,6 +25,7 @@ struct TurnToolbarContent: ToolbarContent {
     let showsDiscardRuntimeChangesAndSync: Bool
     let gitSyncState: String?
     let contextWindowUsage: ContextWindowUsage?
+    var onTapDesktopRestart: (() -> Void)?
     var onCompactContext: (() -> Void)?
     var onTapRepoDiff: (() -> Void)?
     let onGitAction: (TurnGitActionKind) -> Void
@@ -68,6 +71,18 @@ struct TurnToolbarContent: ToolbarContent {
 
         ToolbarItem(placement: .topBarTrailing) {
             HStack(spacing: 10) {
+                if showsDesktopRestart, let onTapDesktopRestart {
+                    Button {
+                        HapticFeedback.shared.triggerImpactFeedback(style: .light)
+                        onTapDesktopRestart()
+                    } label: {
+                        TurnDesktopRestartToolbarLabel(isLoading: isRestartingDesktopApp)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isRestartingDesktopApp)
+                    .accessibilityLabel("Restart Codex desktop app")
+                }
+
                 if let contextWindowUsage {
                     ContextWindowProgressRing(
                         usage: contextWindowUsage,
@@ -94,6 +109,27 @@ struct TurnToolbarContent: ToolbarContent {
                 }
             }
         }
+    }
+}
+
+private struct TurnDesktopRestartToolbarLabel: View {
+    let isLoading: Bool
+
+    var body: some View {
+        Group {
+            if isLoading {
+                ProgressView()
+                    .controlSize(.small)
+                    .frame(width: 24, height: 24)
+            } else {
+                Image(systemName: "arrow.clockwise")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .frame(width: 24, height: 24)
+            }
+        }
+        .contentShape(Circle())
+        .adaptiveToolbarItem(in: Circle())
     }
 }
 

@@ -26,12 +26,14 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalConfiguration
@@ -142,6 +144,9 @@ private fun CodeRoverAppShell(
     var repositoryDiffBody by remember(state.selectedThreadId) { mutableStateOf<String?>(null) }
     var repositoryPathToShowInSheet by remember { mutableStateOf<String?>(null) }
     var isSidebarSearchActive by rememberSaveable { mutableStateOf(false) }
+    var isShowingDesktopRestartConfirmation by rememberSaveable(state.selectedThreadId) { mutableStateOf(false) }
+    var isRestartingDesktopApp by remember(state.selectedThreadId) { mutableStateOf(false) }
+    var desktopRestartErrorMessage by rememberSaveable(state.selectedThreadId) { mutableStateOf<String?>(null) }
 
     DisposableEffect(
         lifecycleOwner,
@@ -372,6 +377,10 @@ private fun CodeRoverAppShell(
                         actions = {
                             if (shellContent == AppShellContent.THREAD) {
                                 TurnTopBarActions(
+                                    showsDesktopRestart = state.isConnected &&
+                                        state.activeRuntimeProviderId == "codex" &&
+                                        state.activeRuntimeCapabilities.desktopRestart,
+                                    isRestartingDesktopApp = isRestartingDesktopApp,
                                     gitRepoSyncResult = state.gitRepoSyncResult,
                                     gitSyncState = state.gitSyncState,
                                     isRunningGitAction = state.isRunningGitAction,
@@ -381,6 +390,10 @@ private fun CodeRoverAppShell(
                                         selectedThread?.cwd != null &&
                                         !isSelectedThreadRunning &&
                                         !state.isRunningGitAction,
+                                    onTapDesktopRestart = {
+                                        haptic.triggerImpactFeedback()
+                                        isShowingDesktopRestartConfirmation = true
+                                    },
                                     onShowRepoDiff = {
                                         val cwd = selectedThread?.cwd ?: return@TurnTopBarActions
                                         coroutineScope.launch {
@@ -494,12 +507,63 @@ private fun CodeRoverAppShell(
                                     contentViewModel.startPairingFlow(state.connectionPhase)
                                 },
                             )
-                        }
-                    }
+            }
+        }
 
-                    repositoryPathToShowInSheet?.let { path ->
-                        TurnThreadPathSheet(
-                            path = path,
+        if (shellContent == AppShellContent.THREAD && isShowingDesktopRestartConfirmation && selectedThread != null) {
+            AlertDialog(
+                onDismissRequest = { isShowingDesktopRestartConfirmation = false },
+                title = { Text("Restart Codex Desktop App") },
+                text = {
+                    Text("Force close and reopen the Codex desktop app on your Mac, then reopen this conversation there.")
+                },
+                dismissButton = {
+                    TextButton(onClick = { isShowingDesktopRestartConfirmation = false }) {
+                        Text("Cancel")
+                    }
+                },
+                confirmButton = {
+                    TextButton(
+                        enabled = !isRestartingDesktopApp,
+                        onClick = {
+                            val thread = selectedThread ?: return@TextButton
+                            isShowingDesktopRestartConfirmation = false
+                            coroutineScope.launch {
+                                isRestartingDesktopApp = true
+                                try {
+                                    viewModel.restartDesktopApp(thread.provider, thread.id)
+                                } catch (error: IllegalStateException) {
+                                    desktopRestartErrorMessage = error.message ?: "Could not restart the desktop app on your Mac."
+                                } catch (error: IllegalArgumentException) {
+                                    desktopRestartErrorMessage = error.message ?: "Could not restart the desktop app on your Mac."
+                                } finally {
+                                    isRestartingDesktopApp = false
+                                }
+                            }
+                        },
+                    ) {
+                        Text("Restart")
+                    }
+                },
+            )
+        }
+
+        desktopRestartErrorMessage?.let { message ->
+            AlertDialog(
+                onDismissRequest = { desktopRestartErrorMessage = null },
+                title = { Text("Desktop Restart Failed") },
+                text = { Text(message) },
+                confirmButton = {
+                    TextButton(onClick = { desktopRestartErrorMessage = null }) {
+                        Text("OK")
+                    }
+                },
+            )
+        }
+
+        repositoryPathToShowInSheet?.let { path ->
+            TurnThreadPathSheet(
+                path = path,
                             onDismiss = { repositoryPathToShowInSheet = null }
                         )
                     }
