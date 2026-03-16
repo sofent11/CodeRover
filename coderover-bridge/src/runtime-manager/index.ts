@@ -386,7 +386,7 @@ export function createRuntimeManager({
             const result = await readThread(stripProviderField(params));
             const threadId = normalizeOptionalString(params.threadId || params.thread_id);
             if (threadId) {
-              observeCodexThread(threadId, { immediate: false, reason: "thread-read" });
+              observeCodexThread(threadId, { immediate: true, reason: "thread-read" });
             }
             return result;
           });
@@ -1277,7 +1277,18 @@ export function createRuntimeManager({
           }
         }
       } else {
-        provisionalRecords.push(record);
+        // Next record is provisional. If we matched a previous provisional record,
+        // update it in place to avoid duplication.
+        if (previousRecord && !readHistoryRecordProviderItemId(previousRecord)) {
+          const pIndex = provisionalRecords.indexOf(previousRecord);
+          if (pIndex >= 0) {
+            provisionalRecords[pIndex] = record;
+          } else {
+            provisionalRecords.push(record);
+          }
+        } else {
+          provisionalRecords.push(record);
+        }
       }
       syncCanonicalFieldsOnRecord(record);
     });

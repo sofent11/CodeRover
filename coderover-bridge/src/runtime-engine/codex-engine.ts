@@ -271,7 +271,7 @@ export function createCodexRuntimeEngine({
     async resumeThread(threadMeta, params = {}) {
       await ensureSession(threadMeta, params);
       const result = await codexAdapter.resumeThread(stripProviderField(params));
-      observeCodexThread(threadMeta.id, { immediate: false, reason: "thread-resume" });
+      observeCodexThread(threadMeta.id, { immediate: true, reason: "thread-resume" });
       return sanitizeCodexThreadResult(result);
     },
     shutdown() {},
