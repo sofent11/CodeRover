@@ -132,7 +132,6 @@ class CodeRoverRepository(context: Context) {
     private val orderCounter = AtomicInteger(0)
     private val connectionEpoch = AtomicLong(0)
     private val isConnectInFlight = AtomicBoolean(false)
-    private val streamingMessageIdsByKey = mutableMapOf<String, String>()
     internal val threadTimelineStateByThread = mutableMapOf<String, ThreadTimelineState>()
     private val threadHistoryRefreshInFlight = mutableSetOf<String>()
     private val threadHistoryRefreshPending = mutableSetOf<String>()
@@ -3095,73 +3094,6 @@ class CodeRoverRepository(context: Context) {
         }
     }
 
-    private fun upsertStreamingMessage(
-        threadId: String,
-        role: MessageRole,
-        kind: MessageKind,
-        textDelta: String,
-        turnId: String?,
-        itemId: String?,
-        completed: Boolean = false,
-        fileChanges: List<FileChangeEntry> = emptyList(),
-        commandState: CommandState? = null,
-        planState: PlanState? = null,
-        replaceText: Boolean = false,
-    ) {
-        val normalizedTurnId = turnId?.trim()?.takeIf(String::isNotEmpty)
-        if (normalizedTurnId == null && !state.value.threadHasActiveOrRunningTurn(threadId)) {
-            return
-        }
-        if (textDelta.isBlank() && !completed) {
-            return
-        }
-        val streamKey = listOfNotNull(threadId, normalizedTurnId, itemId, role.name, kind.name).joinToString(":")
-        updateState {
-            val existingMessages = messagesByThread[threadId].orEmpty().toMutableList()
-            val existingMessageId = streamingMessageIdsByKey[streamKey]
-            val existingIndex = existingMessages.indexOfLast { it.id == existingMessageId }
-            if (existingIndex >= 0) {
-                val current = existingMessages[existingIndex]
-                existingMessages[existingIndex] = current.copy(
-                    text = when {
-                        completed && textDelta.isBlank() -> current.text
-                        replaceText -> textDelta
-                        else -> current.text + textDelta
-                    },
-                    isStreaming = !completed,
-                    turnId = turnId ?: current.turnId,
-                    itemId = itemId ?: current.itemId,
-                    fileChanges = fileChanges.ifEmpty { current.fileChanges },
-                    commandState = mergeCommandState(current.commandState, commandState),
-                    planState = planState ?: current.planState,
-                )
-            } else {
-                val message = ChatMessage(
-                    threadId = threadId,
-                    role = role,
-                    kind = kind,
-                    text = textDelta,
-                    turnId = normalizedTurnId,
-                    itemId = itemId,
-                    isStreaming = !completed,
-                    orderIndex = nextOrderIndex(),
-                    fileChanges = fileChanges,
-                    commandState = commandState,
-                    planState = planState,
-                )
-                streamingMessageIdsByKey[streamKey] = message.id
-                existingMessages += message
-            }
-            copy(
-                messagesByThread = messagesByThread + (threadId to existingMessages),
-                threads = threads.refreshThreadSummaryFromMessages(threadId, existingMessages),
-            )
-        }
-        if (completed) {
-            streamingMessageIdsByKey.remove(streamKey)
-        }
-    }
-
     private fun buildClient(epoch: Long): SecureBridgeClient {
         return SecureBridgeClient(
             onNotification = { method, params ->
@@ -3322,30 +3254,6 @@ class CodeRoverRepository(context: Context) {
                 handleCanonicalTimelineItemEvent(params, CanonicalTimelineEventKind.COMPLETED)
             }
 
-            "turn/started" -> {
-                val threadId = state.value.resolveRealtimeThreadId(params) ?: return
-                val turnId = params.resolveTurnId()
-                markRealtimeTurnStarted(threadId = threadId, turnId = turnId)
-            }
-
-            "turn/plan/updated" -> {
-                val resolvedParams = params ?: return
-                val threadId = state.value.resolveRealtimeThreadId(resolvedParams) ?: return
-                val turnId = resolvedParams.resolveTurnId()
-                val planState = decodePlanState(resolvedParams)
-                upsertStreamingMessage(
-                    threadId = threadId,
-                    role = MessageRole.SYSTEM,
-                    kind = MessageKind.PLAN,
-                    textDelta = resolvedParams.deltaText().ifBlank {
-                        decodePlanText(resolvedParams, planState)
-                    },
-                    turnId = turnId,
-                    itemId = resolvedParams.resolveItemId(),
-                    planState = planState,
-                )
-            }
-
             "serverRequest/resolved" -> {
                 val resolvedParams = params ?: return
                 val requestId = resolvedParams["requestId"] ?: return
@@ -3355,292 +3263,7 @@ class CodeRoverRepository(context: Context) {
                 )
             }
 
-            "turn/completed" -> {
-                val resolvedParams = params ?: return
-                val threadId = state.value.resolveRealtimeThreadId(params) ?: return
-                val turnId = params.resolveTurnId()
-
-                val status = params.string("status") ?: params["turn"]?.jsonObjectOrNull()?.string("status")
-                val isFailed = status?.lowercase()?.contains("fail") == true || status?.lowercase()?.contains("error") == true || params.string("errorMessage") != null || params["turn"]?.jsonObjectOrNull()?.get("error") != null
-                val isStopped = status?.lowercase()?.contains("cancel") == true || status?.lowercase()?.contains("abort") == true || status?.lowercase()?.contains("interrupt") == true || status?.lowercase()?.contains("stop") == true
-                val terminalState = if (isFailed) ThreadRunBadgeState.FAILED else if (isStopped) null else ThreadRunBadgeState.READY
-
-                updateState {
-                    copy(
-                        runningThreadIds = runningThreadIds - threadId,
-                        activeTurnIdByThread = activeTurnIdByThread - threadId,
-                        pendingRealtimeSeededTurnIdByThread = pendingRealtimeSeededTurnIdByThread - threadId,
-                        readyThreadIds = if (terminalState == ThreadRunBadgeState.READY && selectedThreadId != threadId) readyThreadIds + threadId else readyThreadIds,
-                        failedThreadIds = if (terminalState == ThreadRunBadgeState.FAILED && selectedThreadId != threadId) failedThreadIds + threadId else failedThreadIds
-                    )
-                }
-                if (turnId != null) {
-                    upsertStreamingMessage(
-                        threadId = threadId,
-                        role = MessageRole.ASSISTANT,
-                        kind = MessageKind.CHAT,
-                        textDelta = "",
-                        turnId = turnId,
-                        itemId = resolvedParams.string("itemId"),
-                        completed = true,
-                    )
-                }
-                if (state.value.selectedThreadId == threadId) {
-                    scope.launch {
-                        runCatching {
-                            refreshThreadHistory(threadId, reason = "turn-completed")
-                        }.onFailure { failure ->
-                            Log.w(TAG, "post-completion tail refresh failed threadId=$threadId", failure)
-                        }
-                    }
-                }
-                checkAndSendNextQueuedDraft(threadId)
-            }
-
-            "item/agentMessage/delta",
-            "coderover/event/agent_message_content_delta",
-            "coderover/event/agent_message_delta" -> {
-                val resolvedParams = params ?: return
-                val threadId = state.value.resolveRealtimeThreadId(params) ?: return
-                val itemId = resolvedParams.string("itemId") ?: resolvedParams.string("id")
-                if (!handleRealtimeHistoryEvent(
-                    threadId = threadId,
-                    itemId = itemId,
-                    payload = resolvedParams,
-                )) {
-                    return
-                }
-                upsertStreamingMessage(
-                    threadId = threadId,
-                    role = MessageRole.ASSISTANT,
-                    kind = MessageKind.CHAT,
-                    textDelta = params.deltaText(),
-                    turnId = params.resolveTurnId(),
-                    itemId = itemId,
-                )
-            }
-
-            "item/reasoning/summaryTextDelta",
-            "item/reasoning/summaryPartAdded",
-            "item/reasoning/textDelta" -> {
-                val resolvedParams = params ?: return
-                val threadId = state.value.resolveRealtimeThreadId(params) ?: return
-                val itemId = resolvedParams.string("itemId") ?: resolvedParams.string("id")
-                if (!handleRealtimeHistoryEvent(
-                    threadId = threadId,
-                    itemId = itemId,
-                    payload = resolvedParams,
-                )) {
-                    return
-                }
-                upsertStreamingMessage(
-                    threadId = threadId,
-                    role = MessageRole.SYSTEM,
-                    kind = MessageKind.THINKING,
-                    textDelta = params.deltaText(),
-                    turnId = params.resolveTurnId(),
-                    itemId = itemId,
-                )
-            }
-
-            "item/plan/delta" -> {
-                val resolvedParams = params ?: return
-                val threadId = state.value.resolveRealtimeThreadId(resolvedParams) ?: return
-                val planState = decodePlanState(resolvedParams)
-                val itemId = resolvedParams.resolveItemId()
-                if (!handleRealtimeHistoryEvent(
-                    threadId = threadId,
-                    itemId = itemId,
-                    payload = resolvedParams,
-                )) {
-                    return
-                }
-                upsertStreamingMessage(
-                    threadId = threadId,
-                    role = MessageRole.SYSTEM,
-                    kind = MessageKind.PLAN,
-                    textDelta = resolvedParams.deltaText().ifBlank {
-                        decodePlanText(resolvedParams, planState)
-                    },
-                    turnId = resolvedParams.resolveTurnId(),
-                    itemId = itemId,
-                    planState = planState,
-                )
-            }
-
-            "item/fileChange/outputDelta",
-            "turn/diff/updated",
-            "coderover/event/turn_diff_updated",
-            "coderover/event/turn_diff" -> {
-                val resolvedParams = params ?: return
-                val threadId = state.value.resolveRealtimeThreadId(params) ?: return
-                val fileChanges = decodeFileChangeEntries(resolvedParams)
-                val itemId = resolvedParams.resolveItemId()
-                if (!handleRealtimeHistoryEvent(
-                    threadId = threadId,
-                    itemId = itemId,
-                    payload = resolvedParams,
-                )) {
-                    return
-                }
-                upsertStreamingMessage(
-                    threadId = threadId,
-                    role = MessageRole.SYSTEM,
-                    kind = MessageKind.FILE_CHANGE,
-                    textDelta = params.deltaText(),
-                    turnId = params.resolveTurnId(),
-                    itemId = itemId,
-                    fileChanges = fileChanges,
-                )
-            }
-
-            "item/toolCall/outputDelta",
-            "item/toolCall/output_delta",
-            "item/tool_call/outputDelta",
-            "item/tool_call/output_delta",
-            "item/toolCall/completed",
-            "item/tool_call/completed" -> {
-                val resolvedParams = params ?: return
-                val threadId = state.value.resolveRealtimeThreadId(resolvedParams) ?: return
-                val fileChanges = decodeFileChangeEntries(resolvedParams)
-                val itemId = resolvedParams.resolveItemId()
-                if (!handleRealtimeHistoryEvent(
-                    threadId = threadId,
-                    itemId = itemId,
-                    payload = resolvedParams,
-                )) {
-                    return
-                }
-                upsertStreamingMessage(
-                    threadId = threadId,
-                    role = MessageRole.SYSTEM,
-                    kind = MessageKind.FILE_CHANGE,
-                    textDelta = resolvedParams.deltaText(),
-                    turnId = resolvedParams.resolveTurnId(),
-                    itemId = itemId,
-                    fileChanges = fileChanges,
-                    completed = method.endsWith("completed"),
-                )
-            }
-
-            "item/commandExecution/outputDelta",
-            "item/command_execution/outputDelta" -> {
-                val resolvedParams = params ?: return
-                val threadId = state.value.resolveRealtimeThreadId(params) ?: return
-                val commandState = decodeCommandState(resolvedParams, completedFallback = false)
-                val itemId = resolvedParams.resolveItemId()
-                if (!handleRealtimeHistoryEvent(
-                    threadId = threadId,
-                    itemId = itemId,
-                    payload = resolvedParams,
-                )) {
-                    return
-                }
-                upsertStreamingMessage(
-                    threadId = threadId,
-                    role = MessageRole.SYSTEM,
-                    kind = MessageKind.COMMAND_EXECUTION,
-                    textDelta = decodeCommandExecutionText(resolvedParams, commandState),
-                    turnId = params.resolveTurnId(),
-                    itemId = itemId,
-                    commandState = commandState,
-                    replaceText = true,
-                )
-            }
-
-            "item/completed",
-            "coderover/event/item_completed",
-            "coderover/event/agent_message" -> {
-                val resolvedParams = params ?: return
-                val threadId = state.value.resolveRealtimeThreadId(params) ?: return
-                val itemId = resolvedParams.resolveItemId()
-                val previousItemId = resolvedParams.resolvePreviousItemId()
-                if (!handleRealtimeHistoryEvent(
-                    threadId = threadId,
-                    turnId = resolvedParams.resolveTurnId() ?: state.value.activeTurnIdByThread[threadId],
-                    itemId = itemId,
-                    previousItemId = previousItemId,
-                    cursor = resolvedParams.resolveCursor(),
-                    previousCursor = resolvedParams.resolvePreviousCursor(),
-                )) {
-                    return
-                }
-                when (resolvedParams.resolveMessageKind()) {
-                    MessageKind.FILE_CHANGE -> {
-                        upsertStreamingMessage(
-                            threadId = threadId,
-                            role = MessageRole.SYSTEM,
-                            kind = MessageKind.FILE_CHANGE,
-                            textDelta = "",
-                            turnId = resolvedParams.resolveTurnId(),
-                            itemId = itemId,
-                            completed = true,
-                            fileChanges = decodeFileChangeEntries(resolvedParams),
-                        )
-                    }
-
-                    MessageKind.COMMAND_EXECUTION -> {
-                        val commandState = decodeCommandState(resolvedParams, completedFallback = true)
-                        upsertStreamingMessage(
-                            threadId = threadId,
-                            role = MessageRole.SYSTEM,
-                            kind = MessageKind.COMMAND_EXECUTION,
-                            textDelta = decodeCommandExecutionText(resolvedParams, commandState),
-                            turnId = resolvedParams.resolveTurnId(),
-                            itemId = itemId,
-                            completed = true,
-                            commandState = commandState,
-                            replaceText = true,
-                        )
-                    }
-
-                    MessageKind.PLAN -> {
-                        val planState = decodePlanState(resolvedParams)
-                        upsertStreamingMessage(
-                            threadId = threadId,
-                            role = MessageRole.SYSTEM,
-                            kind = MessageKind.PLAN,
-                            textDelta = "",
-                            turnId = resolvedParams.resolveTurnId(),
-                            itemId = itemId,
-                            completed = true,
-                            planState = planState,
-                        )
-                    }
-
-                    MessageKind.THINKING -> {
-                        upsertStreamingMessage(
-                            threadId = threadId,
-                            role = MessageRole.SYSTEM,
-                            kind = MessageKind.THINKING,
-                            textDelta = resolvedParams.deltaText(),
-                            turnId = resolvedParams.resolveTurnId(),
-                            itemId = itemId,
-                            completed = true,
-                        )
-                    }
-
-                    else -> {
-                        val text = params.deltaText()
-                        if (text.isNotBlank()) {
-                            upsertStreamingMessage(
-                                threadId = threadId,
-                                role = MessageRole.ASSISTANT,
-                                kind = MessageKind.CHAT,
-                                textDelta = text,
-                                turnId = params.resolveTurnId(),
-                                itemId = itemId,
-                                completed = true,
-                            )
-                        }
-                    }
-                }
-            }
-
-            "item/started",
-            "coderover/event/item_started" -> Unit
-
-            "error", "coderover/event/error", "turn/failed" -> {
+            "error", "turn/failed" -> {
                 val resolvedParams = params
                 val threadId = params.resolveThreadId() ?: state.value.selectedThreadId ?: return
                 appendLocalMessage(
@@ -3663,25 +3286,7 @@ class CodeRoverRepository(context: Context) {
                 checkAndSendNextQueuedDraft(threadId)
             }
 
-            "coderover/event" -> {
-                if (handleLegacyCodeRoverEnvelopeEvent(params)) {
-                    return
-                }
-            }
-
             else -> {
-                if (method.startsWith("coderover/event/") && handleLegacyCodeRoverNamedEvent(method, params)) {
-                    return
-                }
-                if (handleToolCallNotificationFallback(method, params)) {
-                    return
-                }
-                if (handleDiffNotificationFallback(method, params)) {
-                    return
-                }
-                if (handleFileChangeNotificationFallback(method, params)) {
-                    return
-                }
                 Log.d(TAG, "ignored notification method=$method params=${params?.toString()?.take(400)}")
             }
         }
@@ -3701,7 +3306,7 @@ class CodeRoverRepository(context: Context) {
         } else {
             payload
         }
-        handleNotification("turn/completed", synthesized)
+        handleTurnCompletedNotification(synthesized)
     }
 
     private fun handleCanonicalTimelineItemEvent(
@@ -3765,6 +3370,40 @@ class CodeRoverRepository(context: Context) {
             commandState = commandState,
             planState = planState,
         )
+    }
+
+    private fun handleTurnCompletedNotification(params: JsonObject) {
+        val threadId = state.value.resolveRealtimeThreadId(params) ?: return
+        val status = params.string("status") ?: params["turn"]?.jsonObjectOrNull()?.string("status")
+        val isFailed = status?.lowercase()?.contains("fail") == true ||
+            status?.lowercase()?.contains("error") == true ||
+            params.string("errorMessage") != null ||
+            params["turn"]?.jsonObjectOrNull()?.get("error") != null
+        val isStopped = status?.lowercase()?.contains("cancel") == true ||
+            status?.lowercase()?.contains("abort") == true ||
+            status?.lowercase()?.contains("interrupt") == true ||
+            status?.lowercase()?.contains("stop") == true
+        val terminalState = if (isFailed) ThreadRunBadgeState.FAILED else if (isStopped) null else ThreadRunBadgeState.READY
+
+        updateState {
+            copy(
+                runningThreadIds = runningThreadIds - threadId,
+                activeTurnIdByThread = activeTurnIdByThread - threadId,
+                pendingRealtimeSeededTurnIdByThread = pendingRealtimeSeededTurnIdByThread - threadId,
+                readyThreadIds = if (terminalState == ThreadRunBadgeState.READY && selectedThreadId != threadId) readyThreadIds + threadId else readyThreadIds,
+                failedThreadIds = if (terminalState == ThreadRunBadgeState.FAILED && selectedThreadId != threadId) failedThreadIds + threadId else failedThreadIds,
+            )
+        }
+        if (state.value.selectedThreadId == threadId) {
+            scope.launch {
+                runCatching {
+                    refreshThreadHistory(threadId, reason = "turn-completed")
+                }.onFailure { failure ->
+                    Log.w(TAG, "post-completion tail refresh failed threadId=$threadId", failure)
+                }
+            }
+        }
+        checkAndSendNextQueuedDraft(threadId)
     }
 
     private fun handleThreadStatusChanged(params: JsonObject?) {
@@ -3896,200 +3535,6 @@ class CodeRoverRepository(context: Context) {
             tokensUsed = usedTokens,
             tokenLimit = totalTokens,
         )
-    }
-
-    private suspend fun handleLegacyCodeRoverEnvelopeEvent(params: JsonObject?): Boolean {
-        val msgObject = params?.get("msg")?.jsonObjectOrNull() ?: return false
-        val eventType = msgObject.string("type")?.trim()?.lowercase() ?: return false
-        if (eventType == "turn_diff") {
-            val normalized = JsonObject(
-                buildMap {
-                    putAll(params)
-                    put("event", msgObject)
-                    msgObject.string("unified_diff")?.let { put("diff", JsonPrimitive(it)) }
-                    if (params.resolveTurnId() == null) {
-                        msgObject.string("turnId")?.let { put("turnId", JsonPrimitive(it)) }
-                    }
-                    if (params.resolveThreadId() == null) {
-                        firstNonBlank(
-                            msgObject.string("threadId"),
-                            msgObject.string("thread_id"),
-                            msgObject.string("conversationId"),
-                            msgObject.string("conversation_id"),
-                        )?.let { put("threadId", JsonPrimitive(it)) }
-                    }
-                },
-            )
-            handleNotification("turn/diff/updated", normalized)
-            return true
-        }
-        return handleLegacyCodeRoverEventType(eventType, msgObject, params)
-    }
-
-    private suspend fun handleLegacyCodeRoverNamedEvent(method: String, params: JsonObject?): Boolean {
-        if (!method.startsWith("coderover/event/")) {
-            return false
-        }
-        val eventType = method.removePrefix("coderover/event/").trim().lowercase()
-        if (eventType.isEmpty()) {
-            return false
-        }
-        val payload = params?.get("msg")?.jsonObjectOrNull()
-            ?: params?.get("event")?.jsonObjectOrNull()
-            ?: params
-            ?: return false
-        if (eventType == "turn_diff") {
-            val normalized = JsonObject(
-                buildMap {
-                    if (params != null) {
-                        putAll(params)
-                    }
-                    put("event", payload)
-                    firstNonBlank(payload.string("unified_diff"), payload.string("diff"))
-                        ?.let { put("diff", JsonPrimitive(it)) }
-                },
-            )
-            handleNotification("turn/diff/updated", normalized)
-            return true
-        }
-        return handleLegacyCodeRoverEventType(eventType, payload, params)
-    }
-
-    private suspend fun handleLegacyCodeRoverEventType(
-        eventType: String,
-        payload: JsonObject,
-        params: JsonObject?,
-    ): Boolean {
-        return when (eventType) {
-            "exec_command_begin", "exec_command_output_delta", "exec_command_end" -> {
-                handleLegacyCommandExecutionEvent(eventType, payload, params)
-            }
-
-            "background_event", "read", "search", "list_files" -> {
-                handleLegacyActivityEvent(eventType, payload, params)
-            }
-
-            else -> false
-        }
-    }
-
-    private suspend fun handleLegacyCommandExecutionEvent(
-        eventType: String,
-        payload: JsonObject,
-        params: JsonObject?,
-    ): Boolean {
-        val normalized = JsonObject(
-            buildMap {
-                if (params != null) {
-                    putAll(params)
-                }
-                put("event", payload)
-                firstNonBlank(
-                    payload.string("call_id"),
-                    payload.string("callId"),
-                    params?.resolveItemId(),
-                )?.let { put("itemId", JsonPrimitive(it)) }
-                firstNonBlank(
-                    payload.string("threadId"),
-                    payload.string("thread_id"),
-                    payload.string("conversationId"),
-                    params?.resolveThreadId(),
-                )?.let { put("threadId", JsonPrimitive(it)) }
-                firstNonBlank(
-                    payload.string("turnId"),
-                    payload.string("turn_id"),
-                    params?.resolveTurnId(),
-                )?.let { put("turnId", JsonPrimitive(it)) }
-                payload.flattenedString("text")?.let { put("text", JsonPrimitive(it)) }
-                payload.flattenedString("message")?.let { put("message", JsonPrimitive(it)) }
-                payload.string("status")?.let { put("status", JsonPrimitive(it)) }
-            },
-        )
-        val mappedMethod = when (eventType) {
-            "exec_command_output_delta" -> "item/commandExecution/outputDelta"
-            else -> "item/completed"
-        }
-        if (eventType == "exec_command_begin") {
-            upsertStreamingMessage(
-                threadId = normalized.resolveThreadId() ?: return false,
-                role = MessageRole.SYSTEM,
-                kind = MessageKind.COMMAND_EXECUTION,
-                textDelta = decodeCommandExecutionText(normalized, decodeCommandState(normalized, completedFallback = false)),
-                turnId = normalized.resolveTurnId(),
-                itemId = normalized.resolveItemId(),
-                commandState = decodeCommandState(normalized, completedFallback = false),
-                replaceText = true,
-            )
-            return true
-        }
-        handleNotification(mappedMethod, normalized)
-        return true
-    }
-
-    private fun handleLegacyActivityEvent(
-        eventType: String,
-        payload: JsonObject,
-        params: JsonObject?,
-    ): Boolean {
-        val threadId = params.resolveThreadId() ?: return false
-        val line = firstNonBlank(
-            payload.flattenedString("message"),
-            payload.flattenedString("text"),
-            payload.flattenedString("path"),
-        ) ?: eventType.replace('_', ' ')
-        appendLocalMessage(
-            ChatMessage(
-                threadId = threadId,
-                role = MessageRole.SYSTEM,
-                kind = MessageKind.COMMAND_EXECUTION,
-                text = line,
-                turnId = params.resolveTurnId(),
-                orderIndex = nextOrderIndex(),
-            ),
-        )
-        return true
-    }
-
-    private suspend fun handleFileChangeNotificationFallback(method: String, params: JsonObject?): Boolean {
-        val normalized = normalizeMethodToken(method)
-        if (!normalized.contains("filechange")) {
-            return false
-        }
-        val targetMethod = when {
-            normalized.contains("delta") || normalized.contains("partadded") -> "item/fileChange/outputDelta"
-            normalized.contains("completed") || normalized.contains("finished") || normalized.contains("done") -> "item/completed"
-            else -> "item/completed"
-        }
-        handleNotification(targetMethod, params)
-        return true
-    }
-
-    private suspend fun handleToolCallNotificationFallback(method: String, params: JsonObject?): Boolean {
-        val normalized = normalizeMethodToken(method)
-        if (!normalized.contains("toolcall")) {
-            return false
-        }
-        val targetMethod = when {
-            normalized.contains("delta") || normalized.contains("partadded") -> "item/toolCall/outputDelta"
-            normalized.contains("completed") || normalized.contains("finished") || normalized.contains("done") -> "item/toolCall/completed"
-            else -> "item/toolCall/completed"
-        }
-        handleNotification(targetMethod, params)
-        return true
-    }
-
-    private suspend fun handleDiffNotificationFallback(method: String, params: JsonObject?): Boolean {
-        val normalized = normalizeMethodToken(method)
-        val isDiffMethod = normalized.contains("turndiff") ||
-            normalized.contains("/diff/") ||
-            normalized.startsWith("diff/") ||
-            normalized.endsWith("/diff") ||
-            normalized.contains("itemdiff")
-        if (!isDiffMethod) {
-            return false
-        }
-        handleNotification("turn/diff/updated", params)
-        return true
     }
 
     private fun checkAndSendNextQueuedDraft(threadId: String) {
@@ -5226,33 +4671,6 @@ private fun mergeHistoryState(
             isLoadingOlder = false,
             isTailRefreshing = false,
         )
-    }
-}
-
-private fun JsonObject?.resolveMessageKind(): MessageKind {
-    if (this == null) {
-        return MessageKind.CHAT
-    }
-    val normalizedType = (
-        string("type")
-            ?: this["item"]?.jsonObjectOrNull()?.string("type")
-            ?: this["event"]?.jsonObjectOrNull()?.string("type")
-        )
-        ?.lowercase()
-        ?.replace("_", "")
-        ?.replace("-", "")
-        ?: ""
-    return when {
-        normalizedType == "reasoning" -> MessageKind.THINKING
-        normalizedType == "plan" -> MessageKind.PLAN
-        normalizedType == "filechange" || normalizedType == "diff" -> MessageKind.FILE_CHANGE
-        normalizedType == "commandexecution" -> MessageKind.COMMAND_EXECUTION
-        normalizedType == "toolcall" && (
-            this["changes"] != null || this["fileChanges"] != null || this["file_changes"] != null ||
-                this["patches"] != null || this["diff"] != null || this["patch"] != null
-            ) -> MessageKind.FILE_CHANGE
-        normalizedType.contains("message") -> MessageKind.CHAT
-        else -> MessageKind.CHAT
     }
 }
 
