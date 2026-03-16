@@ -102,7 +102,6 @@ extension CodeRoverService {
             historyStateByThread: historyStateByThread
         )
         assistantCompletionFingerprintByThread.removeAll()
-        recentActivityLineByThread.removeAll()
         runningThreadIDs.removeAll()
         protectedRunningFallbackThreadIDs.removeAll()
         readyThreadIDs.removeAll()
@@ -279,7 +278,6 @@ extension CodeRoverService {
         isLoadingModels = false
         modelsErrorMessage = nil
         assistantCompletionFingerprintByThread.removeAll()
-        recentActivityLineByThread.removeAll()
         runningThreadIDs.removeAll()
         protectedRunningFallbackThreadIDs.removeAll()
         readyThreadIDs.removeAll()

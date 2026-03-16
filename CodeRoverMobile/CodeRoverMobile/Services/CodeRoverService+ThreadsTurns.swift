@@ -1026,13 +1026,15 @@ extension CodeRoverService {
                 applyTerminalStatesFromThreadRead(threadId: threadId, threadObject: threadObject)
                 let historyMessages = decodeMessagesFromThreadRead(threadId: threadId, threadObject: threadObject)
                 if !historyMessages.isEmpty {
-                    let existingMessages = messagesByThread[threadId] ?? []
                     let activeThreadIDs = Set(activeTurnIdByThread.keys)
                     let runningIDs = runningThreadIDs
-                    let merged = await Task.detached {
-                        Self.mergeHistoryMessages(existingMessages, historyMessages, activeThreadIDs: activeThreadIDs, runningThreadIDs: runningIDs)
-                    }.value
-                    messagesByThread[threadId] = merged
+                    let existingMessages = messagesByThread[threadId] ?? []
+                    let merged = mergeCanonicalHistoryIntoTimelineState(
+                        threadId: threadId,
+                        historyMessages: historyMessages,
+                        activeThreadIDs: activeThreadIDs,
+                        runningThreadIDs: runningIDs
+                    )
                     coderoverDiagnosticLog(
                         "CodeRoverThreads",
                         "ensureThreadResumed mergedHistory thread=\(threadId) existing=\(existingMessages.count) decoded=\(historyMessages.count) merged=\(merged.count)"

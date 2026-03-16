@@ -30,7 +30,7 @@ enum ChatMessageKind: String, Codable, Hashable, Sendable {
 struct ChatMessage: Identifiable, Codable, Hashable, Sendable {
     let id: String
     let threadId: String
-    let role: ChatMessageRole
+    var role: ChatMessageRole
     var kind: ChatMessageKind
     var text: String
     let createdAt: Date
@@ -41,10 +41,15 @@ struct ChatMessage: Identifiable, Codable, Hashable, Sendable {
     var attachments: [ImageAttachment]
     var planState: CodeRoverPlanState?
     var structuredUserInputRequest: CodeRoverStructuredUserInputRequest?
+    var providerItemId: String?
+    var timelineOrdinal: Int?
+    var timelineStatus: String?
 
     /// Monotonically increasing counter that preserves insertion order.
     /// Used as primary sort key so messages are never reordered by timestamp drift.
     var orderIndex: Int
+
+    var timelineItemId: String { id }
 
     init(
         id: String = UUID().uuidString,
@@ -60,6 +65,9 @@ struct ChatMessage: Identifiable, Codable, Hashable, Sendable {
         attachments: [ImageAttachment] = [],
         planState: CodeRoverPlanState? = nil,
         structuredUserInputRequest: CodeRoverStructuredUserInputRequest? = nil,
+        providerItemId: String? = nil,
+        timelineOrdinal: Int? = nil,
+        timelineStatus: String? = nil,
         orderIndex: Int? = nil
     ) {
         self.id = id
@@ -75,6 +83,9 @@ struct ChatMessage: Identifiable, Codable, Hashable, Sendable {
         self.attachments = attachments
         self.planState = planState
         self.structuredUserInputRequest = structuredUserInputRequest
+        self.providerItemId = providerItemId
+        self.timelineOrdinal = timelineOrdinal
+        self.timelineStatus = timelineStatus
         self.orderIndex = orderIndex ?? MessageOrderCounter.next()
     }
 
@@ -92,6 +103,9 @@ struct ChatMessage: Identifiable, Codable, Hashable, Sendable {
         case attachments
         case planState
         case structuredUserInputRequest
+        case providerItemId
+        case timelineOrdinal
+        case timelineStatus
         case orderIndex
     }
 
@@ -113,6 +127,9 @@ struct ChatMessage: Identifiable, Codable, Hashable, Sendable {
             CodeRoverStructuredUserInputRequest.self,
             forKey: .structuredUserInputRequest
         )
+        providerItemId = try container.decodeIfPresent(String.self, forKey: .providerItemId)
+        timelineOrdinal = try container.decodeIfPresent(Int.self, forKey: .timelineOrdinal)
+        timelineStatus = try container.decodeIfPresent(String.self, forKey: .timelineStatus)
         orderIndex = try container.decodeIfPresent(Int.self, forKey: .orderIndex) ?? MessageOrderCounter.next()
     }
 }

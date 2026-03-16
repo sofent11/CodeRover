@@ -16,11 +16,8 @@ enum TurnTimelineReducer {
     // Applies all render-only timeline transforms in one pass.
     static func project(messages: [ChatMessage]) -> TurnTimelineProjection {
         let visibleMessages = removeHiddenSystemMarkers(in: messages)
-        let reordered = enforceIntraTurnOrder(in: visibleMessages)
-        let collapsedThinking = collapseConsecutiveThinkingMessages(in: reordered)
-        let dedupedFileChanges = removeDuplicateFileChangeMessages(in: collapsedThinking)
-        let dedupedAssistant = removeDuplicateAssistantMessages(in: dedupedFileChanges)
-        return TurnTimelineProjection(messages: dedupedAssistant)
+        let collapsedThinking = collapseConsecutiveThinkingMessages(in: visibleMessages)
+        return TurnTimelineProjection(messages: collapsedThinking)
     }
 
     // Resolves where the viewport should anchor when assistant output starts streaming.
@@ -192,21 +189,7 @@ enum TurnTimelineReducer {
 
     // Preserves separate reasoning blocks when they come from different item ids.
     private static func shouldMergeThinkingRows(previous: ChatMessage, incoming: ChatMessage) -> Bool {
-        let previousItemId = normalizedIdentifier(previous.itemId)
-        let incomingItemId = normalizedIdentifier(incoming.itemId)
-        if let previousItemId, let incomingItemId {
-            return previousItemId == incomingItemId
-        }
-        if previousItemId != nil || incomingItemId != nil {
-            return false
-        }
-
-        let previousTurnId = normalizedIdentifier(previous.turnId)
-        let incomingTurnId = normalizedIdentifier(incoming.turnId)
-        guard previousTurnId == incomingTurnId else {
-            return false
-        }
-        return previousTurnId != nil
+        return previous.id == incoming.id
     }
 
     private static func normalizedIdentifier(_ value: String?) -> String? {

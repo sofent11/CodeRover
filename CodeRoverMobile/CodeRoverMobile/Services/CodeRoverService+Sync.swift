@@ -397,6 +397,7 @@ extension CodeRoverService {
 
         threads.removeAll { $0.id == threadId }
         messagesByThread.removeValue(forKey: threadId)
+        threadTimelineStateByThread.removeValue(forKey: threadId)
         lastPublishedMessageSignatureByThread.removeValue(forKey: threadId)
         foregroundAggressivePollingDeadlineByThread.removeValue(forKey: threadId)
         messagePersistence.save(

@@ -7,8 +7,6 @@ import SwiftUI
 
 struct ContextWindowProgressRing: View {
     let usage: ContextWindowUsage
-    var threadId: String = ""
-    var isCompacting: Bool = false
     var onCompact: (() -> Void)?
     @State private var isShowingPopover = false
 
@@ -61,29 +59,19 @@ struct ContextWindowProgressRing: View {
             if onCompact != nil {
                 Divider()
 
-                if isCompacting {
+                Button {
+                    onCompact?()
+                    isShowingPopover = false
+                } label: {
                     HStack(spacing: 6) {
-                        ProgressView()
-                            .controlSize(.small)
-                        Text("Compacting…")
+                        Image(systemName: "arrow.trianglehead.2.clockwise")
+                            .font(AppFont.system(size: 13))
+                        Text("Compact context")
                             .font(AppFont.subheadline())
-                            .foregroundStyle(.secondary)
                     }
-                } else {
-                    Button {
-                        onCompact?()
-                        isShowingPopover = false
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: "arrow.trianglehead.2.clockwise")
-                                .font(AppFont.system(size: 13))
-                            Text("Compact context")
-                                .font(AppFont.subheadline())
-                        }
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.tint)
                 }
+                .buttonStyle(.plain)
+                .foregroundStyle(.tint)
             }
         }
         .padding()

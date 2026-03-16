@@ -156,8 +156,6 @@ struct TurnView: View {
                 showsDiscardRuntimeChangesAndSync: viewModel.shouldShowDiscardRuntimeChangesAndSync,
                 gitSyncState: viewModel.gitSyncState,
                 contextWindowUsage: coderover.contextWindowUsageByThread[thread.id],
-                threadId: thread.id,
-                isCompacting: coderover.compactingThreadIDs.contains(thread.id),
                 onCompactContext: {
                     Task {
                         try? await coderover.compactContext(threadId: thread.id)

@@ -824,20 +824,18 @@ extension CodeRoverService {
         let runningIDs = runningThreadIDs
         let mergedMessages: [ChatMessage]
         if replaceLocalHistory {
-            mergedMessages = historyMessages
+            mergedMessages = synchronizeThreadTimelineState(
+                threadId: threadId,
+                canonicalMessages: historyMessages,
+                preservingOverlayMessages: []
+            )
         } else {
-            mergedMessages = await Task.detached {
-                Self.mergeHistoryMessages(
-                    existingMessages,
-                    historyMessages,
-                    activeThreadIDs: activeThreadIDs,
-                    runningThreadIDs: runningIDs
-                )
-            }.value
-        }
-
-        if replaceLocalHistory || !historyMessages.isEmpty {
-            messagesByThread[threadId] = mergedMessages
+            mergedMessages = mergeCanonicalHistoryIntoTimelineState(
+                threadId: threadId,
+                historyMessages: historyMessages,
+                activeThreadIDs: activeThreadIDs,
+                runningThreadIDs: runningIDs
+            )
         }
 
         debugRuntimeLog(
@@ -1519,6 +1517,7 @@ extension CodeRoverService {
         }
 
         let message = ChatMessage(
+            id: itemId,
             threadId: threadId,
             role: .system,
             kind: kind,
@@ -1973,6 +1972,7 @@ extension CodeRoverService {
         }
 
         let message = ChatMessage(
+            id: normalizedItemId ?? UUID().uuidString,
             threadId: threadId,
             role: .assistant,
             text: "",
@@ -2083,6 +2083,7 @@ extension CodeRoverService {
                 resolvedAssistantMessageId = messagesByThread[threadId]?[duplicateIndex].id
             } else {
                 let newMessage = ChatMessage(
+                    id: itemId ?? UUID().uuidString,
                     threadId: threadId,
                     role: .assistant,
                     text: trimmedText,
@@ -2361,7 +2362,7 @@ extension CodeRoverService {
 
 // ─── Private helpers ──────────────────────────────────────────
 
-private extension CodeRoverService {
+extension CodeRoverService {
     func messagePublicationSignature(for threadId: String) -> Int {
         var hasher = Hasher()
         hasher.combine(threadId)
@@ -2450,6 +2451,13 @@ private extension CodeRoverService {
         if message.isStreaming {
             // Keep sidebar run state independent from timeline scanning cost.
             markThreadAsRunning(message.threadId)
+        }
+        if let existingIndex = messagesByThread[message.threadId]?.firstIndex(where: { $0.id == message.id }) {
+            messagesByThread[message.threadId]?[existingIndex] = message
+            messagesByThread[message.threadId]?.sort(by: { $0.orderIndex < $1.orderIndex })
+            persistMessages()
+            updateCurrentOutput(for: message.threadId)
+            return
         }
         messagesByThread[message.threadId, default: []].append(message)
         messagesByThread[message.threadId]?.sort(by: { $0.orderIndex < $1.orderIndex })

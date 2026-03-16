@@ -43,11 +43,6 @@ struct CodeRoverApprovalRequest: Identifiable, Sendable {
     let params: JSONValue?
 }
 
-struct CodeRoverRecentActivityLine {
-    let line: String
-    let timestamp: Date
-}
-
 struct CodeRoverRunningThreadWatch: Equatable, Sendable {
     let threadId: String
     let expiresAt: Date
@@ -240,7 +235,6 @@ final class CodeRoverService {
     var activeTurnId: String?
     var activeTurnIdByThread: [String: String] = [:]
 
-    var compactingThreadIDs: Set<String> = []
     var runningThreadIDs: Set<String> = []
     // Protects active runs that are real but have not yielded a stable turnId yet.
     var protectedRunningFallbackThreadIDs: Set<String> = []
@@ -259,6 +253,7 @@ final class CodeRoverService {
     // Per-thread queue pause state (active by default when absent).
     var queuePauseStateByThread: [String: QueuePauseState] = [:]
     var messagesByThread: [String: [ChatMessage]] = [:]
+    var threadTimelineStateByThread: [String: ThreadTimelineState] = [:]
     // Monotonic per-thread revision so views can react to message mutations without hashing full transcripts.
     var messageRevisionByThread: [String: Int] = [:]
     // Caches the last published timeline signature so no-op sync merges do not trigger UI work.
@@ -384,8 +379,6 @@ final class CodeRoverService {
     var messagePersistenceDebounceTask: Task<Void, Never>?
     // Dedupes completion payloads when servers omit turn/item identifiers.
     var assistantCompletionFingerprintByThread: [String: (text: String, timestamp: Date)] = [:]
-    // Dedupes concise activity feed lines per thread/turn to avoid visual spam.
-    var recentActivityLineByThread: [String: CodeRoverRecentActivityLine] = [:]
     var contextWindowUsageByThread: [String: ContextWindowUsage] = [:]
     var threadIdByTurnID: [String: String] = [:]
     var hydratedThreadIDs: Set<String> = []
@@ -461,6 +454,13 @@ final class CodeRoverService {
         }
         MessageOrderCounter.seed(from: loadedMessages)
         self.messagesByThread = loadedMessages
+        self.threadTimelineStateByThread = loadedMessages.mapValues { messages in
+            ThreadTimelineState(
+                messages: messages.filter { message in
+                    Self.isCanonicalTimelineMessage(message)
+                }
+            )
+        }
         self.historyStateByThread = loadedCache.historyStateByThread
 
         let loadedChangeSets = aiChangeSetPersistence.load()

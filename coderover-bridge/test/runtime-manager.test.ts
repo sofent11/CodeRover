@@ -858,7 +858,7 @@ test("thread/read history tail and after windows reuse the Codex cache", async (
     const tailResponse = responseById(tailMessages, "thread-read-tail");
     assert.ok(tailResponse);
     assert.equal(tailResponse.result.historyWindow.mode, "tail");
-    assert.equal(tailResponse.result.historyWindow.servedFromCache, false);
+    assert.equal(tailResponse.result.historyWindow.servedFromCache, true);
     assert.equal(tailResponse.result.historyWindow.hasOlder, true);
     assert.equal(tailResponse.result.historyWindow.pageSize, 50);
     assert.ok(tailResponse.result.historyWindow.olderCursor);
@@ -1125,18 +1125,15 @@ test("forwarded Codex item delta notifications include cursor metadata when cach
     }));
 
     const forwarded = fixture.messages[beforeCount];
-    const historyChanged = fixture.messages[beforeCount + 1];
     assert.ok(forwarded);
-    assert.equal(forwarded.method, "item/agentMessage/delta");
+    assert.equal(forwarded.method, "timeline/itemTextUpdated");
+    assert.equal(forwarded.params.timelineItemId, "item-4");
+    assert.equal(forwarded.params.providerItemId, "item-4");
+    assert.equal(forwarded.params.text, "message-4");
     assert.ok(forwarded.params.cursor);
     assert.ok(forwarded.params.previousCursor);
     assert.equal(forwarded.params.previousItemId, "item-3");
-    assert.ok(historyChanged);
-    assert.equal(historyChanged.method, "thread/history/changed");
-    assert.equal(historyChanged.params.threadId, thread.id);
-    assert.equal(historyChanged.params.itemId, "item-4");
-    assert.equal(historyChanged.params.sourceMethod, "item/agentMessage/delta");
-    assert.ok(historyChanged.params.cursor);
+    assert.equal(fixture.messages[beforeCount + 1], undefined);
   } finally {
     fixture.cleanup();
   }
@@ -1180,10 +1177,10 @@ test("forwarded Codex snake_case delta notifications are normalized before reach
 
     const forwarded = fixture.messages[beforeCount];
     assert.ok(forwarded);
-    assert.equal(forwarded.method, "item/agentMessage/delta");
+    assert.equal(forwarded.method, "timeline/itemTextUpdated");
     assert.equal(forwarded.params.threadId, thread.id);
     assert.equal(forwarded.params.turnId, "turn-snake");
-    assert.equal(forwarded.params.itemId, "item-snake");
+    assert.equal(forwarded.params.timelineItemId, "item-snake");
     assert.ok(forwarded.params.cursor);
   } finally {
     fixture.cleanup();
@@ -1232,15 +1229,15 @@ test("forwarded codex/event legacy delta notifications are normalized before rea
 
     const forwarded = fixture.messages[beforeCount];
     assert.ok(forwarded);
-    assert.equal(forwarded.method, "item/agentMessage/delta");
-    assert.equal(forwarded.params.conversationId, thread.id);
+    assert.equal(forwarded.method, "timeline/itemTextUpdated");
+    assert.equal(forwarded.params.threadId, thread.id);
     assert.ok(forwarded.params.cursor);
   } finally {
     fixture.cleanup();
   }
 });
 
-test("legacy Codex event notifications invalidate stale history windows so after reads refetch upstream", async () => {
+test("legacy Codex event notifications are normalized into canonical timeline cache updates", async () => {
   const fixture = createManagerFixtureWithOptions({
     useDefaultCodexAdapter: true,
   });
@@ -1265,7 +1262,7 @@ test("legacy Codex event notifications invalidate stale history windows so after
     });
     const tailResponse = responseById(tailMessages, "legacy-tail");
     assert.ok(tailResponse);
-    assert.equal(tailResponse.result.historyWindow.servedFromCache, false);
+    assert.equal(tailResponse.result.historyWindow.servedFromCache, true);
     assert.deepEqual(
       tailResponse.result.thread.turns[0].items.map((item: { id: string }) => item.id),
       ["item-1", "item-2", "item-3"]
@@ -1293,12 +1290,11 @@ test("legacy Codex event notifications invalidate stale history windows so after
         },
       },
     }));
-    const historyChanged = fixture.messages.at(-1);
-    assert.ok(historyChanged);
-    assert.equal(historyChanged.method, "thread/history/changed");
-    assert.equal(historyChanged.params.threadId, nextThread.id);
-    assert.equal(historyChanged.params.reason, "cache-invalidated");
-    assert.equal(historyChanged.params.sourceMethod, "item/completed");
+    const liveUpdate = fixture.messages.at(-1);
+    assert.ok(liveUpdate);
+    assert.equal(liveUpdate.method, "timeline/itemCompleted");
+    assert.equal(liveUpdate.params.threadId, nextThread.id);
+    assert.equal(liveUpdate.params.timelineItemId, "item-4");
 
     const afterMessages = await request(fixture, "legacy-after", "thread/read", {
       threadId: threadRef.current.id,
@@ -1310,18 +1306,18 @@ test("legacy Codex event notifications invalidate stale history windows so after
     });
     const afterResponse = responseById(afterMessages, "legacy-after");
     assert.ok(afterResponse);
-    assert.equal(afterResponse.result.historyWindow.servedFromCache, false);
+    assert.equal(afterResponse.result.historyWindow.servedFromCache, true);
     assert.deepEqual(
       afterResponse.result.thread.turns[0].items.map((item: { id: string }) => item.id),
       ["item-4"]
     );
-    assert.equal(transportFixture.readCountsByThread.get(threadRef.current.id), 3);
+    assert.equal(transportFixture.readCountsByThread.get(threadRef.current.id), 2);
   } finally {
     fixture.cleanup();
   }
 });
 
-test("codex/event legacy notifications invalidate stale history windows so after reads refetch upstream", async () => {
+test("codex/event legacy notifications are normalized into canonical timeline cache updates", async () => {
   const fixture = createManagerFixtureWithOptions({
     useDefaultCodexAdapter: true,
   });
@@ -1346,7 +1342,7 @@ test("codex/event legacy notifications invalidate stale history windows so after
     });
     const tailResponse = responseById(tailMessages, "legacy-prefix-tail");
     assert.ok(tailResponse);
-    assert.equal(tailResponse.result.historyWindow.servedFromCache, false);
+    assert.equal(tailResponse.result.historyWindow.servedFromCache, true);
 
     threadRef.current = buildCodexThread({
       threadId: threadRef.current.id,
@@ -1369,6 +1365,11 @@ test("codex/event legacy notifications invalidate stale history windows so after
         },
       },
     }));
+    const liveUpdate = fixture.messages.at(-1);
+    assert.ok(liveUpdate);
+    assert.equal(liveUpdate.method, "timeline/itemCompleted");
+    assert.equal(liveUpdate.params.threadId, threadRef.current.id);
+    assert.equal(liveUpdate.params.timelineItemId, "item-4");
 
     const afterMessages = await request(fixture, "legacy-prefix-after", "thread/read", {
       threadId: threadRef.current.id,
@@ -1380,11 +1381,12 @@ test("codex/event legacy notifications invalidate stale history windows so after
     });
     const afterResponse = responseById(afterMessages, "legacy-prefix-after");
     assert.ok(afterResponse);
-    assert.equal(afterResponse.result.historyWindow.servedFromCache, false);
+    assert.equal(afterResponse.result.historyWindow.servedFromCache, true);
     assert.deepEqual(
       afterResponse.result.thread.turns[0].items.map((item: { id: string }) => item.id),
       ["item-4"]
     );
+    assert.equal(transportFixture.readCountsByThread.get(threadRef.current.id), 2);
   } finally {
     fixture.cleanup();
   }
@@ -1415,7 +1417,7 @@ test("Codex delta notifications without threadId still advance cache windows via
     });
     const tailResponse = responseById(tailMessages, "turn-context-tail");
     assert.ok(tailResponse);
-    assert.equal(tailResponse.result.historyWindow.servedFromCache, false);
+    assert.equal(tailResponse.result.historyWindow.servedFromCache, true);
 
     const beforeCount = fixture.messages.length;
     fixture.manager.handleCodexTransportMessage(JSON.stringify({
@@ -1430,7 +1432,7 @@ test("Codex delta notifications without threadId still advance cache windows via
 
     const forwarded = fixture.messages[beforeCount];
     assert.ok(forwarded);
-    assert.equal(forwarded.method, "item/agentMessage/delta");
+    assert.equal(forwarded.method, "timeline/itemTextUpdated");
 
     const afterMessages = await request(fixture, "turn-context-after", "thread/read", {
       threadId: threadRef.current.id,
@@ -1499,10 +1501,10 @@ test("forwarded Codex item delta notifications backfill thread and turn identity
 
     const forwarded = fixture.messages[beforeCount];
     assert.ok(forwarded);
-    assert.equal(forwarded.method, "item/agentMessage/delta");
+    assert.equal(forwarded.method, "timeline/itemTextUpdated");
     assert.equal(forwarded.params.threadId, thread.id);
     assert.equal(forwarded.params.turnId, "turn-identity");
-    assert.equal(forwarded.params.itemId, "item-identity");
+    assert.equal(forwarded.params.timelineItemId, "item-identity");
   } finally {
     fixture.cleanup();
   }
@@ -1533,7 +1535,7 @@ test("unscoped Codex history events invalidate cache so reopen fetches upstream"
     });
     const tailResponse = responseById(tailMessages, "unscoped-tail");
     assert.ok(tailResponse);
-    assert.equal(tailResponse.result.historyWindow.servedFromCache, false);
+    assert.equal(tailResponse.result.historyWindow.servedFromCache, true);
 
     const nextThread = buildCodexThread({
       threadId: threadRef.current.id,
@@ -1715,7 +1717,7 @@ test("managed realtime notifications include cursor and previousCursor metadata"
 
     const itemNotifications = fixture.messages
       .slice(beforeCount)
-      .filter((message: RpcMessage) => message.method === "item/agentMessage/delta");
+      .filter((message: RpcMessage) => message.method === "timeline/itemTextUpdated");
     assert.equal(itemNotifications.length, 2);
     assert.ok(itemNotifications[0]);
     assert.ok(itemNotifications[1]);
@@ -1788,7 +1790,7 @@ test("Codex history cache evicts the least recently used thread after twenty ent
       },
     });
     const rereadResponse = responseById(rereadMessages, "tail-codex-thread-1-reread");
-    assert.equal(rereadResponse.result.historyWindow.servedFromCache, false);
+    assert.equal(rereadResponse.result.historyWindow.servedFromCache, true);
     assert.equal(codexFixture.readCountsByThread.get("codex-thread-1"), 3);
   } finally {
     fixture.cleanup();

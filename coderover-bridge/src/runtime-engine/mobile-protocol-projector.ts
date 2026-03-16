@@ -35,72 +35,94 @@ export function projectRuntimeEventToMobileProtocol(
     case "turn_started":
       return {
         kind: "notification",
-        method: "turn/started",
+        method: "timeline/turnUpdated",
         params: {
           threadId: event.threadId,
           turnId: event.turnId,
+          state: "running",
         },
       };
 
     case "turn_completed":
       return {
         kind: "notification",
-        method: "turn/completed",
+        method: "timeline/turnUpdated",
         params: {
           threadId: event.threadId,
           turnId: event.turnId,
-          status: event.status,
+          state: event.status || "completed",
         },
       };
 
     case "assistant_delta":
       return {
         kind: "notification",
-        method: "item/agentMessage/delta",
+        method: "timeline/itemTextUpdated",
         params: {
           threadId: event.threadId,
           turnId: event.turnId,
-          itemId: event.itemId,
-          delta: event.delta,
+          timelineItemId: event.itemId,
+          providerItemId: event.itemId,
+          kind: "chat",
+          role: "assistant",
+          status: "streaming",
+          text: event.delta,
+          textMode: "append",
         },
       };
 
     case "reasoning_delta":
       return {
         kind: "notification",
-        method: "item/reasoning/textDelta",
+        method: "timeline/itemTextUpdated",
         params: {
           threadId: event.threadId,
           turnId: event.turnId,
-          itemId: event.itemId,
-          delta: event.delta,
+          timelineItemId: event.itemId,
+          providerItemId: event.itemId,
+          kind: "thinking",
+          role: "system",
+          status: "streaming",
+          text: event.delta,
+          textMode: "append",
         },
       };
 
     case "plan_update":
       return {
         kind: "notification",
-        method: "turn/plan/updated",
+        method: "timeline/itemTextUpdated",
         params: {
           threadId: event.threadId,
           turnId: event.turnId,
-          itemId: event.itemId,
-          explanation: event.explanation,
-          summary: event.summary,
-          plan: event.plan,
-          delta: event.delta,
+          timelineItemId: event.itemId,
+          providerItemId: event.itemId,
+          kind: "plan",
+          role: "system",
+          status: "streaming",
+          text: event.delta || event.explanation || "",
+          textMode: "replace",
+          planState: {
+            explanation: event.explanation,
+            steps: Array.isArray(event.plan) ? event.plan : [],
+          },
         },
       };
 
     case "tool_delta":
       return {
         kind: "notification",
-        method: event.completed ? "item/toolCall/completed" : "item/toolCall/outputDelta",
+        method: event.completed ? "timeline/itemCompleted" : "timeline/itemTextUpdated",
         params: {
           threadId: event.threadId,
           turnId: event.turnId,
-          itemId: event.itemId,
-          delta: event.delta,
+          timelineItemId: event.itemId,
+          providerItemId: event.itemId,
+          kind: "fileChange",
+          role: "system",
+          status: event.completed ? "completed" : "streaming",
+          text: event.delta,
+          textMode: "append",
           toolName: event.toolName,
           changes: event.changes,
         },
@@ -109,17 +131,21 @@ export function projectRuntimeEventToMobileProtocol(
     case "command_delta":
       return {
         kind: "notification",
-        method: "item/commandExecution/outputDelta",
+        method: "timeline/itemTextUpdated",
         params: {
           threadId: event.threadId,
           turnId: event.turnId,
-          itemId: event.itemId,
+          timelineItemId: event.itemId,
+          providerItemId: event.itemId,
+          kind: "commandExecution",
+          role: "system",
+          status: event.status || "running",
+          text: event.delta,
+          textMode: "replace",
           command: event.command,
           cwd: event.cwd,
-          status: event.status,
           exitCode: event.exitCode,
           durationMs: event.durationMs,
-          delta: event.delta,
         },
       };
 

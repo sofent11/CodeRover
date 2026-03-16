@@ -46,8 +46,9 @@ test("projectRuntimeEventToMobileProtocol preserves existing plan and approval m
     delta: "Inspect the failing path",
   });
   assert.equal(planProjection.kind, "notification");
-  assert.equal(planProjection.method, "turn/plan/updated");
-  assert.deepEqual(planProjection.params.plan, [{ step: "Find the regression", status: "in_progress" }]);
+  assert.equal(planProjection.method, "timeline/itemTextUpdated");
+  assert.equal(planProjection.params.kind, "plan");
+  assert.deepEqual((planProjection.params.planState as { steps: unknown[] }).steps, [{ step: "Find the regression", status: "in_progress" }]);
 
   const approvalProjection = projectRuntimeEventToMobileProtocol({
     kind: "approval_request",

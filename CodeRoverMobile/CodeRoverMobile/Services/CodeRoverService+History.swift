@@ -34,9 +34,13 @@ extension CodeRoverService {
             let timestamp = decodeHistoryTimestamp(from: itemObject) ?? syntheticTimestamp
             offset += 0.001
             let itemID = itemObject["id"]?.stringValue
+            let providerItemID = itemObject["providerItemId"]?.stringValue
+                ?? itemObject["provider_item_id"]?.stringValue
             let decodedText = decodeItemText(from: itemObject)
             let imageAttachments = decodeImageAttachments(from: itemObject)
             let normalizedType = normalizedItemType(itemType)
+            let timelineOrdinal = itemObject["ordinal"]?.intValue
+            let timelineStatus = itemObject["status"]?.stringValue
             itemTypeCounts[normalizedType, default: 0] += 1
 
             switch normalizedType {
@@ -48,7 +52,10 @@ extension CodeRoverService {
                     turnId: turnID,
                     itemId: itemID,
                     createdAt: timestamp,
-                    attachments: imageAttachments
+                    attachments: imageAttachments,
+                    providerItemId: providerItemID,
+                    timelineOrdinal: timelineOrdinal,
+                    timelineStatus: timelineStatus
                 )
 
             case "agentmessage", "assistantmessage":
@@ -60,7 +67,10 @@ extension CodeRoverService {
                     turnId: turnID,
                     itemId: itemID,
                     createdAt: timestamp,
-                    attachments: imageAttachments
+                    attachments: imageAttachments,
+                    providerItemId: providerItemID,
+                    timelineOrdinal: timelineOrdinal,
+                    timelineStatus: timelineStatus
                 )
 
             case "message":
@@ -74,7 +84,10 @@ extension CodeRoverService {
                     turnId: turnID,
                     itemId: itemID,
                     createdAt: timestamp,
-                    attachments: imageAttachments
+                    attachments: imageAttachments,
+                    providerItemId: providerItemID,
+                    timelineOrdinal: timelineOrdinal,
+                    timelineStatus: timelineStatus
                 )
 
             case "reasoning":
@@ -85,7 +98,10 @@ extension CodeRoverService {
                     threadId: threadId,
                     turnId: turnID,
                     itemId: itemID,
-                    createdAt: timestamp
+                    createdAt: timestamp,
+                    providerItemId: providerItemID,
+                    timelineOrdinal: timelineOrdinal,
+                    timelineStatus: timelineStatus
                 )
 
             case "filechange":
@@ -96,7 +112,10 @@ extension CodeRoverService {
                     threadId: threadId,
                     turnId: turnID,
                     itemId: itemID,
-                    createdAt: timestamp
+                    createdAt: timestamp,
+                    providerItemId: providerItemID,
+                    timelineOrdinal: timelineOrdinal,
+                    timelineStatus: timelineStatus
                 )
 
             case "toolcall", "diff":
@@ -110,7 +129,10 @@ extension CodeRoverService {
                     threadId: threadId,
                     turnId: turnID,
                     itemId: itemID,
-                    createdAt: timestamp
+                    createdAt: timestamp,
+                    providerItemId: providerItemID,
+                    timelineOrdinal: timelineOrdinal,
+                    timelineStatus: timelineStatus
                 )
 
             case "commandexecution":
@@ -121,7 +143,10 @@ extension CodeRoverService {
                     threadId: threadId,
                     turnId: turnID,
                     itemId: itemID,
-                    createdAt: timestamp
+                    createdAt: timestamp,
+                    providerItemId: providerItemID,
+                    timelineOrdinal: timelineOrdinal,
+                    timelineStatus: timelineStatus
                 )
 
             case "plan":
@@ -133,7 +158,10 @@ extension CodeRoverService {
                     turnId: turnID,
                     itemId: itemID,
                     createdAt: timestamp,
-                    planState: decodeHistoryPlanState(from: itemObject)
+                    planState: decodeHistoryPlanState(from: itemObject),
+                    providerItemId: providerItemID,
+                    timelineOrdinal: timelineOrdinal,
+                    timelineStatus: timelineStatus
                 )
 
             default:
@@ -166,7 +194,7 @@ extension CodeRoverService {
                 }
                 .map { message in
                     var copy = message
-                    copy.orderIndex = MessageOrderCounter.next()
+                    copy.orderIndex = message.timelineOrdinal ?? MessageOrderCounter.next()
                     return copy
                 }
         } else {
@@ -211,13 +239,17 @@ extension CodeRoverService {
         itemId: String?,
         createdAt: Date,
         attachments: [ImageAttachment] = [],
-        planState: CodeRoverPlanState? = nil
+        planState: CodeRoverPlanState? = nil,
+        providerItemId: String? = nil,
+        timelineOrdinal: Int? = nil,
+        timelineStatus: String? = nil
     ) -> ChatMessage? {
         guard !text.isEmpty || !attachments.isEmpty else {
             return nil
         }
 
         return ChatMessage(
+            id: itemId ?? UUID().uuidString,
             threadId: threadId,
             role: role,
             kind: kind,
@@ -228,8 +260,109 @@ extension CodeRoverService {
             isStreaming: false,
             deliveryState: .confirmed,
             attachments: attachments,
-            planState: planState
+            planState: planState,
+            providerItemId: providerItemId,
+            timelineOrdinal: timelineOrdinal,
+            timelineStatus: timelineStatus,
+            orderIndex: timelineOrdinal
         )
+    }
+
+    nonisolated static func isCanonicalTimelineMessage(_ message: ChatMessage) -> Bool {
+        guard message.deliveryState == .confirmed,
+              let normalizedID = normalizedHistoryIdentifier(message.id),
+              let normalizedItemID = normalizedHistoryIdentifier(message.itemId),
+              normalizedID == normalizedItemID else {
+            return false
+        }
+        return true
+    }
+
+    nonisolated static func mergeRenderedTimelineMessages(
+        _ canonicalMessages: [ChatMessage],
+        overlayMessages: [ChatMessage]
+    ) -> [ChatMessage] {
+        let canonicalIDs = Set(canonicalMessages.map(\.id))
+        let filteredOverlay = overlayMessages.filter { !canonicalIDs.contains($0.id) }
+        return (canonicalMessages + filteredOverlay).sorted { lhs, rhs in
+            if lhs.orderIndex != rhs.orderIndex {
+                return lhs.orderIndex < rhs.orderIndex
+            }
+            if lhs.createdAt != rhs.createdAt {
+                return lhs.createdAt < rhs.createdAt
+            }
+            return lhs.id < rhs.id
+        }
+    }
+
+    func synchronizeThreadTimelineState(
+        threadId: String,
+        canonicalMessages: [ChatMessage],
+        preservingOverlayMessages: [ChatMessage]? = nil
+    ) -> [ChatMessage] {
+        let overlayMessages = preservingOverlayMessages
+            ?? (messagesByThread[threadId] ?? []).filter { !Self.isCanonicalTimelineMessage($0) }
+        let nextState = ThreadTimelineState(messages: canonicalMessages)
+        threadTimelineStateByThread[threadId] = nextState
+        let renderedMessages = Self.mergeRenderedTimelineMessages(
+            nextState.renderedMessages(),
+            overlayMessages: overlayMessages
+        )
+        messagesByThread[threadId] = renderedMessages
+        return renderedMessages
+    }
+
+    func upsertThreadTimelineMessage(_ message: ChatMessage) -> [ChatMessage] {
+        let threadId = message.threadId
+        let overlayMessages = (messagesByThread[threadId] ?? []).filter { !Self.isCanonicalTimelineMessage($0) }
+        var state = threadTimelineStateByThread[threadId]
+            ?? ThreadTimelineState(
+                messages: (messagesByThread[threadId] ?? []).filter { Self.isCanonicalTimelineMessage($0) }
+            )
+        state.upsert(message)
+        threadTimelineStateByThread[threadId] = state
+        let renderedMessages = Self.mergeRenderedTimelineMessages(
+            state.renderedMessages(),
+            overlayMessages: overlayMessages
+        )
+        messagesByThread[threadId] = renderedMessages
+        return renderedMessages
+    }
+
+    func mergeCanonicalHistoryIntoTimelineState(
+        threadId: String,
+        historyMessages: [ChatMessage],
+        activeThreadIDs: Set<String>,
+        runningThreadIDs: Set<String>
+    ) -> [ChatMessage] {
+        let overlayMessages = (messagesByThread[threadId] ?? []).filter { !Self.isCanonicalTimelineMessage($0) }
+        var state = threadTimelineStateByThread[threadId]
+            ?? ThreadTimelineState(
+                messages: (messagesByThread[threadId] ?? []).filter { Self.isCanonicalTimelineMessage($0) }
+            )
+
+        for message in historyMessages {
+            if let existing = state.message(for: message.id) {
+                state.upsert(
+                    Self.reconcileExistingMessage(
+                        existing,
+                        with: message,
+                        activeThreadIDs: activeThreadIDs,
+                        runningThreadIDs: runningThreadIDs
+                    )
+                )
+            } else {
+                state.upsert(message)
+            }
+        }
+
+        threadTimelineStateByThread[threadId] = state
+        let renderedMessages = Self.mergeRenderedTimelineMessages(
+            state.renderedMessages(),
+            overlayMessages: overlayMessages
+        )
+        messagesByThread[threadId] = renderedMessages
+        return renderedMessages
     }
 
     func decodeHistoryBaseDate(from threadObject: [String: JSONValue]) -> Date {
@@ -358,168 +491,6 @@ extension CodeRoverService {
         }
 
         return attachments
-    }
-
-    func mergeHistoryMessages(_ existing: [ChatMessage], _ history: [ChatMessage]) -> [ChatMessage] {
-        let activeThreadIDs = Set(activeTurnIdByThread.keys)
-        let runningIDs = runningThreadIDs
-        return Self.mergeHistoryMessages(existing, history, activeThreadIDs: activeThreadIDs, runningThreadIDs: runningIDs)
-    }
-
-    nonisolated static func mergeHistoryMessages(
-        _ existing: [ChatMessage],
-        _ history: [ChatMessage],
-        activeThreadIDs: Set<String>,
-        runningThreadIDs: Set<String>
-    ) -> [ChatMessage] {
-        if existing.isEmpty {
-            // History messages arrive in server order; assign sequential orderIndex values
-            // so that the stable sort preserves server-provided chronology.
-            var sorted = history.sorted(by: { $0.createdAt < $1.createdAt })
-            for index in sorted.indices {
-                sorted[index].orderIndex = MessageOrderCounter.next()
-            }
-            return sorted
-        }
-
-        var merged = existing
-
-        for message in history {
-            if message.role == .assistant,
-               let turnId = message.turnId, !turnId.isEmpty,
-               let index = merged.lastIndex(where: { candidate in
-                   candidate.role == .assistant
-                       && candidate.turnId == turnId
-                       && normalizedMessageText(candidate.text) == normalizedMessageText(message.text)
-               }) {
-                merged[index] = reconcileExistingMessage(merged[index], with: message, activeThreadIDs: activeThreadIDs, runningThreadIDs: runningThreadIDs)
-                continue
-            }
-
-            // Fallback: match assistant by turnId alone when text-based matching missed
-            // (e.g. history arrives while streaming is in progress, or itemId mismatch).
-            if message.role == .assistant,
-               let turnId = message.turnId, !turnId.isEmpty,
-               let incomingItemId = normalizedHistoryIdentifier(message.itemId),
-               let index = merged.lastIndex(where: { candidate in
-                   candidate.role == .assistant
-                       && candidate.turnId == turnId
-                       && (normalizedHistoryIdentifier(candidate.itemId) == nil
-                           || normalizedHistoryIdentifier(candidate.itemId) == incomingItemId)
-               }) {
-                merged[index] = reconcileExistingMessage(merged[index], with: message, activeThreadIDs: activeThreadIDs, runningThreadIDs: runningThreadIDs)
-                continue
-            }
-
-            // Legacy fallback for servers that still omit assistant item ids in history snapshots.
-            if message.role == .assistant,
-               let turnId = message.turnId, !turnId.isEmpty,
-               normalizedHistoryIdentifier(message.itemId) == nil,
-               let index = merged.lastIndex(where: { candidate in
-                   candidate.role == .assistant
-                       && candidate.turnId == turnId
-                       && normalizedHistoryIdentifier(candidate.itemId) == nil
-               }) {
-                merged[index] = reconcileExistingMessage(merged[index], with: message, activeThreadIDs: activeThreadIDs, runningThreadIDs: runningThreadIDs)
-                continue
-            }
-
-            if message.role == .user,
-               let turnId = message.turnId, !turnId.isEmpty,
-               let index = merged.lastIndex(where: { candidate in
-                   candidate.role == .user
-                       && candidate.deliveryState != .failed
-                       && normalizedMessageText(candidate.text) == normalizedMessageText(message.text)
-                       && attachmentSignature(for: candidate.attachments) == attachmentSignature(for: message.attachments)
-                       && (candidate.turnId == nil || candidate.turnId == turnId)
-               }) {
-                merged[index] = reconcileExistingMessage(merged[index], with: message, activeThreadIDs: activeThreadIDs, runningThreadIDs: runningThreadIDs)
-                continue
-            }
-
-            // Reconcile turn-scoped thinking snapshots even when the streamed row
-            // carries a synthetic itemId (e.g. "turn:ABC|kind:thinking") that differs
-            // from the server's real itemId or nil.
-            if message.role == .system,
-               message.kind == .thinking,
-               let turnId = message.turnId, !turnId.isEmpty,
-               let index = merged.lastIndex(where: { candidate in
-                   candidate.role == .system
-                       && candidate.kind == .thinking
-                       && candidate.turnId == turnId
-               }) {
-                merged[index] = reconcileExistingMessage(merged[index], with: message, activeThreadIDs: activeThreadIDs, runningThreadIDs: runningThreadIDs)
-                continue
-            }
-
-            // Reconcile turn-scoped file change items even when the streamed row
-            // has a synthetic itemId that differs from the server's real one.
-            if message.role == .system,
-               message.kind == .fileChange,
-               let turnId = message.turnId, !turnId.isEmpty,
-               let index = merged.lastIndex(where: { candidate in
-                   candidate.role == .system
-                       && candidate.kind == .fileChange
-                       && candidate.turnId == turnId
-               }) {
-                merged[index] = reconcileExistingMessage(merged[index], with: message, activeThreadIDs: activeThreadIDs, runningThreadIDs: runningThreadIDs)
-                continue
-            }
-
-            // Dedupes command rows when incoming/history command formatting differs only by shell quoting.
-            if message.role == .system,
-               message.kind == .commandExecution,
-               let turnId = message.turnId, !turnId.isEmpty,
-               let incomingCommandKey = normalizedCommandExecutionPreviewKey(from: message.text),
-               let index = merged.lastIndex(where: { candidate in
-                   guard candidate.role == .system,
-                         candidate.kind == .commandExecution,
-                         candidate.turnId == turnId,
-                         let candidateCommandKey = normalizedCommandExecutionPreviewKey(from: candidate.text) else {
-                       return false
-                   }
-                   return candidateCommandKey == incomingCommandKey
-               }) {
-                merged[index] = reconcileExistingMessage(merged[index], with: message, activeThreadIDs: activeThreadIDs, runningThreadIDs: runningThreadIDs)
-                continue
-            }
-
-            // Reconcile turn-scoped command execution items by turnId when text-based
-            // dedup above did not match (e.g. synthetic vs real itemId).
-            if message.role == .system,
-               message.kind == .commandExecution,
-               let turnId = message.turnId, !turnId.isEmpty,
-               let index = merged.lastIndex(where: { candidate in
-                   candidate.role == .system
-                       && candidate.kind == .commandExecution
-                       && candidate.turnId == turnId
-               }) {
-                merged[index] = reconcileExistingMessage(merged[index], with: message, activeThreadIDs: activeThreadIDs, runningThreadIDs: runningThreadIDs)
-                continue
-            }
-
-            let key = historyMessageKey(for: message)
-            if let index = merged.firstIndex(where: { historyMessageKey(for: $0) == key }) {
-                merged[index] = reconcileExistingMessage(merged[index], with: message, activeThreadIDs: activeThreadIDs, runningThreadIDs: runningThreadIDs)
-                continue
-            }
-
-            if message.role == .user,
-               let pendingIndex = merged.lastIndex(where: { candidate in
-                   candidate.role == .user
-                       && candidate.deliveryState == .pending
-                       && normalizedMessageText(candidate.text) == normalizedMessageText(message.text)
-                       && attachmentSignature(for: candidate.attachments) == attachmentSignature(for: message.attachments)
-               }) {
-                merged[pendingIndex] = reconcileExistingMessage(merged[pendingIndex], with: message, activeThreadIDs: activeThreadIDs, runningThreadIDs: runningThreadIDs)
-                continue
-            }
-
-            merged.append(message)
-        }
-
-        merged.sort(by: { $0.orderIndex < $1.orderIndex })
-        return merged
     }
 
     func messageHistoryAnchor(for message: ChatMessage) -> ThreadHistoryAnchor {
@@ -693,19 +664,6 @@ extension CodeRoverService {
         }
 
         return value
-    }
-
-    nonisolated static func historyMessageKey(for message: ChatMessage) -> String {
-        if let itemId = message.itemId, !itemId.isEmpty {
-            return "item:\(message.role.rawValue):\(message.kind.rawValue):\(itemId)"
-        }
-
-        return [
-            message.role.rawValue,
-            message.turnId ?? "no-turn",
-            message.text,
-            attachmentSignature(for: message.attachments),
-        ].joined(separator: "|")
     }
 
     nonisolated static func normalizedMessageText(_ text: String) -> String {

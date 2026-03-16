@@ -246,6 +246,16 @@ export function createCodexRuntimeEngine({
             hasNewer: Boolean(historyWindow.hasNewer),
           } satisfies CodexHistorySnapshotLike;
           writeCodexHistoryCache(threadMeta.id, partialSnapshot);
+          const cachedWindow = readCodexHistoryWindowFromCache(
+            threadMeta.id,
+            normalizedHistoryRequest
+          );
+          if (cachedWindow) {
+            return cachedWindow;
+          }
+          if (normalizedHistoryRequest.mode === "tail") {
+            return buildHistoryWindowResponse(partialSnapshot, normalizedHistoryRequest, true);
+          }
           return buildUpstreamHistoryWindowResponse(
             partialSnapshot,
             normalizedHistoryRequest,
@@ -316,7 +326,9 @@ export function createCodexRuntimeEngine({
     const decoratedThread = decorateConversationThread(threadObject);
     upsertOverlayFromThread(decoratedThread);
     primeCodexHistoryCache(threadId, decoratedThread);
-    return createHistorySnapshotFromThread(decoratedThread);
+    return createHistorySnapshotFromThread(
+      sanitizeThreadHistoryForTransport(decoratedThread) || decoratedThread
+    );
   }
 }
 

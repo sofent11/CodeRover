@@ -7,52 +7,6 @@
 import Foundation
 
 extension CodeRoverService {
-    // Applies the latest structured plan snapshot for a turn while plan text keeps streaming separately.
-    func handleTurnPlanUpdated(_ paramsObject: IncomingParamsObject?) {
-        guard let paramsObject,
-              let threadId = normalizedPlanIdentifier(paramsObject["threadId"]?.stringValue),
-              let turnId = normalizedPlanIdentifier(paramsObject["turnId"]?.stringValue) else {
-            return
-        }
-
-        threadIdByTurnID[turnId] = threadId
-        let explanation = normalizedOptionalPlanText(paramsObject["explanation"]?.stringValue)
-        let steps = decodePlanSteps(from: paramsObject["plan"])
-
-        upsertPlanMessage(
-            threadId: threadId,
-            turnId: turnId,
-            itemId: nil,
-            explanation: explanation,
-            steps: steps,
-            isStreaming: true
-        )
-    }
-
-    // Streams the current proposed-plan text while treating the final item/completed body as authoritative.
-    func appendPlanDelta(from paramsObject: IncomingParamsObject?) {
-        guard let paramsObject,
-              let threadId = normalizedPlanIdentifier(paramsObject["threadId"]?.stringValue),
-              let turnId = normalizedPlanIdentifier(paramsObject["turnId"]?.stringValue),
-              let itemId = normalizedPlanIdentifier(paramsObject["itemId"]?.stringValue) else {
-            return
-        }
-
-        let delta = paramsObject["delta"]?.stringValue ?? ""
-        guard !delta.isEmpty else {
-            return
-        }
-
-        threadIdByTurnID[turnId] = threadId
-        upsertPlanMessage(
-            threadId: threadId,
-            turnId: turnId,
-            itemId: itemId,
-            text: delta,
-            isStreaming: true
-        )
-    }
-
     // Creates the inline question card used by plan mode when the server needs a structured answer.
     func handleStructuredUserInputRequest(
         requestID: JSONValue,
@@ -115,20 +69,6 @@ private extension CodeRoverService {
 
         let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
-    }
-
-    func decodePlanSteps(from value: JSONValue?) -> [CodeRoverPlanStep] {
-        let items = value?.arrayValue ?? []
-        return items.compactMap { value in
-            guard let object = value.objectValue,
-                  let step = normalizedOptionalPlanText(object["step"]?.stringValue),
-                  let rawStatus = normalizedOptionalPlanText(object["status"]?.stringValue),
-                  let status = CodeRoverPlanStepStatus(rawValue: rawStatus) else {
-                return nil
-            }
-
-            return CodeRoverPlanStep(step: step, status: status)
-        }
     }
 
     func decodeStructuredUserInputQuestions(from value: JSONValue?) -> [CodeRoverStructuredUserInputQuestion] {
