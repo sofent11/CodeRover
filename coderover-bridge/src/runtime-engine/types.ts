@@ -2,7 +2,7 @@
 // Purpose: Shared bridge-internal runtime engine types for session ownership, provider control, events, and projection.
 
 import type { RuntimeThreadShape } from "../bridge-types";
-import type { RuntimeThreadMeta } from "../runtime-store";
+import type { RuntimeStore, RuntimeThreadMeta } from "../runtime-store";
 
 export type RuntimeOwnerState = "idle" | "running" | "waiting_for_client" | "closed";
 
@@ -161,9 +161,17 @@ export interface ProviderRuntimeEngine {
   initialize(clientCaps?: Record<string, unknown>): Promise<void>;
   interruptTurn(threadMeta: RuntimeThreadMeta, params?: Record<string, unknown>): Promise<unknown>;
   listModels(params?: Record<string, unknown>): Promise<unknown>;
+  listThreads(params?: Record<string, unknown>): Promise<RuntimeThreadShape[]>;
+  lookupThreadMeta?(threadId: string, store: RuntimeStore): Promise<RuntimeThreadMeta | null>;
+  readThread(
+    threadMeta: RuntimeThreadMeta,
+    params?: Record<string, unknown>,
+    historyRequest?: unknown
+  ): Promise<unknown>;
   resumeThread(threadMeta: RuntimeThreadMeta, params?: Record<string, unknown>): Promise<unknown>;
   shutdown(): void;
   startThread(params?: Record<string, unknown>): Promise<unknown>;
   startTurn(threadMeta: RuntimeThreadMeta, params?: Record<string, unknown>): Promise<unknown>;
   steerTurn?(threadMeta: RuntimeThreadMeta, params?: Record<string, unknown>): Promise<unknown>;
+  syncImportedThreads?(): Promise<void>;
 }

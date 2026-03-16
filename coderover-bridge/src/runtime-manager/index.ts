@@ -28,7 +28,6 @@ import { buildRpcError, buildRpcSuccess } from "../rpc-client";
 import {
   getRuntimeProvider,
   listRuntimeProviders,
-  listStaticModelsForProvider,
 } from "../provider-catalog";
 import { createCodexAdapter, type CodexAdapter } from "../providers/codex-adapter";
 import { createClaudeAdapter } from "../providers/claude-adapter";
@@ -160,8 +159,6 @@ interface EnsureHistoryRecordOptions {
 type InterruptHandler = (() => void | Promise<void>) | null;
 type SnapshotReader = (threadId: string) => CodexHistorySnapshot | null;
 
-const MAX_HISTORY_INLINE_IMAGE_URL_BYTES = 128 * 1024;
-
 type ManagedHistoryItem = RuntimeStoreItem & {
   cwd?: string | null;
   exitCode?: number | null;
@@ -251,25 +248,44 @@ export function createRuntimeManager({
     store,
   });
   const codexEngine = createCodexRuntimeEngine({
+    buildHistoryWindowResponse,
+    buildUpstreamCodexHistoryParams,
+    buildUpstreamHistoryWindowResponse,
     codexAdapter,
+    createHistorySnapshotFromThread,
+    createThreadNotFoundError(threadId) {
+      return createRuntimeError(ERROR_THREAD_NOT_FOUND, `Thread not found: ${threadId}`);
+    },
+    defaultThreadListPageSize: DEFAULT_THREAD_LIST_PAGE_SIZE,
     decorateConversationThread,
     ensureCodexWarm,
+    extractHistoryWindowFromResult,
     extractThreadFromResult,
+    extractThreadArray,
     normalizeModelListResult,
+    normalizePositiveInteger,
     observeCodexThread,
+    primeCodexHistoryCache,
+    readCodexHistoryWindowFromCache,
     sanitizeCodexThreadResult,
+    sanitizeThreadHistoryForTransport,
     seedCodexHistoryCacheWithUserInput,
     sendThreadStartedNotification,
+    store,
     stripProviderField,
+    threadObjectToMeta,
     syncThreadSessionFromMeta,
     updateThreadSessionOwnerState,
     upsertOverlayFromThread,
+    writeCodexHistoryCache,
   });
   const claudeEngine = createManagedProviderRuntimeEngine({
     activeRunsByThread,
     adapter: claudeAdapter,
+    buildHistoryWindowResponse,
     buildManagedThreadObject,
     buildProviderMetadata,
+    createHistorySnapshotFromThread,
     createRuntimeError,
     createTurnContext: createManagedTurnContext,
     firstNonEmptyString,
@@ -282,8 +298,10 @@ export function createRuntimeManager({
   const geminiEngine = createManagedProviderRuntimeEngine({
     activeRunsByThread,
     adapter: geminiAdapter,
+    buildHistoryWindowResponse,
     buildManagedThreadObject,
     buildProviderMetadata,
+    createHistorySnapshotFromThread,
     createRuntimeError,
     createTurnContext: createManagedTurnContext,
     firstNonEmptyString,
@@ -293,6 +311,11 @@ export function createRuntimeManager({
     store,
     syncThreadSessionFromMeta,
   });
+  const providerEngines = new Map<string, ProviderRuntimeEngine>([
+    [codexEngine.providerId, codexEngine],
+    [claudeEngine.providerId, claudeEngine],
+    [geminiEngine.providerId, geminiEngine],
+  ]);
 
   async function handleClientMessage(rawMessage: string): Promise<boolean> {
     let parsed: UnknownRecord | null = null;
@@ -317,7 +340,9 @@ export function createRuntimeManager({
     try {
       switch (method) {
         case "initialize":
-          await codexEngine.initialize(params);
+          await Promise.all(
+            Array.from(providerEngines.values(), (engine) => engine.initialize(params))
+          );
           if (requestId != null) {
             sendApplicationMessage(buildRpcSuccess(requestId, { bridgeManaged: true }));
           }
@@ -504,9 +529,9 @@ export function createRuntimeManager({
 
   function shutdown(): void {
     stopAllObservedCodexThreadWatchers("shutdown");
-    codexEngine.shutdown();
-    claudeEngine.shutdown();
-    geminiEngine.shutdown();
+    for (const engine of providerEngines.values()) {
+      engine.shutdown();
+    }
     threadSessionIndex.shutdown();
     store.shutdown();
   }
@@ -786,10 +811,10 @@ export function createRuntimeManager({
       return;
     }
     lastExternalSyncAt = now;
-    await Promise.allSettled([
-      claudeAdapter.syncImportedThreads(),
-      geminiAdapter.syncImportedThreads(),
-    ]);
+    const syncTasks = Array.from(providerEngines.values())
+      .map((engine) => engine.syncImportedThreads?.())
+      .filter((task): task is Promise<void> => Boolean(task));
+    await Promise.allSettled(syncTasks);
   }
 
   async function listThreads(params: UnknownRecord): Promise<{
@@ -801,12 +826,10 @@ export function createRuntimeManager({
     const archived = Boolean(params?.archived);
     const requestedLimit = normalizePositiveInteger(params?.limit) || DEFAULT_THREAD_LIST_PAGE_SIZE;
     const cursor = decodeThreadListCursor(params?.cursor);
-    const codexThreads = await listConversationThreads(params, archived);
-    const managedThreads = store.listThreadMetas()
-      .filter((entry) => entry.provider !== "codex")
-      .filter((entry) => Boolean(entry.archived) === archived)
-      .map((entry) => buildManagedThreadObject(entry));
-    const mergedThreads = mergeThreadLists([...codexThreads, ...managedThreads])
+    const providerThreads = await Promise.all(
+      Array.from(providerEngines.values(), (engine) => engine.listThreads(params))
+    );
+    const mergedThreads = mergeThreadLists(providerThreads.flat())
       .map((thread) => summarizeThreadForList(thread));
     const page = paginateThreadList(mergedThreads, {
       archived,
@@ -822,47 +845,11 @@ export function createRuntimeManager({
     };
   }
 
-  async function listConversationThreads(
-    params: UnknownRecord,
-    archived: boolean
-  ): Promise<RuntimeThreadShape[]> {
-    if (!codexAdapter.isAvailable()) {
-      return [];
-    }
-
-    await ensureCodexWarm();
-    const normalizedParams = {
-      ...stripProviderField(params || {}),
-    };
-    delete normalizedParams.cursor;
-    normalizedParams.limit = Math.max(
-      normalizePositiveInteger(normalizedParams.limit) || DEFAULT_THREAD_LIST_PAGE_SIZE,
-      500
-    );
-    const result = await codexAdapter.listThreads(normalizedParams);
-    const threads = extractThreadArray(result).map((thread) =>
-      decorateConversationThread(asObject(thread) as RuntimeThreadShape)
-    );
-    return threads.filter((thread) => {
-      const overlay = store.getThreadMeta(thread.id);
-      const overlayArchived = overlay?.archived;
-      if (overlayArchived != null) {
-        return Boolean(overlayArchived) === archived;
-      }
-      return archived === Boolean(params?.archived);
-    });
-  }
-
   async function readThread(params: UnknownRecord): Promise<unknown> {
     const threadId = normalizeOptionalString(params.threadId || params.thread_id);
     const threadMeta = await requireThreadMeta(threadId);
     const historyRequest = normalizeHistoryRequest(params?.history);
-
-    if (threadMeta.provider === "codex") {
-      return readCodexThread(threadMeta.id, params, historyRequest);
-    }
-
-    return readManagedThread(threadMeta, params, historyRequest);
+    return getProviderEngine(threadMeta.provider).readThread(threadMeta, params, historyRequest);
   }
 
   async function requireThreadMeta(threadId: unknown): Promise<RuntimeThreadMeta> {
@@ -876,157 +863,23 @@ export function createRuntimeManager({
       return storedMeta;
     }
 
-    if (!normalizedThreadId.startsWith("claude:") && !normalizedThreadId.startsWith("gemini:")) {
-      const coderoverThread = await readConversationThreadMeta(normalizedThreadId);
-      if (coderoverThread) {
-        return coderoverThread;
+    for (const engine of providerEngines.values()) {
+      const resolvedMeta = await engine.lookupThreadMeta?.(normalizedThreadId, store);
+      if (resolvedMeta) {
+        return resolvedMeta;
       }
     }
 
     throw createRuntimeError(ERROR_THREAD_NOT_FOUND, `Thread not found: ${normalizedThreadId}`);
   }
 
-  async function readConversationThreadMeta(threadId: unknown): Promise<RuntimeThreadMeta | null> {
-    if (!codexAdapter.isAvailable()) {
-      return null;
-    }
-    try {
-      await ensureCodexWarm();
-      const result = await codexAdapter.readThread({
-        threadId,
-        includeTurns: false,
-      });
-      const threadObject = extractThreadFromResult(result);
-      if (!threadObject) {
-        return null;
-      }
-      const decorated = decorateConversationThread(threadObject);
-      upsertOverlayFromThread(decorated);
-      return store.getThreadMeta(threadId) || threadObjectToMeta(decorated);
-    } catch {
-      return null;
-    }
-  }
-
-  function getManagedProviderAdapter(provider: RuntimeThreadMeta["provider"]): ManagedProviderAdapter {
-    if (provider === "claude") {
-      return claudeAdapter;
-    }
-    if (provider === "gemini") {
-      return geminiAdapter;
-    }
-    throw createMethodError(`Managed adapter unavailable for provider: ${provider}`);
-  }
-
   function getProviderEngine(provider: unknown): ProviderRuntimeEngine {
     const normalizedProvider = resolveProviderId(provider);
-    if (normalizedProvider === "codex") {
-      return codexEngine;
-    }
-    if (normalizedProvider === "claude") {
-      return claudeEngine;
-    }
-    if (normalizedProvider === "gemini") {
-      return geminiEngine;
+    const engine = providerEngines.get(normalizedProvider);
+    if (engine) {
+      return engine;
     }
     throw createMethodError(`Runtime engine unavailable for provider: ${normalizedProvider}`);
-  }
-
-  async function readManagedThread(
-    threadMeta: RuntimeThreadMeta,
-    params: UnknownRecord,
-    historyRequest: RuntimeHistoryRequest | null
-  ): Promise<unknown> {
-    await getManagedProviderAdapter(threadMeta.provider).hydrateThread(threadMeta);
-    const refreshedMeta = store.getThreadMeta(threadMeta.id) || threadMeta;
-    const history = store.getThreadHistory(threadMeta.id);
-    const thread = buildManagedThreadObject(refreshedMeta, history?.turns || []);
-    if (!historyRequest) {
-      return { thread };
-    }
-    return buildHistoryWindowResponse(
-      createHistorySnapshotFromThread(thread),
-      historyRequest,
-      false
-    );
-  }
-
-  async function readCodexThread(
-    threadId: string,
-    params: UnknownRecord,
-    historyRequest: RuntimeHistoryRequest | null = null
-  ): Promise<unknown> {
-    await ensureCodexWarm();
-
-    if (!historyRequest) {
-      const result = await codexAdapter.readThread(stripProviderField(params));
-      const threadObject = extractThreadFromResult(result);
-      if (!threadObject) {
-        throw createRuntimeError(ERROR_THREAD_NOT_FOUND, `Thread not found: ${threadId}`);
-      }
-
-      const decoratedThread = decorateConversationThread(threadObject);
-      upsertOverlayFromThread(decoratedThread);
-      primeCodexHistoryCache(threadId, decoratedThread);
-      return {
-        thread: sanitizeThreadHistoryForTransport(decoratedThread),
-      };
-    }
-
-    const cachedWindow = readCodexHistoryWindowFromCache(threadId, historyRequest);
-    if (cachedWindow) {
-      return cachedWindow;
-    }
-
-    const upstreamHistoryResult = await codexAdapter.readThread(
-      buildUpstreamCodexHistoryParams(params, historyRequest)
-    );
-    const upstreamThreadObject = extractThreadFromResult(upstreamHistoryResult);
-    if (upstreamThreadObject) {
-      const decoratedThread = decorateConversationThread(upstreamThreadObject);
-      upsertOverlayFromThread(decoratedThread);
-      const historyWindow = extractHistoryWindowFromResult(upstreamHistoryResult);
-      if (historyWindow) {
-        const partialSnapshot = {
-          ...createHistorySnapshotFromThread(decoratedThread),
-          hasOlder: Boolean(historyWindow.hasOlder),
-          hasNewer: Boolean(historyWindow.hasNewer),
-        };
-        writeCodexHistoryCache(threadId, partialSnapshot);
-        return buildUpstreamHistoryWindowResponse(
-          partialSnapshot,
-          historyRequest,
-          historyWindow,
-          decoratedThread
-        );
-      }
-    }
-
-    const fullSnapshot = await fetchFullCodexThreadSnapshot(threadId, params);
-    return buildHistoryWindowResponse(fullSnapshot, historyRequest, false);
-  }
-
-  async function fetchFullCodexThreadSnapshot(
-    threadId: string,
-    params: UnknownRecord
-  ): Promise<CodexHistorySnapshot> {
-    const upstreamParams: UnknownRecord = {
-      ...stripProviderField(params || {}),
-      threadId,
-      includeTurns: true,
-    };
-    delete upstreamParams.history;
-
-    const result = await codexAdapter.readThread(upstreamParams);
-    const threadObject = extractThreadFromResult(result);
-    if (!threadObject) {
-      throw createRuntimeError(ERROR_THREAD_NOT_FOUND, `Thread not found: ${threadId}`);
-    }
-
-    const decoratedThread = decorateConversationThread(threadObject);
-    upsertOverlayFromThread(decoratedThread);
-    primeCodexHistoryCache(threadId, decoratedThread);
-    return createHistorySnapshotFromThread(decoratedThread);
   }
 
   function readCodexHistoryWindowFromCache(
@@ -3255,35 +3108,11 @@ function decodeThreadListCursor(value: unknown): { offset: number } | null {
 }
 
 function sanitizeThreadHistoryForTransport(thread: RuntimeThreadShape | null): RuntimeThreadShape | null {
-  if (!thread) {
-    return null;
-  }
-  const clone = JSON.parse(JSON.stringify(thread)) as RuntimeThreadShape;
-  if (!Array.isArray(clone.turns)) {
-    return clone;
-  }
-  clone.turns = clone.turns.map((turn) => {
-    if (!turn || typeof turn !== "object" || !Array.isArray(turn.items)) {
-      return turn;
-    }
-    return {
-      ...turn,
-      items: turn.items.map((item) => sanitizeHistoryItemForTransport(item)),
-    };
-  });
-  return clone;
+  return historyHelpers.sanitizeThreadHistoryForTransport(thread);
 }
 
 function sanitizeCodexThreadResult(result: unknown): unknown {
-  const record = asObject(result);
-  const thread = extractThreadFromResult(record);
-  if (!thread) {
-    return result;
-  }
-  return {
-    ...record,
-    thread: sanitizeThreadHistoryForTransport(thread),
-  };
+  return historyHelpers.sanitizeThreadResultForTransport(result, extractThreadFromResult);
 }
 
 function extractArray(value: unknown, candidatePaths: string[]): unknown[] {
@@ -3575,43 +3404,13 @@ function rebuildThreadFromHistoryRecords(
       });
       turnOrder.push(turnId);
     }
-    turnsById.get(turnId)!.items.push(sanitizeHistoryItemForTransport(record.itemObject));
+    turnsById.get(turnId)!.items.push(historyHelpers.sanitizeHistoryItemForTransport(record.itemObject));
   });
 
   return {
     ...JSON.parse(JSON.stringify(threadBase || {})),
     turns: turnOrder.map((turnId) => turnsById.get(turnId)),
   };
-}
-
-function sanitizeHistoryItemForTransport(itemObject: RuntimeItemShape): RuntimeItemShape {
-  const clone = JSON.parse(JSON.stringify(itemObject || {})) as RuntimeItemShape & Record<string, unknown>;
-  if (!Array.isArray(clone.content)) {
-    return clone;
-  }
-
-  clone.content = clone.content.map((entry) => sanitizeHistoryContentEntryForTransport(entry));
-  return clone;
-}
-
-function sanitizeHistoryContentEntryForTransport(entry: unknown): unknown {
-  if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
-    return entry;
-  }
-
-  const clone = JSON.parse(JSON.stringify(entry)) as Record<string, unknown>;
-  for (const key of ["url", "image_url"]) {
-    const value = clone[key];
-    if (typeof value !== "string" || !value.startsWith("data:image")) {
-      continue;
-    }
-    if (Buffer.byteLength(value, "utf8") <= MAX_HISTORY_INLINE_IMAGE_URL_BYTES) {
-      continue;
-    }
-    delete clone[key];
-    clone.omittedLargeInlineImage = true;
-  }
-  return clone;
 }
 
 function nextHistoryOrdinal(records: RuntimeHistoryRecord[]): number {

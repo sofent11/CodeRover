@@ -33,11 +33,17 @@ interface ManagedTurnRuntimeContext extends ManagedProviderTurnContext {
 interface CreateManagedProviderRuntimeEngineOptions {
   activeRunsByThread: Map<string, ActiveRunEntry>;
   adapter: ManagedProviderAdapter;
+  buildHistoryWindowResponse(
+    snapshot: unknown,
+    historyRequest: unknown,
+    servedFromCache: boolean
+  ): unknown;
   buildProviderMetadata(provider: unknown): { providerTitle: string };
   buildManagedThreadObject(
     threadMeta: RuntimeThreadMeta,
     turns?: unknown[] | null
   ): RuntimeThreadShape;
+  createHistorySnapshotFromThread(threadObject: RuntimeThreadShape): unknown;
   createRuntimeError(code: number, message: string): Error & { code?: number };
   createTurnContext(
     threadMeta: RuntimeThreadMeta,
@@ -62,8 +68,10 @@ interface CreateManagedProviderRuntimeEngineOptions {
 export function createManagedProviderRuntimeEngine({
   activeRunsByThread,
   adapter,
+  buildHistoryWindowResponse,
   buildProviderMetadata,
   buildManagedThreadObject,
+  createHistorySnapshotFromThread,
   createRuntimeError,
   createTurnContext,
   firstNonEmptyString,
@@ -116,6 +124,28 @@ export function createManagedProviderRuntimeEngine({
       return {
         items: listStaticModelsForProvider(providerId),
       };
+    },
+    async listThreads(params = {}) {
+      const archived = Boolean(params.archived);
+      return store.listThreadMetas()
+        .filter((entry) => entry.provider === providerId)
+        .filter((entry) => Boolean(entry.archived) === archived)
+        .map((entry) => buildManagedThreadObject(entry));
+    },
+    async readThread(threadMeta, _params = {}, historyRequest = null) {
+      await adapter.hydrateThread(threadMeta);
+      const refreshedMeta = store.getThreadMeta(threadMeta.id) || threadMeta;
+      syncThreadSessionFromMeta(refreshedMeta);
+      const history = store.getThreadHistory(threadMeta.id);
+      const thread = buildManagedThreadObject(refreshedMeta, history?.turns || []);
+      if (!historyRequest) {
+        return { thread };
+      }
+      return buildHistoryWindowResponse(
+        createHistorySnapshotFromThread(thread),
+        historyRequest,
+        false
+      );
     },
     async resumeThread(threadMeta) {
       await ensureSession(threadMeta);
@@ -210,6 +240,9 @@ export function createManagedProviderRuntimeEngine({
         threadId: threadMeta.id,
         turnId: turnContext.turnId,
       };
+    },
+    async syncImportedThreads() {
+      await adapter.syncImportedThreads();
     },
   };
 }

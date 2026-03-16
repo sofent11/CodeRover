@@ -1,7 +1,7 @@
 // FILE: runtime-manager/codex-history.ts
 // Purpose: Typed history-window and cursor helpers for Codex-backed thread reads.
 
-import type { RuntimeThreadShape } from "../bridge-types";
+import type { RuntimeItemShape, RuntimeThreadShape } from "../bridge-types";
 import type {
   RuntimeHistoryCursor,
   RuntimeHistoryRecord,
@@ -13,6 +13,7 @@ import type {
 type UnknownRecord = Record<string, unknown>;
 type StripProviderField = <TValue>(params: TValue) => Omit<TValue, "provider"> | TValue;
 type NormalizeOptionalString = (value: unknown) => string | null;
+const MAX_HISTORY_INLINE_IMAGE_URL_BYTES = 128 * 1024;
 
 interface ThreadListLike {
   id?: string;
@@ -190,4 +191,69 @@ export function extractThreadListCursor(
     return normalized || null;
   }
   return typeof cursor === "number" ? cursor : null;
+}
+
+export function sanitizeHistoryItemForTransport(itemObject: RuntimeItemShape): RuntimeItemShape {
+  const clone = JSON.parse(JSON.stringify(itemObject || {})) as RuntimeItemShape & Record<string, unknown>;
+  if (!Array.isArray(clone.content)) {
+    return clone;
+  }
+
+  clone.content = clone.content.map((entry) => sanitizeHistoryContentEntryForTransport(entry));
+  return clone;
+}
+
+export function sanitizeThreadHistoryForTransport(thread: RuntimeThreadShape | null): RuntimeThreadShape | null {
+  if (!thread) {
+    return null;
+  }
+  const clone = JSON.parse(JSON.stringify(thread)) as RuntimeThreadShape;
+  if (!Array.isArray(clone.turns)) {
+    return clone;
+  }
+  clone.turns = clone.turns.map((turn) => {
+    if (!turn || typeof turn !== "object" || !Array.isArray(turn.items)) {
+      return turn;
+    }
+    return {
+      ...turn,
+      items: turn.items.map((item) => sanitizeHistoryItemForTransport(item)),
+    };
+  });
+  return clone;
+}
+
+export function sanitizeThreadResultForTransport(
+  result: unknown,
+  extractThread: (value: unknown) => RuntimeThreadShape | null
+): unknown {
+  const record = result && typeof result === "object" ? (result as UnknownRecord) : null;
+  const thread = extractThread(record);
+  if (!thread || !record) {
+    return result;
+  }
+  return {
+    ...record,
+    thread: sanitizeThreadHistoryForTransport(thread),
+  };
+}
+
+function sanitizeHistoryContentEntryForTransport(entry: unknown): unknown {
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+    return entry;
+  }
+
+  const clone = JSON.parse(JSON.stringify(entry)) as Record<string, unknown>;
+  for (const key of ["url", "image_url"]) {
+    const value = clone[key];
+    if (typeof value !== "string" || !value.startsWith("data:image")) {
+      continue;
+    }
+    if (Buffer.byteLength(value, "utf8") <= MAX_HISTORY_INLINE_IMAGE_URL_BYTES) {
+      continue;
+    }
+    delete clone[key];
+    clone.omittedLargeInlineImage = true;
+  }
+  return clone;
 }
