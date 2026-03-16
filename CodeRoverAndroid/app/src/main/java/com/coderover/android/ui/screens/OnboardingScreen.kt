@@ -107,7 +107,7 @@ fun OnboardingScreen(onContinue: () -> Unit) {
                 modifier = Modifier.fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
-                OnboardingStep(number = "1", title = "Install the package", command = "npm install -g coderover")
+                OnboardingStep(number = "1", title = "Install the package", command = "bun add -g coderover")
                 OnboardingStep(number = "2", title = "Start the bridge", command = "coderover up")
                 OnboardingStep(number = "3", title = "Scan the QR code")
             }

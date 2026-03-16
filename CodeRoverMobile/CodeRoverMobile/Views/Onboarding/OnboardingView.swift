@@ -57,7 +57,7 @@ struct OnboardingView: View {
                                 OnboardingStepRow(
                                     number: "1",
                                     title: "Install the package",
-                                    command: "npm install -g coderover"
+                                    command: "bun add -g coderover"
                                 )
 
                                 OnboardingStepRow(

@@ -4,7 +4,6 @@
 
 # CodeRover
 
-[![npm version](https://img.shields.io/npm/v/coderover)](https://www.npmjs.com/package/coderover)
 [![License: ISC](https://img.shields.io/badge/License-ISC-blue.svg)](LICENSE)
 
 Control CodeRover from your iPhone. CodeRover is a local-first open-source bridge + iOS app that keeps the CodeRover runtime on your Mac and lets your phone connect through a paired encrypted channel over your LAN or tailnet.
@@ -49,7 +48,7 @@ If you scan the pairing QR with a generic camera or QR reader before installing 
 This is a monorepo with a local bridge, an iOS app target, and its tests:
 
 ```
-├── coderover-bridge/                # Node.js bridge package used by `coderover`
+├── coderover-bridge/                # Bun/TypeScript bridge package used by `coderover`
 │   ├── bin/                      # CLI entrypoints
 │   └── src/                      # Bridge runtime, git/workspace handlers, refresh helpers
 │
@@ -66,7 +65,7 @@ This is a monorepo with a local bridge, an iOS app target, and its tests:
 
 ## Prerequisites
 
-- **Node.js** v18+
+- **Bun** v1.0+
 - **CodeRover CLI** installed and in your PATH
 - **CodeRover desktop app** (optional — for viewing threads on your Mac)
 - **[CodeRover iOS app via TestFlight](https://testflight.apple.com/join/PKZhBUVM)** installed on your iPhone or iPad before scanning the pairing QR
@@ -76,16 +75,16 @@ This is a monorepo with a local bridge, an iOS app target, and its tests:
 ## Install the Bridge
 
 ```sh
-npm install -g coderover
+bun add -g coderover
 ```
 
 To update an existing global install later:
 
 ```sh
-npm install -g coderover@latest
+bun add -g coderover@latest
 ```
 
-If you only want to try CodeRover, you can install it from npm and run it without cloning this repository.
+If you only want to try CodeRover, you can install it with Bun and run it without cloning this repository.
 
 ## Quick Start
 

@@ -201,27 +201,26 @@ struct CommandExecutionDetailSheet: View {
         @State private var isShowingSheet = false
 
         private let status = CommandExecutionStatusModel(
-            command: "npm install",
+            command: "bun install",
             statusLabel: "completed",
             accent: .completed
         )
         private let details = CommandExecutionDetails(
-            fullCommand: "/usr/bin/bash -lc \"cd /home/user/project && npm install --save-dev typescript @types/node\"",
+            fullCommand: "/usr/bin/bash -lc \"cd /home/user/project && bun add --dev typescript @types/node\"",
             cwd: "/home/user/project",
             exitCode: 0,
             durationMs: 4320,
             outputTail: """
-            added 127 packages in 4s
+            installed 127 packages in 4s
 
-            15 packages are looking for funding
-              run `npm fund` for details
+            Saved lockfile
             """
         )
 
         var body: some View {
             VStack(spacing: 16) {
                 CommandExecutionCardBody(
-                    command: "/usr/bin/bash -lc \"cd /home/user/project && npm install\"",
+                    command: "/usr/bin/bash -lc \"cd /home/user/project && bun install\"",
                     statusLabel: "running",
                     accent: .running
                 )
@@ -253,20 +252,19 @@ struct CommandExecutionDetailSheet: View {
 #Preview("Detail Sheet — Full") {
     CommandExecutionDetailSheet(
         status: CommandExecutionStatusModel(
-            command: "npm install",
+            command: "bun install",
             statusLabel: "completed",
             accent: .completed
         ),
         details: CommandExecutionDetails(
-            fullCommand: "/usr/bin/bash -lc \"cd /home/user/project && npm install --save-dev typescript @types/node\"",
+            fullCommand: "/usr/bin/bash -lc \"cd /home/user/project && bun add --dev typescript @types/node\"",
             cwd: "/home/user/project",
             exitCode: 0,
             durationMs: 4320,
             outputTail: """
-            added 127 packages in 4s
+            installed 127 packages in 4s
 
-            15 packages are looking for funding
-              run `npm fund` for details
+            Saved lockfile
             """
         )
     )
@@ -275,12 +273,12 @@ struct CommandExecutionDetailSheet: View {
 #Preview("Detail Sheet — Failed") {
     CommandExecutionDetailSheet(
         status: CommandExecutionStatusModel(
-            command: "npm test",
+            command: "bun test",
             statusLabel: "failed",
             accent: .failed
         ),
         details: CommandExecutionDetails(
-            fullCommand: "/usr/bin/bash -lc \"cd /home/user/project && npm test\"",
+            fullCommand: "/usr/bin/bash -lc \"cd /home/user/project && bun test\"",
             cwd: "/home/user/project",
             exitCode: 1,
             durationMs: 890,

@@ -1,10 +1,10 @@
 // FILE: secure-transport.test.ts
 // Purpose: Verifies the bridge-side E2EE handshake rejects plaintext and round-trips encrypted payloads.
 // Layer: Unit test
-// Exports: node:test suite
-// Depends on: node:test, node:assert/strict, crypto, ../src/secure-transport
+// Exports: bun:test suite
+// Depends on: bun:test, node:assert/strict, crypto, ../src/secure-transport
 
-import { test } from "node:test";
+import { test } from "bun:test";
 import { strict as assert } from "node:assert";
 import {
   createCipheriv,

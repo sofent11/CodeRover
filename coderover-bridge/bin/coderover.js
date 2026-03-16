@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 // FILE: coderover.js
 // Purpose: CLI surface for starting the local CodeRover bridge, reopening the latest active thread, and tailing its rollout file.
 // Layer: CLI binary

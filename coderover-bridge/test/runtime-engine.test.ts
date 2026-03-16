@@ -1,7 +1,7 @@
 // FILE: runtime-engine.test.ts
 // Purpose: Verifies the runtime engine projector, session index, and ACP engine lifecycle.
 
-import { test } from "node:test";
+import { test } from "bun:test";
 import { strict as assert } from "node:assert";
 import * as fs from "fs";
 import * as os from "os";
@@ -56,13 +56,13 @@ test("projectRuntimeEventToMobileProtocol preserves existing plan and approval m
     turnId: "turn-1",
     itemId: "approval-1",
     method: "item/commandExecution/requestApproval",
-    command: "npm test",
+    command: "bun test",
     reason: "Run checks",
     toolName: null,
   });
   assert.equal(approvalProjection.kind, "request");
   assert.equal(approvalProjection.method, "item/commandExecution/requestApproval");
-  assert.equal(approvalProjection.params.command, "npm test");
+  assert.equal(approvalProjection.params.command, "bun test");
 });
 
 test("thread session index persists runtime owner state and provider session binding", () => {
@@ -123,7 +123,7 @@ test("ACP engine bridges prompt lifecycle, approval, and structured user input t
         type: "approval_request",
         itemId: "approval-1",
         method: "item/commandExecution/requestApproval",
-        command: "npm test",
+        command: "bun test",
         reason: "Run the targeted check",
         respond(decision) {
           approvalResponses.push(decision);

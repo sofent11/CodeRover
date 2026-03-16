@@ -11,9 +11,9 @@
     "dist/"
   ],
   "scripts": {
-    "build": "node ./scripts/default-runtime.cjs build",
-    "start": "node ./scripts/default-runtime.cjs start",
-    "test": "node ./scripts/default-runtime.cjs test"
+    "build": "bun ./scripts/default-runtime.mjs build",
+    "start": "bun ./scripts/default-runtime.mjs start",
+    "test": "bun ./scripts/default-runtime.mjs test"
   },
   "keywords": [
     "coderover",
@@ -24,6 +24,9 @@
   "author": "Emanuele Di Pietro",
   "license": "ISC",
   "type": "commonjs",
+  "engines": {
+    "bun": ">=1.0.0"
+  },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.74",
     "qrcode-terminal": "^0.12.0",

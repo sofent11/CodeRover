@@ -1,7 +1,7 @@
 // FILE: coderover-desktop-refresher.test.ts
 // Purpose: Verifies desktop refresh defaults, failure hardening, and rollout-based throttling.
 
-import { test } from "node:test";
+import { test } from "bun:test";
 import { strict as assert } from "node:assert";
 
 import {

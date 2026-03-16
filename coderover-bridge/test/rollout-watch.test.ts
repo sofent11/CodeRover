@@ -1,7 +1,7 @@
 // FILE: rollout-watch.test.ts
 // Purpose: Verifies rollout-backed context-window reads used by the Codex status sheet.
 
-import { test } from "node:test";
+import { test } from "bun:test";
 import { strict as assert } from "node:assert";
 import * as fs from "fs";
 import * as os from "os";

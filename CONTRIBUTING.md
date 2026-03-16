@@ -36,7 +36,7 @@ Opening a PR does not create an obligation on my side. I may close it. I may ign
 
 ### Prerequisites
 
-- **Node.js** v18+
+- **Bun** v1.0+
 - **CodeRover CLI** installed and working
 - **CodeRover desktop app** (optional — for viewing threads on Mac)
 - **macOS** (required for desktop refresh; core bridge works on any OS)
@@ -113,7 +113,7 @@ CODEROVER_REFRESH_ENABLED=true bun run start
 
 ```
 coderover/
-├── coderover-bridge/          # Node.js CLI bridge (npm package)
+├── coderover-bridge/          # Bun/TypeScript CLI bridge package
 │   ├── bin/coderover.js      # CLI entrypoint
 │   └── src/
 │       ├── bridge.js               # Core local bridge + message forwarding

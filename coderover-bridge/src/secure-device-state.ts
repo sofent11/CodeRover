@@ -5,7 +5,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { randomUUID, generateKeyPairSync } from "crypto";
-import { execFileSync } from "child_process";
+import * as childProcess from "child_process";
 
 interface JsonWebKeyLike {
   x?: string;
@@ -25,10 +25,27 @@ interface BridgeDeviceStateWithMigrationFlag extends BridgeDeviceState {
   didMigrate?: boolean;
 }
 
-const STORE_DIR = path.join(os.homedir(), ".coderover");
-const STORE_FILE = path.join(STORE_DIR, "device-state.json");
+type ExecFileSyncLike = typeof childProcess.execFileSync;
+
 const KEYCHAIN_SERVICE = "com.coderover.bridge.device-state";
 const KEYCHAIN_ACCOUNT = "default";
+let execFileSyncImpl: ExecFileSyncLike = childProcess.execFileSync.bind(childProcess);
+
+function resolveCoderoverHome(): string {
+  const configuredHome = process.env.CODEROVER_HOME?.trim();
+  if (configuredHome) {
+    return configuredHome;
+  }
+  return path.join(os.homedir(), ".coderover");
+}
+
+function resolveStoreDir(): string {
+  return resolveCoderoverHome();
+}
+
+function resolveStoreFile(): string {
+  return path.join(resolveStoreDir(), "device-state.json");
+}
 
 export function loadOrCreateBridgeDeviceState(): BridgeDeviceState {
   const existingState = readBridgeDeviceState();
@@ -126,10 +143,12 @@ function readBridgeDeviceStateRecord(
 
 function writeBridgeDeviceState(state: BridgeDeviceState): void {
   const serialized = JSON.stringify(state, null, 2);
-  fs.mkdirSync(STORE_DIR, { recursive: true });
-  fs.writeFileSync(STORE_FILE, serialized, { mode: 0o600 });
+  const storeDir = resolveStoreDir();
+  const storeFile = resolveStoreFile();
+  fs.mkdirSync(storeDir, { recursive: true });
+  fs.writeFileSync(storeFile, serialized, { mode: 0o600 });
   try {
-    fs.chmodSync(STORE_FILE, 0o600);
+    fs.chmodSync(storeFile, 0o600);
   } catch {
     // Best-effort only on filesystems that support POSIX modes.
   }
@@ -148,12 +167,13 @@ function readKeychainStoredDeviceStateString(): string | null {
 }
 
 function readFileStoredDeviceStateString(): string | null {
-  if (!fs.existsSync(STORE_FILE)) {
+  const storeFile = resolveStoreFile();
+  if (!fs.existsSync(storeFile)) {
     return null;
   }
 
   try {
-    return fs.readFileSync(STORE_FILE, "utf8");
+    return fs.readFileSync(storeFile, "utf8");
   } catch {
     return null;
   }
@@ -161,7 +181,7 @@ function readFileStoredDeviceStateString(): string | null {
 
 function readKeychainStateString(): string | null {
   try {
-    return execFileSync(
+    return execFileSyncImpl(
       "security",
       [
         "find-generic-password",
@@ -200,7 +220,7 @@ function writeKeychainStateString(value: string): boolean {
     return false;
   }
   try {
-    execFileSync(
+    execFileSyncImpl(
       "security",
       [
         "add-generic-password",
@@ -304,4 +324,8 @@ function base64UrlToBase64(value: string | undefined): string {
 
   const padded = `${value}${"=".repeat((4 - (value.length % 4 || 4)) % 4)}`;
   return padded.replace(/-/g, "+").replace(/_/g, "/");
+}
+
+export function __setExecFileSyncForTests(override: ExecFileSyncLike | null): void {
+  execFileSyncImpl = override ? override : childProcess.execFileSync.bind(childProcess);
 }

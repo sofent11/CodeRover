@@ -1,7 +1,7 @@
 // FILE: desktop-handler.test.ts
 // Purpose: Verifies explicit desktop restart routing and provider/platform errors for bridge desktop methods.
 
-import { test } from "node:test";
+import { test } from "bun:test";
 import { strict as assert } from "node:assert";
 
 import { handleDesktopRequest } from "../src/desktop-handler";

@@ -18,22 +18,20 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v5
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
         with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: coderover-bridge/package-lock.json
+          bun-version: latest
 
       - name: Install bridge dependencies
         working-directory: coderover-bridge
-        run: npm ci
+        run: bun install --frozen-lockfile
 
       - name: Run bridge tests
         working-directory: coderover-bridge
-        run: npm test
+        run: bun run test
 
       - name: Verify bridge entrypoints load
         working-directory: coderover-bridge
         run: |
-          node -e "const mod = require('./dist'); const names = ['startBridge', 'openLastActiveThread', 'watchThreadRollout']; for (const name of names) { if (typeof mod[name] !== 'function') { throw new Error('Missing export: ' + name); } }"
+          bun -e "const mod = require('./dist'); const names = ['startBridge', 'openLastActiveThread', 'watchThreadRollout']; for (const name of names) { if (typeof mod[name] !== 'function') { throw new Error('Missing export: ' + name); } }"

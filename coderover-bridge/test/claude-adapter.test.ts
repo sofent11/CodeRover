@@ -2,7 +2,7 @@
 // Purpose: Verifies Claude session imports refresh cached history when the SDK reports newer data.
 // Layer: Unit test
 
-import { test } from "node:test";
+import { test } from "bun:test";
 import { strict as assert } from "node:assert";
 import * as fs from "fs";
 import * as os from "os";

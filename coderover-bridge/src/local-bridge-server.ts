@@ -150,8 +150,12 @@ export function startLocalBridgeServer({
     }
 
     if (!canAcceptConnection()) {
-      socket.write("HTTP/1.1 503 Service Unavailable\r\n\r\n");
-      socket.destroy();
+      socket.end(
+        "HTTP/1.1 503 Service Unavailable\r\n"
+        + "Connection: close\r\n"
+        + "Content-Length: 0\r\n"
+        + "\r\n"
+      );
       return;
     }
 
@@ -309,6 +313,7 @@ interface BuildTransportCandidatesOptions {
   localPort?: number;
   tailnetUrl?: string;
   relayUrls?: string[] | string;
+  networkInterfaces?: typeof os.networkInterfaces;
 }
 
 export function buildTransportCandidates({
@@ -316,6 +321,7 @@ export function buildTransportCandidates({
   localPort = 8765,
   tailnetUrl = "",
   relayUrls = [],
+  networkInterfaces = os.networkInterfaces,
 }: BuildTransportCandidatesOptions = {}): TransportCandidateShape[] {
   const routePath = `/bridge/${bridgeId}`;
   const candidates: TransportCandidateShape[] = [];
@@ -334,11 +340,11 @@ export function buildTransportCandidates({
     });
   }
 
-  for (const address of listReachableLocalIPv4Addresses()) {
+  for (const address of listReachableLocalIPv4Addresses(networkInterfaces)) {
     addCandidate("local_ipv4", `ws://${address}:${localPort}${routePath}`, address);
   }
 
-  for (const address of listReachableTailnetIPv4Addresses()) {
+  for (const address of listReachableTailnetIPv4Addresses(networkInterfaces)) {
     addCandidate("tailnet_ipv4", `ws://${address}:${localPort}${routePath}`, address);
   }
 
@@ -355,12 +361,16 @@ export function buildTransportCandidates({
   return candidates;
 }
 
-function listReachableLocalIPv4Addresses(): string[] {
-  return listReachableIPv4Addresses(isReachableLocalIPv4);
+function listReachableLocalIPv4Addresses(
+  networkInterfaces: typeof os.networkInterfaces
+): string[] {
+  return listReachableIPv4Addresses(isReachableLocalIPv4, networkInterfaces);
 }
 
-function listReachableTailnetIPv4Addresses(): string[] {
-  return listReachableIPv4Addresses(isReachableTailnetIPv4);
+function listReachableTailnetIPv4Addresses(
+  networkInterfaces: typeof os.networkInterfaces
+): string[] {
+  return listReachableIPv4Addresses(isReachableTailnetIPv4, networkInterfaces);
 }
 
 function isBridgeRoutePath(pathname: string | undefined): boolean {
@@ -368,9 +378,10 @@ function isBridgeRoutePath(pathname: string | undefined): boolean {
 }
 
 function listReachableIPv4Addresses(
-  addressFilter: (address: string, interfaceName: string) => boolean
+  addressFilter: (address: string, interfaceName: string) => boolean,
+  networkInterfaces: typeof os.networkInterfaces
 ): string[] {
-  const interfaces = os.networkInterfaces();
+  const interfaces = networkInterfaces();
   const addresses: string[] = [];
 
   for (const [interfaceName, networkDetails] of Object.entries(interfaces)) {

@@ -1,10 +1,10 @@
 // FILE: runtime-manager.test.ts
 // Purpose: Verifies bridge-managed multi-provider routing for non-CodeRover threads.
 // Layer: Unit test
-// Exports: node:test suite
-// Depends on: node:test, node:assert/strict, fs, os, path, ../src/runtime-manager
+// Exports: bun:test suite
+// Depends on: bun:test, node:assert/strict, fs, os, path, ../src/runtime-manager
 
-import { test } from "node:test";
+import { test } from "bun:test";
 import { strict as assert } from "node:assert";
 import * as fs from "fs";
 import * as os from "os";
