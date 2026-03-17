@@ -12,6 +12,7 @@ import type { JsonRpcId } from "../src/bridge-types";
 import { createRuntimeStore, type RuntimeStore, type RuntimeSessionMeta } from "../src/runtime-store";
 import { createSessionRuntimeIndex, type SessionRuntimeIndex } from "../src/runtime-engine/session-runtime-index";
 import type { AcpSessionManager } from "../src/acp/session-manager";
+import { RUNTIME_EXTENSION_METHODS } from "../src/runtime-manager/extension-router";
 
 type RuntimeManager = ReturnType<typeof createRuntimeManager>;
 type UnknownRecord = Record<string, unknown>;
@@ -472,4 +473,37 @@ test("session/prompt persists session ownership metadata in the ACP journal", as
   } finally {
     fixture.cleanup();
   }
+});
+
+test("unsupported _coderover runtime extensions return explicit method errors", async () => {
+  const fixture = createManagerFixture();
+  try {
+    const skillsResponse = responseById(
+      await request(fixture, "skills-list", "_coderover/skills/list", {}),
+      "skills-list"
+    );
+    assert.equal(skillsResponse.error.code, -32601);
+    assert.match(skillsResponse.error.message, /Unsupported CodeRover runtime extension/);
+
+    const fuzzyResponse = responseById(
+      await request(fixture, "fuzzy-search", "_coderover/fuzzy_file_search", {}),
+      "fuzzy-search"
+    );
+    assert.equal(fuzzyResponse.error.code, -32601);
+    assert.match(fuzzyResponse.error.message, /Unsupported CodeRover runtime extension/);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("runtime extension inventory covers every currently translated ACP bridge method", () => {
+  assert.deepEqual(RUNTIME_EXTENSION_METHODS, [
+    "_coderover/agent/list",
+    "_coderover/model/list",
+    "_coderover/session/set_title",
+    "_coderover/session/archive",
+    "_coderover/session/unarchive",
+    "_coderover/skills/list",
+    "_coderover/fuzzy_file_search",
+  ]);
 });

@@ -1,13 +1,22 @@
 // FILE: runtime-store.ts
-// Purpose: Provider-aware local overlay store for CodeRover runtime sessions and histories.
+// Purpose: Provider-aware local checkpoint + ACP transcript store for bridge runtime sessions.
 
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { randomUUID } from "crypto";
 
+import type { JsonRpcNotificationShape, RuntimeTurnShape } from "./bridge-types";
+import { normalizeAcpAgentId } from "./acp/agent-registry";
+import {
+  buildAcpReplayNotifications,
+  projectSessionInfoFromSessionObject,
+} from "./runtime-engine/acp-protocol";
+
 type ProviderId = "codex" | "claude" | "gemini";
 type UnknownRecord = Record<string, unknown>;
+
+const CHECKPOINT_SCHEMA = "coderover.runtime.session.v2";
 
 export interface RuntimeStoreItem {
   id: string;
@@ -60,6 +69,13 @@ interface RuntimeStoreIndex {
   providerSessions: Record<string, string>;
 }
 
+interface RuntimeSessionCheckpoint {
+  schema: typeof CHECKPOINT_SCHEMA;
+  sessionId: string;
+  updatedAt: string;
+  history: RuntimeSessionHistory;
+}
+
 export interface CreateSessionInput {
   id?: string | null;
   provider?: unknown;
@@ -78,12 +94,14 @@ export interface CreateSessionInput {
 
 export interface RuntimeStore {
   baseDir: string;
+  appendSessionTranscriptMessage(sessionId: unknown, message: unknown): void;
   createSession(input: CreateSessionInput): RuntimeSessionMeta;
   deleteSession(sessionId: unknown): boolean;
   findSessionIdByProviderSession(provider: unknown, providerSessionId: unknown): string | null;
   flush(): void;
   getSessionHistory(sessionId: unknown): RuntimeSessionHistory | null;
   getSessionMeta(sessionId: unknown): RuntimeSessionMeta | null;
+  getSessionTranscriptMessages(sessionId: unknown): JsonRpcNotificationShape[];
   listSessionMetas(): RuntimeSessionMeta[];
   saveSessionHistory(sessionId: unknown, history: unknown): RuntimeSessionHistory;
   shutdown(): void;
@@ -92,6 +110,7 @@ export interface RuntimeStore {
     sessionId: unknown,
     updater: (entry: RuntimeSessionMeta) => RuntimeSessionMeta | null | undefined
   ): RuntimeSessionMeta | null;
+  updateSessionProjection(sessionId: unknown, history: unknown): RuntimeSessionHistory;
   upsertSessionMeta(sessionMeta: unknown): RuntimeSessionMeta;
 }
 
@@ -130,17 +149,36 @@ export function createRuntimeStore({ baseDir = DEFAULT_STORE_DIR }: { baseDir?: 
       return null;
     }
 
-    const historyPath = sessionHistoryPath(normalizedSessionId);
-    if (!fs.existsSync(historyPath)) {
-      return null;
+    const checkpointPath = sessionCheckpointPath(normalizedSessionId);
+    if (fs.existsSync(checkpointPath)) {
+      const stored = readSessionCheckpointOrLegacy(normalizedSessionId);
+      if (stored.kind === "checkpoint") {
+        return stored.history;
+      }
+      if (stored.kind === "legacy") {
+        migrateLegacyHistory(normalizedSessionId, stored.history);
+        return stored.history;
+      }
     }
 
-    try {
-      const raw = fs.readFileSync(historyPath, "utf8");
-      return normalizeSessionHistory(JSON.parse(raw), normalizedSessionId);
-    } catch {
-      return defaultSessionHistory(normalizedSessionId);
+    const transcriptMessages = getSessionTranscriptMessages(normalizedSessionId);
+    if (transcriptMessages.length === 0) {
+      return null;
     }
+    const derivedHistory = projectHistoryFromTranscript(transcriptMessages, normalizedSessionId);
+    writeSessionCheckpoint(normalizedSessionId, derivedHistory);
+    return derivedHistory;
+  }
+
+  function updateSessionProjection(sessionId: unknown, history: unknown): RuntimeSessionHistory {
+    const normalizedSessionId = normalizeNonEmptyString(sessionId);
+    if (!normalizedSessionId) {
+      throw new Error("updateSessionProjection requires a non-empty sessionId");
+    }
+
+    const normalizedHistory = normalizeSessionHistory(history, normalizedSessionId);
+    writeSessionCheckpoint(normalizedSessionId, normalizedHistory);
+    return normalizedHistory;
   }
 
   function saveSessionHistory(sessionId: unknown, history: unknown): RuntimeSessionHistory {
@@ -149,13 +187,51 @@ export function createRuntimeStore({ baseDir = DEFAULT_STORE_DIR }: { baseDir?: 
       throw new Error("saveSessionHistory requires a non-empty sessionId");
     }
 
-    const normalizedHistory = normalizeSessionHistory(history, normalizedSessionId);
-    fs.mkdirSync(sessionsDir, { recursive: true });
-    fs.writeFileSync(
-      sessionHistoryPath(normalizedSessionId),
-      JSON.stringify(normalizedHistory, null, 2)
-    );
+    const normalizedHistory = updateSessionProjection(normalizedSessionId, history);
+    rewriteTranscriptFromHistory(normalizedSessionId, normalizedHistory);
     return normalizedHistory;
+  }
+
+  function appendSessionTranscriptMessage(sessionId: unknown, message: unknown): void {
+    const normalizedSessionId = normalizeNonEmptyString(sessionId);
+    if (!normalizedSessionId) {
+      return;
+    }
+
+    const normalizedMessage = normalizeTranscriptMessage(message);
+    if (!normalizedMessage) {
+      return;
+    }
+
+    fs.mkdirSync(sessionsDir, { recursive: true });
+    fs.appendFileSync(
+      sessionTranscriptPath(normalizedSessionId),
+      `${JSON.stringify(normalizedMessage)}\n`
+    );
+  }
+
+  function getSessionTranscriptMessages(sessionId: unknown): JsonRpcNotificationShape[] {
+    const normalizedSessionId = normalizeNonEmptyString(sessionId);
+    if (!normalizedSessionId) {
+      return [];
+    }
+
+    const transcriptPath = sessionTranscriptPath(normalizedSessionId);
+    if (!fs.existsSync(transcriptPath)) {
+      return [];
+    }
+
+    try {
+      const raw = fs.readFileSync(transcriptPath, "utf8");
+      return raw
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .map((line) => normalizeTranscriptMessage(JSON.parse(line)))
+        .filter((entry): entry is JsonRpcNotificationShape => Boolean(entry));
+    } catch {
+      return [];
+    }
   }
 
   function createSession({
@@ -199,7 +275,7 @@ export function createRuntimeStore({ baseDir = DEFAULT_STORE_DIR }: { baseDir?: 
     scheduleIndexWrite();
 
     if (!getSessionHistory(sessionId)) {
-      saveSessionHistory(sessionId, defaultSessionHistory(sessionId));
+      updateSessionProjection(sessionId, defaultSessionHistory(sessionId));
     }
 
     return { ...sessionMeta };
@@ -221,17 +297,10 @@ export function createRuntimeStore({ baseDir = DEFAULT_STORE_DIR }: { baseDir?: 
       delete indexState.providerSessions[previousKey];
     }
 
-    syncProviderSessionIndex(
-      normalized.id,
-      normalized.provider,
-      normalized.providerSessionId
-    );
+    syncProviderSessionIndex(normalized.id, normalized.provider, normalized.providerSessionId);
     scheduleIndexWrite();
     const storedEntry = indexState.sessions[normalized.id];
-    if (!storedEntry) {
-      return { ...normalized };
-    }
-    return { ...storedEntry };
+    return storedEntry ? { ...storedEntry } : { ...normalized };
   }
 
   function updateSessionMeta(
@@ -277,10 +346,12 @@ export function createRuntimeStore({ baseDir = DEFAULT_STORE_DIR }: { baseDir?: 
     }
     scheduleIndexWrite();
 
-    const historyPath = sessionHistoryPath(existing.id);
-    if (fs.existsSync(historyPath)) {
+    for (const filePath of [sessionCheckpointPath(existing.id), sessionTranscriptPath(existing.id)]) {
+      if (!fs.existsSync(filePath)) {
+        continue;
+      }
       try {
-        fs.unlinkSync(historyPath);
+        fs.unlinkSync(filePath);
       } catch {
         // Best-effort cleanup only.
       }
@@ -320,23 +391,91 @@ export function createRuntimeStore({ baseDir = DEFAULT_STORE_DIR }: { baseDir?: 
     indexState.providerSessions[key] = sessionId;
   }
 
-  function sessionHistoryPath(sessionId: string): string {
+  function migrateLegacyHistory(sessionId: string, history: RuntimeSessionHistory): void {
+    writeSessionCheckpoint(sessionId, history);
+    rewriteTranscriptFromHistory(sessionId, history);
+  }
+
+  function rewriteTranscriptFromHistory(sessionId: string, history: RuntimeSessionHistory): void {
+    const sessionMeta = getSessionMeta(sessionId);
+    const notifications = buildAcpReplayNotifications({
+      id: sessionId,
+      provider: sessionMeta?.provider || inferProviderFromSessionId(sessionId),
+      providerSessionId: sessionMeta?.providerSessionId || null,
+      title: sessionMeta?.title,
+      name: sessionMeta?.name,
+      preview: sessionMeta?.preview,
+      cwd: sessionMeta?.cwd,
+      createdAt: sessionMeta?.createdAt,
+      updatedAt: sessionMeta?.updatedAt,
+      archived: sessionMeta?.archived,
+      capabilities: sessionMeta?.capabilities,
+      metadata: sessionMeta?.metadata,
+      turns: history.turns as unknown as RuntimeTurnShape[],
+    });
+    const transcriptPath = sessionTranscriptPath(sessionId);
+    fs.mkdirSync(sessionsDir, { recursive: true });
+    const payload = notifications
+      .map((notification) => JSON.stringify(projectedNotificationToEnvelope(notification)))
+      .join("\n");
+    fs.writeFileSync(transcriptPath, payload ? `${payload}\n` : "");
+  }
+
+  function writeSessionCheckpoint(sessionId: string, history: RuntimeSessionHistory): void {
+    fs.mkdirSync(sessionsDir, { recursive: true });
+    const checkpoint: RuntimeSessionCheckpoint = {
+      schema: CHECKPOINT_SCHEMA,
+      sessionId,
+      updatedAt: new Date().toISOString(),
+      history,
+    };
+    fs.writeFileSync(
+      sessionCheckpointPath(sessionId),
+      JSON.stringify(checkpoint, null, 2)
+    );
+  }
+
+  function sessionCheckpointPath(sessionId: string): string {
     return path.join(sessionsDir, `${sessionId}.json`);
+  }
+
+  function sessionTranscriptPath(sessionId: string): string {
+    return path.join(sessionsDir, `${sessionId}.stream.ndjson`);
+  }
+
+  function readSessionCheckpointOrLegacy(
+    sessionId: string
+  ): { kind: "checkpoint"; history: RuntimeSessionHistory } | { kind: "legacy"; history: RuntimeSessionHistory } {
+    const raw = fs.readFileSync(sessionCheckpointPath(sessionId), "utf8");
+    const parsed = JSON.parse(raw) as UnknownRecord;
+    if (parsed.schema === CHECKPOINT_SCHEMA) {
+      return {
+        kind: "checkpoint",
+        history: normalizeSessionHistory(asObject(parsed.history), sessionId),
+      };
+    }
+    return {
+      kind: "legacy",
+      history: normalizeSessionHistory(parsed, sessionId),
+    };
   }
 
   return {
     baseDir,
+    appendSessionTranscriptMessage,
     createSession,
     deleteSession,
     findSessionIdByProviderSession,
     flush,
     getSessionHistory,
     getSessionMeta,
+    getSessionTranscriptMessages,
     listSessionMetas,
     saveSessionHistory,
     shutdown,
     bindProviderSession,
     updateSessionMeta,
+    updateSessionProjection,
     upsertSessionMeta,
   };
 }
@@ -564,8 +703,12 @@ function normalizeSessionId(value: unknown, provider: unknown): string {
   return `${normalizeProvider(provider)}:${randomUUID()}`;
 }
 
+function inferProviderFromSessionId(value: string): ProviderId {
+  return normalizeProvider(value.split(":", 1)[0]);
+}
+
 function normalizeProvider(value: unknown): ProviderId {
-  const normalized = normalizeNonEmptyString(value).toLowerCase();
+  const normalized = normalizeAcpAgentId(value);
   if (normalized === "claude" || normalized === "gemini" || normalized === "codex") {
     return normalized;
   }
@@ -638,22 +781,320 @@ function toIsoDateString(value: unknown): string {
   if (!value) {
     return new Date().toISOString();
   }
-
+  if (value instanceof Date) {
+    return new Date(value.getTime()).toISOString();
+  }
+  if (typeof value === "number") {
+    return new Date(value).toISOString();
+  }
   if (typeof value === "string") {
     const parsed = Date.parse(value);
     if (!Number.isNaN(parsed)) {
       return new Date(parsed).toISOString();
     }
   }
-
-  if (typeof value === "number") {
-    const milliseconds = value > 10_000_000_000 ? value : value * 1000;
-    return new Date(milliseconds).toISOString();
-  }
-
-  if (value instanceof Date) {
-    return value.toISOString();
-  }
-
   return new Date().toISOString();
+}
+
+function projectedNotificationToEnvelope(
+  notification: ReturnType<typeof projectSessionInfoFromSessionObject>
+): JsonRpcNotificationShape {
+  return {
+    jsonrpc: "2.0",
+    method: notification.method,
+    params: notification.params,
+  };
+}
+
+function normalizeTranscriptMessage(message: unknown): JsonRpcNotificationShape | null {
+  const parsed = typeof message === "string"
+    ? safeParseJSON(message)
+    : message;
+  const record = asObject(parsed);
+  if (!record || normalizeOptionalString(record.method) !== "session/update") {
+    return null;
+  }
+  const params = asObject(record.params);
+  if (!params || !asObject(params.update)) {
+    return null;
+  }
+  return {
+    jsonrpc: "2.0",
+    method: "session/update",
+    params: {
+      sessionId: normalizeOptionalString(params.sessionId) || "",
+      update: asObject(params.update),
+    },
+  };
+}
+
+function projectHistoryFromTranscript(
+  messages: JsonRpcNotificationShape[],
+  sessionId: string
+): RuntimeSessionHistory {
+  const history = defaultSessionHistory(sessionId);
+  const turnById = new Map<string, RuntimeStoreTurn>();
+  let activeTurnId: string | null = null;
+
+  function ensureTurn(turnId: string | null): RuntimeStoreTurn {
+    const normalizedTurnId = normalizeOptionalString(turnId) || activeTurnId || `${sessionId}:turn`;
+    let turn = turnById.get(normalizedTurnId);
+    if (!turn) {
+      turn = {
+        id: normalizedTurnId,
+        createdAt: new Date().toISOString(),
+        status: "running",
+        items: [],
+      };
+      history.turns.push(turn);
+      turnById.set(normalizedTurnId, turn);
+    }
+    return turn;
+  }
+
+  function upsertItem(turn: RuntimeStoreTurn, item: RuntimeStoreItem): RuntimeStoreItem {
+    const existing = turn.items.find((entry) => entry.id === item.id);
+    if (existing) {
+      return existing;
+    }
+    turn.items.push(item);
+    return item;
+  }
+
+  for (const message of messages) {
+    const params = asObject(message.params);
+    const update = asObject(params?.update);
+    const sessionUpdate = normalizeOptionalString(update?.sessionUpdate);
+    if (!sessionUpdate) {
+      continue;
+    }
+
+    const coderoverMeta = asObject(asObject(update?._meta)?.coderover);
+    const turnId = firstNonEmptyString([
+      update?.turnId,
+      coderoverMeta?.turnId,
+      activeTurnId,
+    ]);
+
+    switch (sessionUpdate) {
+      case "session_info_update": {
+        const lifecycleTurnId = firstNonEmptyString([update?.turnId, coderoverMeta?.turnId]);
+        const runState = normalizeOptionalString(update?.runState)
+          || normalizeOptionalString(coderoverMeta?.runState);
+        if (!lifecycleTurnId) {
+          continue;
+        }
+        const turn = ensureTurn(lifecycleTurnId);
+        if (runState === "running") {
+          turn.status = "running";
+          activeTurnId = turn.id;
+        } else if (runState) {
+          turn.status = normalizeTurnStatus(runState);
+          if (activeTurnId === turn.id) {
+            activeTurnId = null;
+          }
+        }
+        continue;
+      }
+
+      case "user_message_chunk": {
+        const turn = ensureTurn(turnId);
+        const itemId = firstNonEmptyString([update?.messageId, coderoverMeta?.itemId]) || randomUUID();
+        const contentBlock = normalizeContent(update?.content);
+        const item = upsertItem(turn, {
+          id: itemId,
+          type: "user_message",
+          role: "user",
+          content: [],
+          text: null,
+          message: null,
+          createdAt: new Date().toISOString(),
+          status: null,
+          command: null,
+          metadata: null,
+          plan: null,
+          summary: null,
+          fileChanges: [],
+        });
+        item.content.push(contentBlock);
+        if (contentBlock.type === "text") {
+          item.text = `${item.text || ""}${normalizeOptionalString(contentBlock.text) || ""}`;
+        }
+        continue;
+      }
+
+      case "agent_message_chunk":
+      case "agent_thought_chunk": {
+        const turn = ensureTurn(turnId);
+        const itemId = firstNonEmptyString([update?.messageId, coderoverMeta?.itemId]) || randomUUID();
+        const item = upsertItem(turn, {
+          id: itemId,
+          type: sessionUpdate === "agent_thought_chunk" ? "reasoning" : "agent_message",
+          role: sessionUpdate === "agent_thought_chunk" ? "system" : "assistant",
+          content: [],
+          text: "",
+          message: null,
+          createdAt: new Date().toISOString(),
+          status: null,
+          command: null,
+          metadata: null,
+          plan: null,
+          summary: null,
+          fileChanges: [],
+        });
+        item.text = `${item.text || ""}${readTextContent(update?.content)}`;
+        continue;
+      }
+
+      case "plan": {
+        const turn = ensureTurn(turnId);
+        const itemId = firstNonEmptyString([update?.messageId, coderoverMeta?.itemId]) || `${turn.id}:plan`;
+        const item = upsertItem(turn, {
+          id: itemId,
+          type: "plan",
+          role: "system",
+          content: [],
+          text: normalizeOptionalString(coderoverMeta?.text) || "Planning...",
+          message: null,
+          createdAt: new Date().toISOString(),
+          status: null,
+          command: null,
+          metadata: null,
+          plan: [],
+          summary: normalizeOptionalString(coderoverMeta?.summary),
+          fileChanges: [],
+          explanation: normalizeOptionalString(coderoverMeta?.explanation),
+        } as RuntimeStoreItem);
+        item.text = normalizeOptionalString(coderoverMeta?.text) || item.text || "Planning...";
+        item.summary = normalizeOptionalString(coderoverMeta?.summary)
+          || normalizeOptionalString(coderoverMeta?.explanation);
+        item.explanation = normalizeOptionalString(coderoverMeta?.explanation);
+        item.plan = normalizePlanEntries(update?.entries);
+        continue;
+      }
+
+      case "tool_call":
+      case "tool_call_update": {
+        const turn = ensureTurn(turnId);
+        const kind = normalizeOptionalString(update?.kind);
+        const itemId = firstNonEmptyString([update?.toolCallId, coderoverMeta?.itemId]) || randomUUID();
+        const rawInput = asObject(update?.rawInput);
+        const rawOutput = asObject(update?.rawOutput);
+        const isCommand = kind === "execute" || Boolean(normalizeOptionalString(rawInput?.command));
+        const item = upsertItem(turn, {
+          id: itemId,
+          type: isCommand ? "command_execution" : "tool_call",
+          role: null,
+          content: [],
+          text: "",
+          message: null,
+          createdAt: new Date().toISOString(),
+          status: normalizeOptionalString(update?.status),
+          command: normalizeOptionalString(rawInput?.command) || normalizeOptionalString(update?.title),
+          metadata: isCommand
+            ? null
+            : { toolName: normalizeOptionalString(update?.title) || "Tool call" },
+          plan: null,
+          summary: null,
+          fileChanges: [],
+        });
+        item.status = normalizeOptionalString(update?.status) || item.status;
+        item.text = `${item.text || ""}${readToolText(update?.content)}`;
+        if (isCommand) {
+          item.cwd = normalizeOptionalString(rawInput?.cwd);
+          item.exitCode = typeof rawOutput?.exitCode === "number" ? rawOutput.exitCode : item.exitCode;
+          item.durationMs = typeof rawOutput?.durationMs === "number" ? rawOutput.durationMs : item.durationMs;
+        } else if (Array.isArray(rawOutput?.changes)) {
+          item.fileChanges = normalizeObjectArray(rawOutput.changes);
+          item.changes = normalizeObjectArray(rawOutput.changes);
+        }
+        continue;
+      }
+
+      default:
+        continue;
+    }
+  }
+
+  if (history.turns.length === 0) {
+    return history;
+  }
+
+  return {
+    sessionId,
+    turns: history.turns.map((turn) => ({
+      ...turn,
+      status: turn.status || "completed",
+    })),
+  };
+}
+
+function normalizeTurnStatus(value: string): string {
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) {
+    return "completed";
+  }
+  if (normalized.includes("run") || normalized.includes("progress")) {
+    return "running";
+  }
+  if (normalized.includes("stop") || normalized.includes("cancel")) {
+    return "stopped";
+  }
+  if (normalized.includes("fail") || normalized.includes("error")) {
+    return "failed";
+  }
+  return "completed";
+}
+
+function normalizePlanEntries(entries: unknown): UnknownRecord[] {
+  if (!Array.isArray(entries)) {
+    return [];
+  }
+  return entries.map((entry) => {
+    const record = asObject(entry);
+    return {
+      step: normalizeOptionalString(record?.content) || normalizeOptionalString(record?.step) || "Step",
+      status: normalizeOptionalString(record?.status) || "pending",
+    };
+  });
+}
+
+function readTextContent(content: unknown): string {
+  const record = asObject(content);
+  const directText = normalizeOptionalString(record?.text);
+  if (directText) {
+    return directText;
+  }
+  if (Array.isArray(content)) {
+    return content
+      .map((entry) => readTextContent(entry))
+      .filter(Boolean)
+      .join("");
+  }
+  return "";
+}
+
+function readToolText(content: unknown): string {
+  if (!Array.isArray(content)) {
+    return "";
+  }
+  return content
+    .map((entry) => readTextContent(asObject(entry)?.content || entry))
+    .filter(Boolean)
+    .join("");
+}
+
+function asObject(value: unknown): UnknownRecord | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  return value as UnknownRecord;
+}
+
+function safeParseJSON(raw: string): unknown {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
 }

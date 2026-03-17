@@ -16,9 +16,9 @@ export interface AcpAgentRegistry {
   list(): AcpAgentDefinition[];
 }
 
-const DEFAULT_AGENT_ID = "codex";
+export const DEFAULT_AGENT_ID = "codex";
 
-const BUILTIN_AGENTS: AcpAgentDefinition[] = [
+export const BUILTIN_AGENTS: AcpAgentDefinition[] = [
   {
     id: "codex",
     name: "Codex",
@@ -84,6 +84,28 @@ export function createAcpAgentRegistry(): AcpAgentRegistry {
       return Array.from(byId.values(), (agent) => ({ ...agent }));
     },
   };
+}
+
+export function normalizeAcpAgentId(value: unknown): string {
+  const normalized = normalizeAgentId(value);
+  return normalized || DEFAULT_AGENT_ID;
+}
+
+export function getAcpAgentDefinition(agentId: unknown): AcpAgentDefinition | null {
+  const normalized = normalizeAgentId(agentId);
+  if (!normalized) {
+    return null;
+  }
+  const registry = createAcpAgentRegistry();
+  return registry.get(normalized);
+}
+
+export function acpAgentSupports(
+  agentId: unknown,
+  capability: keyof NonNullable<AcpAgentDefinition["supports"]>
+): boolean {
+  const definition = getAcpAgentDefinition(agentId);
+  return Boolean(definition?.supports?.[capability]);
 }
 
 function resolveEnvOverride(agent: AcpAgentDefinition): AcpAgentDefinition {

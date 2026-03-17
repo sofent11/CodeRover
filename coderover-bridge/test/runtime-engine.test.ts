@@ -96,6 +96,37 @@ test("session runtime index persists runtime owner state and provider session bi
   }
 });
 
+test("session runtime index migrates the legacy file into the ACP index path", () => {
+  const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "coderover-session-runtime-index-legacy-"));
+  try {
+    fs.writeFileSync(path.join(baseDir, "thread-session-index.json"), JSON.stringify({
+      version: 1,
+      sessions: {
+        "thread-legacy": {
+          sessionId: "thread-legacy",
+          provider: "claude",
+          providerSessionId: "provider-legacy",
+          ownerState: "idle",
+          activeTurnId: null,
+          createdAt: "2026-03-17T00:00:00.000Z",
+          updatedAt: "2026-03-17T00:00:00.000Z",
+        },
+      },
+    }, null, 2));
+
+    const index = createSessionRuntimeIndex({ baseDir });
+    const record = index.get("thread-legacy");
+    assert.equal(record?.provider, "claude");
+    assert.equal(record?.providerSessionId, "provider-legacy");
+    index.shutdown();
+
+    assert.equal(fs.existsSync(path.join(baseDir, "thread-session-index.json")), false);
+    assert.equal(fs.existsSync(path.join(baseDir, "session-runtime-index.json")), true);
+  } finally {
+    fs.rmSync(baseDir, { recursive: true, force: true });
+  }
+});
+
 test("ACP engine bridges prompt lifecycle, approval, and structured user input through runtime events", async () => {
   const emittedEvents: RuntimeEvent[] = [];
   const approvalRequests: RuntimeApprovalRequestEvent[] = [];

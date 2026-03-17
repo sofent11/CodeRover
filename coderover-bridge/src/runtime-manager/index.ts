@@ -9,7 +9,6 @@ export {};
 import { randomUUID } from "crypto";
 
 import type {
-  JsonRpcEnvelope,
   JsonRpcId,
   RuntimeInputItem,
   RuntimeItemShape,
@@ -29,7 +28,6 @@ import { createAcpSessionManager, type AcpSessionManager } from "../acp/session-
 import type { AcpClientServerRequest, AcpClientSessionUpdateNotification } from "../acp/process-client";
 import {
   ACP_PROTOCOL_VERSION,
-  buildAcpReplayNotifications,
   normalizeRunState,
   projectSessionInfoFromSessionObject,
   projectRuntimeEventToAcpProtocol,
@@ -49,14 +47,15 @@ import {
   ERROR_INVALID_PARAMS,
   ERROR_METHOD_NOT_FOUND,
   ERROR_THREAD_NOT_FOUND,
-  EXTERNAL_SYNC_INTERVAL_MS,
   type ManagedProviderTurnContext,
   type RuntimeErrorShape,
 } from "./types";
+import {
+  handleRuntimeExtensionMethod,
+  isRuntimeExtensionMethod,
+} from "./extension-router";
 
 type UnknownRecord = Record<string, unknown>;
-const THREAD_LIST_INITIAL_WINDOW_DAYS = 3;
-const THREAD_LIST_INITIAL_PROJECT_CAP = 10;
 const THREAD_LIST_CURSOR_VERSION = 1;
 
 interface RuntimeManager {
@@ -184,15 +183,10 @@ export function createRuntimeManager({
     const requestId = parsed?.id as JsonRpcId | undefined;
 
     try {
-      switch (method) {
-        case "initialize":
-          if (requestId != null) {
-            sendServerMessage(buildRpcSuccess(requestId, buildAcpInitializeResult(params)));
-          }
-          return true;
-
-        case "_coderover/agent/list":
-          return await handleRequestWithResponse(requestId, async () => ({
+      if (isRuntimeExtensionMethod(method)) {
+        return await handleRuntimeExtensionMethod(method, requestId, params, {
+          handleRequestWithResponse,
+          handleAgentList: async () => ({
             agents: acpAgentRegistry.list().map((agent) => ({
               id: agent.id,
               name: agent.name,
@@ -207,18 +201,32 @@ export function createRuntimeManager({
               },
             })),
             defaultAgentId: acpAgentRegistry.defaultAgentId,
-          }));
-
-        case "_coderover/model/list":
-          return await handleRequestWithResponse(requestId, async () => {
-            const provider = resolveAcpAgentId(params);
+          }),
+          handleModelList: async (extensionParams) => {
+            const provider = resolveAcpAgentId(extensionParams);
             const client = await acpSessionManager.getClient(provider);
-            return buildAcpModelListResult(await client.listModels(params));
-          });
+            return buildAcpModelListResult(await client.listModels(extensionParams));
+          },
+          handleSessionSetTitle,
+          handleSessionArchive,
+          unsupportedExtension(extensionMethod) {
+            throw createRuntimeError(
+              ERROR_METHOD_NOT_FOUND,
+              `Unsupported CodeRover runtime extension: ${extensionMethod}`
+            );
+          },
+        });
+      }
+
+      switch (method) {
+        case "initialize":
+          if (requestId != null) {
+            sendServerMessage(buildRpcSuccess(requestId, buildAcpInitializeResult(params)));
+          }
+          return true;
 
         case "session/list":
           return await handleRequestWithResponse(requestId, async () => {
-            await ensureExternalThreadsIndexed();
             return handleAcpSessionList(params);
           });
 
@@ -261,55 +269,6 @@ export function createRuntimeManager({
         case "session/set_model":
           return await handleRequestWithResponse(requestId, async () => {
             return handleAcpSetModel(params);
-          });
-
-        case "_coderover/session/set_title":
-          return await handleRequestWithResponse(requestId, async () => {
-            const sessionMeta = await requireSessionMeta(params.sessionId);
-            const nextName = normalizeOptionalString(params.title || params.name);
-            const updatedMeta = store.updateSessionMeta(sessionMeta.id, (entry) => ({
-              ...entry,
-              name: nextName,
-              updatedAt: new Date().toISOString(),
-            }));
-            const stableMeta = updatedMeta || sessionMeta;
-            emitProjectedAcpMessage({
-              kind: "notification",
-              method: "session/update",
-              params: {
-                sessionId: stableMeta.id,
-                update: {
-                  sessionUpdate: "session_info_update",
-                  title: stableMeta.name,
-                  updatedAt: stableMeta.updatedAt,
-                  _meta: {
-                    coderover: {
-                      sessionId: stableMeta.id,
-                      agentId: stableMeta.provider,
-                    },
-                  },
-                },
-              },
-            });
-            return {
-              thread: buildManagedSessionObject(stableMeta),
-            };
-          });
-
-        case "_coderover/session/archive":
-        case "_coderover/session/unarchive":
-          return await handleRequestWithResponse(requestId, async () => {
-            const sessionMeta = await requireSessionMeta(params.sessionId);
-            const archived = method === "_coderover/session/archive";
-            const updatedMeta = store.updateSessionMeta(sessionMeta.id, (entry) => ({
-              ...entry,
-              archived,
-              updatedAt: new Date().toISOString(),
-            }));
-            const stableMeta = updatedMeta || sessionMeta;
-            return {
-              thread: buildManagedSessionObject(stableMeta),
-            };
           });
 
         default:
@@ -372,10 +331,6 @@ export function createRuntimeManager({
     return true;
   }
 
-  async function ensureExternalThreadsIndexed(): Promise<void> {
-    // No-op in ACP flow.
-  }
-
   async function requireSessionMeta(sessionId: unknown): Promise<RuntimeSessionMeta> {
     const normalizedSessionId = normalizeOptionalString(sessionId);
     if (!normalizedSessionId) {
@@ -388,6 +343,72 @@ export function createRuntimeManager({
     }
 
     throw createRuntimeError(ERROR_THREAD_NOT_FOUND, `Session not found: ${normalizedSessionId}`);
+  }
+
+  async function handleSessionSetTitle(params: UnknownRecord): Promise<UnknownRecord> {
+    const sessionMeta = await requireSessionMeta(params.sessionId);
+    const nextName = normalizeOptionalString(params.title || params.name);
+    const updatedMeta = store.updateSessionMeta(sessionMeta.id, (entry) => ({
+      ...entry,
+      name: nextName,
+      updatedAt: new Date().toISOString(),
+    }));
+    const stableMeta = updatedMeta || sessionMeta;
+    emitProjectedAcpMessage({
+      kind: "notification",
+      method: "session/update",
+      params: {
+        sessionId: stableMeta.id,
+        update: {
+          sessionUpdate: "session_info_update",
+          title: stableMeta.name,
+          updatedAt: stableMeta.updatedAt,
+          _meta: {
+            coderover: {
+              sessionId: stableMeta.id,
+              agentId: stableMeta.provider,
+            },
+          },
+        },
+      },
+    });
+    return {
+      thread: buildManagedSessionObject(stableMeta),
+    };
+  }
+
+  async function handleSessionArchive(
+    params: UnknownRecord,
+    archived: boolean
+  ): Promise<UnknownRecord> {
+    const sessionMeta = await requireSessionMeta(params.sessionId);
+    const updatedMeta = store.updateSessionMeta(sessionMeta.id, (entry) => ({
+      ...entry,
+      archived,
+      updatedAt: new Date().toISOString(),
+    }));
+    const stableMeta = updatedMeta || sessionMeta;
+    emitProjectedAcpMessage({
+      kind: "notification",
+      method: "session/update",
+      params: {
+        sessionId: stableMeta.id,
+        update: {
+          sessionUpdate: "session_info_update",
+          updatedAt: stableMeta.updatedAt,
+          _meta: {
+            coderover: {
+              sessionId: stableMeta.id,
+              agentId: stableMeta.provider,
+              archived,
+            },
+          },
+        },
+      },
+    });
+    return {
+      thread: buildManagedSessionObject(stableMeta),
+    };
   }
 
   function createManagedTurnContext(
@@ -434,7 +455,7 @@ export function createRuntimeManager({
       } as ManagedHistoryItem);
     }
 
-    store.saveSessionHistory(sessionMeta.id, sessionHistory);
+    store.updateSessionProjection(sessionMeta.id, sessionHistory);
     store.updateSessionMeta(sessionMeta.id, (entry) => ({
       ...entry,
       preview: userTextPreview || entry.preview,
@@ -500,7 +521,7 @@ export function createRuntimeManager({
     }
 
     function persistSessionHistory(): void {
-      store.saveSessionHistory(sessionMeta.id, sessionHistory);
+      store.updateSessionProjection(sessionMeta.id, sessionHistory);
       store.updateSessionMeta(sessionMeta.id, (entry) => ({
         ...entry,
         updatedAt: new Date().toISOString(),
@@ -1114,7 +1135,6 @@ export function createRuntimeManager({
     }
 
     const page = paginateSessionList(mergedThreads, {
-      archived: Boolean(archivedFilter),
       limit: requestedLimit,
       cursor,
     });
@@ -1158,13 +1178,21 @@ export function createRuntimeManager({
       sessionId: sessionMeta.providerSessionId || sessionId,
       ...(sessionMeta.cwd ? { cwd: sessionMeta.cwd } : {}),
     });
-    const session = buildManagedSessionObject(
-      store.getSessionMeta(sessionId) || sessionMeta,
-      store.getSessionHistory(sessionId)?.turns || []
-    );
-    buildAcpReplayNotifications(session).forEach((notification) => {
-      emitProjectedAcpMessage(notification);
-    });
+    const replayMessages = store.getSessionTranscriptMessages(sessionId);
+    if (replayMessages.length === 0) {
+      emitProjectedAcpMessage(
+        projectSessionInfoFromSessionObject(buildManagedSessionObject(store.getSessionMeta(sessionId) || sessionMeta)),
+        { recordTranscript: false }
+      );
+    } else {
+      replayMessages.forEach((message) => {
+        sendServerMessage(JSON.stringify({
+          jsonrpc: "2.0",
+          method: message.method,
+          params: message.params,
+        }));
+      });
+    }
     return buildAcpSessionState(sessionMeta);
   }
 
@@ -1935,7 +1963,10 @@ export function createRuntimeManager({
     return null;
   }
 
-  function emitProjectedAcpMessage(projected: ProjectedAcpProtocolMessage): void {
+  function emitProjectedAcpMessage(
+    projected: ProjectedAcpProtocolMessage,
+    { recordTranscript = true }: { recordTranscript?: boolean } = {}
+  ): void {
     if (projected.kind !== "notification") {
       return;
     }
@@ -1952,14 +1983,18 @@ export function createRuntimeManager({
         seenAcpToolCallsBySession.set(sessionId, seenToolCalls);
       }
     }
-    sendServerMessage(JSON.stringify({
+    const envelope = {
       jsonrpc: "2.0",
       method: projected.method,
       params: {
         sessionId,
         update,
       },
-    }));
+    };
+    if (recordTranscript && sessionId) {
+      store.appendSessionTranscriptMessage(sessionId, envelope);
+    }
+    sendServerMessage(JSON.stringify(envelope));
   }
 
   function resolvePendingPromptRequest(sessionId: string, status: string | null): void {
@@ -2048,11 +2083,9 @@ function summarizeSessionForList(session: RuntimeThreadShape): RuntimeThreadShap
 function paginateSessionList(
   sessions: RuntimeThreadShape[],
   {
-    archived,
     limit,
     cursor,
   }: {
-    archived: boolean;
     limit: number;
     cursor: { offset: number } | null;
   }
@@ -2062,73 +2095,17 @@ function paginateSessionList(
   hasMore: boolean;
   pageSize: number;
 } {
-  const initialVisibleIds = archived ? new Set<string>() : buildInitialVisibleSessionIds(sessions);
-  const remainingSessions = archived
-    ? sessions
-    : sessions.filter((session) => !initialVisibleIds.has(normalizeOptionalString(session.id) || ""));
-  const sourceThreads = cursor
-    ? sessions.filter((session) => !initialVisibleIds.has(normalizeOptionalString(session.id) || ""))
-    : archived
-      ? sessions
-      : sessions.filter((session) => initialVisibleIds.has(normalizeOptionalString(session.id) || ""));
   const offset = Math.max(0, cursor?.offset || 0);
-  const pageThreads = sourceThreads.slice(offset, offset + limit);
+  const pageThreads = sessions.slice(offset, offset + limit);
   const nextOffset = offset + pageThreads.length;
-  const hasMore = cursor
-    ? nextOffset < sourceThreads.length
-    : remainingSessions.length > 0 || nextOffset < sourceThreads.length;
+  const hasMore = nextOffset < sessions.length;
 
   return {
     threads: pageThreads,
-    nextCursor: hasMore ? encodeThreadListCursor(cursor ? nextOffset : 0) : null,
+    nextCursor: hasMore ? encodeThreadListCursor(nextOffset) : null,
     hasMore,
     pageSize: pageThreads.length,
   };
-}
-
-function buildInitialVisibleSessionIds(sessions: RuntimeThreadShape[]): Set<string> {
-  const cutoffMs = Date.now() - (THREAD_LIST_INITIAL_WINDOW_DAYS * 24 * 60 * 60 * 1000);
-  const visibleIds = new Set<string>();
-  collectInitialVisibleSessionIds(sessions, visibleIds, (session) => {
-    const updatedAt = Date.parse(normalizeTimestampString(session.updatedAt) || "") || 0;
-    return updatedAt >= cutoffMs;
-  });
-
-  if (visibleIds.size > 0) {
-    return visibleIds;
-  }
-
-  collectInitialVisibleSessionIds(sessions, visibleIds, () => true);
-  return visibleIds;
-}
-
-function collectInitialVisibleSessionIds(
-  sessions: RuntimeThreadShape[],
-  visibleIds: Set<string>,
-  predicate: (session: RuntimeThreadShape) => boolean
-): void {
-  const countsByProject = new Map<string, number>();
-
-  for (const session of sessions) {
-    const sessionId = normalizeOptionalString(session.id);
-    if (!sessionId) {
-      continue;
-    }
-    if (!predicate(session)) {
-      continue;
-    }
-    const projectKey = sessionProjectKey(session);
-    const currentCount = countsByProject.get(projectKey) || 0;
-    if (currentCount >= THREAD_LIST_INITIAL_PROJECT_CAP) {
-      continue;
-    }
-    countsByProject.set(projectKey, currentCount + 1);
-    visibleIds.add(sessionId);
-  }
-}
-
-function sessionProjectKey(session: RuntimeThreadShape): string {
-  return firstNonEmptyString([session.cwd]) || "__no_project__";
 }
 
 function encodeThreadListCursor(offset: number): string {

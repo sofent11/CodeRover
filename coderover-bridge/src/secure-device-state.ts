@@ -111,17 +111,17 @@ function createBridgeDeviceState(): BridgeDeviceState {
 }
 
 function readBridgeDeviceState(): BridgeDeviceStateWithMigrationFlag | null {
-  const keychainState = readBridgeDeviceStateRecord(readKeychainStoredDeviceStateString());
-  if (keychainState) {
-    return keychainState;
-  }
-
   const fileState = readBridgeDeviceStateRecord(readFileStoredDeviceStateString());
   if (fileState) {
     if (isKeychainAvailable()) {
       writeKeychainStateString(JSON.stringify(stripMigrationMarker(fileState), null, 2));
     }
     return fileState;
+  }
+
+  const keychainState = readBridgeDeviceStateRecord(readKeychainStoredDeviceStateString());
+  if (keychainState) {
+    return keychainState;
   }
 
   return null;

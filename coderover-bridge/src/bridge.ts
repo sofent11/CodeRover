@@ -14,6 +14,7 @@ import { handleDesktopRequest } from "./desktop-handler";
 import { loadOrCreateBridgeDeviceState } from "./secure-device-state";
 import { debugLog } from "./debug-log";
 import { createRuntimeManager } from "./runtime-manager";
+import { createAcpAgentRegistry } from "./acp/agent-registry";
 import {
   buildTransportCandidates,
   startLocalBridgeServer,
@@ -34,11 +35,11 @@ interface BridgeConfigShape {
   localPort: number;
   tailnetUrl: string;
   relayUrls: string[];
-  coderoverEndpoint: string;
 }
 
 export function startBridge(): void {
-    const config = readBridgeConfig() as BridgeConfigShape;
+  const config = readBridgeConfig() as BridgeConfigShape;
+  const agentRegistry = createAcpAgentRegistry();
   const deviceState = loadOrCreateBridgeDeviceState();
   const bridgeId = deviceState.bridgeId || deviceState.macDeviceId;
   const desktopRefresher = new CodeRoverDesktopRefresher({
@@ -116,7 +117,7 @@ export function startBridge(): void {
     localServer.stop();
   }));
 
-    function handleApplicationMessage(rawMessage: string): void {
+  function handleApplicationMessage(rawMessage: string): void {
       logBridgeFlow("phone->bridge", rawMessage);
       if (handleDesktopRequest(rawMessage, sendApplicationResponse, { env: process.env })) {
         return;
@@ -146,7 +147,8 @@ export function startBridge(): void {
   function rememberSessionFromMessage(source: string, rawMessage: string): void {
     const parsed = safeParseJSON(rawMessage);
     const sessionId = parsed ? extractBridgeMessageSessionId(parsed) : null;
-    if (!sessionId || sessionId.startsWith("claude:") || sessionId.startsWith("gemini:")) {
+    const agentId = parsed ? extractBridgeMessageAgentId(parsed) : null;
+    if (!sessionId || !agentSupportsDesktopRefresh(agentId || inferAgentIdFromSessionId(sessionId))) {
       return;
     }
     rememberActiveSession(sessionId, source);
@@ -158,8 +160,8 @@ export function startBridge(): void {
       return;
     }
 
-    const provider = readString(asRecord(parsed.params)?.provider);
-    if (provider && provider !== "codex") {
+    const agentId = extractBridgeMessageAgentId(parsed);
+    if (!agentSupportsDesktopRefresh(agentId)) {
       return;
     }
     desktopRefresher.handleInbound(rawMessage);
@@ -180,6 +182,13 @@ export function startBridge(): void {
     }
     runtimeManager.shutdown();
     setTimeout(() => process.exit(0), 100);
+  }
+
+  function agentSupportsDesktopRefresh(agentId: string | null): boolean {
+    if (!agentId) {
+      return true;
+    }
+    return Boolean(agentRegistry.get(agentId)?.supports?.desktopRefresh);
   }
 }
 
@@ -256,6 +265,34 @@ function extractBridgeMessageSessionId(parsed: JsonRecord): string | null {
     || readString(result?.sessionId)
     || readString(asRecord(asRecord(update?._meta)?.coderover)?.sessionId)
   );
+}
+
+function extractBridgeMessageAgentId(parsed: JsonRecord): string | null {
+  const params = asRecord(parsed.params);
+  const update = asRecord(params?.update);
+  const meta = asRecord(asRecord(update?._meta)?.coderover);
+  const resultMeta = asRecord(asRecord(asRecord(parsed.result)?._meta)?.coderover);
+  return (
+    readString(meta?.agentId)
+    || readString(meta?.provider)
+    || readString(resultMeta?.agentId)
+    || readString(resultMeta?.provider)
+    || readString(params?.provider)
+    || readString(params?.agentId)
+    || inferAgentIdFromSessionId(extractBridgeMessageSessionId(parsed))
+  );
+}
+
+function inferAgentIdFromSessionId(sessionId: string | null): string | null {
+  const normalizedSessionId = readString(sessionId);
+  if (!normalizedSessionId) {
+    return null;
+  }
+  const prefix = normalizedSessionId.split(":", 1)[0];
+  if (prefix === "codex" || prefix === "claude" || prefix === "gemini") {
+    return prefix;
+  }
+  return null;
 }
 
 function safeParseJSON(value: string): JsonRecord | null {

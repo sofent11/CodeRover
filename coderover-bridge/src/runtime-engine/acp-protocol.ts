@@ -125,7 +125,6 @@ export function projectRuntimeEventToAcpProtocol(
           toolName: event.toolName,
           changes: event.changes,
           completed: event.completed,
-          legacyKind: "fileChange",
         }),
       });
     }
@@ -164,7 +163,6 @@ export function projectRuntimeEventToAcpProtocol(
           status: event.status,
           exitCode: event.exitCode,
           durationMs: event.durationMs,
-          legacyKind: "commandExecution",
         }),
       });
     }
@@ -387,7 +385,6 @@ function buildReplayNotificationsForItem(
         sessionId,
         turnId,
         itemId,
-        legacyKind: "commandExecution",
       }),
     })];
   }
@@ -417,7 +414,6 @@ function buildReplayNotificationsForItem(
         sessionId,
         turnId,
         itemId,
-        legacyKind: "fileChange",
       }),
     })];
   }

@@ -106,6 +106,62 @@ test("bridge device state falls back to file when keychain payload is invalid", 
   }
 });
 
+test("bridge device state prefers the local file over a stale keychain payload", () => {
+  const originalHome = process.env.HOME;
+  const originalCoderoverHome = process.env.CODEROVER_HOME;
+  const originalPlatform = process.platform;
+  const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "coderover-secure-state-"));
+  const coderoverHome = path.join(tempHome, ".coderover");
+  const fileState = {
+    version: 1,
+    bridgeId: "bridge-from-file",
+    macDeviceId: "mac-from-file",
+    macIdentityPublicKey: "public-key",
+    macIdentityPrivateKey: "private-key",
+    trustedPhones: {},
+  };
+  const staleKeychainState = {
+    ...fileState,
+    bridgeId: "bridge-from-keychain",
+    macDeviceId: "mac-from-keychain",
+  };
+
+  try {
+    process.env.HOME = tempHome;
+    process.env.CODEROVER_HOME = coderoverHome;
+    fs.mkdirSync(coderoverHome, { recursive: true });
+    fs.writeFileSync(
+      path.join(coderoverHome, "device-state.json"),
+      JSON.stringify(fileState, null, 2)
+    );
+
+    Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
+    __setExecFileSyncForTests(((command: string, args?: readonly string[]) => {
+      if (command !== "security") {
+        throw new Error(`Unexpected command: ${command}`);
+      }
+      if (args?.[0] === "find-generic-password") {
+        return JSON.stringify(staleKeychainState);
+      }
+      if (args?.[0] === "add-generic-password") {
+        return "";
+      }
+      throw new Error(`Unexpected security args: ${String(args)}`);
+    }) as typeof import("child_process").execFileSync);
+
+    const loaded = loadOrCreateBridgeDeviceState();
+
+    assert.equal(loaded.bridgeId, fileState.bridgeId);
+    assert.equal(loaded.macDeviceId, fileState.macDeviceId);
+  } finally {
+    __setExecFileSyncForTests(null);
+    Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
+    process.env.CODEROVER_HOME = originalCoderoverHome;
+    process.env.HOME = originalHome;
+    fs.rmSync(tempHome, { recursive: true, force: true });
+  }
+});
+
 test("bridge device state preserves legacy non-UUID bridge identity fields", () => {
   const originalHome = process.env.HOME;
   const originalCoderoverHome = process.env.CODEROVER_HOME;

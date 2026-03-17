@@ -36,7 +36,8 @@ export function createSessionRuntimeIndex(
   fs.mkdirSync(baseDir, { recursive: true });
   const indexPath = path.join(baseDir, INDEX_FILE);
   const legacyIndexPath = path.join(baseDir, LEGACY_INDEX_FILE);
-  let state = loadIndex(indexPath, legacyIndexPath);
+  const loaded = loadIndex(indexPath, legacyIndexPath);
+  let state = loaded.state;
   let writeTimer: NodeJS.Timeout | null = null;
 
   function get(sessionId: unknown): RuntimeSessionHandle | null {
@@ -134,12 +135,18 @@ export function createSessionRuntimeIndex(
   };
 }
 
-function loadIndex(indexPath: string, legacyIndexPath: string): SessionRuntimeIndexFileShape {
+function loadIndex(
+  indexPath: string,
+  legacyIndexPath: string
+): { state: SessionRuntimeIndexFileShape; didLoadLegacy: boolean } {
   const sourcePath = fs.existsSync(indexPath)
     ? indexPath
     : (fs.existsSync(legacyIndexPath) ? legacyIndexPath : null);
   if (!sourcePath) {
-    return { version: INDEX_VERSION, sessions: {} };
+    return {
+      state: { version: INDEX_VERSION, sessions: {} },
+      didLoadLegacy: false,
+    };
   }
 
   try {
@@ -155,12 +162,41 @@ function loadIndex(indexPath: string, legacyIndexPath: string): SessionRuntimeIn
         return result;
       }, {} as Record<string, RuntimeSessionHandle>)
       : {};
-    return {
-      version: INDEX_VERSION,
+    const state: SessionRuntimeIndexFileShape = {
+      version: INDEX_VERSION as 1,
       sessions,
     };
+    if (sourcePath === legacyIndexPath) {
+      persistMigratedIndex(indexPath, state, legacyIndexPath);
+    }
+    return {
+      state,
+      didLoadLegacy: sourcePath === legacyIndexPath,
+    };
   } catch {
-    return { version: INDEX_VERSION, sessions: {} };
+    return {
+      state: { version: INDEX_VERSION as 1, sessions: {} },
+      didLoadLegacy: false,
+    };
+  }
+}
+
+function persistMigratedIndex(
+  indexPath: string,
+  state: SessionRuntimeIndexFileShape,
+  legacyIndexPath: string
+): void {
+  const payload = JSON.stringify(state, null, 2);
+  fs.mkdirSync(path.dirname(indexPath), { recursive: true });
+  const tempPath = `${indexPath}.${process.pid}.${Date.now()}.tmp`;
+  fs.writeFileSync(tempPath, `${payload}\n`);
+  fs.renameSync(tempPath, indexPath);
+  if (fs.existsSync(legacyIndexPath)) {
+    try {
+      fs.unlinkSync(legacyIndexPath);
+    } catch {
+      // Best-effort cleanup only.
+    }
   }
 }
 

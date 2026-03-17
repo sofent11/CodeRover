@@ -38,7 +38,6 @@ interface BridgeConfig {
   relayUrls: string[];
   refreshEnabled: boolean;
   refreshDebounceMs: number;
-  coderoverEndpoint: string;
   refreshCommand: string;
   coderoverBundleId: string;
   coderoverAppPath: string;
@@ -578,7 +577,6 @@ export class CodeRoverDesktopRefresher {
 
 export function readBridgeConfig({ env = process.env }: ReadBridgeConfigOptions = {}): BridgeConfig {
   const environment = env as Record<string, string | undefined>;
-  const coderoverEndpoint = readFirstDefinedEnv(["CODEROVER_ENDPOINT", "CODEROVER_ENDPOINT"], "", environment);
   const refreshCommand = readFirstDefinedEnv(["CODEROVER_REFRESH_COMMAND"], "", environment);
   const explicitRefreshEnabled = readOptionalBooleanEnv(["CODEROVER_REFRESH_ENABLED"], environment);
   const defaultRefreshEnabled = false;
@@ -593,7 +591,6 @@ export function readBridgeConfig({ env = process.env }: ReadBridgeConfigOptions 
       readFirstDefinedEnv(["CODEROVER_REFRESH_DEBOUNCE_MS"], String(DEFAULT_DEBOUNCE_MS), environment),
       DEFAULT_DEBOUNCE_MS
     ),
-    coderoverEndpoint,
     refreshCommand,
     coderoverBundleId: readFirstDefinedEnv(["CODEROVER_BUNDLE_ID"], DEFAULT_BUNDLE_ID, environment),
     coderoverAppPath: DEFAULT_APP_PATH,

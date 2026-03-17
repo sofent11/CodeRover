@@ -62,6 +62,11 @@ test("runtime store persists provider session mappings and session history", () 
     const history = fixture.store.getSessionHistory(created.id);
     assert.equal(history?.turns?.length, 1);
     assert.equal(history?.turns?.[0]?.items?.[0]?.text, "hello");
+    const transcript = fixture.store.getSessionTranscriptMessages(created.id);
+    assert.ok(transcript.some((message) =>
+      message.method === "session/update"
+      && message.params?.update?.sessionUpdate === "agent_message_chunk"
+    ));
   } finally {
     fixture.cleanup();
   }
@@ -96,7 +101,7 @@ test("runtime store keeps archive and name overlays in the session index", () =>
   }
 });
 
-test("runtime store loads persisted session metadata and history items", () => {
+test("runtime store migrates legacy history files into checkpoint + ACP transcript", () => {
   const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "coderover-runtime-store-legacy-"));
 
   try {
@@ -154,10 +159,98 @@ test("runtime store loads persisted session metadata and history items", () => {
       assert.equal(history?.turns?.[0]?.items?.[0]?.text, "legacy hello");
       assert.equal(history?.turns?.[0]?.items?.[0]?.explanation, "keep me");
       assert.deepEqual(history?.turns?.[0]?.items?.[0]?.fileChanges, [{ path: "README.md" }]);
+
+      const migratedCheckpoint = JSON.parse(
+        fs.readFileSync(path.join(baseDir, "sessions", "claude:legacy-thread.json"), "utf8")
+      ) as { schema?: string; history?: { sessionId?: string } };
+      assert.equal(migratedCheckpoint.schema, "coderover.runtime.session.v2");
+      assert.equal(migratedCheckpoint.history?.sessionId, "claude:legacy-thread");
+
+      const transcript = store.getSessionTranscriptMessages("claude:legacy-thread");
+      assert.ok(transcript.some((message) =>
+        message.method === "session/update"
+        && message.params?.update?.sessionUpdate === "agent_message_chunk"
+      ));
     } finally {
       store.shutdown();
     }
   } finally {
     fs.rmSync(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("runtime store appends live ACP transcript messages without rewriting the checkpoint schema", () => {
+  const fixture = createTempStore();
+
+  try {
+    const created = fixture.store.createSession({
+      provider: "codex",
+      providerSessionId: "session-append",
+      title: "Codex thread",
+    });
+
+    fixture.store.appendSessionTranscriptMessage(created.id, {
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId: created.id,
+        update: {
+          sessionUpdate: "session_info_update",
+          _meta: {
+            coderover: {
+              sessionId: created.id,
+              turnId: "turn-1",
+              runState: "running",
+            },
+          },
+        },
+      },
+    });
+    fixture.store.appendSessionTranscriptMessage(created.id, {
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId: created.id,
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          messageId: "assistant-1",
+          content: { type: "text", text: "hello from transcript" },
+          _meta: {
+            coderover: {
+              sessionId: created.id,
+              turnId: "turn-1",
+              itemId: "assistant-1",
+            },
+          },
+        },
+      },
+    });
+    fixture.store.appendSessionTranscriptMessage(created.id, {
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId: created.id,
+        update: {
+          sessionUpdate: "session_info_update",
+          _meta: {
+            coderover: {
+              sessionId: created.id,
+              turnId: "turn-1",
+              runState: "completed",
+            },
+          },
+        },
+      },
+    });
+
+    const transcript = fixture.store.getSessionTranscriptMessages(created.id);
+    assert.equal(transcript.length, 3);
+
+    const checkpoint = JSON.parse(
+      fs.readFileSync(path.join(fixture.store.baseDir, "sessions", `${created.id}.json`), "utf8")
+    ) as { schema?: string };
+    assert.equal(checkpoint.schema, "coderover.runtime.session.v2");
+  } finally {
+    fixture.cleanup();
   }
 });

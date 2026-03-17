@@ -29,8 +29,13 @@ function ensureLocalTypeScript() {
   }
 }
 
+function cleanDist() {
+  fs.rmSync(path.join(projectRoot, "dist"), { recursive: true, force: true });
+}
+
 function runBuild() {
   ensureLocalTypeScript();
+  cleanDist();
   const result = Bun.spawnSync([bunBinary, localTscPath, "-p", "tsconfig.json"], {
     cwd: projectRoot,
     stdin: "inherit",

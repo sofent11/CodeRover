@@ -6,6 +6,7 @@ import type {
   RuntimeSessionMetaHelpers,
 } from "./types";
 import type { RuntimeThreadShape } from "../bridge-types";
+import { normalizeAcpAgentId } from "../acp/agent-registry";
 
 type ProviderDefinition = ReturnType<RuntimeSessionMetaHelpers["getRuntimeProvider"]>;
 const THREAD_LIST_PREVIEW_LIMIT = 600;
@@ -14,23 +15,12 @@ export function resolveProviderId(
   value: unknown,
   normalizeOptionalString: (value: unknown) => string | null
 ): string {
-  const candidate = normalizeOptionalString(
+  const candidate = normalizeAcpAgentId(normalizeOptionalString(
     typeof value === "object" && value
       ? (value as Record<string, unknown>).provider ?? (value as Record<string, unknown>).id
       : value
-  );
-  if (candidate === "claude" || candidate === "gemini" || candidate === "codex") {
-    return candidate;
-  }
-  return "codex";
-}
-
-export function stripProviderField<TValue>(params: TValue): Omit<TValue, "provider"> | TValue {
-  if (!params || typeof params !== "object") {
-    return params;
-  }
-  const { provider: _provider, ...rest } = params as TValue & { provider?: unknown };
-  return rest as Omit<TValue, "provider">;
+  ));
+  return candidate;
 }
 
 export function buildManagedSessionObject(

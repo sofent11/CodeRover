@@ -19,10 +19,6 @@ function wait(ms: number): Promise<void> {
 
 test("readBridgeConfig keeps safe defaults and explicit overrides", () => {
   const macConfig = readBridgeConfig({ env: {}, platform: "darwin" });
-  const macEndpointConfig = readBridgeConfig({
-    env: { CODEROVER_ENDPOINT: "ws://localhost:8080" },
-    platform: "darwin",
-  });
   const linuxConfig = readBridgeConfig({ env: {}, platform: "linux" });
   const linuxCommandConfig = readBridgeConfig({
     env: { CODEROVER_REFRESH_COMMAND: "echo refresh" },
@@ -30,7 +26,6 @@ test("readBridgeConfig keeps safe defaults and explicit overrides", () => {
   });
   const explicitOnConfig = readBridgeConfig({
     env: {
-      CODEROVER_ENDPOINT: "ws://localhost:8080",
       CODEROVER_REFRESH_ENABLED: "true",
     },
     platform: "darwin",
@@ -50,7 +45,6 @@ test("readBridgeConfig keeps safe defaults and explicit overrides", () => {
   });
 
   assert.equal(macConfig.refreshEnabled, false);
-  assert.equal(macEndpointConfig.refreshEnabled, false);
   assert.equal(linuxConfig.refreshEnabled, false);
   assert.equal(linuxCommandConfig.refreshEnabled, false);
   assert.equal(explicitOnConfig.refreshEnabled, true);

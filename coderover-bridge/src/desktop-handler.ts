@@ -10,6 +10,7 @@ import {
   resolveSessionsRoot,
   type RolloutScanFsModule,
 } from "./rollout-watch";
+import { createAcpAgentRegistry, normalizeAcpAgentId } from "./acp/agent-registry";
 
 const execFileAsync = promisify(execFile);
 
@@ -23,7 +24,6 @@ const DEFAULT_THREAD_MATERIALIZE_POLL_MS = 250;
 
 type SendResponse = (response: string) => void;
 type JsonObject = Record<string, unknown>;
-type DesktopProvider = "codex" | "claude" | "gemini";
 type DesktopExecResult = { stdout?: string | Buffer; stderr?: string | Buffer };
 type DesktopExecutor = (
   file: string,
@@ -68,12 +68,14 @@ interface DesktopHandlerOptions {
 
 interface RestartDesktopResult {
   success: true;
-  provider: DesktopProvider;
+  provider: string;
   restarted: boolean;
   targetUrl: string;
   sessionId: string;
   desktopKnown: boolean;
 }
+
+const desktopAgentRegistry = createAcpAgentRegistry();
 
 export function handleDesktopRequest(
   rawMessage: string,
@@ -167,8 +169,8 @@ async function restartDesktopApp(
     codexAppPath = readFirstDefinedEnv(["CODEX_DESKTOP_APP_PATH", "CODEX_APP_PATH"], DEFAULT_CODEX_APP_PATH, env),
   }: DesktopHandlerOptions = {}
 ): Promise<RestartDesktopResult> {
-  const provider = normalizeProvider(params.provider);
-  if (provider !== "codex") {
+  const provider = normalizeDesktopAgentId(params.provider);
+  if (!desktopAgentRegistry.get(provider)?.supports?.desktopRestart) {
     throw desktopError(
       "unsupported_provider",
       `${providerTitle(provider)} desktop restart is not supported in this build.`
@@ -241,23 +243,12 @@ async function restartDesktopApp(
   };
 }
 
-function normalizeProvider(value: unknown): DesktopProvider {
-  const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
-  if (normalized === "claude" || normalized === "gemini" || normalized === "codex") {
-    return normalized;
-  }
-  return "codex";
+function normalizeDesktopAgentId(value: unknown): string {
+  return normalizeAcpAgentId(value);
 }
 
-function providerTitle(provider: DesktopProvider): string {
-  switch (provider) {
-    case "claude":
-      return "Claude";
-    case "gemini":
-      return "Gemini";
-    default:
-      return "Codex";
-  }
+function providerTitle(provider: string): string {
+  return desktopAgentRegistry.get(provider)?.name || "Codex";
 }
 
 function resolveSessionId(params: DesktopRequestParams): string {
