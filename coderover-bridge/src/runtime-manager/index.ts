@@ -4,7 +4,7 @@ export {};
 // Purpose: Bridge-owned multi-provider runtime router for Codex, Claude Code, and Gemini CLI.
 // Layer: Runtime orchestration
 // Exports: createRuntimeManager
-// Depends on: crypto, ../runtime-store, ../provider-catalog, ../providers/*
+// Depends on: crypto, ../runtime-store, ../acp/*, ../runtime-engine/*
 
 import { randomUUID } from "crypto";
 
@@ -28,9 +28,6 @@ import { createAcpAgentRegistry } from "../acp/agent-registry";
 import { createAcpSessionManager, type AcpSessionManager } from "../acp/session-manager";
 import type { AcpClientServerRequest, AcpClientSessionUpdateNotification } from "../acp/process-client";
 import {
-  getRuntimeProvider,
-} from "../provider-catalog";
-import {
   ACP_PROTOCOL_VERSION,
   buildAcpReplayNotifications,
   normalizeRunState,
@@ -43,7 +40,6 @@ import {
   type SessionRuntimeIndex,
 } from "../runtime-engine/session-runtime-index";
 import type { RuntimeEvent } from "../runtime-engine/types";
-import * as historyHelpers from "./codex-history";
 import * as routingHelpers from "./client-routing";
 import * as managedRuntimeHelpers from "./managed-provider-runtime";
 import * as normalizerHelpers from "./normalizers";
@@ -151,6 +147,15 @@ export function createRuntimeManager({
     store,
     sessionRuntimeIndex,
   });
+
+  function getRuntimeProvider(providerId: unknown): { title: string; supports: Record<string, unknown> } {
+    const agent = acpAgentRegistry.get(providerId);
+    return {
+      title: agent?.name || "Unknown",
+      supports: (agent?.supports || {}) as Record<string, unknown>,
+    };
+  }
+
   const pendingClientRequests = new Map<string, PendingClientRequest>();
   const pendingPromptRequests = new Map<string, PendingPromptRequest>();
   const pendingPromptUsage = new Map<string, UnknownRecord | null>();
@@ -368,11 +373,7 @@ export function createRuntimeManager({
   }
 
   async function ensureExternalThreadsIndexed(): Promise<void> {
-    const now = Date.now();
-    if ((now - lastExternalSyncAt) < EXTERNAL_SYNC_INTERVAL_MS) {
-      return;
-    }
-    lastExternalSyncAt = now;
+    // No-op in ACP flow.
   }
 
   async function requireSessionMeta(sessionId: unknown): Promise<RuntimeSessionMeta> {
@@ -965,25 +966,6 @@ export function createRuntimeManager({
       mode: overrides.mode ?? null,
       ownerState: overrides.ownerState ?? "idle",
       activeTurnId: overrides.activeTurnId ?? null,
-    });
-  }
-
-  function syncSessionRuntimeFromThreadObject(threadObject: RuntimeThreadShape): void {
-    const sessionId = normalizeOptionalString(threadObject.id);
-    if (!sessionId) {
-      return;
-    }
-    const provider = normalizeOptionalString(threadObject.provider) || "codex";
-    upsertSessionRuntimeRecord({
-      sessionId,
-      provider,
-      engineSessionId: normalizeOptionalString(threadObject.providerSessionId)
-        || normalizeOptionalString(threadObject.id),
-      providerSessionId: normalizeOptionalString(threadObject.providerSessionId)
-        || normalizeOptionalString(threadObject.id),
-      cwd: firstNonEmptyString([threadObject.cwd]),
-      model: normalizeOptionalString(threadObject.model),
-      ownerState: "idle",
     });
   }
 
@@ -2172,13 +2154,12 @@ function decodeThreadListCursor(value: unknown): { offset: number } | null {
 }
 
 function extractArray(value: unknown, candidatePaths: string[]): unknown[] {
-  return historyHelpers.extractArray(value, candidatePaths, readPath);
+  return normalizerHelpers.extractArray(value, candidatePaths, readPath);
 }
 
 function readPath(root: unknown, path: string): unknown {
-  return historyHelpers.readPath(root, path);
+  return normalizerHelpers.readPath(root, path);
 }
-
 function normalizeTimestampString(value: unknown): string | null {
   if (value == null) {
     return null;

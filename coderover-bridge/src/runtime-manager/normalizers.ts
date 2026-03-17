@@ -169,6 +169,37 @@ export function asObject(value: unknown): UnknownRecord {
   return asRecord(value) || {};
 }
 
+export function extractArray(
+  value: unknown,
+  candidatePaths: string[],
+  readPath: (root: unknown, path: string) => unknown
+): unknown[] {
+  if (!value) {
+    return [];
+  }
+
+  for (const candidatePath of candidatePaths) {
+    const candidateValue = readPath(value, candidatePath);
+    if (Array.isArray(candidateValue)) {
+      return candidateValue;
+    }
+  }
+
+  return [];
+}
+
+export function readPath(root: unknown, path: string): unknown {
+  const parts = path.split(".");
+  let current: unknown = root;
+  for (const part of parts) {
+    if (!current || typeof current !== "object") {
+      return null;
+    }
+    current = (current as UnknownRecord)[part];
+  }
+  return current;
+}
+
 export function normalizeTimestampString(value: unknown): string | null {
   if (value == null) {
     return null;
