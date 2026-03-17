@@ -5,9 +5,9 @@ import { execFile, type ExecFileException } from "child_process";
 import * as path from "path";
 
 import {
-  createThreadRolloutActivityWatcher,
-  type ThreadRolloutActivityEvent,
-  type ThreadRolloutActivityWatcher,
+  createSessionRolloutActivityWatcher,
+  type SessionRolloutActivityEvent,
+  type SessionRolloutActivityWatcher,
 } from "./rollout-watch";
 
 const DEFAULT_BUNDLE_ID = "com.sofent.CodeRover";
@@ -27,7 +27,7 @@ type RefreshBackend = "command" | "applescript";
 type JsonRecord = Record<string, unknown>;
 
 interface RefreshTarget {
-  threadId: string | null;
+  sessionId: string | null;
   url: string;
 }
 
@@ -45,16 +45,16 @@ interface BridgeConfig {
 }
 
 interface WatchFactoryOptions {
-  threadId: string;
+  sessionId: string;
   lookupTimeoutMs: number;
   idleTimeoutMs: number;
-  onEvent: (event: ThreadRolloutActivityEvent) => void;
+  onEvent: (event: SessionRolloutActivityEvent) => void;
   onIdle: () => void;
   onTimeout: () => void;
   onError: (error: Error) => void;
 }
 
-type WatchThreadRolloutFactory = (options: WatchFactoryOptions) => ThreadRolloutActivityWatcher;
+type WatchSessionRolloutFactory = (options: WatchFactoryOptions) => SessionRolloutActivityWatcher;
 type RefreshExecutor = (targetUrl: string) => Promise<unknown>;
 
 interface ReadBridgeConfigOptions {
@@ -80,7 +80,7 @@ interface CodeRoverDesktopRefresherOptions {
   rolloutIdleTimeoutMs?: number;
   now?: () => number;
   refreshExecutor?: RefreshExecutor | null;
-  watchThreadRolloutFactory?: WatchThreadRolloutFactory;
+  watchSessionRolloutFactory?: WatchSessionRolloutFactory;
   refreshBackend?: RefreshBackend | null;
   customRefreshFailureThreshold?: number;
 }
@@ -98,7 +98,7 @@ export class CodeRoverDesktopRefresher {
   rolloutIdleTimeoutMs: number;
   now: () => number;
   refreshExecutor: RefreshExecutor | null;
-  watchThreadRolloutFactory: WatchThreadRolloutFactory;
+  watchSessionRolloutFactory: WatchSessionRolloutFactory;
   refreshBackend: RefreshBackend;
   customRefreshFailureThreshold: number;
 
@@ -108,9 +108,9 @@ export class CodeRoverDesktopRefresher {
   pendingCompletionRefresh = false;
   pendingCompletionTurnId: string | null = null;
   pendingCompletionTargetUrl = "";
-  pendingCompletionTargetThreadId = "";
+  pendingCompletionTargetSessionId = "";
   pendingTargetUrl = "";
-  pendingTargetThreadId = "";
+  pendingTargetSessionId = "";
   lastRefreshAt = 0;
   lastRefreshSignature = "";
   lastTurnIdRefreshed: string | null = null;
@@ -118,11 +118,11 @@ export class CodeRoverDesktopRefresher {
   refreshTimer: NodeJS.Timeout | null = null;
   refreshRunning = false;
   fallbackTimer: NodeJS.Timeout | null = null;
-  activeWatcher: ThreadRolloutActivityWatcher | null = null;
-  activeWatchedThreadId: string | null = null;
+  activeWatcher: SessionRolloutActivityWatcher | null = null;
+  activeWatchedSessionId: string | null = null;
   watchStartAt = 0;
   lastRolloutSize: number | null = null;
-  stopWatcherAfterRefreshThreadId: string | null = null;
+  stopWatcherAfterRefreshSessionId: string | null = null;
   runtimeRefreshAvailable: boolean;
   consecutiveRefreshFailures = 0;
   unavailableLogged = false;
@@ -140,7 +140,7 @@ export class CodeRoverDesktopRefresher {
     rolloutIdleTimeoutMs = DEFAULT_ROLLOUT_IDLE_TIMEOUT_MS,
     now = () => Date.now(),
     refreshExecutor = null,
-    watchThreadRolloutFactory = createThreadRolloutActivityWatcher,
+    watchSessionRolloutFactory = createSessionRolloutActivityWatcher,
     refreshBackend = null,
     customRefreshFailureThreshold = DEFAULT_CUSTOM_REFRESH_FAILURE_THRESHOLD,
   }: CodeRoverDesktopRefresherOptions = {}) {
@@ -156,7 +156,7 @@ export class CodeRoverDesktopRefresher {
     this.rolloutIdleTimeoutMs = rolloutIdleTimeoutMs;
     this.now = now;
     this.refreshExecutor = refreshExecutor;
-    this.watchThreadRolloutFactory = watchThreadRolloutFactory;
+    this.watchSessionRolloutFactory = watchSessionRolloutFactory;
     this.refreshBackend =
       refreshBackend || (this.refreshCommand || this.refreshExecutor ? "command" : "applescript");
     this.customRefreshFailureThreshold = customRefreshFailureThreshold;
@@ -170,11 +170,11 @@ export class CodeRoverDesktopRefresher {
     }
 
     const method = normalizeOptionalString(parsed.method);
-    if (method === "thread/start") {
+    if (method === "session/new") {
       const target = resolveInboundTarget(method, parsed);
-      if (target?.threadId) {
+      if (target?.sessionId) {
         this.queueRefresh("phone", target, `phone ${method}`);
-        this.ensureWatcher(target.threadId);
+        this.ensureWatcher(target.sessionId);
         return;
       }
 
@@ -185,15 +185,15 @@ export class CodeRoverDesktopRefresher {
       return;
     }
 
-    if (method === "turn/start") {
+    if (method === "session/prompt") {
       const target = resolveInboundTarget(method, parsed);
       if (!target) {
         return;
       }
 
       this.queueRefresh("phone", target, `phone ${method}`);
-      if (target.threadId) {
-        this.ensureWatcher(target.threadId);
+      if (target.sessionId) {
+        this.ensureWatcher(target.sessionId);
       }
     }
   }
@@ -205,26 +205,27 @@ export class CodeRoverDesktopRefresher {
     }
 
     const method = normalizeOptionalString(parsed.method);
-    if (method === "turn/completed") {
-      this.clearFallbackTimer();
+    if (method === "session/update") {
+      const target = resolveOutboundTarget(method, parsed);
+      const runState = extractSessionRunState(parsed);
       const turnId = extractTurnId(parsed);
-      if (turnId && turnId === this.lastTurnIdRefreshed) {
-        this.log(`refresh skipped (debounced): completion already refreshed for ${turnId}`);
+
+      if (runState === "completed" || runState === "stopped" || runState === "failed" || runState === "idle") {
+        this.clearFallbackTimer();
+        if (turnId && turnId === this.lastTurnIdRefreshed) {
+          this.log(`refresh skipped (debounced): completion already refreshed for ${turnId}`);
+          return;
+        }
+        this.queueCompletionRefresh(target, turnId, `coderover ${method}`);
         return;
       }
 
-      this.queueCompletionRefresh(resolveOutboundTarget(method, parsed), turnId, `coderover ${method}`);
-      return;
-    }
-
-    if (method === "thread/started") {
-      const target = resolveOutboundTarget(method, parsed);
       this.pendingNewThread = false;
       this.clearFallbackTimer();
       this.queueRefresh("phone", target, `coderover ${method}`);
-      if (target?.threadId) {
+      if (target?.sessionId) {
         this.mode = "watching_thread";
-        this.ensureWatcher(target.threadId);
+        this.ensureWatcher(target.sessionId);
       }
     }
   }
@@ -249,7 +250,7 @@ export class CodeRoverDesktopRefresher {
     this.noteCompletionTarget(target);
     this.pendingCompletionRefresh = true;
     this.pendingCompletionTurnId = turnId;
-    this.stopWatcherAfterRefreshThreadId = target?.threadId || null;
+    this.stopWatcherAfterRefreshSessionId = target?.sessionId || null;
     this.scheduleRefresh(reason);
   }
 
@@ -258,12 +259,12 @@ export class CodeRoverDesktopRefresher {
       return;
     }
     this.pendingTargetUrl = target.url;
-    this.pendingTargetThreadId = target.threadId || "";
+    this.pendingTargetSessionId = target.sessionId || "";
   }
 
   clearPendingTarget(): void {
     this.pendingTargetUrl = "";
-    this.pendingTargetThreadId = "";
+    this.pendingTargetSessionId = "";
   }
 
   noteCompletionTarget(target: RefreshTarget | null): void {
@@ -271,12 +272,12 @@ export class CodeRoverDesktopRefresher {
       return;
     }
     this.pendingCompletionTargetUrl = target.url;
-    this.pendingCompletionTargetThreadId = target.threadId || "";
+    this.pendingCompletionTargetSessionId = target.sessionId || "";
   }
 
   clearPendingCompletionTarget(): void {
     this.pendingCompletionTargetUrl = "";
-    this.pendingCompletionTargetThreadId = "";
+    this.pendingCompletionTargetSessionId = "";
   }
 
   scheduleRefresh(reason: string): void {
@@ -317,15 +318,15 @@ export class CodeRoverDesktopRefresher {
     const pendingRefreshKinds = isCompletionRun ? new Set<RefreshKind>(["completion"]) : new Set(this.pendingRefreshKinds);
     const completionTurnId = this.pendingCompletionTurnId;
     const targetUrl = isCompletionRun ? this.pendingCompletionTargetUrl : this.pendingTargetUrl;
-    const targetThreadId = isCompletionRun ? this.pendingCompletionTargetThreadId : this.pendingTargetThreadId;
-    const stopWatcherAfterRefreshThreadId = isCompletionRun ? this.stopWatcherAfterRefreshThreadId : null;
+    const targetSessionId = isCompletionRun ? this.pendingCompletionTargetSessionId : this.pendingTargetSessionId;
+    const stopWatcherAfterRefreshSessionId = isCompletionRun ? this.stopWatcherAfterRefreshSessionId : null;
     const shouldForceCompletionRefresh = isCompletionRun;
 
     if (isCompletionRun) {
       this.pendingCompletionRefresh = false;
       this.pendingCompletionTurnId = null;
       this.clearPendingCompletionTarget();
-      this.stopWatcherAfterRefreshThreadId = null;
+      this.stopWatcherAfterRefreshSessionId = null;
     } else {
       this.pendingRefreshKinds.clear();
       this.clearPendingTarget();
@@ -333,12 +334,12 @@ export class CodeRoverDesktopRefresher {
 
     this.refreshRunning = true;
     this.log(
-      `refresh running: ${Array.from(pendingRefreshKinds).join("+")}${targetThreadId ? ` thread=${targetThreadId}` : ""}`
+      `refresh running: ${Array.from(pendingRefreshKinds).join("+")}${targetSessionId ? ` session=${targetSessionId}` : ""}`
     );
 
     let didRefresh = false;
     try {
-      const refreshSignature = `${targetUrl || "app"}|${targetThreadId || "no-thread"}`;
+      const refreshSignature = `${targetUrl || "app"}|${targetSessionId || "no-session"}`;
       if (
         !shouldForceCompletionRefresh
         && refreshSignature === this.lastRefreshSignature
@@ -361,8 +362,8 @@ export class CodeRoverDesktopRefresher {
       this.refreshRunning = false;
       if (
         didRefresh
-        && stopWatcherAfterRefreshThreadId
-        && stopWatcherAfterRefreshThreadId === this.activeWatchedThreadId
+        && stopWatcherAfterRefreshSessionId
+        && stopWatcherAfterRefreshSessionId === this.activeWatchedSessionId
       ) {
         this.stopWatcher();
         this.mode = this.pendingNewThread ? "pending_new_thread" : "idle";
@@ -397,7 +398,7 @@ export class CodeRoverDesktopRefresher {
     this.pendingCompletionTurnId = null;
     this.clearPendingCompletionTarget();
     this.clearPendingTarget();
-    this.stopWatcherAfterRefreshThreadId = null;
+    this.stopWatcherAfterRefreshSessionId = null;
   }
 
   clearRefreshTimer(): void {
@@ -414,13 +415,13 @@ export class CodeRoverDesktopRefresher {
 
     this.fallbackTimer = setTimeout(() => {
       this.fallbackTimer = null;
-      if (!this.pendingNewThread || this.pendingTargetThreadId) {
+      if (!this.pendingNewThread || this.pendingTargetSessionId) {
         return;
       }
 
-      this.noteRefreshTarget({ threadId: null, url: NEW_THREAD_DEEP_LINK });
+      this.noteRefreshTarget({ sessionId: null, url: NEW_THREAD_DEEP_LINK });
       this.pendingRefreshKinds.add("phone");
-      this.scheduleRefresh("fallback thread/start");
+      this.scheduleRefresh("fallback session/new");
     }, this.fallbackNewThreadMs);
   }
 
@@ -431,37 +432,37 @@ export class CodeRoverDesktopRefresher {
     }
   }
 
-  ensureWatcher(threadId: string | null): void {
-    if (!this.canRefresh() || !threadId) {
+  ensureWatcher(sessionId: string | null): void {
+    if (!this.canRefresh() || !sessionId) {
       return;
     }
 
-    if (this.activeWatchedThreadId === threadId && this.activeWatcher) {
+    if (this.activeWatchedSessionId === sessionId && this.activeWatcher) {
       return;
     }
 
     this.stopWatcher();
-    this.activeWatchedThreadId = threadId;
+    this.activeWatchedSessionId = sessionId;
     this.watchStartAt = this.now();
     this.lastRolloutSize = null;
     this.mode = "watching_thread";
-    this.activeWatcher = this.watchThreadRolloutFactory({
-      threadId,
+    this.activeWatcher = this.watchSessionRolloutFactory({
+      sessionId,
       lookupTimeoutMs: this.rolloutLookupTimeoutMs,
       idleTimeoutMs: this.rolloutIdleTimeoutMs,
       onEvent: (event) => this.handleWatcherEvent(event),
       onIdle: () => {
-        this.log(`rollout watcher idle thread=${threadId}`);
+        this.log(`rollout watcher idle session=${sessionId}`);
         this.stopWatcher();
         this.mode = this.pendingNewThread ? "pending_new_thread" : "idle";
       },
       onTimeout: () => {
-        this.log(`rollout watcher timeout thread=${threadId}`);
+        this.log(`rollout watcher timeout session=${sessionId}`);
         this.stopWatcher();
         this.mode = this.pendingNewThread ? "pending_new_thread" : "idle";
       },
       onError: (error) => {
-        this.log(`rollout watcher failed thread=${threadId}: ${error.message}`);
+        this.log(`rollout watcher failed session=${sessionId}: ${error.message}`);
         this.stopWatcher();
         this.mode = this.pendingNewThread ? "pending_new_thread" : "idle";
       },
@@ -470,7 +471,7 @@ export class CodeRoverDesktopRefresher {
 
   stopWatcher(): void {
     if (!this.activeWatcher) {
-      this.activeWatchedThreadId = null;
+      this.activeWatchedSessionId = null;
       this.watchStartAt = 0;
       this.lastRolloutSize = null;
       return;
@@ -478,27 +479,27 @@ export class CodeRoverDesktopRefresher {
 
     this.activeWatcher.stop();
     this.activeWatcher = null;
-    this.activeWatchedThreadId = null;
+    this.activeWatchedSessionId = null;
     this.watchStartAt = 0;
     this.lastRolloutSize = null;
   }
 
-  handleWatcherEvent(event: ThreadRolloutActivityEvent): void {
-    if (!event.threadId || event.threadId !== this.activeWatchedThreadId) {
+  handleWatcherEvent(event: SessionRolloutActivityEvent): void {
+    if (!event.sessionId || event.sessionId !== this.activeWatchedSessionId) {
       return;
     }
 
     const previousSize = this.lastRolloutSize;
     this.lastRolloutSize = event.size;
     this.noteRefreshTarget({
-      threadId: event.threadId,
-      url: buildThreadDeepLink(event.threadId),
+      sessionId: event.sessionId,
+      url: buildSessionDeepLink(event.sessionId),
     });
 
     if (event.reason === "materialized") {
       this.queueRefresh("rollout_materialized", {
-        threadId: event.threadId,
-        url: buildThreadDeepLink(event.threadId),
+        sessionId: event.sessionId,
+        url: buildSessionDeepLink(event.sessionId),
       }, `rollout ${event.reason}`);
       return;
     }
@@ -509,8 +510,8 @@ export class CodeRoverDesktopRefresher {
 
     if (previousSize == null) {
       this.queueRefresh("rollout_growth", {
-        threadId: event.threadId,
-        url: buildThreadDeepLink(event.threadId),
+        sessionId: event.sessionId,
+        url: buildSessionDeepLink(event.sessionId),
       }, "rollout first-growth");
       this.lastMidRunRefreshAt = this.now();
       return;
@@ -522,8 +523,8 @@ export class CodeRoverDesktopRefresher {
 
     this.lastMidRunRefreshAt = this.now();
     this.queueRefresh("rollout_growth", {
-      threadId: event.threadId,
-      url: buildThreadDeepLink(event.threadId),
+      sessionId: event.sessionId,
+      url: buildSessionDeepLink(event.sessionId),
     }, "rollout mid-run");
   }
 
@@ -642,6 +643,12 @@ function extractTurnId(message: JsonRecord): string | null {
     return null;
   }
 
+  const update = asRecord(params.update);
+  const coderoverMeta = asRecord(asRecord(update?._meta)?.coderover);
+  if (typeof coderoverMeta?.turnId === "string" && coderoverMeta.turnId) {
+    return coderoverMeta.turnId;
+  }
+
   if (typeof params.turnId === "string" && params.turnId) {
     return params.turnId;
   }
@@ -654,15 +661,21 @@ function extractTurnId(message: JsonRecord): string | null {
   return null;
 }
 
-function extractThreadId(message: JsonRecord): string | null {
+function extractSessionId(message: JsonRecord): string | null {
   const params = asRecord(message.params);
-  if (!params) {
-    return null;
-  }
+  const result = asRecord(message.result);
+  const update = asRecord(params?.update);
+  const coderoverMeta = asRecord(asRecord(update?._meta)?.coderover);
 
   const thread = asRecord(params.thread);
   const turn = asRecord(params.turn);
   const candidates = [
+    params?.sessionId,
+    params?.session_id,
+    result?.sessionId,
+    result?.session_id,
+    coderoverMeta?.sessionId,
+    coderoverMeta?.threadId,
     params.threadId,
     params.conversationId,
     thread?.id,
@@ -681,33 +694,43 @@ function extractThreadId(message: JsonRecord): string | null {
 }
 
 function resolveInboundTarget(method: string, message: JsonRecord): RefreshTarget | null {
-  const threadId = extractThreadId(message);
-  if (threadId) {
-    return { threadId, url: buildThreadDeepLink(threadId) };
+  const sessionId = extractSessionId(message);
+  if (sessionId) {
+    return { sessionId, url: buildSessionDeepLink(sessionId) };
   }
 
-  if (method === "thread/start" || method === "turn/start") {
-    return { threadId: null, url: NEW_THREAD_DEEP_LINK };
+  if (method === "session/new") {
+    return { sessionId: null, url: NEW_THREAD_DEEP_LINK };
   }
 
   return null;
 }
 
 function resolveOutboundTarget(method: string, message: JsonRecord): RefreshTarget | null {
-  const threadId = extractThreadId(message);
-  if (threadId) {
-    return { threadId, url: buildThreadDeepLink(threadId) };
+  const sessionId = extractSessionId(message);
+  if (sessionId) {
+    return { sessionId, url: buildSessionDeepLink(sessionId) };
   }
 
-  if (method === "thread/started") {
-    return { threadId: null, url: NEW_THREAD_DEEP_LINK };
+  if (method === "session/update") {
+    return { sessionId: null, url: NEW_THREAD_DEEP_LINK };
   }
 
   return null;
 }
 
-function buildThreadDeepLink(threadId: string): string {
-  return `coderover://threads/${threadId}`;
+function buildSessionDeepLink(sessionId: string): string {
+  return `coderover://threads/${sessionId}`;
+}
+
+function extractSessionRunState(message: JsonRecord): string | null {
+  const params = asRecord(message.params);
+  const update = asRecord(params?.update);
+  const coderoverMeta = asRecord(asRecord(update?._meta)?.coderover);
+  if (typeof coderoverMeta?.runState === "string" && coderoverMeta.runState) {
+    return coderoverMeta.runState;
+  }
+  return null;
 }
 
 function readOptionalBooleanEnv(

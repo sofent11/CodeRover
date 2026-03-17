@@ -10,7 +10,7 @@ function waitForTick(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
-test("desktop/restartApp relaunches Codex for the requested thread", async () => {
+test("desktop/restartApp relaunches Codex for the requested session", async () => {
   const executorCalls: Array<[string, readonly string[] | undefined]> = [];
   const responses: Array<Record<string, any>> = [];
   let running = true;
@@ -20,7 +20,7 @@ test("desktop/restartApp relaunches Codex for the requested thread", async () =>
     method: "desktop/restartApp",
     params: {
       provider: "codex",
-      threadId: "thread-123",
+      sessionId: "thread-123",
     },
   }), (response) => {
     responses.push(JSON.parse(response) as Record<string, any>);
@@ -55,7 +55,7 @@ test("desktop/restartApp relaunches Codex for the requested thread", async () =>
       provider: "codex",
       restarted: true,
       targetUrl: "codex://threads/thread-123",
-      threadId: "thread-123",
+      sessionId: "thread-123",
       desktopKnown: false,
     },
   }]);
@@ -70,7 +70,7 @@ test("desktop/restartApp opens Codex when the desktop app is not already running
     method: "desktop/restartApp",
     params: {
       provider: "codex",
-      threadId: "thread-closed-app",
+      sessionId: "thread-closed-app",
     },
   }), (response) => {
     responses.push(JSON.parse(response) as Record<string, any>);
@@ -122,7 +122,7 @@ test("desktop/restartApp reports desktopKnown when rollout already exists", asyn
     method: "desktop/restartApp",
     params: {
       provider: "codex",
-      threadId: "thread-known",
+      sessionId: "thread-known",
     },
   }), (response) => {
     responses.push(JSON.parse(response) as Record<string, any>);
@@ -147,7 +147,7 @@ test("desktop/restartApp reports desktopKnown when rollout already exists", asyn
   assert.equal(responses[0]?.result?.desktopKnown, true);
 });
 
-test("desktop/restartApp returns a bridge error when thread id is missing", async () => {
+test("desktop/restartApp returns a bridge error when session id is missing", async () => {
   const responses: Array<Record<string, any>> = [];
 
   handleDesktopRequest(JSON.stringify({
@@ -165,7 +165,7 @@ test("desktop/restartApp returns a bridge error when thread id is missing", asyn
   await waitForTick();
 
   assert.equal(responses.length, 1);
-  assert.equal(responses[0]?.error?.data?.errorCode, "missing_thread_id");
+  assert.equal(responses[0]?.error?.data?.errorCode, "missing_session_id");
 });
 
 test("desktop/restartApp refuses unsupported providers", async () => {
@@ -176,7 +176,7 @@ test("desktop/restartApp refuses unsupported providers", async () => {
     method: "desktop/restartApp",
     params: {
       provider: "claude",
-      threadId: "thread-claude",
+      sessionId: "thread-claude",
     },
   }), (response) => {
     responses.push(JSON.parse(response) as Record<string, any>);
@@ -196,7 +196,7 @@ test("desktop/restartApp refuses non-mac platforms", async () => {
     method: "desktop/restartApp",
     params: {
       provider: "codex",
-      threadId: "thread-456",
+      sessionId: "thread-456",
     },
   }), (response) => {
     responses.push(JSON.parse(response) as Record<string, any>);

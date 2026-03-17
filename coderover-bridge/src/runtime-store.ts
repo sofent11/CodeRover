@@ -33,12 +33,12 @@ export interface RuntimeStoreTurn {
   items: RuntimeStoreItem[];
 }
 
-export interface RuntimeThreadHistory {
-  threadId: string;
+export interface RuntimeSessionHistory {
+  sessionId: string;
   turns: RuntimeStoreTurn[];
 }
 
-export interface RuntimeThreadMeta {
+export interface RuntimeSessionMeta {
   id: string;
   provider: ProviderId;
   providerSessionId: string | null;
@@ -56,11 +56,11 @@ export interface RuntimeThreadMeta {
 
 interface RuntimeStoreIndex {
   version: number;
-  threads: Record<string, RuntimeThreadMeta>;
+  threads: Record<string, RuntimeSessionMeta>;
   providerSessions: Record<string, string>;
 }
 
-export interface CreateThreadInput {
+export interface CreateSessionInput {
   id?: string | null;
   provider?: unknown;
   providerSessionId?: string | null;
@@ -78,21 +78,21 @@ export interface CreateThreadInput {
 
 export interface RuntimeStore {
   baseDir: string;
-  createThread(input: CreateThreadInput): RuntimeThreadMeta;
-  deleteThread(threadId: unknown): boolean;
-  findThreadIdByProviderSession(provider: unknown, providerSessionId: unknown): string | null;
+  createSession(input: CreateSessionInput): RuntimeSessionMeta;
+  deleteSession(sessionId: unknown): boolean;
+  findSessionIdByProviderSession(provider: unknown, providerSessionId: unknown): string | null;
   flush(): void;
-  getThreadHistory(threadId: unknown): RuntimeThreadHistory | null;
-  getThreadMeta(threadId: unknown): RuntimeThreadMeta | null;
-  listThreadMetas(): RuntimeThreadMeta[];
-  saveThreadHistory(threadId: unknown, history: unknown): RuntimeThreadHistory;
+  getSessionHistory(sessionId: unknown): RuntimeSessionHistory | null;
+  getSessionMeta(sessionId: unknown): RuntimeSessionMeta | null;
+  listSessionMetas(): RuntimeSessionMeta[];
+  saveSessionHistory(sessionId: unknown, history: unknown): RuntimeSessionHistory;
   shutdown(): void;
-  bindProviderSession(threadId: unknown, provider: unknown, providerSessionId: unknown): RuntimeThreadMeta | null;
-  updateThreadMeta(
-    threadId: unknown,
-    updater: (entry: RuntimeThreadMeta) => RuntimeThreadMeta | null | undefined
-  ): RuntimeThreadMeta | null;
-  upsertThreadMeta(threadMeta: unknown): RuntimeThreadMeta;
+  bindProviderSession(sessionId: unknown, provider: unknown, providerSessionId: unknown): RuntimeSessionMeta | null;
+  updateSessionMeta(
+    sessionId: unknown,
+    updater: (entry: RuntimeSessionMeta) => RuntimeSessionMeta | null | undefined
+  ): RuntimeSessionMeta | null;
+  upsertSessionMeta(sessionMeta: unknown): RuntimeSessionMeta;
 }
 
 const DEFAULT_STORE_DIR = path.join(os.homedir(), ".coderover", "runtime");
@@ -108,13 +108,13 @@ export function createRuntimeStore({ baseDir = DEFAULT_STORE_DIR }: { baseDir?: 
   let indexState = loadIndex(indexPath);
   let writeTimer: NodeJS.Timeout | null = null;
 
-  function listThreadMetas(): RuntimeThreadMeta[] {
+  function listSessionMetas(): RuntimeSessionMeta[] {
     return Object.values(indexState.threads)
       .map((entry) => ({ ...entry }))
       .sort(compareThreadMeta);
   }
 
-  function getThreadMeta(threadId: unknown): RuntimeThreadMeta | null {
+  function getSessionMeta(threadId: unknown): RuntimeSessionMeta | null {
     const normalizedThreadId = normalizeNonEmptyString(threadId);
     if (!normalizedThreadId) {
       return null;
@@ -124,7 +124,7 @@ export function createRuntimeStore({ baseDir = DEFAULT_STORE_DIR }: { baseDir?: 
     return entry ? { ...entry } : null;
   }
 
-  function getThreadHistory(threadId: unknown): RuntimeThreadHistory | null {
+  function getSessionHistory(threadId: unknown): RuntimeSessionHistory | null {
     const normalizedThreadId = normalizeNonEmptyString(threadId);
     if (!normalizedThreadId) {
       return null;
@@ -137,19 +137,19 @@ export function createRuntimeStore({ baseDir = DEFAULT_STORE_DIR }: { baseDir?: 
 
     try {
       const raw = fs.readFileSync(historyPath, "utf8");
-      return normalizeThreadHistory(JSON.parse(raw), normalizedThreadId);
+      return normalizeSessionHistory(JSON.parse(raw), normalizedThreadId);
     } catch {
-      return defaultThreadHistory(normalizedThreadId);
+      return defaultSessionHistory(normalizedThreadId);
     }
   }
 
-  function saveThreadHistory(threadId: unknown, history: unknown): RuntimeThreadHistory {
+  function saveSessionHistory(threadId: unknown, history: unknown): RuntimeSessionHistory {
     const normalizedThreadId = normalizeNonEmptyString(threadId);
     if (!normalizedThreadId) {
-      throw new Error("saveThreadHistory requires a non-empty threadId");
+      throw new Error("saveSessionHistory requires a non-empty sessionId");
     }
 
-    const normalizedHistory = normalizeThreadHistory(history, normalizedThreadId);
+    const normalizedHistory = normalizeSessionHistory(history, normalizedThreadId);
     fs.mkdirSync(threadsDir, { recursive: true });
     fs.writeFileSync(
       threadHistoryPath(normalizedThreadId),
@@ -158,7 +158,7 @@ export function createRuntimeStore({ baseDir = DEFAULT_STORE_DIR }: { baseDir?: 
     return normalizedHistory;
   }
 
-  function createThread({
+  function createSession({
     id,
     provider,
     providerSessionId = null,
@@ -172,13 +172,13 @@ export function createRuntimeStore({ baseDir = DEFAULT_STORE_DIR }: { baseDir?: 
     createdAt = null,
     updatedAt = null,
     archived = false,
-  }: CreateThreadInput): RuntimeThreadMeta {
+  }: CreateSessionInput): RuntimeSessionMeta {
     const normalizedProvider = normalizeProvider(provider);
     const threadId = normalizeThreadId(id, normalizedProvider);
     const nowIso = toIsoDateString(updatedAt || createdAt || Date.now());
     const createdIso = toIsoDateString(createdAt || updatedAt || Date.now());
 
-    const threadMeta = normalizeThreadMeta({
+    const threadMeta = normalizeSessionMeta({
       id: threadId,
       provider: normalizedProvider,
       providerSessionId,
@@ -198,15 +198,15 @@ export function createRuntimeStore({ baseDir = DEFAULT_STORE_DIR }: { baseDir?: 
     syncProviderSessionIndex(threadId, threadMeta.provider, threadMeta.providerSessionId);
     scheduleIndexWrite();
 
-    if (!getThreadHistory(threadId)) {
-      saveThreadHistory(threadId, defaultThreadHistory(threadId));
+    if (!getSessionHistory(threadId)) {
+      saveSessionHistory(threadId, defaultSessionHistory(threadId));
     }
 
     return { ...threadMeta };
   }
 
-  function upsertThreadMeta(threadMeta: unknown): RuntimeThreadMeta {
-    const normalized = normalizeThreadMeta(threadMeta);
+  function upsertSessionMeta(threadMeta: unknown): RuntimeSessionMeta {
+    const normalized = normalizeSessionMeta(threadMeta);
     const previous = indexState.threads[normalized.id] || null;
     indexState.threads[normalized.id] = {
       ...(previous || {}),
@@ -234,38 +234,38 @@ export function createRuntimeStore({ baseDir = DEFAULT_STORE_DIR }: { baseDir?: 
     return { ...storedEntry };
   }
 
-  function updateThreadMeta(
+  function updateSessionMeta(
     threadId: unknown,
-    updater: (entry: RuntimeThreadMeta) => RuntimeThreadMeta | null | undefined
-  ): RuntimeThreadMeta | null {
-    const existing = getThreadMeta(threadId);
+    updater: (entry: RuntimeSessionMeta) => RuntimeSessionMeta | null | undefined
+  ): RuntimeSessionMeta | null {
+    const existing = getSessionMeta(threadId);
     if (!existing) {
       return null;
     }
 
     const next = updater({ ...existing }) || existing;
-    return upsertThreadMeta(next);
+    return upsertSessionMeta(next);
   }
 
   function bindProviderSession(
     threadId: unknown,
     provider: unknown,
     providerSessionId: unknown
-  ): RuntimeThreadMeta | null {
-    return updateThreadMeta(threadId, (entry) => ({
+  ): RuntimeSessionMeta | null {
+    return updateSessionMeta(threadId, (entry) => ({
       ...entry,
       provider: normalizeProvider(provider || entry.provider),
       providerSessionId: normalizeNonEmptyString(providerSessionId) || null,
     }));
   }
 
-  function findThreadIdByProviderSession(provider: unknown, providerSessionId: unknown): string | null {
+  function findSessionIdByProviderSession(provider: unknown, providerSessionId: unknown): string | null {
     const key = providerSessionKey(provider, providerSessionId);
     return key ? indexState.providerSessions[key] || null : null;
   }
 
-  function deleteThread(threadId: unknown): boolean {
-    const existing = getThreadMeta(threadId);
+  function deleteSession(threadId: unknown): boolean {
+    const existing = getSessionMeta(threadId);
     if (!existing) {
       return false;
     }
@@ -326,18 +326,18 @@ export function createRuntimeStore({ baseDir = DEFAULT_STORE_DIR }: { baseDir?: 
 
   return {
     baseDir,
-    createThread,
-    deleteThread,
-    findThreadIdByProviderSession,
+    createSession,
+    deleteSession,
+    findSessionIdByProviderSession,
     flush,
-    getThreadHistory,
-    getThreadMeta,
-    listThreadMetas,
-    saveThreadHistory,
+    getSessionHistory,
+    getSessionMeta,
+    listSessionMetas,
+    saveSessionHistory,
     shutdown,
     bindProviderSession,
-    updateThreadMeta,
-    upsertThreadMeta,
+    updateSessionMeta,
+    upsertSessionMeta,
   };
 }
 
@@ -380,7 +380,7 @@ function normalizeIndex(input: unknown): RuntimeStoreIndex {
         continue;
       }
 
-      normalized.threads[normalizedThreadId] = normalizeThreadMeta({
+      normalized.threads[normalizedThreadId] = normalizeSessionMeta({
         ...(value as UnknownRecord),
         id: normalizedThreadId,
       });
@@ -410,7 +410,7 @@ function normalizeIndex(input: unknown): RuntimeStoreIndex {
   return normalized;
 }
 
-function normalizeThreadMeta(input: unknown): RuntimeThreadMeta {
+function normalizeSessionMeta(input: unknown): RuntimeSessionMeta {
   const record = input && typeof input === "object" ? (input as UnknownRecord) : {};
   const normalizedProvider = normalizeProvider(record.provider);
   const normalizedId = normalizeThreadId(record.id, normalizedProvider);
@@ -455,7 +455,7 @@ function normalizeThreadMeta(input: unknown): RuntimeThreadMeta {
   };
 }
 
-function normalizeThreadHistory(input: unknown, threadId: string): RuntimeThreadHistory {
+function normalizeSessionHistory(input: unknown, threadId: string): RuntimeSessionHistory {
   const record = input && typeof input === "object" ? (input as UnknownRecord) : {};
   const turns = Array.isArray(record.turns)
     ? record.turns
@@ -463,7 +463,7 @@ function normalizeThreadHistory(input: unknown, threadId: string): RuntimeThread
       ? record.history
       : [];
   return {
-    threadId: normalizeNonEmptyString(record.threadId || record.thread_id) || threadId,
+    sessionId: normalizeNonEmptyString(record.sessionId || record.session_id || record.threadId || record.thread_id) || threadId,
     turns: turns
       .filter((entry): entry is UnknownRecord => Boolean(entry) && typeof entry === "object")
       .map((entry) => normalizeTurn(entry)),
@@ -544,14 +544,14 @@ function normalizeContent(input: unknown): UnknownRecord {
   return normalized;
 }
 
-function defaultThreadHistory(threadId: string): RuntimeThreadHistory {
+function defaultSessionHistory(threadId: string): RuntimeSessionHistory {
   return {
-    threadId,
+    sessionId: threadId,
     turns: [],
   };
 }
 
-function compareThreadMeta(left: RuntimeThreadMeta, right: RuntimeThreadMeta): number {
+function compareThreadMeta(left: RuntimeSessionMeta, right: RuntimeSessionMeta): number {
   const leftUpdated = Date.parse(left.updatedAt || "0") || 0;
   const rightUpdated = Date.parse(right.updatedAt || "0") || 0;
   if (leftUpdated !== rightUpdated) {

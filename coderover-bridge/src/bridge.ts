@@ -5,11 +5,10 @@ import {
   CodeRoverDesktopRefresher,
   readBridgeConfig,
 } from "./coderover-desktop-refresher";
-import { createCodexTransport } from "./codex-transport";
 import { printQR } from "./qr";
-import { rememberActiveThread } from "./session-state";
+import { rememberActiveSession } from "./session-state";
 import { handleGitRequest } from "./git-handler";
-import { handleThreadContextRequest } from "./thread-context-handler";
+import { handleContextWindowReadRequest } from "./coderover-context-window-handler";
 import { handleWorkspaceRequest } from "./workspace-handler";
 import { handleDesktopRequest } from "./desktop-handler";
 import { loadOrCreateBridgeDeviceState } from "./secure-device-state";
@@ -51,9 +50,6 @@ export function startBridge(): void {
   });
 
   let isShuttingDown = false;
-  let codexTransport: ReturnType<typeof createCodexTransport> | null = null;
-  let codexRestartTimer: NodeJS.Timeout | null = null;
-  let codexRestartAttempt = 0;
   let pairingQRRefreshTimer: NodeJS.Timeout | null = null;
   let secureTransport: ReturnType<typeof createBridgeSecureTransport> | null = null;
   const runtimeManager = createRuntimeManager({
@@ -110,7 +106,6 @@ export function startBridge(): void {
       printFreshPairingQR();
     }
   }, PAIRING_QR_REPRINT_INTERVAL_MS);
-  launchCodexTransport();
 
   process.on("SIGINT", () => shutdownBridge(() => {
     isShuttingDown = true;
@@ -126,7 +121,7 @@ export function startBridge(): void {
       if (handleDesktopRequest(rawMessage, sendApplicationResponse, { env: process.env })) {
         return;
       }
-      if (handleThreadContextRequest(rawMessage, sendApplicationResponse)) {
+      if (handleContextWindowReadRequest(rawMessage, sendApplicationResponse)) {
         return;
       }
     if (handleWorkspaceRequest(rawMessage, sendApplicationResponse)) {
@@ -135,7 +130,7 @@ export function startBridge(): void {
     if (handleGitRequest(rawMessage, sendApplicationResponse)) {
       return;
     }
-    maybeTrackPhoneThread(rawMessage);
+    maybeTrackPhoneSession(rawMessage);
     void runtimeManager.handleClientMessage(rawMessage).catch((error: Error) => {
       console.error(`[coderover] ${error.message}`);
     });
@@ -143,19 +138,20 @@ export function startBridge(): void {
 
   function sendApplicationResponse(rawMessage: string): void {
     logBridgeFlow("bridge->phone", rawMessage);
+    desktopRefresher.handleOutbound(rawMessage);
     debugLog(`[coderover] queue outbound application bytes=${Buffer.byteLength(rawMessage, "utf8")}`);
     secureTransport?.queueOutboundApplicationMessage(rawMessage);
   }
 
-  function rememberThreadFromMessage(source: string, rawMessage: string): void {
-    const threadId = extractThreadId(rawMessage);
-    if (!threadId || threadId.startsWith("claude:") || threadId.startsWith("gemini:")) {
+  function rememberSessionFromMessage(source: string, rawMessage: string): void {
+    const sessionId = extractSessionId(rawMessage);
+    if (!sessionId || sessionId.startsWith("claude:") || sessionId.startsWith("gemini:")) {
       return;
     }
-    rememberActiveThread(threadId, source);
+    rememberActiveSession(sessionId, source);
   }
 
-  function maybeTrackPhoneThread(rawMessage: string): void {
+  function maybeTrackPhoneSession(rawMessage: string): void {
     const parsed = safeParseJSON(rawMessage);
     if (!parsed) {
       return;
@@ -166,82 +162,7 @@ export function startBridge(): void {
       return;
     }
     desktopRefresher.handleInbound(rawMessage);
-    rememberThreadFromMessage("phone", rawMessage);
-  }
-
-  function launchCodexTransport(): void {
-    const transport = createCodexTransport({
-      endpoint: config.coderoverEndpoint,
-      env: process.env,
-    });
-    codexTransport = transport;
-    runtimeManager.attachCodexTransport(transport);
-
-    transport.onError((error) => {
-      if (codexTransport === transport) {
-        handleCodexTransportFailure(error);
-      }
-    });
-
-    transport.onMessage((message) => {
-      if (codexTransport !== transport) {
-        return;
-      }
-
-      logBridgeFlow("codex->bridge", message);
-      codexRestartAttempt = 0;
-      desktopRefresher.handleOutbound(message);
-      rememberThreadFromMessage("codex", message);
-      runtimeManager.handleCodexTransportMessage(message);
-    });
-
-    transport.onClose(() => {
-      if (codexTransport !== transport) {
-        return;
-      }
-
-      if (isShuttingDown) {
-        desktopRefresher.handleTransportReset();
-        localServer.stop();
-        return;
-      }
-
-      handleCodexTransportFailure(new Error("Codex app-server transport closed unexpectedly."));
-    });
-  }
-
-  function handleCodexTransportFailure(error: Error): void {
-    if (isShuttingDown) {
-      return;
-    }
-
-    console.error(`[coderover] ${error.message || "Unknown Codex transport failure"}`);
-    desktopRefresher.handleTransportReset();
-    localServer.disconnectAllClients();
-    runtimeManager.handleCodexTransportClosed(error.message);
-    printFreshPairingQR();
-
-    if (codexTransport) {
-      const failedTransport = codexTransport;
-      codexTransport = null;
-      failedTransport.shutdown();
-    }
-
-    scheduleCodexRestart();
-  }
-
-  function scheduleCodexRestart(): void {
-    if (codexRestartTimer || isShuttingDown) {
-      return;
-    }
-
-    const delayMs = Math.min(4_000, 500 * (2 ** Math.min(codexRestartAttempt, 3)));
-    codexRestartAttempt += 1;
-    console.log(`[coderover] Restarting Codex transport in ${delayMs}ms...`);
-    codexRestartTimer = setTimeout(() => {
-      codexRestartTimer = null;
-      launchCodexTransport();
-    }, delayMs);
+    rememberSessionFromMessage("phone", rawMessage);
   }
 
   function printFreshPairingQR(): void {
@@ -252,55 +173,25 @@ export function startBridge(): void {
 
   function shutdownBridge(beforeExit: () => void = () => {}): void {
     beforeExit();
-    if (codexRestartTimer) {
-      clearTimeout(codexRestartTimer);
-      codexRestartTimer = null;
-    }
     if (pairingQRRefreshTimer) {
       clearInterval(pairingQRRefreshTimer);
       pairingQRRefreshTimer = null;
     }
-    codexTransport?.shutdown();
     runtimeManager.shutdown();
     setTimeout(() => process.exit(0), 100);
   }
 }
 
-function extractThreadId(rawMessage: string): string | null {
+function extractSessionIdFromMessage(rawMessage: string): string | null {
+  return extractSessionId(rawMessage);
+}
+
+function extractSessionId(rawMessage: string): string | null {
   const parsed = safeParseJSON(rawMessage);
   if (!parsed) {
     return null;
   }
-
-  const method = readString(parsed.method);
-  const params = asRecord(parsed.params);
-
-  if (method === "turn/start") {
-    return readString(params?.threadId) || readString(params?.thread_id);
-  }
-
-  if (method === "thread/start" || method === "thread/started") {
-    const thread = asRecord(params?.thread);
-    return (
-      readString(params?.threadId)
-      || readString(params?.thread_id)
-      || readString(thread?.id)
-      || readString(thread?.threadId)
-      || readString(thread?.thread_id)
-    );
-  }
-
-  if (method === "turn/completed") {
-    const turn = asRecord(params?.turn);
-    return (
-      readString(params?.threadId)
-      || readString(params?.thread_id)
-      || readString(turn?.threadId)
-      || readString(turn?.thread_id)
-    );
-  }
-
-  return null;
+  return extractBridgeMessageSessionId(parsed);
 }
 
 function readString(value: unknown): string | null {
@@ -323,7 +214,7 @@ function summarizeBridgeMessage(rawMessage: string): string {
   const method = readString(parsed.method);
   const id = readString(parsed.id) || (typeof parsed.id === "number" ? String(parsed.id) : null);
   const params = asRecord(parsed.params);
-  const threadId = extractBridgeMessageThreadId(parsed);
+  const sessionId = extractBridgeMessageSessionIdForLogs(parsed);
   const turnId = extractBridgeMessageTurnId(params);
   const itemId = extractBridgeMessageItemId(params);
   const parts: string[] = [];
@@ -335,8 +226,8 @@ function summarizeBridgeMessage(rawMessage: string): string {
   } else {
     parts.push("message=unknown");
   }
-  if (threadId) {
-    parts.push(`thread=${threadId}`);
+  if (sessionId) {
+    parts.push(`session=${sessionId}`);
   }
   if (turnId) {
     parts.push(`turn=${turnId}`);
@@ -352,21 +243,36 @@ function summarizeBridgeMessage(rawMessage: string): string {
   return parts.join(" ");
 }
 
-function extractBridgeMessageThreadId(parsed: JsonRecord): string | null {
+function extractBridgeMessageSessionIdForLogs(parsed: JsonRecord): string | null {
   const params = asRecord(parsed.params);
-  const thread = asRecord(params?.thread);
-  const turn = asRecord(params?.turn);
-  const item = asRecord(params?.item);
+  const update = asRecord(params?.update);
+  const meta = asRecord(update?._meta);
   return (
-    extractThreadId(JSON.stringify(parsed))
-    || readString(params?.threadId)
-    || readString(params?.thread_id)
-    || readString(thread?.id)
-    || readString(turn?.threadId)
-    || readString(turn?.thread_id)
-    || readString(item?.threadId)
-    || readString(item?.thread_id)
+    extractBridgeMessageSessionId(parsed)
+    || extractBridgeSessionIdFromResult(parsed)
+    || extractCoderoverSessionId(asRecord(meta?.coderover))
   );
+}
+
+function extractBridgeMessageSessionId(parsed: JsonRecord): string | null {
+  const params = asRecord(parsed.params);
+  const update = asRecord(params?.update);
+  const result = asRecord(parsed.result);
+  return (
+    readString(params?.sessionId)
+    || readString(params?.session_id)
+    || readString(result?.sessionId)
+    || readString(result?.session_id)
+    || extractCoderoverSessionId(asRecord(asRecord(update?._meta)?.coderover))
+  );
+}
+
+function extractBridgeSessionIdFromResult(parsed: JsonRecord): string | null {
+  const result = asRecord(parsed.result);
+  if (!result) {
+    return null;
+  }
+  return readString(result.sessionId) || readString(result.session_id);
 }
 
 function extractBridgeMessageTurnId(params: JsonRecord | null): string | null {
@@ -390,6 +296,10 @@ function extractBridgeMessageItemId(params: JsonRecord | null): string | null {
     || readString(params?.messageId)
     || readString(params?.message_id)
   );
+}
+
+function extractCoderoverSessionId(coderoverMeta: JsonRecord | null): string | null {
+  return readString(coderoverMeta?.sessionId) || readString(coderoverMeta?.threadId);
 }
 
 function safeParseJSON(value: string): JsonRecord | null {

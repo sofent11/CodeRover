@@ -115,7 +115,7 @@ export interface RuntimeThreadShape {
 }
 
 export interface HistoryCursorShape {
-  threadId: string;
+  sessionId: string;
   createdAt: string;
   itemId?: string | null;
   turnId?: string | null;

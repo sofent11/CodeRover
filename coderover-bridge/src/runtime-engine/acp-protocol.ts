@@ -39,51 +39,60 @@ export function projectRuntimeEventToAcpProtocol(
     case "thread_started":
       return projectThreadStarted(event.thread);
 
-    case "turn_started":
-      return sessionInfoUpdate(event.threadId, {
+    case "turn_started": {
+      const sessionId = readRuntimeEventSessionId(event);
+      return sessionInfoUpdate(sessionId, {
         turnId: event.turnId,
         runState: "running",
       });
+    }
 
-    case "turn_completed":
-      return sessionInfoUpdate(event.threadId, {
+    case "turn_completed": {
+      const sessionId = readRuntimeEventSessionId(event);
+      return sessionInfoUpdate(sessionId, {
         turnId: event.turnId,
         runState: normalizeRunState(event.status),
       });
+    }
 
-    case "assistant_delta":
-      return sessionUpdate(event.threadId, {
+    case "assistant_delta": {
+      const sessionId = readRuntimeEventSessionId(event);
+      return sessionUpdate(sessionId, {
         sessionUpdate: "agent_message_chunk",
         messageId: event.itemId,
         content: textContent(event.delta),
         _meta: coderoverMeta({
-          threadId: event.threadId,
+          sessionId,
           turnId: event.turnId,
           itemId: event.itemId,
           role: "assistant",
         }),
       });
+    }
 
-    case "reasoning_delta":
-      return sessionUpdate(event.threadId, {
+    case "reasoning_delta": {
+      const sessionId = readRuntimeEventSessionId(event);
+      return sessionUpdate(sessionId, {
         sessionUpdate: "agent_thought_chunk",
         messageId: event.itemId,
         content: textContent(event.delta),
         _meta: coderoverMeta({
-          threadId: event.threadId,
+          sessionId,
           turnId: event.turnId,
           itemId: event.itemId,
           role: "system",
           kind: "thinking",
         }),
       });
+    }
 
-    case "plan_update":
-      return sessionUpdate(event.threadId, {
+    case "plan_update": {
+      const sessionId = readRuntimeEventSessionId(event);
+      return sessionUpdate(sessionId, {
         sessionUpdate: "plan",
         entries: normalizePlanEntries(event.plan),
         _meta: coderoverMeta({
-          threadId: event.threadId,
+          sessionId,
           turnId: event.turnId,
           itemId: event.itemId,
           explanation: event.explanation,
@@ -91,9 +100,11 @@ export function projectRuntimeEventToAcpProtocol(
           text: event.delta,
         }),
       });
+    }
 
-    case "tool_delta":
-      return sessionUpdate(event.threadId, {
+    case "tool_delta": {
+      const sessionId = readRuntimeEventSessionId(event);
+      return sessionUpdate(sessionId, {
         sessionUpdate: "tool_call",
         toolCallId: event.itemId,
         title: event.toolName || "Tool call",
@@ -111,7 +122,7 @@ export function projectRuntimeEventToAcpProtocol(
           ? { rawOutput: { changes: event.changes } }
           : {}),
         _meta: coderoverMeta({
-          threadId: event.threadId,
+          sessionId,
           turnId: event.turnId,
           itemId: event.itemId,
           toolName: event.toolName,
@@ -120,9 +131,11 @@ export function projectRuntimeEventToAcpProtocol(
           legacyKind: "fileChange",
         }),
       });
+    }
 
-    case "command_delta":
-      return sessionUpdate(event.threadId, {
+    case "command_delta": {
+      const sessionId = readRuntimeEventSessionId(event);
+      return sessionUpdate(sessionId, {
         sessionUpdate: "tool_call",
         toolCallId: event.itemId,
         title: event.command || "Command",
@@ -146,7 +159,7 @@ export function projectRuntimeEventToAcpProtocol(
           text: event.delta,
         },
         _meta: coderoverMeta({
-          threadId: event.threadId,
+          sessionId,
           turnId: event.turnId,
           itemId: event.itemId,
           command: event.command,
@@ -157,13 +170,15 @@ export function projectRuntimeEventToAcpProtocol(
           legacyKind: "commandExecution",
         }),
       });
+    }
 
-    case "approval_request":
+    case "approval_request": {
+      const sessionId = readRuntimeEventSessionId(event);
       return {
         kind: "request",
         method: "session/request_permission",
         params: {
-          sessionId: event.threadId,
+          sessionId,
           toolCall: {
             toolCallId: event.itemId,
             title: event.toolName || event.command || "Tool approval",
@@ -175,7 +190,7 @@ export function projectRuntimeEventToAcpProtocol(
               toolName: event.toolName,
             },
             _meta: coderoverMeta({
-              threadId: event.threadId,
+              sessionId,
               turnId: event.turnId,
               itemId: event.itemId,
               method: event.method,
@@ -192,39 +207,56 @@ export function projectRuntimeEventToAcpProtocol(
           ],
         },
       };
+    }
 
-    case "user_input_request":
+    case "user_input_request": {
+      const sessionId = readRuntimeEventSessionId(event);
       return {
         kind: "request",
         method: "_coderover/session/request_input",
         params: {
-          sessionId: event.threadId,
+          sessionId,
           questions: event.questions,
           _meta: coderoverMeta({
-            threadId: event.threadId,
+            sessionId,
             turnId: event.turnId,
             itemId: event.itemId,
           }),
         },
       };
+    }
 
-    case "token_usage":
-      return sessionUpdate(event.threadId, {
+    case "token_usage": {
+      const sessionId = readRuntimeEventSessionId(event);
+      return sessionUpdate(sessionId, {
         sessionUpdate: "usage_update",
         ...(normalizeUsage(event.usage) ? { usage: normalizeUsage(event.usage) } : {}),
         _meta: coderoverMeta({
-          threadId: event.threadId,
+          sessionId,
           usage: event.usage,
         }),
       });
+    }
 
-    case "runtime_error":
-      return sessionInfoUpdate(event.threadId, {
+    case "runtime_error": {
+      const sessionId = readRuntimeEventSessionId(event);
+      return sessionInfoUpdate(sessionId, {
         turnId: event.turnId,
         runState: "failed",
         errorMessage: event.message,
       });
+    }
   }
+}
+
+function readRuntimeEventSessionId(event: RuntimeEvent): string {
+  if ("sessionId" in event && typeof event.sessionId === "string" && event.sessionId) {
+    return event.sessionId;
+  }
+  if ("threadId" in event && typeof event.threadId === "string" && event.threadId) {
+    return event.threadId;
+  }
+  throw new Error(`Runtime event ${event.kind} is missing a sessionId`);
 }
 
 export function buildAcpReplayNotifications(
@@ -281,7 +313,7 @@ function buildReplayNotificationsForItem(
       messageId: itemId,
       content,
       _meta: coderoverMeta({
-        threadId: sessionId,
+        sessionId,
         turnId,
         itemId,
         role: "user",
@@ -295,7 +327,7 @@ function buildReplayNotificationsForItem(
       messageId: itemId,
       content: textContent(normalizeString(item.text) || ""),
       _meta: coderoverMeta({
-        threadId: sessionId,
+        sessionId,
         turnId,
         itemId,
         role: "assistant",
@@ -309,7 +341,7 @@ function buildReplayNotificationsForItem(
       messageId: itemId,
       content: textContent(normalizeString(item.text) || ""),
       _meta: coderoverMeta({
-        threadId: sessionId,
+        sessionId,
         turnId,
         itemId,
         role: "system",
@@ -323,7 +355,7 @@ function buildReplayNotificationsForItem(
       sessionUpdate: "plan",
       entries: normalizePlanEntries(item.plan),
       _meta: coderoverMeta({
-        threadId: sessionId,
+        sessionId,
         turnId,
         itemId,
         explanation: normalizeString(item.explanation) || normalizeString(item.summary),
@@ -358,7 +390,7 @@ function buildReplayNotificationsForItem(
         text: normalizeString(item.text),
       },
       _meta: coderoverMeta({
-        threadId: sessionId,
+        sessionId,
         turnId,
         itemId,
         legacyKind: "commandExecution",
@@ -388,7 +420,7 @@ function buildReplayNotificationsForItem(
         ? { rawOutput: { changes } }
         : {}),
       _meta: coderoverMeta({
-        threadId: sessionId,
+        sessionId,
         turnId,
         itemId,
         legacyKind: "fileChange",
@@ -402,7 +434,7 @@ function buildReplayNotificationsForItem(
       messageId: itemId,
       content: textContent(normalizeString(item.text) || ""),
       _meta: coderoverMeta({
-        threadId: sessionId,
+        sessionId,
         turnId,
         itemId,
         role: normalizeString(item.role) || "assistant",
@@ -449,7 +481,7 @@ function sessionInfoUpdate(
     ...(payload.title !== undefined ? { title: payload.title } : {}),
     ...(payload.updatedAt ? { updatedAt: payload.updatedAt } : {}),
     _meta: coderoverMeta({
-      threadId: sessionId,
+      sessionId,
       turnId: payload.turnId,
       runState: payload.runState,
       errorMessage: payload.errorMessage,

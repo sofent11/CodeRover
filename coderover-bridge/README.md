@@ -131,7 +131,7 @@ coderover resume
 # => [coderover] Opened last active thread: abc-123 (phone)
 ```
 
-### `coderover watch [threadId]`
+### `coderover watch [sessionId]`
 
 Tails the event log for a thread in real-time.
 

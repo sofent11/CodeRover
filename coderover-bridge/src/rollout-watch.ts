@@ -5,7 +5,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 
-import { readLastActiveThread } from "./session-state";
+import { readLastActiveSession } from "./session-state";
 
 const DEFAULT_WATCH_INTERVAL_MS = 1_000;
 const DEFAULT_LOOKUP_TIMEOUT_MS = 5_000;
@@ -35,39 +35,39 @@ interface RolloutReadFsModule extends RolloutScanFsModule {
   readFileSync(filePath: string, options: { encoding: "utf8" }): string;
 }
 
-export interface ThreadRolloutActivityEvent {
+export interface SessionRolloutActivityEvent {
   reason: "materialized" | "growth";
-  threadId: string;
+  sessionId: string;
   rolloutPath: string;
   size: number;
 }
 
-export interface ThreadRolloutIdleEvent {
-  threadId: string;
+export interface SessionRolloutIdleEvent {
+  sessionId: string;
   rolloutPath: string;
   size: number | null;
 }
 
-export interface ThreadRolloutTimeoutEvent {
-  threadId: string;
+export interface SessionRolloutTimeoutEvent {
+  sessionId: string;
 }
 
-export interface ThreadRolloutActivityWatcher {
+export interface SessionRolloutActivityWatcher {
   stop(): void;
-  readonly threadId: string;
+  readonly sessionId: string;
 }
 
-interface CreateThreadRolloutActivityWatcherOptions {
-  threadId?: string;
+interface CreateSessionRolloutActivityWatcherOptions {
+  sessionId?: string;
   intervalMs?: number;
   lookupTimeoutMs?: number;
   idleTimeoutMs?: number;
   now?: () => number;
   fsModule?: RolloutScanFsModule;
   transientErrorRetryLimit?: number;
-  onEvent?: (event: ThreadRolloutActivityEvent) => void;
-  onIdle?: (event: ThreadRolloutIdleEvent) => void;
-  onTimeout?: (event: ThreadRolloutTimeoutEvent) => void;
+  onEvent?: (event: SessionRolloutActivityEvent) => void;
+  onIdle?: (event: SessionRolloutIdleEvent) => void;
+  onTimeout?: (event: SessionRolloutTimeoutEvent) => void;
   onError?: (error: Error) => void;
 }
 
@@ -82,7 +82,7 @@ export interface ContextWindowUsageReadResult {
 }
 
 interface ReadLatestContextWindowUsageOptions {
-  threadId?: string;
+  sessionId?: string;
   turnId?: string;
   root?: string;
   fsModule?: RolloutReadFsModule;
@@ -90,7 +90,7 @@ interface ReadLatestContextWindowUsageOptions {
 }
 
 interface FindRecentRolloutOptions {
-  threadId?: string;
+  sessionId?: string;
   turnId?: string;
   fsModule?: RolloutReadFsModule;
   candidateLimit?: number;
@@ -139,8 +139,8 @@ function getDefaultReadFsModule(): RolloutReadFsModule {
   return defaultReadFsModule;
 }
 
-export function createThreadRolloutActivityWatcher({
-  threadId,
+export function createSessionRolloutActivityWatcher({
+  sessionId,
   intervalMs = DEFAULT_WATCH_INTERVAL_MS,
   lookupTimeoutMs = DEFAULT_LOOKUP_TIMEOUT_MS,
   idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS,
@@ -151,8 +151,8 @@ export function createThreadRolloutActivityWatcher({
   onIdle = () => {},
   onTimeout = () => {},
   onError = () => {},
-}: CreateThreadRolloutActivityWatcherOptions = {}): ThreadRolloutActivityWatcher {
-  const resolvedThreadId = resolveThreadId(threadId);
+}: CreateSessionRolloutActivityWatcherOptions = {}): SessionRolloutActivityWatcher {
+  const resolvedSessionId = resolveSessionId(sessionId);
   const sessionsRoot = resolveSessionsRoot();
   const startedAt = now();
 
@@ -172,12 +172,12 @@ export function createThreadRolloutActivityWatcher({
 
       if (!rolloutPath) {
         if (currentTime - startedAt >= lookupTimeoutMs) {
-          onTimeout({ threadId: resolvedThreadId });
+          onTimeout({ sessionId: resolvedSessionId });
           stop();
           return;
         }
 
-        rolloutPath = findRolloutFileForThread(sessionsRoot, resolvedThreadId, { fsModule });
+        rolloutPath = findRolloutFileForSession(sessionsRoot, resolvedSessionId, { fsModule });
         if (!rolloutPath) {
           transientErrorCount = 0;
           return;
@@ -188,7 +188,7 @@ export function createThreadRolloutActivityWatcher({
         transientErrorCount = 0;
         onEvent({
           reason: "materialized",
-          threadId: resolvedThreadId,
+          sessionId: resolvedSessionId,
           rolloutPath,
           size: lastSize,
         });
@@ -202,7 +202,7 @@ export function createThreadRolloutActivityWatcher({
         lastGrowthAt = currentTime;
         onEvent({
           reason: "growth",
-          threadId: resolvedThreadId,
+          sessionId: resolvedSessionId,
           rolloutPath,
           size: nextSize,
         });
@@ -211,7 +211,7 @@ export function createThreadRolloutActivityWatcher({
 
       if (currentTime - lastGrowthAt >= idleTimeoutMs) {
         onIdle({
-          threadId: resolvedThreadId,
+          sessionId: resolvedSessionId,
           rolloutPath,
           size: lastSize,
         });
@@ -245,25 +245,25 @@ export function createThreadRolloutActivityWatcher({
 
   return {
     stop,
-    get threadId() {
-      return resolvedThreadId;
+    get sessionId() {
+      return resolvedSessionId;
     },
   };
 }
 
-export function watchThreadRollout(threadId = ""): void {
-  const resolvedThreadId = resolveThreadId(threadId);
+export function watchSessionRollout(sessionId = ""): void {
+  const resolvedSessionId = resolveSessionId(sessionId);
   const sessionsRoot = resolveSessionsRoot();
-  const rolloutPath = findRolloutFileForThread(sessionsRoot, resolvedThreadId);
+  const rolloutPath = findRolloutFileForSession(sessionsRoot, resolvedSessionId);
 
   if (!rolloutPath) {
-    throw new Error(`No rollout file found for thread ${resolvedThreadId}.`);
+    throw new Error(`No rollout file found for session ${resolvedSessionId}.`);
   }
 
   let offset = fs.statSync(rolloutPath).size;
   let partialLine = "";
 
-  console.log(`[coderover] Watching thread ${resolvedThreadId}`);
+  console.log(`[coderover] Watching session ${resolvedSessionId}`);
   console.log(`[coderover] Rollout file: ${rolloutPath}`);
   console.log("[coderover] Waiting for new persisted events... (Ctrl+C to stop)");
 
@@ -309,17 +309,17 @@ export function watchThreadRollout(threadId = ""): void {
   process.on("SIGTERM", cleanup);
 }
 
-function resolveThreadId(threadId: string | undefined): string {
-  if (threadId && typeof threadId === "string") {
-    return threadId;
+function resolveSessionId(sessionId: string | undefined): string {
+  if (sessionId && typeof sessionId === "string") {
+    return sessionId;
   }
 
-  const last = readLastActiveThread();
-  if (last?.threadId) {
-    return last.threadId;
+  const last = readLastActiveSession();
+  if (last?.sessionId) {
+    return last.sessionId;
   }
 
-  throw new Error("No thread id provided and no remembered CodeRover thread found.");
+  throw new Error("No session id provided and no remembered CodeRover session found.");
 }
 
 export function resolveSessionsRoot(): string {
@@ -327,9 +327,9 @@ export function resolveSessionsRoot(): string {
   return path.join(coderoverHome, "sessions");
 }
 
-export function findRolloutFileForThread(
+export function findRolloutFileForSession(
   root: string,
-  threadId: string,
+  sessionId: string,
   { fsModule = getDefaultScanFsModule() }: { fsModule?: RolloutScanFsModule } = {}
 ): string | null {
   if (!fsModule.existsSync(root)) {
@@ -357,7 +357,7 @@ export function findRolloutFileForThread(
       }
 
       if (
-        entry.name.includes(threadId)
+        entry.name.includes(sessionId)
         && entry.name.startsWith("rollout-")
         && entry.name.endsWith(".jsonl")
       ) {
@@ -370,22 +370,22 @@ export function findRolloutFileForThread(
 }
 
 export function readLatestContextWindowUsage({
-  threadId,
+  sessionId,
   turnId = "",
   root = resolveSessionsRoot(),
   fsModule = getDefaultReadFsModule(),
   scanBytes = DEFAULT_CONTEXT_READ_SCAN_BYTES,
 }: ReadLatestContextWindowUsageOptions = {}): ContextWindowUsageReadResult | null {
-  const normalizedThreadId = typeof threadId === "string" ? threadId.trim() : "";
+  const normalizedSessionId = typeof sessionId === "string" ? sessionId.trim() : "";
   const normalizedTurnId = typeof turnId === "string" ? turnId.trim() : "";
-  if (!normalizedThreadId && !normalizedTurnId) {
+  if (!normalizedSessionId && !normalizedTurnId) {
     return null;
   }
 
   const rolloutPath =
-    findRolloutFileForThread(root, normalizedThreadId, { fsModule })
+    findRolloutFileForSession(root, normalizedSessionId, { fsModule })
     || findRecentRolloutFileForContextRead(root, {
-      threadId: normalizedThreadId,
+      sessionId: normalizedSessionId,
       turnId: normalizedTurnId,
       fsModule,
     });
@@ -434,7 +434,7 @@ export function readLatestContextWindowUsage({
 function findRecentRolloutFileForContextRead(
   root: string,
   {
-    threadId = "",
+    sessionId = "",
     turnId = "",
     fsModule = getDefaultReadFsModule(),
     candidateLimit = DEFAULT_RECENT_ROLLOUT_CANDIDATE_LIMIT,
@@ -454,9 +454,9 @@ function findRecentRolloutFileForContextRead(
     }
   }
 
-  if (threadId) {
+  if (sessionId) {
     for (const candidate of candidates) {
-      if (rolloutFileContainsToken(candidate.filePath, threadId, { fsModule, scanBytes })) {
+      if (rolloutFileContainsToken(candidate.filePath, sessionId, { fsModule, scanBytes })) {
         return candidate.filePath;
       }
     }

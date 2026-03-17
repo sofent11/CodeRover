@@ -9,8 +9,8 @@ import {
   readBridgeConfig,
 } from "../src/coderover-desktop-refresher";
 import {
-  createThreadRolloutActivityWatcher,
-  type ThreadRolloutActivityEvent,
+  createSessionRolloutActivityWatcher,
+  type SessionRolloutActivityEvent,
 } from "../src/rollout-watch";
 
 function wait(ms: number): Promise<void> {
@@ -61,7 +61,7 @@ test("readBridgeConfig keeps safe defaults and explicit overrides", () => {
   ]);
 });
 
-test("thread/start falls back once to the new-thread route when thread id is still unknown", async () => {
+test("session/new falls back once to the new-thread route when session id is still unknown", async () => {
   const refreshCalls: string[] = [];
   const refresher = new CodeRoverDesktopRefresher({
     enabled: true,
@@ -73,7 +73,7 @@ test("thread/start falls back once to the new-thread route when thread id is sti
   });
 
   refresher.handleInbound(JSON.stringify({
-    method: "thread/start",
+    method: "session/new",
     params: {},
   }));
 
@@ -83,7 +83,7 @@ test("thread/start falls back once to the new-thread route when thread id is sti
   refresher.handleTransportReset();
 });
 
-test("thread/started cancels the fallback and refreshes the concrete thread route", async () => {
+test("session/update cancels the fallback and refreshes the concrete thread route", async () => {
   const refreshCalls: string[] = [];
   const watchedThreads: string[] = [];
   let stopCount = 0;
@@ -94,29 +94,36 @@ test("thread/started cancels the fallback and refreshes the concrete thread rout
     refreshExecutor: async (targetUrl) => {
       refreshCalls.push(targetUrl);
     },
-    watchThreadRolloutFactory: ({ threadId }) => {
-      watchedThreads.push(threadId);
+    watchSessionRolloutFactory: ({ sessionId }) => {
+      watchedThreads.push(sessionId);
       return {
         stop() {
           stopCount += 1;
         },
-        get threadId() {
-          return threadId;
+        get sessionId() {
+          return sessionId;
         },
       };
     },
   });
 
   refresher.handleInbound(JSON.stringify({
-    method: "thread/start",
+    method: "session/new",
     params: {},
   }));
   await wait(10);
   refresher.handleOutbound(JSON.stringify({
-    method: "thread/started",
+    method: "session/update",
     params: {
-      thread: {
-        id: "thread-123",
+      sessionId: "thread-123",
+      update: {
+        sessionUpdate: "session_info_update",
+        _meta: {
+          coderover: {
+            threadId: "thread-123",
+            runState: "running",
+          },
+        },
       },
     },
   }));
@@ -137,8 +144,8 @@ test("rollout growth refreshes are throttled during long runs", async () => {
   const refreshCalls: string[] = [];
   let watcherHooks:
     | {
-      threadId: string;
-      onEvent: (event: ThreadRolloutActivityEvent) => void;
+      sessionId: string;
+      onEvent: (event: SessionRolloutActivityEvent) => void;
     }
     | null = null;
   let currentTime = 0;
@@ -151,15 +158,15 @@ test("rollout growth refreshes are throttled during long runs", async () => {
     refreshExecutor: async (targetUrl) => {
       refreshCalls.push(targetUrl);
     },
-    watchThreadRolloutFactory: (hooks) => {
+    watchSessionRolloutFactory: (hooks) => {
       watcherHooks = {
-        threadId: hooks.threadId,
+        sessionId: hooks.sessionId,
         onEvent: hooks.onEvent,
       };
       return {
         stop() {},
-        get threadId() {
-          return hooks.threadId;
+        get sessionId() {
+          return hooks.sessionId;
         },
       };
     },
@@ -172,16 +179,16 @@ test("rollout growth refreshes are throttled during long runs", async () => {
     }
     hooks.onEvent({
       reason: "growth",
-      threadId: hooks.threadId,
+      sessionId: hooks.sessionId,
       rolloutPath: "/tmp/rollout-thread-456.jsonl",
       size,
     });
   };
 
   refresher.handleInbound(JSON.stringify({
-    method: "turn/start",
+    method: "session/prompt",
     params: {
-      threadId: "thread-456",
+      sessionId: "thread-456",
     },
   }));
   await wait(10);
@@ -204,7 +211,7 @@ test("rollout growth refreshes are throttled during long runs", async () => {
   assert.deepEqual(refreshCalls, ["coderover://threads/thread-456"]);
 });
 
-test("turn/completed bypasses duplicate-target dedupe and still stops the watcher", async () => {
+test("completion session/update bypasses duplicate-target dedupe and still stops the watcher", async () => {
   const refreshCalls: string[] = [];
   let stopCount = 0;
   let currentTime = 3_000;
@@ -216,40 +223,58 @@ test("turn/completed bypasses duplicate-target dedupe and still stops the watche
     refreshExecutor: async (targetUrl) => {
       refreshCalls.push(targetUrl);
     },
-    watchThreadRolloutFactory: () => ({
+    watchSessionRolloutFactory: () => ({
       stop() {
         stopCount += 1;
       },
-      get threadId() {
+      get sessionId() {
         return "thread-789";
       },
     }),
   });
 
   refresher.handleInbound(JSON.stringify({
-    method: "turn/start",
+    method: "session/prompt",
     params: {
-      threadId: "thread-789",
+      sessionId: "thread-789",
     },
   }));
   await wait(10);
 
   currentTime = 4_500;
   refresher.handleOutbound(JSON.stringify({
-    method: "turn/completed",
+    method: "session/update",
     params: {
-      threadId: "thread-789",
-      turnId: "turn-789",
+      sessionId: "thread-789",
+      update: {
+        sessionUpdate: "session_info_update",
+        _meta: {
+          coderover: {
+            threadId: "thread-789",
+            turnId: "turn-789",
+            runState: "completed",
+          },
+        },
+      },
     },
   }));
   await wait(10);
 
   currentTime = 4_700;
   refresher.handleOutbound(JSON.stringify({
-    method: "turn/completed",
+    method: "session/update",
     params: {
-      threadId: "thread-789",
-      turnId: "turn-789",
+      sessionId: "thread-789",
+      update: {
+        sessionUpdate: "session_info_update",
+        _meta: {
+          coderover: {
+            threadId: "thread-789",
+            turnId: "turn-789",
+            runState: "completed",
+          },
+        },
+      },
     },
   }));
   await wait(10);
@@ -261,7 +286,7 @@ test("turn/completed bypasses duplicate-target dedupe and still stops the watche
   assert.equal(stopCount, 1);
 });
 
-test("turn/completed is retried after a slow in-flight refresh finishes", async () => {
+test("completion session/update is retried after a slow in-flight refresh finishes", async () => {
   const refreshCalls: string[] = [];
   let releaseSlowRefresh!: () => void;
 
@@ -276,27 +301,36 @@ test("turn/completed is retried after a slow in-flight refresh finishes", async 
         });
       }
     },
-    watchThreadRolloutFactory: () => ({
+    watchSessionRolloutFactory: () => ({
       stop() {},
-      get threadId() {
+      get sessionId() {
         return "thread-slow";
       },
     }),
   });
 
   refresher.handleInbound(JSON.stringify({
-    method: "turn/start",
+    method: "session/prompt",
     params: {
-      threadId: "thread-slow",
+      sessionId: "thread-slow",
     },
   }));
   await wait(10);
 
   refresher.handleOutbound(JSON.stringify({
-    method: "turn/completed",
+    method: "session/update",
     params: {
-      threadId: "thread-slow",
-      turnId: "turn-slow",
+      sessionId: "thread-slow",
+      update: {
+        sessionUpdate: "session_info_update",
+        _meta: {
+          coderover: {
+            threadId: "thread-slow",
+            turnId: "turn-slow",
+            runState: "completed",
+          },
+        },
+      },
     },
   }));
   await wait(10);
@@ -323,36 +357,45 @@ test("completion refresh keeps its own thread target even if another thread queu
     refreshExecutor: async (targetUrl) => {
       refreshCalls.push(targetUrl);
     },
-    watchThreadRolloutFactory: ({ threadId }) => ({
+    watchSessionRolloutFactory: ({ sessionId }) => ({
       stop() {
-        if (threadId === "thread-a") {
+        if (sessionId === "thread-a") {
           stopCount += 1;
         }
       },
-      get threadId() {
-        return threadId;
+      get sessionId() {
+        return sessionId;
       },
     }),
   });
 
   refresher.handleInbound(JSON.stringify({
-    method: "turn/start",
-    params: { threadId: "thread-a" },
+    method: "session/prompt",
+    params: { sessionId: "thread-a" },
   }));
   await wait(10);
   refreshCalls.length = 0;
   refresher.clearRefreshTimer();
 
   refresher.handleOutbound(JSON.stringify({
-    method: "turn/completed",
+    method: "session/update",
     params: {
-      threadId: "thread-a",
-      turnId: "turn-a",
+      sessionId: "thread-a",
+      update: {
+        sessionUpdate: "session_info_update",
+        _meta: {
+          coderover: {
+            threadId: "thread-a",
+            turnId: "turn-a",
+            runState: "completed",
+          },
+        },
+      },
     },
   }));
   refresher.handleInbound(JSON.stringify({
-    method: "turn/start",
-    params: { threadId: "thread-b" },
+    method: "session/prompt",
+    params: { sessionId: "thread-b" },
   }));
   refresher.clearRefreshTimer();
   await refresher.runPendingRefresh();
@@ -375,20 +418,20 @@ test("handleTransportReset cancels pending refreshes and clears watcher state", 
     refreshExecutor: async (targetUrl) => {
       refreshCalls.push(targetUrl);
     },
-    watchThreadRolloutFactory: () => ({
+    watchSessionRolloutFactory: () => ({
       stop() {
         stopCount += 1;
       },
-      get threadId() {
+      get sessionId() {
         return "thread-reset";
       },
     }),
   });
 
   refresher.handleInbound(JSON.stringify({
-    method: "turn/start",
+    method: "session/prompt",
     params: {
-      threadId: "thread-reset",
+      sessionId: "thread-reset",
     },
   }));
   refresher.handleTransportReset();
@@ -409,17 +452,17 @@ test("handleTransportReset clears duplicate-target memory so the next refresh ca
     refreshExecutor: async (targetUrl) => {
       refreshCalls.push(targetUrl);
     },
-    watchThreadRolloutFactory: () => ({
+    watchSessionRolloutFactory: () => ({
       stop() {},
-      get threadId() {
+      get sessionId() {
         return "thread-reset-dedupe";
       },
     }),
   });
 
   refresher.handleInbound(JSON.stringify({
-    method: "turn/start",
-    params: { threadId: "thread-reset-dedupe" },
+    method: "session/prompt",
+    params: { sessionId: "thread-reset-dedupe" },
   }));
   await wait(10);
 
@@ -427,8 +470,8 @@ test("handleTransportReset clears duplicate-target memory so the next refresh ca
 
   currentTime = 5_100;
   refresher.handleInbound(JSON.stringify({
-    method: "turn/start",
-    params: { threadId: "thread-reset-dedupe" },
+    method: "session/prompt",
+    params: { sessionId: "thread-reset-dedupe" },
   }));
   await wait(10);
 
@@ -450,28 +493,28 @@ test("desktop refresh disables itself after a desktop-unavailable AppleScript fa
       attempts += 1;
       throw new Error("Unable to find application named CodeRover");
     },
-    watchThreadRolloutFactory: () => ({
+    watchSessionRolloutFactory: () => ({
       stop() {
         stopCount += 1;
       },
-      get threadId() {
+      get sessionId() {
         return "thread-disable";
       },
     }),
   });
 
   refresher.handleInbound(JSON.stringify({
-    method: "turn/start",
+    method: "session/prompt",
     params: {
-      threadId: "thread-disable-1",
+      sessionId: "thread-disable-1",
     },
   }));
   await wait(10);
 
   refresher.handleInbound(JSON.stringify({
-    method: "turn/start",
+    method: "session/prompt",
     params: {
-      threadId: "thread-disable-2",
+      sessionId: "thread-disable-2",
     },
   }));
   await wait(10);
@@ -497,8 +540,8 @@ test("custom refresh commands only disable after repeated failures", async () =>
 
   for (const threadId of ["thread-cmd-1", "thread-cmd-2", "thread-cmd-3", "thread-cmd-4"]) {
     refresher.handleInbound(JSON.stringify({
-      method: "turn/start",
-      params: { threadId },
+      method: "session/prompt",
+      params: { sessionId: threadId },
     }));
     await wait(10);
   }
@@ -512,8 +555,8 @@ test("rollout watcher retries transient filesystem errors before succeeding", as
   const errors: Error[] = [];
   let readdirCalls = 0;
 
-  const watcher = createThreadRolloutActivityWatcher({
-    threadId: "thread-watch-ok",
+  const watcher = createSessionRolloutActivityWatcher({
+    sessionId: "thread-watch-ok",
     intervalMs: 5,
     lookupTimeoutMs: 100,
     idleTimeoutMs: 100,
@@ -551,8 +594,8 @@ test("rollout watcher stops after repeated transient filesystem failures", async
   const errors: Error[] = [];
   let currentTime = 0;
 
-  const watcher = createThreadRolloutActivityWatcher({
-    threadId: "thread-watch-fail",
+  const watcher = createSessionRolloutActivityWatcher({
+    sessionId: "thread-watch-fail",
     intervalMs: 5,
     lookupTimeoutMs: 100,
     idleTimeoutMs: 100,

@@ -1,5 +1,5 @@
-// FILE: runtime-engine/thread-session-index.ts
-// Purpose: Persists bridge-local thread-to-runtime session ownership metadata.
+// FILE: runtime-engine/session-runtime-index.ts
+// Purpose: Persists bridge-local ACP session ownership metadata.
 
 import * as fs from "fs";
 import * as os from "os";
@@ -7,42 +7,44 @@ import * as path from "path";
 
 import type { RuntimeOwnerState, RuntimeSessionHandle } from "./types";
 
-interface ThreadSessionIndexFileShape {
+interface SessionRuntimeIndexFileShape {
   version: 1;
   sessions: Record<string, RuntimeSessionHandle>;
 }
 
-export interface ThreadSessionIndex {
+export interface SessionRuntimeIndex {
   baseDir: string;
-  delete(threadId: unknown): boolean;
-  get(threadId: unknown): RuntimeSessionHandle | null;
+  delete(sessionId: unknown): boolean;
+  get(sessionId: unknown): RuntimeSessionHandle | null;
   list(): RuntimeSessionHandle[];
   shutdown(): void;
-  upsert(record: Partial<RuntimeSessionHandle> & { threadId: string; provider: string }): RuntimeSessionHandle;
+  upsert(record: Partial<RuntimeSessionHandle> & { sessionId: string; provider: string }): RuntimeSessionHandle;
   update(
-    threadId: unknown,
+    sessionId: unknown,
     updater: (record: RuntimeSessionHandle) => RuntimeSessionHandle | null | undefined
   ): RuntimeSessionHandle | null;
 }
 
-const INDEX_FILE = "thread-session-index.json";
+const INDEX_FILE = "session-runtime-index.json";
+const LEGACY_INDEX_FILE = "thread-session-index.json";
 const INDEX_VERSION = 1;
 const DEFAULT_BASE_DIR = path.join(os.homedir(), ".coderover", "runtime");
 
-export function createThreadSessionIndex(
+export function createSessionRuntimeIndex(
   { baseDir = DEFAULT_BASE_DIR }: { baseDir?: string } = {}
-): ThreadSessionIndex {
+): SessionRuntimeIndex {
   fs.mkdirSync(baseDir, { recursive: true });
   const indexPath = path.join(baseDir, INDEX_FILE);
-  let state = loadIndex(indexPath);
+  const legacyIndexPath = path.join(baseDir, LEGACY_INDEX_FILE);
+  let state = loadIndex(indexPath, legacyIndexPath);
   let writeTimer: NodeJS.Timeout | null = null;
 
-  function get(threadId: unknown): RuntimeSessionHandle | null {
-    const normalizedThreadId = normalizeNonEmptyString(threadId);
-    if (!normalizedThreadId) {
+  function get(sessionId: unknown): RuntimeSessionHandle | null {
+    const normalizedSessionId = normalizeNonEmptyString(sessionId);
+    if (!normalizedSessionId) {
       return null;
     }
-    const record = state.sessions[normalizedThreadId];
+    const record = state.sessions[normalizedSessionId];
     return record ? { ...record } : null;
   }
 
@@ -52,43 +54,43 @@ export function createThreadSessionIndex(
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
   }
 
-  function upsert(record: Partial<RuntimeSessionHandle> & { threadId: string; provider: string }): RuntimeSessionHandle {
+  function upsert(record: Partial<RuntimeSessionHandle> & { sessionId: string; provider: string }): RuntimeSessionHandle {
     const normalized = normalizeSessionHandle(record);
-    const existing = state.sessions[normalized.threadId] || null;
+    const existing = state.sessions[normalized.sessionId] || null;
     const nextRecord: RuntimeSessionHandle = {
       ...(existing || normalized),
       ...normalized,
       createdAt: existing?.createdAt || normalized.createdAt,
       updatedAt: normalized.updatedAt || existing?.updatedAt || isoNow(),
     };
-    state.sessions[nextRecord.threadId] = nextRecord;
+    state.sessions[nextRecord.sessionId] = nextRecord;
     scheduleWrite();
     return { ...nextRecord };
   }
 
   function update(
-    threadId: unknown,
+    sessionId: unknown,
     updater: (record: RuntimeSessionHandle) => RuntimeSessionHandle | null | undefined
   ): RuntimeSessionHandle | null {
-    const existing = get(threadId);
+    const existing = get(sessionId);
     if (!existing) {
       return null;
     }
     const nextRecord = updater({ ...existing });
     if (!nextRecord) {
-      delete state.sessions[existing.threadId];
+      delete state.sessions[existing.sessionId];
       scheduleWrite();
       return null;
     }
     return upsert(nextRecord);
   }
 
-  function remove(threadId: unknown): boolean {
-    const normalizedThreadId = normalizeNonEmptyString(threadId);
-    if (!normalizedThreadId || !state.sessions[normalizedThreadId]) {
+  function remove(sessionId: unknown): boolean {
+    const normalizedSessionId = normalizeNonEmptyString(sessionId);
+    if (!normalizedSessionId || !state.sessions[normalizedSessionId]) {
       return false;
     }
-    delete state.sessions[normalizedThreadId];
+    delete state.sessions[normalizedSessionId];
     scheduleWrite();
     return true;
   }
@@ -132,21 +134,24 @@ export function createThreadSessionIndex(
   };
 }
 
-function loadIndex(indexPath: string): ThreadSessionIndexFileShape {
-  if (!fs.existsSync(indexPath)) {
+function loadIndex(indexPath: string, legacyIndexPath: string): SessionRuntimeIndexFileShape {
+  const sourcePath = fs.existsSync(indexPath)
+    ? indexPath
+    : (fs.existsSync(legacyIndexPath) ? legacyIndexPath : null);
+  if (!sourcePath) {
     return { version: INDEX_VERSION, sessions: {} };
   }
 
   try {
-    const parsed = JSON.parse(fs.readFileSync(indexPath, "utf8")) as ThreadSessionIndexFileShape;
+    const parsed = JSON.parse(fs.readFileSync(sourcePath, "utf8")) as SessionRuntimeIndexFileShape;
     const sessions = parsed?.sessions && typeof parsed.sessions === "object"
-      ? Object.entries(parsed.sessions).reduce((result, [threadId, value]) => {
+      ? Object.entries(parsed.sessions).reduce((result, [sessionId, value]) => {
         const normalized = normalizeSessionHandle({
           ...(value || {}),
-          threadId,
+          sessionId: normalizeNonEmptyString((value as RuntimeSessionHandle | null)?.sessionId) || sessionId,
           provider: normalizeNonEmptyString((value as RuntimeSessionHandle | null)?.provider) || "codex",
         });
-        result[threadId] = normalized;
+        result[normalized.sessionId] = normalized;
         return result;
       }, {} as Record<string, RuntimeSessionHandle>)
       : {};
@@ -160,11 +165,12 @@ function loadIndex(indexPath: string): ThreadSessionIndexFileShape {
 }
 
 function normalizeSessionHandle(
-  value: Partial<RuntimeSessionHandle> & { threadId: string; provider: string }
+  value: Partial<RuntimeSessionHandle> & { sessionId: string; provider: string }
 ): RuntimeSessionHandle {
   const now = isoNow();
+  const sessionId = normalizeNonEmptyString(value.sessionId) || "";
   return {
-    threadId: normalizeNonEmptyString(value.threadId) || "",
+    sessionId,
     provider: normalizeNonEmptyString(value.provider) || "codex",
     engineSessionId: normalizeNullableString(value.engineSessionId),
     providerSessionId: normalizeNullableString(value.providerSessionId),

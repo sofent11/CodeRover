@@ -130,24 +130,24 @@ export interface AcpEngineClientBridge {
 
 export interface AcpEngine {
   ensureSession(params: {
-    threadId: string;
+    sessionId: string;
     cwd?: string | null;
     model?: string | null;
     mode?: string | null;
     providerSessionId?: string | null;
   }): Promise<RuntimeSessionHandle>;
   initialize(clientCaps?: Record<string, unknown>): Promise<void>;
-  interruptTurn(threadId: string, turnId?: string | null): Promise<void>;
+  interruptTurn(sessionId: string, turnId?: string | null): Promise<void>;
   shutdown(): void;
   startTurn(params: {
-    threadId: string;
+    sessionId: string;
     input: unknown;
     cwd?: string | null;
     model?: string | null;
     mode?: string | null;
     providerSessionId?: string | null;
     options?: Record<string, unknown>;
-  }): Promise<{ threadId: string; turnId: string }>;
+  }): Promise<{ sessionId: string; turnId: string }>;
 }
 
 export function createAcpEngine({
@@ -167,19 +167,19 @@ export function createAcpEngine({
   }
 
   async function ensureSession({
-    threadId,
+    sessionId,
     cwd = null,
     model = null,
     mode = null,
     providerSessionId = null,
   }: {
-    threadId: string;
+    sessionId: string;
     cwd?: string | null;
     model?: string | null;
     mode?: string | null;
     providerSessionId?: string | null;
   }): Promise<RuntimeSessionHandle> {
-    const existing = sessions.get(threadId) || null;
+    const existing = sessions.get(sessionId) || null;
     if (existing?.engineSessionId) {
       return {
         ...existing,
@@ -208,7 +208,7 @@ export function createAcpEngine({
 
     const now = new Date().toISOString();
     const handle: RuntimeSessionHandle = {
-      threadId,
+      sessionId,
       provider,
       engineSessionId: nextSession.sessionId,
       providerSessionId: nextSession.providerSessionId || nextSession.sessionId,
@@ -220,12 +220,12 @@ export function createAcpEngine({
       createdAt: existing?.createdAt || now,
       updatedAt: now,
     };
-    sessions.set(threadId, handle);
+    sessions.set(sessionId, handle);
     return { ...handle };
   }
 
   async function startTurn({
-    threadId,
+    sessionId,
     input,
     cwd = null,
     model = null,
@@ -233,29 +233,29 @@ export function createAcpEngine({
     providerSessionId = null,
     options = {},
   }: {
-    threadId: string;
+    sessionId: string;
     input: unknown;
     cwd?: string | null;
     model?: string | null;
     mode?: string | null;
     providerSessionId?: string | null;
     options?: Record<string, unknown>;
-  }): Promise<{ threadId: string; turnId: string }> {
+  }): Promise<{ sessionId: string; turnId: string }> {
     const session = await ensureSession({
-      threadId,
+      sessionId,
       cwd,
       model,
       mode,
       providerSessionId,
     });
     if (session.ownerState === "running") {
-      throw new Error(`Thread ${threadId} already has an active ACP turn`);
+      throw new Error(`Session ${sessionId} already has an active ACP turn`);
     }
 
     const turnId = randomUUID();
     const abortController = new AbortController();
-    abortControllers.set(threadId, abortController);
-    sessions.set(threadId, {
+    abortControllers.set(sessionId, abortController);
+    sessions.set(sessionId, {
       ...session,
       ownerState: "running",
       activeTurnId: turnId,
@@ -263,19 +263,19 @@ export function createAcpEngine({
     });
     clientBridge.emitRuntimeEvent({
       kind: "turn_started",
-      threadId,
+      sessionId,
       turnId,
     });
 
     void transport.prompt({
-      sessionId: session.engineSessionId || session.providerSessionId || threadId,
+      sessionId: session.engineSessionId || session.providerSessionId || sessionId,
       input,
       options,
       signal: abortController.signal,
       onUpdate: async (update) => {
         await handleAcpUpdate({
           provider,
-          threadId,
+          sessionId,
           turnId,
           update,
           clientBridge,
@@ -285,36 +285,36 @@ export function createAcpEngine({
       if (result.usage && typeof result.usage === "object") {
         clientBridge.emitRuntimeEvent({
           kind: "token_usage",
-          threadId,
+          sessionId,
           usage: result.usage as Record<string, unknown>,
         });
       }
       clientBridge.emitRuntimeEvent({
         kind: "turn_completed",
-        threadId,
+        sessionId,
         turnId,
         status: normalizeStopReason(result.stopReason),
       });
     }).catch((error) => {
       clientBridge.emitRuntimeEvent({
         kind: "runtime_error",
-        threadId,
+        sessionId,
         turnId,
         message: error instanceof Error ? error.message : String(error),
       });
       clientBridge.emitRuntimeEvent({
         kind: "turn_completed",
-        threadId,
+        sessionId,
         turnId,
         status: "failed",
       });
     }).finally(() => {
-      abortControllers.delete(threadId);
-      const current = sessions.get(threadId);
+      abortControllers.delete(sessionId);
+      const current = sessions.get(sessionId);
       if (!current) {
         return;
       }
-      sessions.set(threadId, {
+      sessions.set(sessionId, {
         ...current,
         ownerState: "idle",
         activeTurnId: null,
@@ -322,15 +322,15 @@ export function createAcpEngine({
       });
     });
 
-    return { threadId, turnId };
+    return { sessionId, turnId };
   }
 
-  async function interruptTurn(threadId: string, turnId?: string | null): Promise<void> {
-    const session = sessions.get(threadId);
+  async function interruptTurn(sessionId: string, turnId?: string | null): Promise<void> {
+    const session = sessions.get(sessionId);
     if (!session?.engineSessionId) {
       return;
     }
-    abortControllers.get(threadId)?.abort();
+    abortControllers.get(sessionId)?.abort();
     await transport.cancel(session.engineSessionId, turnId || session.activeTurnId);
   }
 
@@ -353,13 +353,13 @@ export function createAcpEngine({
 
 async function handleAcpUpdate({
   provider,
-  threadId,
+  sessionId,
   turnId,
   update,
   clientBridge,
 }: {
   provider: string;
-  threadId: string;
+  sessionId: string;
   turnId: string;
   update: AcpSessionUpdate;
   clientBridge: AcpEngineClientBridge;
@@ -368,7 +368,7 @@ async function handleAcpUpdate({
     case "assistant_delta":
       clientBridge.emitRuntimeEvent({
         kind: "assistant_delta",
-        threadId,
+        sessionId,
         turnId,
         itemId: update.itemId || `${provider}:${turnId}:assistant`,
         delta: update.delta,
@@ -378,7 +378,7 @@ async function handleAcpUpdate({
     case "reasoning_delta":
       clientBridge.emitRuntimeEvent({
         kind: "reasoning_delta",
-        threadId,
+        sessionId,
         turnId,
         itemId: update.itemId || `${provider}:${turnId}:reasoning`,
         delta: update.delta,
@@ -388,7 +388,7 @@ async function handleAcpUpdate({
     case "plan_update":
       clientBridge.emitRuntimeEvent({
         kind: "plan_update",
-        threadId,
+        sessionId,
         turnId,
         itemId: update.itemId || `${provider}:${turnId}:plan`,
         explanation: normalizeOptionalString(update.explanation),
@@ -403,7 +403,7 @@ async function handleAcpUpdate({
     case "tool_delta":
       clientBridge.emitRuntimeEvent({
         kind: "tool_delta",
-        threadId,
+        sessionId,
         turnId,
         itemId: update.itemId || `${provider}:${turnId}:tool`,
         delta: normalizeOptionalString(update.delta) || "",
@@ -416,7 +416,7 @@ async function handleAcpUpdate({
     case "command_delta":
       clientBridge.emitRuntimeEvent({
         kind: "command_delta",
-        threadId,
+        sessionId,
         turnId,
         itemId: update.itemId || `${provider}:${turnId}:command`,
         command: normalizeOptionalString(update.command),
@@ -431,7 +431,7 @@ async function handleAcpUpdate({
     case "approval_request": {
       const event: RuntimeApprovalRequestEvent = {
         kind: "approval_request",
-        threadId,
+        sessionId,
         turnId,
         itemId: update.itemId || `${provider}:${turnId}:approval`,
         method: normalizeOptionalString(update.method) || "item/tool/requestApproval",
@@ -447,7 +447,7 @@ async function handleAcpUpdate({
     case "user_input_request": {
       const event: RuntimeUserInputRequestEvent = {
         kind: "user_input_request",
-        threadId,
+        sessionId,
         turnId,
         itemId: update.itemId || `${provider}:${turnId}:user-input`,
         questions: update.questions,
@@ -460,7 +460,7 @@ async function handleAcpUpdate({
     case "token_usage":
       clientBridge.emitRuntimeEvent({
         kind: "token_usage",
-        threadId,
+        sessionId,
         usage: update.usage,
       });
       return;
@@ -468,7 +468,7 @@ async function handleAcpUpdate({
     case "runtime_error":
       clientBridge.emitRuntimeEvent({
         kind: "runtime_error",
-        threadId,
+        sessionId,
         turnId,
         message: update.message,
       });

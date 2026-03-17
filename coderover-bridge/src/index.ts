@@ -2,5 +2,5 @@
 // Purpose: Small entrypoint wrapper for the bridge runtime.
 
 export { startBridge } from "./bridge";
-export { openLastActiveThread } from "./session-state";
-export { watchThreadRollout } from "./rollout-watch";
+export { openLastActiveSession } from "./session-state";
+export { watchSessionRollout } from "./rollout-watch";

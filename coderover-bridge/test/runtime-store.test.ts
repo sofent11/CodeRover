@@ -21,11 +21,11 @@ function createTempStore(): { store: RuntimeStore; cleanup(): void } {
   };
 }
 
-test("runtime store persists provider session mappings and thread history", () => {
+test("runtime store persists provider session mappings and session history", () => {
   const fixture = createTempStore();
 
   try {
-    const created = fixture.store.createThread({
+    const created = fixture.store.createSession({
       provider: "claude",
       providerSessionId: "session-1",
       title: "Claude thread",
@@ -33,14 +33,14 @@ test("runtime store persists provider session mappings and thread history", () =
     });
 
     assert.match(created.id, /^claude:/);
-    assert.equal(fixture.store.findThreadIdByProviderSession("claude", "session-1"), created.id);
+    assert.equal(fixture.store.findSessionIdByProviderSession("claude", "session-1"), created.id);
 
     fixture.store.bindProviderSession(created.id, "claude", "session-2");
-    assert.equal(fixture.store.findThreadIdByProviderSession("claude", "session-1"), null);
-    assert.equal(fixture.store.findThreadIdByProviderSession("claude", "session-2"), created.id);
+    assert.equal(fixture.store.findSessionIdByProviderSession("claude", "session-1"), null);
+    assert.equal(fixture.store.findSessionIdByProviderSession("claude", "session-2"), created.id);
 
-    fixture.store.saveThreadHistory(created.id, {
-      threadId: created.id,
+    fixture.store.saveSessionHistory(created.id, {
+      sessionId: created.id,
       turns: [
         {
           id: "turn-1",
@@ -59,7 +59,7 @@ test("runtime store persists provider session mappings and thread history", () =
       ],
     });
 
-    const history = fixture.store.getThreadHistory(created.id);
+    const history = fixture.store.getSessionHistory(created.id);
     assert.equal(history?.turns?.length, 1);
     assert.equal(history?.turns?.[0]?.items?.[0]?.text, "hello");
   } finally {
@@ -67,30 +67,30 @@ test("runtime store persists provider session mappings and thread history", () =
   }
 });
 
-test("runtime store keeps archive and name overlays in the thread index", () => {
+test("runtime store keeps archive and name overlays in the session index", () => {
   const fixture = createTempStore();
 
   try {
-    const created = fixture.store.createThread({
+    const created = fixture.store.createSession({
       provider: "gemini",
       providerSessionId: "chat-1",
       title: "Gemini thread",
       preview: "draft",
     });
 
-    fixture.store.updateThreadMeta(created.id, (entry) => ({
+    fixture.store.updateSessionMeta(created.id, (entry) => ({
       ...entry,
       name: "Renamed Gemini thread",
       archived: true,
     }));
 
-    const updated = fixture.store.getThreadMeta(created.id);
+    const updated = fixture.store.getSessionMeta(created.id);
     assert.equal(updated?.name, "Renamed Gemini thread");
     assert.equal(updated?.archived, true);
 
-    fixture.store.deleteThread(created.id);
-    assert.equal(fixture.store.getThreadMeta(created.id), null);
-    assert.equal(fixture.store.findThreadIdByProviderSession("gemini", "chat-1"), null);
+    fixture.store.deleteSession(created.id);
+    assert.equal(fixture.store.getSessionMeta(created.id), null);
+    assert.equal(fixture.store.findSessionIdByProviderSession("gemini", "chat-1"), null);
   } finally {
     fixture.cleanup();
   }
@@ -142,13 +142,13 @@ test("runtime store loads legacy snake_case thread metadata and history items", 
 
     const store = createRuntimeStore({ baseDir });
     try {
-      const thread = store.getThreadMeta("claude:legacy-thread");
+      const thread = store.getSessionMeta("claude:legacy-thread");
       assert.equal(thread?.providerSessionId, "session-legacy");
       assert.equal(thread?.preview, "Initial prompt");
-      assert.equal(store.findThreadIdByProviderSession("claude", "session-legacy"), "claude:legacy-thread");
+      assert.equal(store.findSessionIdByProviderSession("claude", "session-legacy"), "claude:legacy-thread");
 
-      const history = store.getThreadHistory("claude:legacy-thread");
-      assert.equal(history?.threadId, "claude:legacy-thread");
+      const history = store.getSessionHistory("claude:legacy-thread");
+      assert.equal(history?.sessionId, "claude:legacy-thread");
       assert.equal(history?.turns?.[0]?.id, "turn-legacy");
       assert.equal(history?.turns?.[0]?.items?.[0]?.id, "item-legacy");
       assert.equal(history?.turns?.[0]?.items?.[0]?.text, "legacy hello");

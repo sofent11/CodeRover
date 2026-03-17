@@ -6,7 +6,7 @@ import * as path from "path";
 import { promisify } from "util";
 
 import {
-  findRolloutFileForThread,
+  findRolloutFileForSession,
   resolveSessionsRoot,
   type RolloutScanFsModule,
 } from "./rollout-watch";
@@ -34,6 +34,8 @@ type DesktopExecutor = (
 ) => Promise<DesktopExecResult>;
 
 interface DesktopRequestParams extends JsonObject {
+  sessionId?: unknown;
+  session_id?: unknown;
   provider?: unknown;
   threadId?: unknown;
   thread_id?: unknown;
@@ -61,6 +63,8 @@ interface DesktopHandlerOptions {
   relaunchWaitMs?: number;
   threadMaterializeWaitMs?: number;
   threadMaterializePollMs?: number;
+  sessionMaterializeWaitMs?: number;
+  sessionMaterializePollMs?: number;
   codexBundleId?: string;
   codexAppPath?: string;
 }
@@ -70,7 +74,7 @@ interface RestartDesktopResult {
   provider: DesktopProvider;
   restarted: boolean;
   targetUrl: string;
-  threadId: string;
+  sessionId: string;
   desktopKnown: boolean;
 }
 
@@ -117,6 +121,9 @@ function normalizeDesktopMethod(value: unknown): string | null {
   if (!method) {
     return null;
   }
+  if (method.startsWith("desktop/")) {
+    return method;
+  }
   if (method.startsWith("_coderover/desktop/")) {
     return method.replace(/^_coderover\//, "");
   }
@@ -157,6 +164,8 @@ async function restartDesktopApp(
     relaunchWaitMs = DEFAULT_RELAUNCH_WAIT_MS,
     threadMaterializeWaitMs = DEFAULT_THREAD_MATERIALIZE_WAIT_MS,
     threadMaterializePollMs = DEFAULT_THREAD_MATERIALIZE_POLL_MS,
+    sessionMaterializeWaitMs = DEFAULT_THREAD_MATERIALIZE_WAIT_MS,
+    sessionMaterializePollMs = DEFAULT_THREAD_MATERIALIZE_POLL_MS,
     codexBundleId = readFirstDefinedEnv(["CODEX_DESKTOP_BUNDLE_ID", "CODEX_BUNDLE_ID"], DEFAULT_CODEX_BUNDLE_ID, env),
     codexAppPath = readFirstDefinedEnv(["CODEX_DESKTOP_APP_PATH", "CODEX_APP_PATH"], DEFAULT_CODEX_APP_PATH, env),
   }: DesktopHandlerOptions = {}
@@ -176,13 +185,13 @@ async function restartDesktopApp(
     );
   }
 
-  const threadId = resolveThreadId(params);
-  if (!threadId) {
-    throw desktopError("missing_thread_id", "A thread id is required to reopen the desktop app.");
+  const sessionId = resolveSessionId(params);
+  if (!sessionId) {
+    throw desktopError("missing_session_id", "A session id is required to reopen the desktop app.");
   }
 
-  const targetUrl = `codex://threads/${threadId}`;
-  const desktopKnown = hasDesktopRolloutForThread(threadId, { env, fsModule });
+  const targetUrl = `codex://threads/${sessionId}`;
+  const desktopKnown = hasDesktopRolloutForSession(sessionId, { env, fsModule });
   const appRunning = typeof isAppRunning === "function"
     ? await isAppRunning(codexAppPath)
     : await detectRunningDesktopApp(codexAppPath, executor);
@@ -207,15 +216,15 @@ async function restartDesktopApp(
       await sleepFn(appBootWaitMs);
     }
 
-    await openWhenThreadReady(threadId, targetUrl, {
+    await openWhenSessionReady(sessionId, targetUrl, {
       bundleId: codexBundleId,
       appPath: codexAppPath,
       executor,
       env,
       fsModule,
       sleepFn,
-      waitMs: threadMaterializeWaitMs,
-      pollMs: threadMaterializePollMs,
+      waitMs: sessionMaterializeWaitMs || threadMaterializeWaitMs,
+      pollMs: sessionMaterializePollMs || threadMaterializePollMs,
     });
   } catch (error) {
     throw desktopError(
@@ -230,7 +239,7 @@ async function restartDesktopApp(
     provider,
     restarted: appRunning,
     targetUrl,
-    threadId,
+    sessionId,
     desktopKnown,
   };
 }
@@ -254,9 +263,11 @@ function providerTitle(provider: DesktopProvider): string {
   }
 }
 
-function resolveThreadId(params: DesktopRequestParams): string {
+function resolveSessionId(params: DesktopRequestParams): string {
   return (
-    readNonEmptyString(params.threadId)
+    readNonEmptyString(params.sessionId)
+    || readNonEmptyString(params.session_id)
+    || readNonEmptyString(params.threadId)
     || readNonEmptyString(params.thread_id)
     || ""
   );
@@ -272,8 +283,8 @@ function desktopError(errorCode: string, userMessage: string, cause: unknown = n
   return error;
 }
 
-function hasDesktopRolloutForThread(
-  threadId: string,
+function hasDesktopRolloutForSession(
+  sessionId: string,
   {
     env = process.env,
     fsModule,
@@ -283,7 +294,7 @@ function hasDesktopRolloutForThread(
   } = {}
 ): boolean {
   const sessionsRoot = resolveSessionsRootForEnv(env);
-  return findRolloutFileForThread(sessionsRoot, threadId, { fsModule }) != null;
+  return findRolloutFileForSession(sessionsRoot, sessionId, { fsModule }) != null;
 }
 
 function resolveSessionsRootForEnv(env: NodeJS.ProcessEnv | Record<string, string> = process.env): string {
@@ -339,8 +350,8 @@ async function openDesktopTarget(
   }
 }
 
-async function openWhenThreadReady(
-  threadId: string,
+async function openWhenSessionReady(
+  sessionId: string,
   targetUrl: string,
   {
     bundleId,
@@ -362,7 +373,7 @@ async function openWhenThreadReady(
     pollMs: number;
   }
 ): Promise<void> {
-  await waitForThreadMaterialization(threadId, {
+  await waitForSessionMaterialization(sessionId, {
     env,
     fsModule,
     sleepFn,
@@ -423,8 +434,8 @@ async function waitForAppExit(
   throw desktopError("restart_timeout", "Timed out waiting for Codex.app to close.");
 }
 
-async function waitForThreadMaterialization(
-  threadId: string,
+async function waitForSessionMaterialization(
+  sessionId: string,
   {
     env,
     fsModule,
@@ -439,14 +450,14 @@ async function waitForThreadMaterialization(
     pollMs: number;
   }
 ): Promise<boolean> {
-  if (hasDesktopRolloutForThread(threadId, { env, fsModule })) {
+  if (hasDesktopRolloutForSession(sessionId, { env, fsModule })) {
     return true;
   }
 
   const deadline = Date.now() + Math.max(0, timeoutMs);
   while (Date.now() < deadline) {
     await sleepFn(pollMs);
-    if (hasDesktopRolloutForThread(threadId, { env, fsModule })) {
+    if (hasDesktopRolloutForSession(sessionId, { env, fsModule })) {
       return true;
     }
   }

@@ -109,8 +109,8 @@ export function buildUpstreamHistoryWindowResponse(
     thread,
     historyWindow: {
       mode: historyRequest.mode,
-      olderCursor: oldestRecord ? dependencies.historyCursorForRecord(snapshot.threadId, oldestRecord) : null,
-      newerCursor: newestRecord ? dependencies.historyCursorForRecord(snapshot.threadId, newestRecord) : null,
+      olderCursor: oldestRecord ? dependencies.historyCursorForRecord(snapshot.sessionId, oldestRecord) : null,
+      newerCursor: newestRecord ? dependencies.historyCursorForRecord(snapshot.sessionId, newestRecord) : null,
       oldestAnchor: oldestRecord ? dependencies.historyRecordAnchor(oldestRecord) : null,
       newestAnchor: newestRecord ? dependencies.historyRecordAnchor(newestRecord) : null,
       hasOlder: Boolean(upstreamHistoryWindow?.hasOlder),

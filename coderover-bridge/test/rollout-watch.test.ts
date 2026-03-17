@@ -8,9 +8,9 @@ import * as os from "os";
 import * as path from "path";
 
 import { readLatestContextWindowUsage } from "../src/rollout-watch";
-import { handleThreadContextRequest } from "../src/thread-context-handler";
+import { handleContextWindowReadRequest } from "../src/coderover-context-window-handler";
 
-test("readLatestContextWindowUsage returns the newest usage snapshot from a thread rollout", () => {
+test("readLatestContextWindowUsage returns the newest usage snapshot from a session rollout", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "coderover-rollout-"));
   const sessionsRoot = path.join(root, "sessions", "2026", "03", "14");
   fs.mkdirSync(sessionsRoot, { recursive: true });
@@ -27,7 +27,7 @@ test("readLatestContextWindowUsage returns the newest usage snapshot from a thre
   );
 
   const result = readLatestContextWindowUsage({
-    threadId: "thread-123",
+    sessionId: "thread-123",
     root: path.join(root, "sessions"),
   });
 
@@ -42,7 +42,7 @@ test("readLatestContextWindowUsage returns the newest usage snapshot from a thre
   fs.rmSync(root, { recursive: true, force: true });
 });
 
-test("handleThreadContextRequest returns usage payload for thread/contextWindow/read", async () => {
+test("handleContextWindowReadRequest returns usage payload for _coderover/context_window/read", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "coderover-thread-context-"));
   const sessionsRoot = path.join(root, "sessions", "2026", "03", "14");
   fs.mkdirSync(sessionsRoot, { recursive: true });
@@ -59,11 +59,11 @@ test("handleThreadContextRequest returns usage payload for thread/contextWindow/
 
   try {
     const response = await new Promise<{ handled: boolean; rawResponse: string }>((resolve) => {
-      const handled = handleThreadContextRequest(
+      const handled = handleContextWindowReadRequest(
         JSON.stringify({
           id: "req-1",
-          method: "thread/contextWindow/read",
-          params: { threadId: "thread-ctx" },
+          method: "_coderover/context_window/read",
+          params: { sessionId: "thread-ctx" },
         }),
         (rawResponse) => resolve({ handled, rawResponse })
       );
@@ -73,7 +73,7 @@ test("handleThreadContextRequest returns usage payload for thread/contextWindow/
     assert.deepEqual(JSON.parse(response.rawResponse), {
       id: "req-1",
       result: {
-        threadId: "thread-ctx",
+        sessionId: "thread-ctx",
         usage: {
           tokensUsed: 42,
           tokenLimit: 1024,

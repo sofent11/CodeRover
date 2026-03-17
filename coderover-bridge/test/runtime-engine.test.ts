@@ -11,8 +11,8 @@ import {
   createAcpEngine,
   type AcpTransport,
 } from "../src/runtime-engine/acp-engine";
-import { projectRuntimeEventToMobileProtocol } from "../src/runtime-engine/mobile-protocol-projector";
-import { createThreadSessionIndex } from "../src/runtime-engine/thread-session-index";
+import { projectRuntimeEventToAcpProtocol } from "../src/runtime-engine/acp-protocol";
+import { createSessionRuntimeIndex } from "../src/runtime-engine/session-runtime-index";
 import type {
   RuntimeApprovalRequestEvent,
   RuntimeEvent,
@@ -34,8 +34,8 @@ async function waitFor(predicate: () => boolean, timeoutMs = 1_000): Promise<voi
   }
 }
 
-test("projectRuntimeEventToMobileProtocol preserves existing plan and approval message shapes", () => {
-  const planProjection = projectRuntimeEventToMobileProtocol({
+test("projectRuntimeEventToAcpProtocol projects plan and approval events onto ACP", () => {
+  const planProjection = projectRuntimeEventToAcpProtocol({
     kind: "plan_update",
     threadId: "thread-1",
     turnId: "turn-1",
@@ -46,11 +46,12 @@ test("projectRuntimeEventToMobileProtocol preserves existing plan and approval m
     delta: "Inspect the failing path",
   });
   assert.equal(planProjection.kind, "notification");
-  assert.equal(planProjection.method, "timeline/itemTextUpdated");
-  assert.equal(planProjection.params.kind, "plan");
-  assert.deepEqual((planProjection.params.planState as { steps: unknown[] }).steps, [{ step: "Find the regression", status: "in_progress" }]);
+  assert.equal(planProjection.method, "session/update");
+  assert.equal(planProjection.params.sessionId, "thread-1");
+  assert.equal(planProjection.params.update.sessionUpdate, "plan");
+  assert.deepEqual(planProjection.params.update.entries, [{ content: "Find the regression", status: "in_progress", priority: "medium" }]);
 
-  const approvalProjection = projectRuntimeEventToMobileProtocol({
+  const approvalProjection = projectRuntimeEventToAcpProtocol({
     kind: "approval_request",
     threadId: "thread-1",
     turnId: "turn-1",
@@ -61,16 +62,16 @@ test("projectRuntimeEventToMobileProtocol preserves existing plan and approval m
     toolName: null,
   });
   assert.equal(approvalProjection.kind, "request");
-  assert.equal(approvalProjection.method, "item/commandExecution/requestApproval");
-  assert.equal(approvalProjection.params.command, "bun test");
+  assert.equal(approvalProjection.method, "session/request_permission");
+  assert.equal(approvalProjection.params.toolCall.rawInput.command, "bun test");
 });
 
-test("thread session index persists runtime owner state and provider session binding", () => {
-  const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "coderover-thread-session-index-"));
+test("session runtime index persists runtime owner state and provider session binding", () => {
+  const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "coderover-session-runtime-index-"));
   try {
-    const index = createThreadSessionIndex({ baseDir });
+    const index = createSessionRuntimeIndex({ baseDir });
     index.upsert({
-      threadId: "thread-1",
+      sessionId: "thread-1",
       provider: "claude",
       engineSessionId: "engine-1",
       providerSessionId: "provider-1",
@@ -81,9 +82,10 @@ test("thread session index persists runtime owner state and provider session bin
     });
     index.shutdown();
 
-    const reloaded = createThreadSessionIndex({ baseDir });
+    const reloaded = createSessionRuntimeIndex({ baseDir });
     const record = reloaded.get("thread-1");
     assert.ok(record);
+    assert.equal(record?.sessionId, "thread-1");
     assert.equal(record?.engineSessionId, "engine-1");
     assert.equal(record?.providerSessionId, "provider-1");
     assert.equal(record?.ownerState, "running");
@@ -174,14 +176,14 @@ test("ACP engine bridges prompt lifecycle, approval, and structured user input t
     clientInfo: { name: "CodeRover", version: "1.0.0" },
   });
   const startResult = await engine.startTurn({
-    threadId: "thread-1",
+    sessionId: "thread-1",
     input: [{ type: "text", text: "Inspect the issue" }],
     cwd: "/tmp/demo",
   });
 
-  assert.equal(startResult.threadId, "thread-1");
+  assert.equal(startResult.sessionId, "thread-1");
   await waitFor(() =>
-    emittedEvents.some((event) => event.kind === "turn_completed" && event.threadId === "thread-1")
+    emittedEvents.some((event) => event.kind === "turn_completed" && event.sessionId === "thread-1")
   );
 
   assert.deepEqual(
@@ -241,13 +243,13 @@ test("ACP engine interruptTurn aborts the in-flight turn and delegates cancel to
   });
 
   const startResult = await engine.startTurn({
-    threadId: "thread-2",
+    sessionId: "thread-2",
     input: [{ type: "text", text: "Wait for interrupt" }],
   });
   await engine.interruptTurn("thread-2", startResult.turnId);
   releasePrompt?.();
   await waitFor(() =>
-    emittedEvents.some((event) => event.kind === "turn_completed" && event.threadId === "thread-2")
+    emittedEvents.some((event) => event.kind === "turn_completed" && event.sessionId === "thread-2")
   );
 
   assert.deepEqual(cancelCalls, [{
@@ -257,7 +259,7 @@ test("ACP engine interruptTurn aborts the in-flight turn and delegates cancel to
   assert.equal(
     emittedEvents.some((event) =>
       event.kind === "turn_completed"
-      && event.threadId === "thread-2"
+      && event.sessionId === "thread-2"
       && event.status === "cancelled"
     ),
     true

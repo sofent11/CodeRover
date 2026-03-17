@@ -10,7 +10,7 @@ import type {
   RuntimeThreadShape,
   RuntimeTurnShape,
 } from "../bridge-types";
-import type { RuntimeStore, RuntimeThreadMeta } from "../runtime-store";
+import type { RuntimeStore, RuntimeSessionMeta } from "../runtime-store";
 
 export const ERROR_METHOD_NOT_FOUND = -32601;
 export const ERROR_INVALID_PARAMS = -32602;
@@ -29,7 +29,7 @@ export const CODEX_OBSERVED_THREAD_LIMIT = 3;
 
 export type RuntimeRpcEnvelope = JsonRpcEnvelope;
 export type RuntimeHistoryCursor =
-  Omit<HistoryCursorShape, "threadId"> & { threadId?: string };
+  Omit<HistoryCursorShape, "sessionId"> & { sessionId?: string };
 
 export interface RuntimeHistoryRequest {
   mode: "tail" | "before" | "after";
@@ -50,18 +50,18 @@ export interface RuntimeHistoryRecord {
 }
 
 export interface RuntimeHistorySnapshot {
-  threadId: string;
+  sessionId: string;
   records: RuntimeHistoryRecord[];
 }
 
-export interface RuntimeThreadListPayload {
+export interface RuntimeSessionListPayload {
   threads: RuntimeThreadShape[];
   nextCursor?: string | number | null;
   hasMore?: boolean;
   pageSize?: number | null;
 }
 
-export interface ManagedThreadMeta extends RuntimeThreadMeta {}
+export interface ManagedSessionMeta extends RuntimeSessionMeta {}
 
 export interface RuntimeCommandPreviewContext {
   command: string | null;
@@ -91,7 +91,7 @@ export interface RuntimeRoutingHelpers {
   normalizeTimestampString(value: unknown): string | null;
 }
 
-export interface RuntimeThreadMetaHelpers extends RuntimeRoutingHelpers {
+export interface RuntimeSessionMetaHelpers extends RuntimeRoutingHelpers {
   asObject(value: unknown): Record<string, unknown>;
   firstNonEmptyString(values: unknown[]): string | null;
   getRuntimeProvider(providerId: unknown): { title: string; supports: Record<string, unknown> };
@@ -100,7 +100,7 @@ export interface RuntimeThreadMetaHelpers extends RuntimeRoutingHelpers {
 
 export interface RuntimeThreadWindowDependencies {
   compareHistoryRecord(left: RuntimeHistoryRecord, right: RuntimeHistoryRecord): number;
-  historyCursorForRecord(threadId: string, record: RuntimeHistoryRecord): string | null;
+  historyCursorForRecord(sessionId: string, record: RuntimeHistoryRecord): string | null;
   historyRecordAnchor(record: RuntimeHistoryRecord): RuntimeHistoryCursor;
 }
 
@@ -108,7 +108,7 @@ export interface RuntimeInputNormalizerDependencies {
   normalizeOptionalString(value: unknown): string | null;
 }
 
-export interface ManagedProviderThreadMeta extends RuntimeThreadMeta {}
+export interface ManagedProviderSessionMeta extends RuntimeSessionMeta {}
 
 export interface ManagedProviderTurnContext {
   inputItems: RuntimeInputItem[];
@@ -127,7 +127,7 @@ export interface ManagedProviderTurnContext {
 
 export interface ManagedProviderStartTurnOptions {
   params: Record<string, unknown>;
-  threadMeta: ManagedProviderThreadMeta;
+  sessionMeta: ManagedProviderSessionMeta;
   turnContext: ManagedProviderTurnContext;
 }
 
@@ -136,9 +136,9 @@ export interface ManagedProviderTurnResult {
 }
 
 export interface ManagedProviderAdapter {
-  hydrateThread(threadMeta: RuntimeThreadMeta): Promise<void>;
+  hydrateSession(sessionMeta: RuntimeSessionMeta): Promise<void>;
   startTurn(options: ManagedProviderStartTurnOptions): Promise<ManagedProviderTurnResult | void>;
-  syncImportedThreads(): Promise<void>;
+  syncImportedSessions(): Promise<void>;
 }
 
 export interface ManagedProviderAdapterFactoryOptions {

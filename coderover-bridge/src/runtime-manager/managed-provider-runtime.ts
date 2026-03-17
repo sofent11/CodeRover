@@ -1,14 +1,14 @@
 // FILE: runtime-manager/managed-provider-runtime.ts
-// Purpose: Typed thread/provider shaping helpers for managed runtimes.
+// Purpose: Typed session/provider shaping helpers for managed runtimes.
 
 import type {
-  ManagedThreadMeta,
-  RuntimeThreadListPayload,
-  RuntimeThreadMetaHelpers,
+  ManagedSessionMeta,
+  RuntimeSessionListPayload,
+  RuntimeSessionMetaHelpers,
 } from "./types";
 import type { RuntimeThreadShape } from "../bridge-types";
 
-type ProviderDefinition = ReturnType<RuntimeThreadMetaHelpers["getRuntimeProvider"]>;
+type ProviderDefinition = ReturnType<RuntimeSessionMetaHelpers["getRuntimeProvider"]>;
 type ProviderResolver = (value: unknown) => string;
 type NormalizePositiveInteger = (value: unknown) => number | null;
 const THREAD_LIST_PREVIEW_LIMIT = 600;
@@ -45,25 +45,26 @@ export function stripProviderField<TValue>(params: TValue): Omit<TValue, "provid
   return rest as Omit<TValue, "provider">;
 }
 
-export function buildManagedThreadObject(
-  threadMeta: ManagedThreadMeta,
+export function buildManagedSessionObject(
+  sessionMeta: ManagedSessionMeta,
   turns: unknown,
   getRuntimeProvider: (providerId: unknown) => ProviderDefinition
 ): RuntimeThreadShape {
-  const providerDefinition = getRuntimeProvider(threadMeta.provider);
+  const providerDefinition = getRuntimeProvider(sessionMeta.provider);
   return {
-    id: threadMeta.id,
-    title: threadMeta.title,
-    name: threadMeta.name,
-    preview: truncateThreadPreview(threadMeta.preview),
-    createdAt: threadMeta.createdAt,
-    updatedAt: threadMeta.updatedAt,
-    cwd: threadMeta.cwd,
-    provider: threadMeta.provider,
-    providerSessionId: threadMeta.providerSessionId,
-    capabilities: threadMeta.capabilities || providerDefinition.supports,
+    id: sessionMeta.id,
+    title: sessionMeta.title,
+    name: sessionMeta.name,
+    archived: Boolean(sessionMeta.archived),
+    preview: truncateThreadPreview(sessionMeta.preview),
+    createdAt: sessionMeta.createdAt,
+    updatedAt: sessionMeta.updatedAt,
+    cwd: sessionMeta.cwd,
+    provider: sessionMeta.provider,
+    providerSessionId: sessionMeta.providerSessionId,
+    capabilities: sessionMeta.capabilities || providerDefinition.supports,
     metadata: {
-      ...(threadMeta.metadata || {}),
+      ...(sessionMeta.metadata || {}),
       providerTitle: providerDefinition.title,
     },
     ...(Array.isArray(turns) ? { turns } : {}),
@@ -84,8 +85,8 @@ export function truncateThreadPreview(preview: unknown): string | null {
   return `${normalized.slice(0, THREAD_LIST_PREVIEW_LIMIT - 1)}…`;
 }
 
-export function buildThreadListResult(
-  payload: RuntimeThreadListPayload | RuntimeThreadShape[],
+export function buildSessionListResult(
+  payload: RuntimeSessionListPayload | RuntimeThreadShape[],
   normalizePositiveInteger: NormalizePositiveInteger
 ): {
   data: RuntimeThreadShape[];
@@ -110,33 +111,33 @@ export function buildThreadListResult(
   };
 }
 
-export function threadObjectToMeta(
-  threadObject: Record<string, unknown>,
-  helpers: RuntimeThreadMetaHelpers
-): ManagedThreadMeta {
-  const providerId = helpers.resolveProviderId(threadObject);
+export function sessionObjectToMeta(
+  sessionObject: Record<string, unknown>,
+  helpers: RuntimeSessionMetaHelpers
+): ManagedSessionMeta {
+  const providerId = helpers.resolveProviderId(sessionObject);
   return {
-    id: helpers.normalizeOptionalString(threadObject.id) || "",
-    provider: providerId as ManagedThreadMeta["provider"],
-    providerSessionId: helpers.normalizeOptionalString(threadObject.providerSessionId)
-      || helpers.normalizeOptionalString(threadObject.id),
-    title: helpers.normalizeOptionalString(threadObject.title),
-    name: helpers.normalizeOptionalString(threadObject.name),
-    preview: helpers.normalizeOptionalString(threadObject.preview),
+    id: helpers.normalizeOptionalString(sessionObject.id) || "",
+    provider: providerId as ManagedSessionMeta["provider"],
+    providerSessionId: helpers.normalizeOptionalString(sessionObject.providerSessionId)
+      || helpers.normalizeOptionalString(sessionObject.id),
+    title: helpers.normalizeOptionalString(sessionObject.title),
+    name: helpers.normalizeOptionalString(sessionObject.name),
+    preview: helpers.normalizeOptionalString(sessionObject.preview),
     cwd: helpers.firstNonEmptyString([
-      threadObject.cwd,
-      threadObject.current_working_directory,
-      threadObject.working_directory,
+      sessionObject.cwd,
+      sessionObject.current_working_directory,
+      sessionObject.working_directory,
     ]),
-    model: helpers.normalizeOptionalString(threadObject.model),
+    model: helpers.normalizeOptionalString(sessionObject.model),
     metadata: {
-      ...(helpers.asObject(threadObject.metadata) as Record<string, unknown>),
+      ...(helpers.asObject(sessionObject.metadata) as Record<string, unknown>),
       providerTitle: helpers.getRuntimeProvider(providerId).title,
     },
-    capabilities: (threadObject.capabilities as Record<string, unknown> | null)
+    capabilities: (sessionObject.capabilities as Record<string, unknown> | null)
       || helpers.getRuntimeProvider(providerId).supports,
-    createdAt: String(threadObject.createdAt || threadObject.created_at || new Date().toISOString()),
-    updatedAt: String(threadObject.updatedAt || threadObject.updated_at || new Date().toISOString()),
-    archived: Boolean(threadObject.archived),
+    createdAt: String(sessionObject.createdAt || sessionObject.created_at || new Date().toISOString()),
+    updatedAt: String(sessionObject.updatedAt || sessionObject.updated_at || new Date().toISOString()),
+    archived: Boolean(sessionObject.archived),
   };
 }
