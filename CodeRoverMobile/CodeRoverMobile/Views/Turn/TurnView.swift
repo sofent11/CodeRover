@@ -39,8 +39,6 @@ struct TurnView: View {
         let stoppedTurnIDs = coderover.stoppedTurnIDs(for: thread.id)
         let rawMessages = coderover.messages(for: thread.id)
         let timelineChangeToken = coderover.messageRevision(for: thread.id)
-        let historyState = coderover.historyStateByThread[thread.id]
-        let hasOlderHistory = historyState?.hasOlderOnServer ?? false
         let projectedMessages = TurnTimelineReducer.project(messages: rawMessages).messages
         let assistantRevertStatesByMessageID = projectedMessages.reduce(into: [String: AssistantRevertPresentation]()) {
             partialResult, message in
@@ -63,8 +61,8 @@ struct TurnView: View {
             stoppedTurnIDs: stoppedTurnIDs,
             assistantRevertStatesByMessageID: assistantRevertStatesByMessageID,
             errorMessage: timelineErrorMessage,
-            hasOlderHistory: hasOlderHistory,
-            isLoadingOlderHistory: historyState?.isLoadingOlder ?? false,
+            hasOlderHistory: false,
+            isLoadingOlderHistory: false,
             shouldAnchorToAssistantResponse: shouldAnchorToAssistantResponseBinding,
             isScrolledToBottom: isScrolledToBottomBinding,
             emptyState: AnyView(emptyState),
@@ -131,11 +129,7 @@ struct TurnView: View {
                 isInputFocused = false
                 viewModel.clearComposerAutocomplete()
             },
-            onLoadOlderHistory: {
-                Task {
-                    try? await coderover.loadOlderThreadHistoryIfNeeded(threadId: thread.id)
-                }
-            }
+            onLoadOlderHistory: {}
         )
         .environment(\.inlineCommitAndPushAction, showsGitControls ? {
             viewModel.inlineCommitAndPush(
@@ -167,11 +161,7 @@ struct TurnView: View {
                 onTapDesktopRestart: showsDesktopRestart ? {
                     isShowingDesktopRestartConfirmation = true
                 } : nil,
-                onCompactContext: {
-                    Task {
-                        try? await coderover.compactContext(threadId: thread.id)
-                    }
-                },
+                onCompactContext: nil,
                 onTapRepoDiff: showsGitControls ? {
                     presentRepositoryDiff(workingDirectory: gitWorkingDirectory)
                 } : nil,
@@ -280,10 +270,7 @@ struct TurnView: View {
         }
         .sheet(isPresented: $isShowingStatusSheet) {
             TurnStatusSheet(
-                contextWindowUsage: coderover.contextWindowUsageByThread[thread.id],
-                rateLimitBuckets: coderover.rateLimitBuckets,
-                isLoadingRateLimits: coderover.isLoadingRateLimits,
-                rateLimitsErrorMessage: coderover.rateLimitsErrorMessage
+                contextWindowUsage: coderover.contextWindowUsageByThread[thread.id]
             )
         }
         .sheet(item: $repositoryDiffPresentation) { presentation in
@@ -464,7 +451,6 @@ struct TurnView: View {
         isShowingStatusSheet = true
         Task {
             await coderover.refreshContextWindowUsage(threadId: thread.id)
-            await coderover.refreshRateLimits()
         }
     }
 
@@ -773,16 +759,12 @@ private extension TurnView {
 
 private struct TurnStatusSheet: View {
     let contextWindowUsage: ContextWindowUsage?
-    let rateLimitBuckets: [CodeRoverRateLimitBucket]
-    let isLoadingRateLimits: Bool
-    let rateLimitsErrorMessage: String?
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     statusCard
-                    rateLimitsCard
                 }
                 .padding(.horizontal, 16)
                 .padding(.bottom, 16)
@@ -811,104 +793,6 @@ private struct TurnStatusSheet: View {
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .adaptiveGlass(.regular, in: RoundedRectangle(cornerRadius: 28, style: .continuous))
-    }
-
-    private var rateLimitsCard: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack {
-                Text("Rate limits")
-                    .font(AppFont.subheadline(weight: .semibold))
-                Spacer(minLength: 12)
-                if isLoadingRateLimits {
-                    ProgressView()
-                        .controlSize(.small)
-                }
-            }
-
-            if !rateLimitRows.isEmpty {
-                VStack(alignment: .leading, spacing: 14) {
-                    ForEach(rateLimitRows) { row in
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack(alignment: .firstTextBaseline, spacing: 10) {
-                                Text(row.label)
-                                    .font(AppFont.mono(.callout))
-                                    .foregroundStyle(.secondary)
-
-                                Spacer(minLength: 12)
-
-                                Text("\(row.window.remainingPercent)% left")
-                                    .font(AppFont.mono(.callout))
-
-                                if let resetText = resetLabel(for: row.window) {
-                                    Text("(\(resetText))")
-                                        .font(AppFont.mono(.caption))
-                                        .foregroundStyle(.secondary)
-                                }
-                            }
-
-                            progressBar(progress: Double(row.window.clampedUsedPercent) / 100)
-                        }
-                    }
-                }
-            } else if let rateLimitsErrorMessage, !rateLimitsErrorMessage.isEmpty {
-                Text(rateLimitsErrorMessage)
-                    .font(AppFont.caption())
-                    .foregroundStyle(.secondary)
-            } else if isLoadingRateLimits {
-                Text("Loading current limits...")
-                    .font(AppFont.caption())
-                    .foregroundStyle(.secondary)
-            } else {
-                Text("Rate limits are unavailable for this account.")
-                    .font(AppFont.caption())
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .adaptiveGlass(.regular, in: RoundedRectangle(cornerRadius: 28, style: .continuous))
-    }
-
-    private var rateLimitRows: [CodeRoverRateLimitDisplayRow] {
-        let rows = rateLimitBuckets.flatMap(\.displayRows)
-        var dedupedByLabel: [String: CodeRoverRateLimitDisplayRow] = [:]
-
-        for row in rows {
-            if let existing = dedupedByLabel[row.label] {
-                dedupedByLabel[row.label] = preferredRateLimitRow(existing, row)
-            } else {
-                dedupedByLabel[row.label] = row
-            }
-        }
-
-        return dedupedByLabel.values.sorted { lhs, rhs in
-            let lhsDuration = lhs.window.windowDurationMins ?? Int.max
-            let rhsDuration = rhs.window.windowDurationMins ?? Int.max
-            if lhsDuration == rhsDuration {
-                return lhs.label.localizedCaseInsensitiveCompare(rhs.label) == .orderedAscending
-            }
-            return lhsDuration < rhsDuration
-        }
-    }
-
-    private func preferredRateLimitRow(
-        _ current: CodeRoverRateLimitDisplayRow,
-        _ candidate: CodeRoverRateLimitDisplayRow
-    ) -> CodeRoverRateLimitDisplayRow {
-        if candidate.window.clampedUsedPercent != current.window.clampedUsedPercent {
-            return candidate.window.clampedUsedPercent > current.window.clampedUsedPercent ? candidate : current
-        }
-
-        switch (current.window.resetsAt, candidate.window.resetsAt) {
-        case (.none, .some):
-            return candidate
-        case (.some, .none):
-            return current
-        case let (.some(currentReset), .some(candidateReset)):
-            return candidateReset < currentReset ? candidate : current
-        case (.none, .none):
-            return current
-        }
     }
 
     private func metricRow(label: String, value: String, detail: String? = nil) -> some View {
@@ -959,23 +843,6 @@ private struct TurnStatusSheet: View {
             formatter.numberStyle = .decimal
             return formatter.string(from: NSNumber(value: count)) ?? "\(count)"
         }
-    }
-
-    private func resetLabel(for window: CodeRoverRateLimitWindow) -> String? {
-        guard let resetsAt = window.resetsAt else { return nil }
-
-        let calendar = Calendar.current
-        let now = Date()
-
-        if calendar.isDate(resetsAt, inSameDayAs: now) {
-            let formatter = DateFormatter()
-            formatter.dateFormat = "HH:mm"
-            return "resets \(formatter.string(from: resetsAt))"
-        }
-
-        let formatter = DateFormatter()
-        formatter.dateFormat = "d MMM HH:mm"
-        return "resets \(formatter.string(from: resetsAt))"
     }
 }
 

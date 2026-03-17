@@ -89,11 +89,11 @@ extension CodeRoverService {
             do {
                 archivedThreads = try await fetchServerThreads(limit: recentThreadListLimit, archived: true)
             } catch {
-                debugSyncLog("thread/list archived fetch failed (non-fatal): \(error.localizedDescription)")
+                debugSyncLog("session/list archived fetch failed (non-fatal): \(error.localizedDescription)")
             }
 
             reconcileLocalThreadsWithServer(activeThreads, serverArchivedThreads: archivedThreads)
-            debugSyncLog("sync thread/list active=\(activeThreads.count) archived=\(archivedThreads.count) local=\(threads.count)")
+            debugSyncLog("sync session/list active=\(activeThreads.count) archived=\(archivedThreads.count) local=\(threads.count)")
         } catch {
             presentConnectionErrorIfNeeded(error)
         }
@@ -113,9 +113,9 @@ extension CodeRoverService {
         } catch {
             if shouldTreatAsThreadNotFound(error) {
                 // Do not archive on background sync alone.
-                // Some servers can temporarily fail thread/read for fresh or stale listeners.
-                // We archive only after an explicit turn/start send failure confirms missing thread.
-                debugSyncLog("sync thread/read reported missing thread=\(threadId); waiting for send-time confirmation")
+                // Background sync should stay conservative; only explicit send-time failures
+                // should archive a thread as genuinely missing on the bridge.
+                debugSyncLog("sync session refresh reported missing thread=\(threadId); waiting for send-time confirmation")
                 return
             }
             presentConnectionErrorIfNeeded(error)
@@ -167,7 +167,7 @@ extension CodeRoverService {
             merged[liveThread.id] = liveThread
         }
 
-        // Merge server-archived threads (from thread/list?archived=true).
+        // Merge server-archived threads fetched from the archived ACP session list.
         for serverThread in serverArchivedThreads {
             if persistedDeletedIDs.contains(serverThread.id) {
                 continue
@@ -201,9 +201,9 @@ extension CodeRoverService {
             merged[archivedThread.id] = archivedThread
         }
 
-        // Keep local-only threads as-is; a missing entry in thread/list can be
+        // Keep local-only threads as-is; a missing entry in session/list can be
         // caused by server-side pagination or temporary visibility mismatch.
-        // We archive only on explicit "thread not found" from thread/read/turn/start.
+        // We archive only on explicit "thread not found" from interactive send flows.
         for localThread in threads where merged[localThread.id] == nil {
             if persistedDeletedIDs.contains(localThread.id) {
                 continue
@@ -214,18 +214,13 @@ extension CodeRoverService {
         threads = sortThreads(Array(merged.values))
 
         if !invalidatedManagedHistoryThreadIDs.isEmpty {
-            messagePersistence.save(
-                messagesByThread: messagesByThread,
-                historyStateByThread: historyStateByThread
-            )
+            messagePersistence.save(messagesByThread: messagesByThread)
             debugSyncLog(
                 "invalidated managed history cache threads=\(invalidatedManagedHistoryThreadIDs.joined(separator: ","))"
             )
         }
 
-        if activeThreadId == nil {
-            activeThreadId = threads.first(where: { $0.syncState == .live })?.id
-        }
+        normalizeActiveThreadSelectionAfterThreadRefresh()
     }
 
     private func shouldInvalidateManagedHistory(
@@ -251,7 +246,6 @@ extension CodeRoverService {
         hydratedThreadIDs.remove(threadId)
         loadingThreadIDs.remove(threadId)
         resumedThreadIDs.remove(threadId)
-        historyStateByThread.removeValue(forKey: threadId)
     }
 
     func handleMissingThread(_ threadId: String) {
@@ -400,10 +394,7 @@ extension CodeRoverService {
         threadTimelineStateByThread.removeValue(forKey: threadId)
         lastPublishedMessageSignatureByThread.removeValue(forKey: threadId)
         foregroundAggressivePollingDeadlineByThread.removeValue(forKey: threadId)
-        messagePersistence.save(
-            messagesByThread: messagesByThread,
-            historyStateByThread: historyStateByThread
-        )
+        messagePersistence.save(messagesByThread: messagesByThread)
 
         hydratedThreadIDs.remove(threadId)
         loadingThreadIDs.remove(threadId)
@@ -462,6 +453,20 @@ extension CodeRoverService {
         coderoverDiagnosticLog("CodeRoverSync", message)
     }
 
+    // Rebinds selection after session/list refresh so a stale thread id cannot strand the UI
+    // on the connected empty shell once live threads are available again.
+    func normalizeActiveThreadSelectionAfterThreadRefresh() {
+        let liveThreads = threads.filter { $0.syncState == .live }
+
+        if let activeThreadId,
+           let activeThread = threads.first(where: { $0.id == activeThreadId }),
+           activeThread.syncState == .live {
+            return
+        }
+
+        activeThreadId = liveThreads.first?.id
+    }
+
     // Treats thread as active if either turn mapping or runtime running fallback is present.
     func threadHasActiveOrRunningTurn(_ threadId: String) -> Bool {
         activeTurnID(for: threadId) != nil || runningThreadIDs.contains(threadId)
@@ -483,8 +488,11 @@ extension CodeRoverService {
     func syncActiveThreadState(threadId: String) async {
         let wasRunning = threadHasActiveOrRunningTurn(threadId)
         let shouldUseAggressiveForegroundPolling = shouldUseAggressiveForegroundPolling(for: threadId)
+        let refreshedRunningSnapshot: Bool
         if wasRunning {
-            _ = await refreshInFlightTurnState(threadId: threadId)
+            refreshedRunningSnapshot = await refreshInFlightTurnState(threadId: threadId)
+        } else {
+            refreshedRunningSnapshot = true
         }
 
         let isRunningAfterRefresh = threadHasActiveOrRunningTurn(threadId)
@@ -496,19 +504,19 @@ extension CodeRoverService {
             _ = try? await ensureThreadResumed(threadId: threadId, force: true)
         }
 
-        if shouldUseAggressiveForegroundPolling {
-            do {
-                try await loadTailThreadHistory(threadId: threadId, replaceLocalHistory: false)
-            } catch {
-                debugSyncLog(
-                    "foreground codex tail refresh failed thread=\(threadId): \(error.localizedDescription)"
-                )
-                await syncThreadHistory(threadId: threadId, force: true)
-            }
+        if !hydratedThreadIDs.contains(threadId) {
+            await syncThreadHistory(threadId: threadId, force: true)
             return
         }
 
-        await syncThreadHistory(threadId: threadId, force: true)
+        if wasRunning && !refreshedRunningSnapshot {
+            await syncThreadHistory(threadId: threadId, force: true)
+            return
+        }
+
+        if shouldUseAggressiveForegroundPolling {
+            _ = try? await ensureThreadResumed(threadId: threadId, force: true)
+        }
     }
 
     func beginForegroundAggressivePolling(threadId: String, ttl: TimeInterval = 90) {

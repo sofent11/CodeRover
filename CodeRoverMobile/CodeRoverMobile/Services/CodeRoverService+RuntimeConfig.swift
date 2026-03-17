@@ -8,12 +8,8 @@ import Foundation
 
 extension CodeRoverService {
     func listProviders() async throws {
-        let response = try await sendRequest(method: "runtime/provider/list", params: nil)
-        let resultObject = response.result?.objectValue
-        let providerValues = resultObject?["providers"]?.arrayValue
-            ?? resultObject?["items"]?.arrayValue
-            ?? []
-        let decodedProviders = providerValues.compactMap { decodeModel(RuntimeProvider.self, from: $0) }
+        let response = try await sendRequest(method: "_coderover/agent/list", params: nil)
+        let decodedProviders = decodeAcpProviders(from: response.result)
         availableProviders = decodedProviders.isEmpty ? [.codexDefault] : decodedProviders
 
         let availableIDs = Set(availableProviders.map(\.id))
@@ -21,35 +17,6 @@ extension CodeRoverService {
             selectedProviderID = availableProviders.first?.id ?? "codex"
         }
         syncRuntimeSelectionContext()
-    }
-
-    // Sends one request while trying approvalPolicy enum variants for cross-version compatibility.
-    func sendRequestWithApprovalPolicyFallback(
-        method: String,
-        baseParams: RPCObject,
-        context: String
-    ) async throws -> RPCMessage {
-        let policies = selectedAccessMode.approvalPolicyCandidates
-        var lastError: Error?
-
-        for (index, policy) in policies.enumerated() {
-            var params = baseParams
-            params["approvalPolicy"] = .string(policy)
-
-            do {
-                return try await sendRequest(method: method, params: .object(params))
-            } catch {
-                lastError = error
-                let hasMorePolicies = index < (policies.count - 1)
-                if hasMorePolicies, shouldRetryWithApprovalPolicyFallback(error) {
-                    debugRuntimeLog("\(method) \(context) fallback approvalPolicy=\(policy)")
-                    continue
-                }
-                throw error
-            }
-        }
-
-        throw lastError ?? CodeRoverServiceError.invalidResponse("\(method) failed with unknown approvalPolicy error")
     }
 
     func listModels(provider: String? = nil) async throws {
@@ -66,26 +33,17 @@ extension CodeRoverService {
         }
         do {
             let response = try await sendRequest(
-                method: "model/list",
+                method: "_coderover/model/list",
                 params: .object([
-                    "provider": .string(resolvedProvider),
-                    "cursor": .null,
-                    "limit": .integer(50),
-                    "includeHidden": .bool(false),
+                    "_meta": .object([
+                        "coderover": .object([
+                            "agentId": .string(resolvedProvider),
+                        ]),
+                    ]),
                 ])
             )
 
-            guard let resultObject = response.result?.objectValue else {
-                throw CodeRoverServiceError.invalidResponse("model/list response missing payload")
-            }
-
-            let items =
-                resultObject["items"]?.arrayValue
-                ?? resultObject["data"]?.arrayValue
-                ?? resultObject["models"]?.arrayValue
-                ?? []
-
-            let decodedModels = items.compactMap { decodeModel(ModelOption.self, from: $0) }
+            let decodedModels = decodeAcpModelOptions(from: response.result)
             availableModels = decodedModels
             loadedModelsProviderID = resolvedProvider
             modelsErrorMessage = nil
@@ -242,86 +200,6 @@ extension CodeRoverService {
         }
     }
 
-    func runtimeSandboxPolicyObject(for accessMode: AccessMode) -> JSONValue {
-        switch accessMode {
-        case .onRequest:
-            return .object([
-                "type": .string("workspaceWrite"),
-                "networkAccess": .bool(true),
-            ])
-        case .fullAccess:
-            return .object([
-                "type": .string("dangerFullAccess"),
-            ])
-        }
-    }
-
-    func shouldFallbackFromSandboxPolicy(_ error: Error) -> Bool {
-        guard let serviceError = error as? CodeRoverServiceError,
-              case .rpcError(let rpcError) = serviceError else {
-            return false
-        }
-
-        if rpcError.code != -32602 && rpcError.code != -32600 {
-            return false
-        }
-
-        let loweredMessage = rpcError.message.lowercased()
-        if loweredMessage.contains("thread not found") || loweredMessage.contains("unknown thread") {
-            return false
-        }
-
-        return loweredMessage.contains("invalid params")
-            || loweredMessage.contains("invalid param")
-            || loweredMessage.contains("unknown field")
-            || loweredMessage.contains("unexpected field")
-            || loweredMessage.contains("unrecognized field")
-            || loweredMessage.contains("failed to parse")
-            || loweredMessage.contains("unsupported")
-    }
-
-    func sendRequestWithSandboxFallback(method: String, baseParams: RPCObject) async throws -> RPCMessage {
-        var firstAttemptParams = baseParams
-        firstAttemptParams["sandboxPolicy"] = runtimeSandboxPolicyObject(for: selectedAccessMode)
-
-        do {
-            debugRuntimeLog("\(method) using sandboxPolicy")
-            return try await sendRequestWithApprovalPolicyFallback(
-                method: method,
-                baseParams: firstAttemptParams,
-                context: "sandboxPolicy"
-            )
-        } catch {
-            guard shouldFallbackFromSandboxPolicy(error) else {
-                throw error
-            }
-        }
-
-        var secondAttemptParams = baseParams
-        secondAttemptParams["sandbox"] = .string(selectedAccessMode.sandboxLegacyValue)
-
-        do {
-            debugRuntimeLog("\(method) fallback using sandbox")
-            return try await sendRequestWithApprovalPolicyFallback(
-                method: method,
-                baseParams: secondAttemptParams,
-                context: "sandbox"
-            )
-        } catch {
-            guard shouldFallbackFromSandboxPolicy(error) else {
-                throw error
-            }
-        }
-
-        var finalAttemptParams = baseParams
-        debugRuntimeLog("\(method) fallback using minimal payload")
-        return try await sendRequestWithApprovalPolicyFallback(
-            method: method,
-            baseParams: finalAttemptParams,
-            context: "minimal"
-        )
-    }
-
     func handleModelListFailure(_ error: Error) {
         let message = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
         let normalized = message.isEmpty ? "Unable to load models" : message
@@ -331,24 +209,6 @@ extension CodeRoverService {
 
     func debugRuntimeLog(_ message: String) {
         coderoverDiagnosticLog("CodeRoverRuntime", message)
-    }
-
-    func shouldRetryWithApprovalPolicyFallback(_ error: Error) -> Bool {
-        guard let serviceError = error as? CodeRoverServiceError,
-              case .rpcError(let rpcError) = serviceError else {
-            return false
-        }
-
-        if rpcError.code != -32600 && rpcError.code != -32602 {
-            return false
-        }
-
-        let message = rpcError.message.lowercased()
-        return message.contains("approval")
-            || message.contains("unknown variant")
-            || message.contains("expected one of")
-            || message.contains("onrequest")
-            || message.contains("on-request")
     }
 }
 

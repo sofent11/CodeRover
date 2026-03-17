@@ -14,15 +14,12 @@ struct TurnComposerSendAvailability {
     let trimmedInput: String
     let hasReadyImages: Bool
     let hasBlockingAttachmentState: Bool
-    let hasReviewSelection: Bool
-    let hasPendingReviewSelection: Bool
 
     // Evaluates whether sending is allowed for the current composer state.
     var isSendDisabled: Bool {
         isSending
             || !isConnected
-            || hasPendingReviewSelection
-            || (trimmedInput.isEmpty && !hasReadyImages && !hasReviewSelection)
+            || (trimmedInput.isEmpty && !hasReadyImages)
             || hasBlockingAttachmentState
     }
 }
@@ -59,15 +56,12 @@ enum QueuePauseState: Equatable {
 }
 
 enum TurnComposerSlashCommand: String, Identifiable, Equatable {
-    case codeReview
     case status
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
-        case .codeReview:
-            return "Code Review"
         case .status:
             return "Status"
         }
@@ -75,17 +69,13 @@ enum TurnComposerSlashCommand: String, Identifiable, Equatable {
 
     var subtitle: String {
         switch self {
-        case .codeReview:
-            return "Run the reviewer on your local changes"
         case .status:
-            return "Show context usage and rate limits"
+            return "Show context usage"
         }
     }
 
     var symbolName: String {
         switch self {
-        case .codeReview:
-            return "ladybug"
         case .status:
             return "speedometer"
         }
@@ -93,8 +83,6 @@ enum TurnComposerSlashCommand: String, Identifiable, Equatable {
 
     var commandToken: String {
         switch self {
-        case .codeReview:
-            return "/review"
         case .status:
             return "/status"
         }
@@ -106,7 +94,7 @@ enum TurnComposerSlashCommand: String, Identifiable, Equatable {
 
     static func filtered(matching query: String) -> [TurnComposerSlashCommand] {
         let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let allCases: [TurnComposerSlashCommand] = [.codeReview, .status]
+        let allCases: [TurnComposerSlashCommand] = [.status]
         guard !trimmedQuery.isEmpty else {
             return allCases
         }
@@ -114,38 +102,9 @@ enum TurnComposerSlashCommand: String, Identifiable, Equatable {
     }
 }
 
-enum TurnComposerReviewTarget: String, Equatable {
-    case uncommittedChanges
-    case baseBranch
-
-    var title: String {
-        switch self {
-        case .uncommittedChanges:
-            return "Uncommitted changes"
-        case .baseBranch:
-            return "Base branch"
-        }
-    }
-
-    var serviceTarget: CodeRoverReviewTarget {
-        switch self {
-        case .uncommittedChanges:
-            return .uncommittedChanges
-        case .baseBranch:
-            return .baseBranch
-        }
-    }
-}
-
-struct TurnComposerReviewSelection: Equatable {
-    let command: TurnComposerSlashCommand
-    let target: TurnComposerReviewTarget?
-}
-
 enum TurnComposerSlashCommandPanelState: Equatable {
     case hidden
     case commands(query: String)
-    case codeReviewTargets
 }
 
 struct TurnTrailingSlashCommandToken: Equatable {
@@ -154,19 +113,6 @@ struct TurnTrailingSlashCommandToken: Equatable {
 }
 
 enum TurnComposerCommandLogic {
-    static func hasContentConflictingWithReview(
-        trimmedInput: String,
-        mentionedFileCount: Int,
-        mentionedSkillCount: Int,
-        attachmentCount: Int
-    ) -> Bool {
-        let draftText = removingTrailingSlashCommandToken(in: trimmedInput) ?? trimmedInput
-        return !draftText.isEmpty
-            || mentionedFileCount > 0
-            || mentionedSkillCount > 0
-            || attachmentCount > 0
-    }
-
     static func trailingSlashCommandToken(in text: String) -> TurnTrailingSlashCommandToken? {
         guard !text.isEmpty,
               let slashIndex = text.lastIndex(of: "/") else {
@@ -203,17 +149,14 @@ enum TurnComposerCommandLogic {
 @MainActor
 @Observable
 final class TurnViewModel {
-    // Preserves the exact composer payload + raw chips so stale-busy recovery can retry cleanly.
+    // Preserves the exact composer payload so stale-busy recovery can retry cleanly.
     private struct PendingTurnSend {
         let payload: String
         let attachments: [ImageAttachment]
         let skillMentions: [TurnSkillMention]
         let collaborationMode: CollaborationModeModeKind?
         let rawInput: String
-        let rawFileMentions: [TurnComposerMentionedFile]
-        let rawSkillMentions: [TurnComposerMentionedSkill]
         let rawAttachments: [TurnComposerImageAttachment]
-        let rawReviewSelection: TurnComposerReviewSelection?
     }
 
     // Splits contiguous filename segments into search-friendly word chunks.
@@ -232,17 +175,6 @@ final class TurnViewModel {
     var isCameraPresented = false
     var photoPickerItems: [PhotosPickerItem] = []
     var composerAttachments: [TurnComposerImageAttachment] = []
-    var composerMentionedFiles: [TurnComposerMentionedFile] = []
-    var composerMentionedSkills: [TurnComposerMentionedSkill] = []
-    var composerReviewSelection: TurnComposerReviewSelection?
-    var fileAutocompleteItems: [FuzzyFileMatch] = []
-    var isFileAutocompleteVisible = false
-    var isFileAutocompleteLoading = false
-    var fileAutocompleteQuery = ""
-    var skillAutocompleteItems: [SkillMetadata] = []
-    var isSkillAutocompleteVisible = false
-    var isSkillAutocompleteLoading = false
-    var skillAutocompleteQuery = ""
     var slashCommandPanelState: TurnComposerSlashCommandPanelState = .hidden
     // MARK: - Git state
 
@@ -279,17 +211,9 @@ final class TurnViewModel {
 
     @ObservationIgnored private var threadActivationTask: Task<Void, Never>?
 
-    @ObservationIgnored var fileAutocompleteDebounceTask: Task<Void, Never>?
-    @ObservationIgnored var skillAutocompleteDebounceTask: Task<Void, Never>?
     @ObservationIgnored private var gitStatusRefreshTask: Task<Void, Never>?
-    @ObservationIgnored private var cachedSkillSearchIndexByRoot: [String: [TurnSkillSearchIndexEntry]] = [:]
-    @ObservationIgnored var unsupportedSkillsAutocompleteRoots: Set<String> = []
 
     let maxComposerImages = 4
-    let maxFileAutocompleteItems = 6
-    let maxSkillAutocompleteItems = 6
-    private let fileAutocompleteDebounceNanoseconds: UInt64 = 180_000_000
-    private let skillAutocompleteDebounceNanoseconds: UInt64 = 180_000_000
     private let gitStatusRefreshDebounceNanoseconds: UInt64 = 350_000_000
 
     init() {}
@@ -330,23 +254,6 @@ final class TurnViewModel {
 
     var hasReadyImages: Bool {
         !readyComposerAttachments.isEmpty
-    }
-
-    var hasComposerReviewSelection: Bool {
-        composerReviewSelection?.target != nil
-    }
-
-    var hasPendingComposerReviewSelection: Bool {
-        composerReviewSelection != nil && composerReviewSelection?.target == nil
-    }
-
-    var hasComposerContentConflictingWithReview: Bool {
-        TurnComposerCommandLogic.hasContentConflictingWithReview(
-            trimmedInput: trimmedComposerInput,
-            mentionedFileCount: composerMentionedFiles.count,
-            mentionedSkillCount: composerMentionedSkills.count,
-            attachmentCount: composerAttachments.count
-        )
     }
 
     var remainingAttachmentSlots: Int {
@@ -397,268 +304,26 @@ final class TurnViewModel {
             isConnected: isConnected,
             trimmedInput: trimmedComposerInput,
             hasReadyImages: hasReadyImages,
-            hasBlockingAttachmentState: hasBlockingAttachmentState,
-            hasReviewSelection: hasComposerReviewSelection,
-            hasPendingReviewSelection: hasPendingComposerReviewSelection
+            hasBlockingAttachmentState: hasBlockingAttachmentState
         ).isSendDisabled
     }
 
     func clearComposer() {
-        resetFileAutocompleteState()
-        resetSkillAutocompleteState()
-        resetSlashCommandState(clearPendingSelection: true, clearConfirmedSelection: true)
+        resetSlashCommandState()
         input = ""
         composerAttachments.removeAll()
-        composerMentionedFiles.removeAll()
-        composerMentionedSkills.removeAll()
     }
 
     func setPlanModeArmed(_ isArmed: Bool) {
         isPlanModeArmed = isArmed
     }
 
-    func clearFileAutocomplete() {
-        resetFileAutocompleteState()
-    }
-
-    func clearSkillAutocomplete() {
-        resetSkillAutocompleteState()
-    }
-
     func clearComposerAutocomplete() {
-        resetFileAutocompleteState()
-        resetSkillAutocompleteState()
-        resetSlashCommandState(clearPendingSelection: true)
+        resetSlashCommandState()
     }
 
     func removeComposerAttachment(id: String) {
         composerAttachments.removeAll(where: { $0.id == id })
-    }
-
-    // Debounces server-side fuzzy search when input ends with a valid `@query` token.
-    func onInputChangedForFileAutocomplete(
-        _ text: String,
-        coderover: CodeRoverService,
-        thread: ConversationThread,
-        activeTurnID: String?
-    ) {
-        clearComposerReviewSelectionIfNeededForInput(text)
-
-        guard !isComposerInteractionLocked(activeTurnID: activeTurnID),
-              coderover.isConnected,
-              let root = normalizedAutocompleteRoot(for: thread),
-              let token = Self.trailingFileAutocompleteToken(in: text) else {
-            resetFileAutocompleteState()
-            return
-        }
-
-        // Keep one autocomplete namespace visible at a time.
-        resetSkillAutocompleteState()
-        resetSlashCommandState(clearPendingSelection: true)
-
-        let query = token.query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard query.count >= 2 else {
-            fileAutocompleteDebounceTask?.cancel()
-            fileAutocompleteDebounceTask = nil
-            fileAutocompleteItems = []
-            fileAutocompleteQuery = query
-            isFileAutocompleteLoading = false
-            isFileAutocompleteVisible = false
-            return
-        }
-
-        fileAutocompleteQuery = query
-        isFileAutocompleteVisible = true
-        isFileAutocompleteLoading = true
-        fileAutocompleteDebounceTask?.cancel()
-
-        let searchRoots = [root]
-        let expectedQuery = query
-        let cancellationToken = fileAutocompleteCancellationToken(for: thread.id)
-
-        fileAutocompleteDebounceTask = Task { @MainActor [weak self] in
-            guard let self else { return }
-
-            do {
-                try await Task.sleep(nanoseconds: fileAutocompleteDebounceNanoseconds)
-            } catch {
-                return
-            }
-
-            guard !Task.isCancelled else { return }
-
-            do {
-                let matches = try await coderover.fuzzyFileSearch(
-                    query: expectedQuery,
-                    roots: searchRoots,
-                    cancellationToken: cancellationToken
-                )
-                guard !Task.isCancelled else { return }
-
-                // Drops stale responses if the user already typed another query.
-                guard self.fileAutocompleteQuery == expectedQuery else { return }
-
-                self.fileAutocompleteItems = Array(matches.prefix(self.maxFileAutocompleteItems))
-                self.isFileAutocompleteLoading = false
-                self.isFileAutocompleteVisible = true
-            } catch {
-                guard self.fileAutocompleteQuery == expectedQuery else { return }
-                self.fileAutocompleteItems = []
-                self.isFileAutocompleteLoading = false
-                self.isFileAutocompleteVisible = false
-            }
-        }
-    }
-
-    // Debounces skill suggestions when input ends with a valid `$query` token.
-    func onInputChangedForSkillAutocomplete(
-        _ text: String,
-        coderover: CodeRoverService,
-        thread: ConversationThread,
-        activeTurnID: String?
-    ) {
-        clearComposerReviewSelectionIfNeededForInput(text)
-
-        guard !isComposerInteractionLocked(activeTurnID: activeTurnID),
-              coderover.isConnected,
-              let root = normalizedAutocompleteRoot(for: thread),
-              let token = Self.trailingSkillAutocompleteToken(in: text) else {
-            resetSkillAutocompleteState()
-            return
-        }
-
-        // Keep one autocomplete namespace visible at a time.
-        resetFileAutocompleteState()
-        resetSlashCommandState(clearPendingSelection: true)
-
-        let query = token.query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard query.count >= 2 else {
-            skillAutocompleteDebounceTask?.cancel()
-            skillAutocompleteDebounceTask = nil
-            skillAutocompleteItems = []
-            skillAutocompleteQuery = query
-            isSkillAutocompleteLoading = false
-            isSkillAutocompleteVisible = false
-            return
-        }
-
-        let normalizedRoot = root
-        skillAutocompleteQuery = query
-        isSkillAutocompleteVisible = true
-        let hasCachedSkillIndex = cachedSkillSearchIndexByRoot[normalizedRoot] != nil
-        let rootIsUnsupported = unsupportedSkillsAutocompleteRoots.contains(normalizedRoot)
-        isSkillAutocompleteLoading = !hasCachedSkillIndex && !rootIsUnsupported
-        skillAutocompleteDebounceTask?.cancel()
-
-        let expectedQuery = query
-
-        skillAutocompleteDebounceTask = Task { @MainActor [weak self] in
-            guard let self else { return }
-
-            do {
-                try await Task.sleep(nanoseconds: skillAutocompleteDebounceNanoseconds)
-            } catch {
-                return
-            }
-
-            guard !Task.isCancelled else { return }
-
-            do {
-                if unsupportedSkillsAutocompleteRoots.contains(normalizedRoot),
-                   cachedSkillSearchIndexByRoot[normalizedRoot] == nil {
-                    guard self.skillAutocompleteQuery == expectedQuery else { return }
-                    self.skillAutocompleteItems = []
-                    self.isSkillAutocompleteLoading = false
-                    self.isSkillAutocompleteVisible = false
-                    return
-                }
-
-                let indexedSkills: [TurnSkillSearchIndexEntry]
-                if let cachedIndex = self.cachedSkillSearchIndexByRoot[normalizedRoot] {
-                    indexedSkills = cachedIndex
-                } else {
-                    let listedSkills = try await coderover.listSkills(cwds: [normalizedRoot], forceReload: false)
-                    guard !Task.isCancelled else { return }
-                    indexedSkills = listedSkills
-                        .filter { $0.enabled }
-                        .map(TurnSkillSearchIndexEntry.init(skill:))
-                    self.cachedSkillSearchIndexByRoot[normalizedRoot] = indexedSkills
-                }
-
-                guard !Task.isCancelled else { return }
-                guard self.skillAutocompleteQuery == expectedQuery else { return }
-
-                self.skillAutocompleteItems = self.filteredSkillAutocompleteItems(
-                    for: expectedQuery,
-                    indexedSkills: indexedSkills
-                )
-                self.isSkillAutocompleteLoading = false
-                self.isSkillAutocompleteVisible = true
-            } catch {
-                guard self.skillAutocompleteQuery == expectedQuery else { return }
-
-                if Self.isMethodNotFoundRPCError(error) {
-                    self.unsupportedSkillsAutocompleteRoots.insert(normalizedRoot)
-                }
-
-                self.skillAutocompleteItems = []
-                self.isSkillAutocompleteLoading = false
-                self.isSkillAutocompleteVisible = false
-            }
-        }
-    }
-
-    // Replaces `@query` with `@filename` in text and adds chip above input.
-    func onSelectFileAutocomplete(_ item: FuzzyFileMatch) {
-        clearComposerReviewSelectionIfNeededForNonReviewContent()
-
-        let fullPath = item.path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? item.fileName
-            : item.path
-
-        // Replace @query with @filename inline in the text.
-        if let updatedInput = Self.replacingTrailingFileAutocompleteToken(
-            in: input, with: item.fileName
-        ) {
-            input = updatedInput
-        }
-
-        if !composerMentionedFiles.contains(where: { $0.path == fullPath }) {
-            composerMentionedFiles.append(
-                TurnComposerMentionedFile(fileName: item.fileName, path: fullPath)
-            )
-        }
-        resetFileAutocompleteState()
-    }
-
-    // Replaces `$query` with `$skill` and stores the selected skill mention for turn/start.
-    func onSelectSkillAutocomplete(_ skill: SkillMetadata) {
-        clearComposerReviewSelectionIfNeededForNonReviewContent()
-
-        let normalizedSkillName = skill.name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !normalizedSkillName.isEmpty else {
-            resetSkillAutocompleteState()
-            return
-        }
-
-        if let updatedInput = Self.replacingTrailingSkillAutocompleteToken(
-            in: input, with: normalizedSkillName
-        ) {
-            input = updatedInput
-        }
-
-        let normalizedPath = skill.path?.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !composerMentionedSkills.contains(where: { $0.name.caseInsensitiveCompare(normalizedSkillName) == .orderedSame }) {
-            composerMentionedSkills.append(
-                TurnComposerMentionedSkill(
-                    name: normalizedSkillName,
-                    path: (normalizedPath?.isEmpty == false) ? normalizedPath : nil,
-                    description: skill.description
-                )
-            )
-        }
-
-        resetSkillAutocompleteState()
     }
 
     func onInputChangedForSlashCommandAutocomplete(
@@ -667,18 +332,12 @@ final class TurnViewModel {
         isEnabled: Bool
     ) {
         guard isEnabled else {
-            resetSlashCommandState(clearPendingSelection: true)
+            resetSlashCommandState()
             return
         }
-
-        clearComposerReviewSelectionIfNeededForInput(text)
 
         guard !isComposerInteractionLocked(activeTurnID: activeTurnID) else {
-            resetSlashCommandState(clearPendingSelection: true)
-            return
-        }
-
-        if case .codeReviewTargets = slashCommandPanelState {
+            resetSlashCommandState()
             return
         }
 
@@ -689,51 +348,13 @@ final class TurnViewModel {
             return
         }
 
-        resetFileAutocompleteState()
-        resetSkillAutocompleteState()
         slashCommandPanelState = .commands(query: token.query)
     }
 
     func onSelectSlashCommand(_ command: TurnComposerSlashCommand) {
+        _ = command
         removeTrailingSlashCommandTokenFromInputIfNeeded()
-
-        switch command {
-        case .codeReview:
-            armCodeReviewSelection(command: command, target: nil)
-        case .status:
-            resetSlashCommandState(clearPendingSelection: true)
-        }
-    }
-
-    func onSelectCodeReviewTarget(_ target: TurnComposerReviewTarget) {
-        removeTrailingSlashCommandTokenFromInputIfNeeded()
-        armCodeReviewSelection(command: .codeReview, target: target)
-    }
-
-    func clearComposerReviewSelection() {
-        composerReviewSelection = nil
         resetSlashCommandState()
-    }
-
-    func removeMentionedFile(id: String) {
-        if let mention = composerMentionedFiles.first(where: { $0.id == id }) {
-            let ambiguousKeys = Self.ambiguousFileNameAliasKeys(in: composerMentionedFiles)
-            let collisionKey = Self.fileNameAliasCollisionKey(for: mention.fileName)
-            let allowFileNameAliases = collisionKey.map { !ambiguousKeys.contains($0) } ?? true
-            input = Self.removingFileMentionAliases(
-                for: mention,
-                from: input,
-                allowFileNameAliases: allowFileNameAliases
-            )
-        }
-        composerMentionedFiles.removeAll(where: { $0.id == id })
-    }
-
-    func removeMentionedSkill(id: String) {
-        if let mention = composerMentionedSkills.first(where: { $0.id == id }) {
-            input = Self.removeBoundedToken("$\(mention.name)", from: input)
-        }
-        composerMentionedSkills.removeAll(where: { $0.id == id })
     }
 
     func openCamera(coderover: CodeRoverService) {
@@ -782,8 +403,6 @@ final class TurnViewModel {
             coderover.lastErrorMessage = "Only \(maxComposerImages) images are allowed per message."
         }
 
-        clearComposerReviewSelectionIfNeededForNonReviewContent()
-
         for item in acceptedItems {
             let attachmentID = UUID().uuidString
             composerAttachments.append(TurnComposerImageAttachment(id: attachmentID, state: .loading))
@@ -818,8 +437,6 @@ final class TurnViewModel {
             coderover.lastErrorMessage = "Only \(maxComposerImages) images are allowed per message."
         }
 
-        clearComposerReviewSelectionIfNeededForNonReviewContent()
-
         for imageData in acceptedItems {
             let attachmentID = UUID().uuidString
             composerAttachments.append(TurnComposerImageAttachment(id: attachmentID, state: .loading))
@@ -843,42 +460,31 @@ final class TurnViewModel {
 
     // Sends a standard turn while preserving all existing preflight guards.
     func sendTurn(coderover: CodeRoverService, threadID: String) {
-        let payload = buildPayloadWithMentions()
+        let payload = trimmedComposerInput
         let attachments = readyComposerAttachments
-        let skillMentions = composerMentionedSkills.map {
-            TurnSkillMention(id: $0.name, name: $0.name, path: $0.path)
-        }
-        let reviewSelection = composerReviewSelection
+        let skillMentions: [TurnSkillMention] = []
 
-        guard (!payload.isEmpty || !attachments.isEmpty || reviewSelection != nil),
+        guard (!payload.isEmpty || !attachments.isEmpty),
               !isSending,
               coderover.isConnected,
               !hasBlockingAttachmentState else {
             return
         }
 
-        if reviewSelection != nil, hasComposerContentConflictingWithReview {
-            coderover.lastErrorMessage = "Clear text, files, skills, and images before starting a code review."
-            return
-        }
-
-        let queuedDraft = reviewSelection == nil ? QueuedTurnDraft(
+        let queuedDraft = QueuedTurnDraft(
             id: UUID().uuidString,
             text: payload,
             attachments: attachments,
             skillMentions: skillMentions,
             createdAt: Date()
-        ) : nil
+        )
         let pendingSend = PendingTurnSend(
             payload: payload,
             attachments: attachments,
             skillMentions: skillMentions,
             collaborationMode: isPlanModeArmed ? .plan : nil,
             rawInput: input,
-            rawFileMentions: composerMentionedFiles,
-            rawSkillMentions: composerMentionedSkills,
-            rawAttachments: composerAttachments,
-            rawReviewSelection: reviewSelection
+            rawAttachments: composerAttachments
         )
         let threadBusy = isThreadBusy(coderover: coderover, threadID: threadID)
         let queuePaused = isQueuePaused(coderover: coderover, threadID: threadID)
@@ -897,7 +503,7 @@ final class TurnViewModel {
                 return
             }
 
-            if queuePaused, let queuedDraft {
+            if queuePaused {
                 appendQueuedDraft(queuedDraft, coderover: coderover, threadID: threadID)
                 shouldAnchorToAssistantResponse = true
                 clearComposer()
@@ -1432,41 +1038,6 @@ final class TurnViewModel {
         return normalizedExtension.isEmpty ? tokenKey : "\(tokenKey).\(normalizedExtension)"
     }
 
-    private static func isMethodNotFoundRPCError(_ error: Error) -> Bool {
-        let message = error.localizedDescription.lowercased()
-        return message.contains("method not found")
-            || message.contains("unsupported")
-            || message.contains("code -32601")
-    }
-
-    // Filters pre-indexed skills using a single normalized search blob to reduce per-keystroke work.
-    private func filteredSkillAutocompleteItems(
-        for query: String,
-        indexedSkills: [TurnSkillSearchIndexEntry]
-    ) -> [SkillMetadata] {
-        let needle = query.lowercased()
-        let filtered = indexedSkills.lazy
-            .filter { $0.searchBlob.contains(needle) }
-            .map(\.skill)
-        return Array(filtered.prefix(maxSkillAutocompleteItems))
-    }
-
-    private func normalizedAutocompleteRoot(for thread: ConversationThread) -> String? {
-        if let normalizedProjectPath = thread.normalizedProjectPath {
-            return normalizedProjectPath
-        }
-
-        guard let rawCwd = thread.cwd?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !rawCwd.isEmpty else {
-            return nil
-        }
-        return rawCwd
-    }
-
-    private func fileAutocompleteCancellationToken(for threadID: String) -> String {
-        "ios-at-file-\(threadID)"
-    }
-
     // Reuses the stop-button refresh path so queued sends do not trust stale running flags.
     private func refreshBusyStateIfNeeded(
         coderover: CodeRoverService,
@@ -1492,13 +1063,6 @@ final class TurnViewModel {
         coderover: CodeRoverService,
         threadID: String
     ) async {
-        if pendingSend.rawReviewSelection != nil {
-            restoreComposerState(from: pendingSend)
-            shouldAnchorToAssistantResponse = false
-            coderover.lastErrorMessage = "Wait for the current run to finish before starting a code review."
-            return
-        }
-
         let queuedDraft = QueuedTurnDraft(
             id: UUID().uuidString,
             text: pendingSend.payload,
@@ -1522,21 +1086,13 @@ final class TurnViewModel {
         clearComposer()
 
         do {
-            if let reviewSelection = pendingSend.rawReviewSelection {
-                try await coderover.startReview(
-                    threadId: threadID,
-                    target: reviewSelection.target?.serviceTarget,
-                    baseBranch: reviewBaseBranchName(for: reviewSelection)
-                )
-            } else {
-                try await coderover.startTurn(
-                    userInput: pendingSend.payload,
-                    threadId: threadID,
-                    attachments: pendingSend.attachments,
-                    skillMentions: pendingSend.skillMentions,
-                    collaborationMode: pendingSend.collaborationMode
-                )
-            }
+            try await coderover.startTurn(
+                userInput: pendingSend.payload,
+                threadId: threadID,
+                attachments: pendingSend.attachments,
+                skillMentions: pendingSend.skillMentions,
+                collaborationMode: pendingSend.collaborationMode
+            )
         } catch {
             shouldAnchorToAssistantResponse = false
             restoreComposerState(from: pendingSend)
@@ -1552,10 +1108,7 @@ final class TurnViewModel {
 
     private func restoreComposerState(from pendingSend: PendingTurnSend) {
         input = pendingSend.rawInput
-        composerMentionedFiles = pendingSend.rawFileMentions
-        composerMentionedSkills = pendingSend.rawSkillMentions
         composerAttachments = pendingSend.rawAttachments
-        composerReviewSelection = pendingSend.rawReviewSelection
     }
 
     // Resolves the active turn id for manual steer without relying on async autoclosure operators.
@@ -1615,102 +1168,14 @@ final class TurnViewModel {
         }
     }
 
-    private func resetFileAutocompleteState() {
-        fileAutocompleteDebounceTask?.cancel()
-        fileAutocompleteDebounceTask = nil
-        fileAutocompleteItems = []
-        isFileAutocompleteVisible = false
-        isFileAutocompleteLoading = false
-        fileAutocompleteQuery = ""
-    }
-
-    private func resetSkillAutocompleteState() {
-        skillAutocompleteDebounceTask?.cancel()
-        skillAutocompleteDebounceTask = nil
-        skillAutocompleteItems = []
-        isSkillAutocompleteVisible = false
-        isSkillAutocompleteLoading = false
-        skillAutocompleteQuery = ""
-    }
-
-    private func resetSlashCommandState(
-        clearPendingSelection: Bool = false,
-        clearConfirmedSelection: Bool = false
-    ) {
+    private func resetSlashCommandState() {
         slashCommandPanelState = .hidden
-        if clearConfirmedSelection {
-            composerReviewSelection = nil
-            return
-        }
-        if clearPendingSelection, composerReviewSelection?.target == nil {
-            composerReviewSelection = nil
-        }
     }
 
     private func removeTrailingSlashCommandTokenFromInputIfNeeded() {
         if let updatedInput = Self.removingTrailingSlashCommandToken(in: input) {
             input = updatedInput
         }
-    }
-
-    private func armCodeReviewSelection(
-        command: TurnComposerSlashCommand,
-        target: TurnComposerReviewTarget?
-    ) {
-        guard !hasComposerContentConflictingWithReview else {
-            resetSlashCommandState(clearPendingSelection: true)
-            return
-        }
-
-        composerReviewSelection = TurnComposerReviewSelection(command: command, target: target)
-        slashCommandPanelState = (target == nil) ? .codeReviewTargets : .hidden
-    }
-
-    private func clearComposerReviewSelectionIfNeededForInput(_ text: String) {
-        guard composerReviewSelection?.target != nil else {
-            return
-        }
-
-        if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            clearComposerReviewSelection()
-        }
-    }
-
-    private func clearComposerReviewSelectionIfNeededForNonReviewContent() {
-        guard composerReviewSelection?.target != nil else {
-            return
-        }
-
-        clearComposerReviewSelection()
-    }
-
-    // Replaces inline `@filename` with `@fullpath` for each mentioned file.
-    private func buildPayloadWithMentions() -> String {
-        var text = trimmedComposerInput
-        guard !composerMentionedFiles.isEmpty else {
-            return text
-        }
-
-        let ambiguousKeys = Self.ambiguousFileNameAliasKeys(in: composerMentionedFiles)
-
-        for mention in composerMentionedFiles {
-            let collisionKey = Self.fileNameAliasCollisionKey(for: mention.fileName)
-            let allowFileNameAliases = collisionKey.map { !ambiguousKeys.contains($0) } ?? true
-            text = Self.replacingFileMentionAliases(
-                in: text,
-                with: mention,
-                allowFileNameAliases: allowFileNameAliases
-            )
-        }
-
-        return text
-    }
-
-    private func reviewBaseBranchName(for selection: TurnComposerReviewSelection) -> String? {
-        guard selection.target == .baseBranch else {
-            return nil
-        }
-        return selectedGitBaseBranch.nilIfEmpty ?? gitDefaultBranch.nilIfEmpty
     }
 
     /// Removes the first occurrence of `token` that sits at a word boundary
@@ -2141,22 +1606,6 @@ struct TurnTrailingSkillAutocompleteToken: Equatable {
 private struct TurnTrailingToken: Equatable {
     let query: String
     let tokenRange: Range<String.Index>
-}
-
-private struct TurnSkillSearchIndexEntry: Equatable {
-    let skill: SkillMetadata
-    let searchBlob: String
-
-    init(skill: SkillMetadata) {
-        self.skill = skill
-        let name = skill.name.lowercased()
-        let description = skill.description?.lowercased() ?? ""
-        if description.isEmpty {
-            self.searchBlob = name
-        } else {
-            self.searchBlob = "\(name)\n\(description)"
-        }
-    }
 }
 
 private extension String {

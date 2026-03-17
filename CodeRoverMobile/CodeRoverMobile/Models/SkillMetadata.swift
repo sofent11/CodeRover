@@ -1,5 +1,5 @@
 // FILE: SkillMetadata.swift
-// Purpose: Skill metadata and mention payload types used by composer autocomplete + turn/start.
+// Purpose: Skill metadata and mention payload types retained for local parsing helpers and queued sends.
 // Layer: Model
 // Exports: SkillMetadata, TurnSkillMention
 // Depends on: Foundation

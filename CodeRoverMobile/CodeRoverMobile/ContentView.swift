@@ -486,6 +486,13 @@ struct ContentView: View {
             return
         }
 
+        if let activeThreadId = coderover.activeThreadId,
+           let activeThread = threads.first(where: { $0.id == activeThreadId }),
+           selectedThread?.id != activeThread.id {
+            selectedThread = activeThread
+            return
+        }
+
         if selectedThread == nil,
            coderover.activeThreadId == nil,
            coderover.pendingNotificationOpenThreadID == nil,

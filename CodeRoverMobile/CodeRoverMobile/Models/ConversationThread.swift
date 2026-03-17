@@ -1,5 +1,5 @@
 // FILE: ConversationThread.swift
-// Purpose: Represents a Codex conversation thread returned by thread/list and related events.
+// Purpose: Represents a conversation thread/session shown by the iOS UI.
 // Layer: Model
 // Exports: ConversationThread
 // Depends on: JSONValue

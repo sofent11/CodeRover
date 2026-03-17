@@ -14,12 +14,6 @@ extension CodeRoverService {
         let pageSize: Int
     }
 
-    private struct ReviewStartRequest {
-        let promptText: String
-        let target: CodeRoverReviewTarget
-        let baseBranch: String?
-    }
-
     // Keeps sidebar/project loading focused on recent conversations without hiding
     // other active project groups when the latest chats all belong to one repo.
     var recentThreadListLimit: Int { 60 }
@@ -28,17 +22,30 @@ extension CodeRoverService {
         isLoadingThreads = true
         defer { isLoadingThreads = false }
 
-        let effectiveLimit = limit ?? recentThreadListLimit
-        let activePage = try await fetchServerThreadPage(limit: effectiveLimit)
-        let activeThreads = activePage.threads
-        activeThreadListNextCursor = activePage.nextCursor
-        activeThreadListHasMore = activePage.hasMore
-
+        let activeThreads: [ConversationThread]
         var archivedThreads: [ConversationThread] = []
-        do {
-            archivedThreads = try await fetchServerThreads(limit: effectiveLimit, archived: true)
-        } catch {
-            debugSyncLog("thread/list archived fetch failed (non-fatal): \(error.localizedDescription)")
+
+        if let limit {
+            let activePage = try await fetchServerThreadPage(limit: limit)
+            activeThreads = activePage.threads
+            activeThreadListNextCursor = activePage.nextCursor
+            activeThreadListHasMore = activePage.hasMore
+
+            do {
+                archivedThreads = try await fetchServerThreads(limit: limit, archived: true)
+            } catch {
+                debugSyncLog("session/list archived fetch failed (non-fatal): \(error.localizedDescription)")
+            }
+        } else {
+            activeThreads = try await fetchServerThreads()
+            activeThreadListNextCursor = .null
+            activeThreadListHasMore = false
+
+            do {
+                archivedThreads = try await fetchServerThreads(archived: true)
+            } catch {
+                debugSyncLog("session/list archived fetch failed (non-fatal): \(error.localizedDescription)")
+            }
         }
 
         reconcileLocalThreadsWithServer(activeThreads, serverArchivedThreads: archivedThreads)
@@ -52,23 +59,34 @@ extension CodeRoverService {
     func startThread(preferredProjectPath: String? = nil, provider: String? = nil) async throws -> ConversationThread {
         let normalizedPreferredProjectPath = ConversationThreadStartProjectBinding.normalizedProjectPath(preferredProjectPath)
         let resolvedProvider = runtimeProviderID(for: provider ?? selectedProviderID)
-        let params = ConversationThreadStartProjectBinding.makeThreadStartParams(
-            modelIdentifier: runtimeModelIdentifier(for: resolvedProvider),
-            preferredProjectPath: normalizedPreferredProjectPath,
-            provider: resolvedProvider
+        let response = try await sendRequest(
+            method: "session/new",
+            params: .object([
+                "cwd": normalizedPreferredProjectPath.map(JSONValue.string) ?? .null,
+                "_meta": .object([
+                    "coderover": .object([
+                        "agentId": .string(resolvedProvider),
+                    ]),
+                ]),
+            ])
         )
-        let response = try await sendRequestWithSandboxFallback(method: "thread/start", baseParams: params)
-
-        guard let result = response.result,
-              let resultObject = result.objectValue,
-              let threadValue = resultObject["thread"],
-              let decodedThread = decodeModel(ConversationThread.self, from: threadValue) else {
-            throw CodeRoverServiceError.invalidResponse("thread/start response missing thread")
+        guard let resultObject = response.result?.objectValue,
+              let sessionId = normalizedIdentifier(resultObject["sessionId"]?.stringValue) else {
+            throw CodeRoverServiceError.invalidResponse("session/new response missing sessionId")
         }
 
-        let thread = ConversationThreadStartProjectBinding.applyPreferredProjectFallback(
-            to: decodedThread,
-            preferredProjectPath: normalizedPreferredProjectPath
+        var thread = ConversationThread(
+            id: sessionId,
+            cwd: normalizedPreferredProjectPath,
+            provider: resolvedProvider,
+            capabilities: availableProviders.first(where: { $0.id == resolvedProvider })?.supports ?? .codexDefault
+        )
+        upsertThread(thread)
+        thread = applyAcpSessionState(
+            sessionId: sessionId,
+            stateObject: resultObject,
+            preferredProjectPath: normalizedPreferredProjectPath,
+            providerHint: resolvedProvider
         )
         upsertThread(thread)
         resumedThreadIDs.insert(thread.id)
@@ -125,8 +143,7 @@ extension CodeRoverService {
             )
         } catch {
             if shouldTreatAsThreadNotFound(error) {
-                // If turn/start explicitly says "thread not found", treat it as authoritative.
-                // Some server states can make thread/read flaky, so we avoid blocking on a second check.
+                // If the active send explicitly says "thread not found", treat it as authoritative.
                 if shouldAppendUserMessage {
                     removeLatestFailedUserMessage(
                         threadId: initialThreadId,
@@ -160,47 +177,10 @@ extension CodeRoverService {
         target: CodeRoverReviewTarget?,
         baseBranch: String? = nil
     ) async throws {
-        guard let target else {
-            throw CodeRoverServiceError.invalidInput("Choose a review target first.")
-        }
-
-        let request = ReviewStartRequest(
-            promptText: reviewPromptText(target: target, baseBranch: baseBranch),
-            target: target,
-            baseBranch: baseBranch
-        )
-        let initialThreadId = try await resolveThreadID(threadId)
-
-        do {
-            try await ensureThreadResumed(threadId: initialThreadId)
-        } catch {
-            if shouldTreatAsThreadNotFound(error) {
-                let resolvedThreadId = try await continueReviewStart(
-                    request,
-                    fromMissingThreadId: initialThreadId,
-                    removePendingUserMessage: false
-                )
-                activeThreadId = resolvedThreadId
-                return
-            }
-        }
-
-        do {
-            try await sendReviewStart(request, to: initialThreadId)
-        } catch {
-            if shouldTreatAsThreadNotFound(error) {
-                let resolvedThreadId = try await continueReviewStart(
-                    request,
-                    fromMissingThreadId: initialThreadId,
-                    removePendingUserMessage: true
-                )
-                activeThreadId = resolvedThreadId
-                return
-            }
-            throw error
-        }
-
-        activeThreadId = initialThreadId
+        _ = target
+        _ = baseBranch
+        _ = threadId
+        throw CodeRoverServiceError.invalidInput("Code review is not available in ACP-native iOS yet.")
     }
 
     func refreshContextWindowUsage(threadId: String) async {
@@ -210,14 +190,14 @@ extension CodeRoverService {
             return
         }
 
-        var params: RPCObject = ["threadId": .string(trimmedThreadID)]
+        var params: RPCObject = ["sessionId": .string(trimmedThreadID)]
         if let turnId = activeTurnIdByThread[trimmedThreadID]?.trimmingCharacters(in: .whitespacesAndNewlines),
            !turnId.isEmpty {
             params["turnId"] = .string(turnId)
         }
 
         do {
-            let response = try await sendRequest(method: "thread/contextWindow/read", params: .object(params))
+            let response = try await sendRequest(method: "_coderover/context_window/read", params: .object(params))
             guard let resultObject = response.result?.objectValue,
                   let usageObject = resultObject["usage"]?.objectValue,
                   let usage = extractContextWindowUsage(from: usageObject) else {
@@ -229,129 +209,27 @@ extension CodeRoverService {
         }
     }
 
-    func refreshRateLimits() async {
-        guard currentRuntimeProviderID() == "codex" else {
-            rateLimitBuckets = []
-            rateLimitsErrorMessage = nil
-            return
-        }
-
-        isLoadingRateLimits = true
-        defer { isLoadingRateLimits = false }
-
-        do {
-            let response = try await fetchRateLimitsWithCompatRetry()
-            guard let resultObject = response.result?.objectValue else {
-                throw CodeRoverServiceError.invalidResponse("account/rateLimits/read response missing payload")
-            }
-
-            applyRateLimitsPayload(resultObject, mergeWithExisting: false)
-            rateLimitsErrorMessage = nil
-        } catch {
-            rateLimitBuckets = []
-            let message = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
-            rateLimitsErrorMessage = message.isEmpty ? "Unable to load rate limits" : message
-        }
-    }
-
-    func handleRateLimitsUpdated(_ paramsObject: IncomingParamsObject?) {
-        guard let paramsObject else { return }
-        applyRateLimitsPayload(paramsObject, mergeWithExisting: true)
-        rateLimitsErrorMessage = nil
-    }
-
     // Requests context compaction for a thread.
     func compactContext(threadId: String) async throws {
-        let params: RPCObject = ["threadId": .string(threadId)]
-        _ = try await sendRequest(method: "thread/compact/start", params: .object(params))
+        _ = threadId
+        throw CodeRoverServiceError.invalidInput("Context compaction is not available in ACP-native iOS yet.")
     }
 
     // Requests interruption for the active turn.
     func interruptTurn(turnId: String?, threadId: String? = nil) async throws {
         let normalizedThreadID = normalizedInterruptIdentifier(threadId)
             ?? normalizedInterruptIdentifier(activeThreadId)
-
-        var normalizedTurnID = normalizedInterruptIdentifier(turnId)
-        if normalizedTurnID == nil,
-           let normalizedThreadID {
-            normalizedTurnID = normalizedInterruptIdentifier(activeTurnIdByThread[normalizedThreadID])
-        }
-        if normalizedTurnID == nil {
-            normalizedTurnID = normalizedInterruptIdentifier(activeTurnId)
-        }
-        if normalizedTurnID == nil,
-           let normalizedThreadID {
-            normalizedTurnID = try await resolveInFlightTurnID(threadId: normalizedThreadID)
-        }
-
-        guard let normalizedTurnID else {
-            throw CodeRoverServiceError.invalidInput("turn/interrupt requires a non-empty turnId")
-        }
-
         let resolvedThreadID = normalizedThreadID
-            ?? threadIdByTurnID[normalizedTurnID]
-            ?? normalizedInterruptIdentifier(activeThreadId)
-        if let resolvedThreadID {
-            threadIdByTurnID[normalizedTurnID] = resolvedThreadID
+            ?? normalizedInterruptIdentifier(turnId).flatMap { threadIdByTurnID[$0] }
+        guard let resolvedThreadID else {
+            throw CodeRoverServiceError.invalidInput("session/cancel requires a threadId")
         }
 
         do {
-            try await sendInterruptRequest(
-                turnId: normalizedTurnID,
-                threadId: resolvedThreadID,
-                useSnakeCaseParams: false
-            )
-            return
+            try await sendInterruptRequest(turnId: turnId ?? "", threadId: resolvedThreadID, useSnakeCaseParams: false)
         } catch {
-            var finalError: Error = error
-
-            if shouldRetryInterruptWithSnakeCaseParams(error) {
-                do {
-                    try await sendInterruptRequest(
-                        turnId: normalizedTurnID,
-                        threadId: resolvedThreadID,
-                        useSnakeCaseParams: true
-                    )
-                    return
-                } catch {
-                    finalError = error
-                }
-            }
-
-            if let resolvedThreadID,
-               shouldRetryInterruptWithRefreshedTurnID(finalError),
-               let refreshedTurnID = try await resolveInFlightTurnID(threadId: resolvedThreadID),
-               refreshedTurnID != normalizedTurnID {
-                do {
-                    try await sendInterruptRequest(
-                        turnId: refreshedTurnID,
-                        threadId: resolvedThreadID,
-                        useSnakeCaseParams: false
-                    )
-                    activeTurnIdByThread[resolvedThreadID] = refreshedTurnID
-                    threadIdByTurnID[refreshedTurnID] = resolvedThreadID
-                    return
-                } catch {
-                    finalError = error
-                    if shouldRetryInterruptWithSnakeCaseParams(error) {
-                        do {
-                            try await sendInterruptRequest(
-                                turnId: refreshedTurnID,
-                                threadId: resolvedThreadID,
-                                useSnakeCaseParams: true
-                            )
-                            activeTurnIdByThread[resolvedThreadID] = refreshedTurnID
-                            threadIdByTurnID[refreshedTurnID] = resolvedThreadID
-                            return
-                        } catch {
-                            finalError = error
-                        }
-                    }
-                }
-            }
-
-            lastErrorMessage = userFacingTurnErrorMessage(from: finalError)
-            throw finalError
+            lastErrorMessage = userFacingTurnErrorMessage(from: error)
+            throw error
         }
     }
 
@@ -361,44 +239,10 @@ extension CodeRoverService {
         roots: [String],
         cancellationToken: String?
     ) async throws -> [FuzzyFileMatch] {
-        let normalizedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !normalizedQuery.isEmpty else {
-            return []
-        }
-
-        let normalizedRoots = roots
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-        guard !normalizedRoots.isEmpty else {
-            return []
-        }
-
-        let normalizedToken = cancellationToken?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let tokenValue = (normalizedToken?.isEmpty == false) ? normalizedToken : nil
-
-        let params: JSONValue = .object([
-            "query": .string(normalizedQuery),
-            "roots": .array(normalizedRoots.map { .string($0) }),
-            "cancellationToken": tokenValue.map(JSONValue.string) ?? .null,
-        ])
-
-        let response = try await sendRequest(method: "fuzzyFileSearch", params: params)
-
-        guard let decodedFiles = decodeFuzzyFileMatches(from: response.result) else {
-            throw CodeRoverServiceError.invalidResponse("fuzzyFileSearch response missing result.files")
-        }
-
-        return decodedFiles.map { match in
-            let normalizedPath = normalizeFuzzyFilePath(path: match.path, root: match.root)
-            return FuzzyFileMatch(
-                root: match.root,
-                path: normalizedPath,
-                fileName: match.fileName,
-                score: match.score,
-                indices: match.indices
-            )
-        }
+        _ = query
+        _ = roots
+        _ = cancellationToken
+        return []
     }
 
     // Loads available skills for one or more roots with shape-fallback compatibility.
@@ -406,44 +250,9 @@ extension CodeRoverService {
         cwds: [String]?,
         forceReload: Bool = false
     ) async throws -> [SkillMetadata] {
-        let normalizedCwds = (cwds ?? [])
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-        var paramsObject: RPCObject = [:]
-        if !normalizedCwds.isEmpty {
-            paramsObject["cwds"] = .array(normalizedCwds.map { .string($0) })
-        }
-        if forceReload {
-            paramsObject["forceReload"] = .bool(true)
-        }
-
-        let response: RPCMessage
-        do {
-            response = try await sendRequest(method: "skills/list", params: .object(paramsObject))
-        } catch {
-            guard !normalizedCwds.isEmpty,
-                  shouldRetrySkillsListWithCwdFallback(error) else {
-                throw error
-            }
-
-            var fallbackParams: RPCObject = ["cwd": .string(normalizedCwds[0])]
-            if forceReload {
-                fallbackParams["forceReload"] = .bool(true)
-            }
-            response = try await sendRequest(method: "skills/list", params: .object(fallbackParams))
-        }
-
-        guard let decodedSkills = decodeSkillMetadata(from: response.result) else {
-            throw CodeRoverServiceError.invalidResponse("skills/list response missing result.data[].skills")
-        }
-
-        let dedupedByName = Dictionary(grouping: decodedSkills) { $0.normalizedName }
-            .compactMap { _, bucket -> SkillMetadata? in
-                bucket.first(where: { $0.enabled }) ?? bucket.first
-            }
-            .filter { !$0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-        return dedupedByName
+        _ = cwds
+        _ = forceReload
+        return []
     }
 
     // Accepts the latest pending approval request.
@@ -452,26 +261,17 @@ extension CodeRoverService {
             throw CodeRoverServiceError.noPendingApproval
         }
 
-        let normalizedMethod = request.method.trimmingCharacters(in: .whitespacesAndNewlines)
-        let isAcpPermission = normalizedMethod.hasPrefix("session/request_permission")
-        let isCommandApproval = normalizedMethod == "item/commandExecution/requestApproval"
-            || normalizedMethod == "item/command_execution/request_approval"
-            || normalizedMethod == "session/request_permission/execute"
-
-        if isAcpPermission {
-            let optionId = (forSession && isCommandApproval) ? "allow_always" : "allow_once"
-            try await sendResponse(
-                id: request.requestID,
-                result: .object([
-                    "outcome": .object([
-                        "optionId": .string(optionId),
-                    ]),
-                ])
-            )
-        } else {
-            let decision = (forSession && isCommandApproval) ? "acceptForSession" : "accept"
-            try await sendResponse(id: request.requestID, result: .string(decision))
-        }
+        let optionId = (forSession && request.method == "session/request_permission/execute")
+            ? "allow_always"
+            : "allow_once"
+        try await sendResponse(
+            id: request.requestID,
+            result: .object([
+                "outcome": .object([
+                    "optionId": .string(optionId),
+                ]),
+            ])
+        )
         pendingApproval = nil
     }
 
@@ -481,23 +281,18 @@ extension CodeRoverService {
             throw CodeRoverServiceError.noPendingApproval
         }
 
-        let normalizedMethod = request.method.trimmingCharacters(in: .whitespacesAndNewlines)
-        if normalizedMethod.hasPrefix("session/request_permission") {
-            try await sendResponse(
-                id: request.requestID,
-                result: .object([
-                    "outcome": .object([
-                        "optionId": .string("reject_once"),
-                    ]),
-                ])
-            )
-        } else {
-            try await sendResponse(id: request.requestID, result: .string("decline"))
-        }
+        try await sendResponse(
+            id: request.requestID,
+            result: .object([
+                "outcome": .object([
+                    "optionId": .string("reject_once"),
+                ]),
+            ])
+        )
         pendingApproval = nil
     }
 
-    // Responds to item/tool/requestUserInput using the exact app-server answer envelope.
+    // Responds to `_coderover/session/request_input` using the ACP answer envelope.
     func respondToStructuredUserInput(
         requestID: JSONValue,
         answersByQuestionID: [String: [String]]
@@ -523,299 +318,6 @@ extension CodeRoverService {
         }
     }
 
-    private func continueReviewStart(
-        _ request: ReviewStartRequest,
-        fromMissingThreadId missingThreadId: String,
-        removePendingUserMessage: Bool
-    ) async throws -> String {
-        if removePendingUserMessage {
-            removeLatestFailedUserMessage(
-                threadId: missingThreadId,
-                matchingText: request.promptText,
-                matchingAttachments: []
-            )
-        }
-        handleMissingThread(missingThreadId)
-
-        let continuationThread = try await createContinuationThread(from: missingThreadId)
-        try await ensureThreadResumed(threadId: continuationThread.id)
-        try await sendReviewStart(request, to: continuationThread.id)
-        lastErrorMessage = nil
-        return continuationThread.id
-    }
-
-    private func sendReviewStart(
-        _ request: ReviewStartRequest,
-        to threadId: String
-    ) async throws {
-        let pendingMessageId = appendUserMessage(
-            threadId: threadId,
-            text: request.promptText
-        )
-        activeThreadId = threadId
-        markThreadAsRunning(threadId)
-        protectedRunningFallbackThreadIDs.insert(threadId)
-
-        do {
-            let requestParams = try buildReviewStartParams(
-                threadId: threadId,
-                target: request.target,
-                baseBranch: request.baseBranch
-            )
-            let response = try await sendRequestWithSandboxFallback(
-                method: "review/start",
-                baseParams: requestParams
-            )
-            handleSuccessfulTurnStartResponse(
-                response,
-                pendingMessageId: pendingMessageId,
-                threadId: threadId
-            )
-        } catch {
-            try handleTurnStartFailure(
-                error,
-                pendingMessageId: pendingMessageId,
-                threadId: threadId
-            )
-        }
-    }
-
-    private func buildReviewStartParams(
-        threadId: String,
-        target: CodeRoverReviewTarget,
-        baseBranch: String?
-    ) throws -> RPCObject {
-        let targetObject: RPCObject
-
-        switch target {
-        case .uncommittedChanges:
-            targetObject = [
-                "type": .string("uncommittedChanges"),
-            ]
-        case .baseBranch:
-            let normalizedBaseBranch = baseBranch?.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard let resolvedBaseBranch = normalizedBaseBranch,
-                  !resolvedBaseBranch.isEmpty else {
-                throw CodeRoverServiceError.invalidInput("Choose a base branch before starting this review.")
-            }
-            targetObject = [
-                "type": .string("baseBranch"),
-                "branch": .string(resolvedBaseBranch),
-            ]
-        }
-
-        return [
-            "threadId": .string(threadId),
-            "delivery": .string("inline"),
-            "target": .object(targetObject),
-        ]
-    }
-
-    private func reviewPromptText(target: CodeRoverReviewTarget, baseBranch: String?) -> String {
-        switch target {
-        case .uncommittedChanges:
-            return "Review current changes"
-        case .baseBranch:
-            let trimmedBaseBranch = baseBranch?.trimmingCharacters(in: .whitespacesAndNewlines)
-            if let trimmedBaseBranch, !trimmedBaseBranch.isEmpty {
-                return "Review against base branch \(trimmedBaseBranch)"
-            }
-            return "Review against base branch"
-        }
-    }
-
-    private func fetchRateLimitsWithCompatRetry() async throws -> RPCMessage {
-        do {
-            return try await sendRequest(method: "account/rateLimits/read", params: .null)
-        } catch {
-            guard shouldRetryRateLimitsWithEmptyParams(error) else {
-                throw error
-            }
-        }
-
-        return try await sendRequest(method: "account/rateLimits/read", params: .object([:]))
-    }
-
-    private func applyRateLimitsPayload(
-        _ payloadObject: IncomingParamsObject,
-        mergeWithExisting: Bool
-    ) {
-        let decodedBuckets = decodeRateLimitBuckets(from: payloadObject)
-        let resolvedBuckets = mergeWithExisting
-            ? mergeRateLimitBuckets(existing: rateLimitBuckets, incoming: decodedBuckets)
-            : decodedBuckets
-
-        rateLimitBuckets = resolvedBuckets.sorted { lhs, rhs in
-            if lhs.sortDurationMins == rhs.sortDurationMins {
-                return lhs.displayLabel.localizedCaseInsensitiveCompare(rhs.displayLabel) == .orderedAscending
-            }
-            return lhs.sortDurationMins < rhs.sortDurationMins
-        }
-    }
-
-    private func decodeRateLimitBuckets(from payloadObject: IncomingParamsObject) -> [CodeRoverRateLimitBucket] {
-        if let keyedBuckets = payloadObject["rateLimitsByLimitId"]?.objectValue
-            ?? payloadObject["rate_limits_by_limit_id"]?.objectValue {
-            return keyedBuckets.compactMap { limitId, value in
-                decodeRateLimitBucket(limitId: limitId, value: value)
-            }
-        }
-
-        if let nestedBuckets = payloadObject["rateLimits"]?.objectValue
-            ?? payloadObject["rate_limits"]?.objectValue {
-            if containsDirectRateLimitWindows(nestedBuckets) {
-                return decodeDirectRateLimitBuckets(from: nestedBuckets)
-            }
-
-            if let decodedBucket = decodeRateLimitBucket(limitId: nil, value: .object(nestedBuckets)) {
-                return [decodedBucket]
-            }
-        }
-
-        if let nestedResult = payloadObject["result"]?.objectValue {
-            return decodeRateLimitBuckets(from: nestedResult)
-        }
-
-        if containsDirectRateLimitWindows(payloadObject) {
-            return decodeDirectRateLimitBuckets(from: payloadObject)
-        }
-
-        return []
-    }
-
-    private func decodeRateLimitBucket(
-        limitId explicitLimitId: String?,
-        value: JSONValue
-    ) -> CodeRoverRateLimitBucket? {
-        guard let object = value.objectValue else { return nil }
-
-        let limitId = firstNonEmptyString([
-            explicitLimitId,
-            firstStringValue(in: object, keys: ["limitId", "limit_id", "id"]),
-        ]) ?? UUID().uuidString
-
-        let primary = decodeRateLimitWindow(value: object["primary"] ?? object["primary_window"])
-        let secondary = decodeRateLimitWindow(value: object["secondary"] ?? object["secondary_window"])
-
-        guard primary != nil || secondary != nil else { return nil }
-
-        return CodeRoverRateLimitBucket(
-            limitId: limitId,
-            limitName: firstStringValue(in: object, keys: ["limitName", "limit_name", "name"]),
-            primary: primary,
-            secondary: secondary
-        )
-    }
-
-    private func decodeDirectRateLimitBuckets(from object: IncomingParamsObject) -> [CodeRoverRateLimitBucket] {
-        var buckets: [CodeRoverRateLimitBucket] = []
-
-        if let primary = decodeRateLimitWindow(value: object["primary"] ?? object["primary_window"]) {
-            buckets.append(
-                CodeRoverRateLimitBucket(
-                    limitId: "primary",
-                    limitName: firstStringValue(in: object, keys: ["limitName", "limit_name", "name"]),
-                    primary: primary,
-                    secondary: nil
-                )
-            )
-        }
-
-        if let secondary = decodeRateLimitWindow(value: object["secondary"] ?? object["secondary_window"]) {
-            buckets.append(
-                CodeRoverRateLimitBucket(
-                    limitId: "secondary",
-                    limitName: firstStringValue(in: object, keys: ["secondaryName", "secondary_name"]),
-                    primary: secondary,
-                    secondary: nil
-                )
-            )
-        }
-
-        return buckets
-    }
-
-    private func decodeRateLimitWindow(value: JSONValue?) -> CodeRoverRateLimitWindow? {
-        guard let object = value?.objectValue else { return nil }
-
-        let usedPercent = firstIntValue(in: object, keys: ["usedPercent", "used_percent"]) ?? 0
-        let windowDurationMins = firstIntValue(
-            in: object,
-            keys: ["windowDurationMins", "window_duration_mins", "windowMinutes", "window_minutes"]
-        )
-
-        let resetDate: Date?
-        if let rawResetsAt = object["resetsAt"]?.doubleValue
-            ?? object["resets_at"]?.doubleValue
-            ?? object["resetAt"]?.doubleValue
-            ?? object["reset_at"]?.doubleValue {
-            let secondsValue = rawResetsAt > 10_000_000_000 ? rawResetsAt / 1000 : rawResetsAt
-            resetDate = Date(timeIntervalSince1970: secondsValue)
-        } else if let rawResetsAtString = firstStringValue(
-            in: object,
-            keys: ["resetsAt", "resets_at", "resetAt", "reset_at"]
-        ) {
-            resetDate = ISO8601DateFormatter().date(from: rawResetsAtString)
-        } else {
-            resetDate = nil
-        }
-
-        return CodeRoverRateLimitWindow(
-            usedPercent: usedPercent,
-            windowDurationMins: windowDurationMins,
-            resetsAt: resetDate
-        )
-    }
-
-    private func containsDirectRateLimitWindows(_ object: IncomingParamsObject) -> Bool {
-        object["primary"] != nil
-            || object["secondary"] != nil
-            || object["primary_window"] != nil
-            || object["secondary_window"] != nil
-    }
-
-    private func mergeRateLimitBuckets(
-        existing: [CodeRoverRateLimitBucket],
-        incoming: [CodeRoverRateLimitBucket]
-    ) -> [CodeRoverRateLimitBucket] {
-        guard !existing.isEmpty else { return incoming }
-        guard !incoming.isEmpty else { return existing }
-
-        var mergedById = Dictionary(uniqueKeysWithValues: existing.map { ($0.limitId, $0) })
-        for bucket in incoming {
-            if let current = mergedById[bucket.limitId] {
-                mergedById[bucket.limitId] = CodeRoverRateLimitBucket(
-                    limitId: bucket.limitId,
-                    limitName: bucket.limitName ?? current.limitName,
-                    primary: bucket.primary ?? current.primary,
-                    secondary: bucket.secondary ?? current.secondary
-                )
-            } else {
-                mergedById[bucket.limitId] = bucket
-            }
-        }
-
-        return Array(mergedById.values)
-    }
-
-    private func shouldRetryRateLimitsWithEmptyParams(_ error: Error) -> Bool {
-        guard let serviceError = error as? CodeRoverServiceError,
-              case .rpcError(let rpcError) = serviceError else {
-            return false
-        }
-
-        guard rpcError.code == -32602 || rpcError.code == -32600 else {
-            return false
-        }
-
-        let lowered = rpcError.message.lowercased()
-        return lowered.contains("invalid params")
-            || lowered.contains("invalid param")
-            || lowered.contains("failed to parse")
-            || lowered.contains("expected")
-            || lowered.contains("missing field `params`")
-            || lowered.contains("missing field params")
-    }
 }
 
 enum ConversationThreadStartProjectBinding {
@@ -883,34 +385,34 @@ extension CodeRoverService {
         archived: Bool = false,
         cursor: JSONValue = .null
     ) async throws -> ThreadListPage {
-        var params: RPCObject = [
-            "sourceKinds": .array(threadListSourceKinds.map(JSONValue.string)),
-            "cursor": cursor,
-        ]
+        var params: RPCObject = ["cursor": cursor]
         if let limit {
             params["limit"] = .integer(limit)
         }
         if archived {
-            params["archived"] = .bool(true)
+            params["_meta"] = .object([
+                "coderover": .object([
+                    "archived": .bool(true),
+                ]),
+            ])
         }
 
-        let response = try await sendRequest(method: "thread/list", params: .object(params))
+        let response = try await sendRequest(method: "session/list", params: .object(params))
 
         guard let resultObject = response.result?.objectValue else {
-            throw CodeRoverServiceError.invalidResponse("thread/list response missing payload")
+            throw CodeRoverServiceError.invalidResponse("session/list response missing payload")
         }
 
         let page =
-            resultObject["data"]?.arrayValue
+            resultObject["sessions"]?.arrayValue
             ?? resultObject["items"]?.arrayValue
-            ?? resultObject["threads"]?.arrayValue
         guard let page else {
-            throw CodeRoverServiceError.invalidResponse("thread/list response missing data array")
+            throw CodeRoverServiceError.invalidResponse("session/list response missing sessions array")
         }
 
         let nextCursor = nextThreadListCursor(from: resultObject)
         return ThreadListPage(
-            threads: page.compactMap { decodeModel(ConversationThread.self, from: $0) },
+            threads: page.compactMap(decodeAcpSessionInfo),
             nextCursor: nextCursor,
             hasMore: threadListCursorExists(nextCursor),
             pageSize: page.count
@@ -936,18 +438,6 @@ extension CodeRoverService {
         return allThreads
     }
 
-    // Requests all user-facing thread sources instead of relying on the server default.
-    private var threadListSourceKinds: [String] {
-        [
-            "cli",
-            "vscode",
-            "appServer",
-            "exec",
-            "unknown",
-        ]
-    }
-
-    // Accepts both modern and legacy cursor field names from thread/list responses.
     private func nextThreadListCursor(from resultObject: RPCObject) -> JSONValue {
         if let nextCursor = resultObject["nextCursor"] {
             return nextCursor
@@ -1016,73 +506,67 @@ extension CodeRoverService {
     }
 
     @discardableResult
+    func hydrateThreadTranscript(threadId: String, forceReload: Bool = false) async throws -> ConversationThread? {
+        guard !threadId.isEmpty else {
+            return nil
+        }
+
+        if !forceReload, hydratedThreadIDs.contains(threadId) {
+            return threads.first(where: { $0.id == threadId })
+        }
+
+        resetTranscriptHydrationState(for: threadId)
+        let response = try await sendRequest(
+            method: "session/load",
+            params: .object([
+                "sessionId": .string(threadId),
+            ])
+        )
+
+        guard let resultObject = response.result?.objectValue else {
+            hydratedThreadIDs.insert(threadId)
+            resumedThreadIDs.insert(threadId)
+            return threads.first(where: { $0.id == threadId })
+        }
+
+        let hydratedThread = applyAcpSessionState(sessionId: threadId, stateObject: resultObject)
+        hydratedThreadIDs.insert(threadId)
+        resumedThreadIDs.insert(threadId)
+        return hydratedThread
+    }
+
+    @discardableResult
     func ensureThreadResumed(threadId: String, force: Bool = false) async throws -> ConversationThread? {
         guard !threadId.isEmpty else {
             return nil
         }
 
-        let hasLocalMessages = !(messagesByThread[threadId] ?? []).isEmpty
-        if !force, resumedThreadIDs.contains(threadId), hasLocalMessages {
+        if !force, resumedThreadIDs.contains(threadId) {
             return threads.first(where: { $0.id == threadId })
         }
 
-        var params: RPCObject = [
-            "threadId": .string(threadId),
-        ]
-        if let modelIdentifier = runtimeModelIdentifierForTurn() {
-            params["model"] = .string(modelIdentifier)
-        }
-        let response = try await sendRequestWithSandboxFallback(method: "thread/resume", baseParams: params)
+        let response = try await sendRequest(
+            method: "session/resume",
+            params: .object([
+                "sessionId": .string(threadId),
+            ])
+        )
 
         guard let resultObject = response.result?.objectValue else {
             resumedThreadIDs.insert(threadId)
-            return nil
+            return threads.first(where: { $0.id == threadId })
         }
 
-        var resumedThread: ConversationThread?
-        if let threadValue = resultObject["thread"],
-           var decodedThread = decodeModel(ConversationThread.self, from: threadValue) {
-            decodedThread.syncState = .live
-            upsertThread(decodedThread)
-            resumedThread = decodedThread
-
-            if let threadObject = threadValue.objectValue {
-                applyTerminalStatesFromThreadRead(threadId: threadId, threadObject: threadObject)
-                let historyMessages = decodeMessagesFromThreadRead(threadId: threadId, threadObject: threadObject)
-                if !historyMessages.isEmpty {
-                    let activeThreadIDs = Set(activeTurnIdByThread.keys)
-                    let runningIDs = runningThreadIDs
-                    let existingMessages = messagesByThread[threadId] ?? []
-                    let merged = mergeCanonicalHistoryIntoTimelineState(
-                        threadId: threadId,
-                        historyMessages: historyMessages,
-                        activeThreadIDs: activeThreadIDs,
-                        runningThreadIDs: runningIDs
-                    )
-                    coderoverDiagnosticLog(
-                        "CodeRoverThreads",
-                        "ensureThreadResumed mergedHistory thread=\(threadId) existing=\(existingMessages.count) decoded=\(historyMessages.count) merged=\(merged.count)"
-                    )
-                    persistMessages()
-                    updateCurrentOutput(for: threadId)
-                }
-            }
-        } else if let index = threads.firstIndex(where: { $0.id == threadId }) {
-            threads[index].syncState = .live
-        }
-
+        let resumedThread = applyAcpSessionState(sessionId: threadId, stateObject: resultObject)
         resumedThreadIDs.insert(threadId)
         return resumedThread
     }
 
     func isThreadMissingOnServer(_ threadId: String) async -> Bool {
-        let params: JSONValue = .object([
-            "threadId": .string(threadId),
-            "includeTurns": .bool(false),
-        ])
-
         do {
-            _ = try await sendRequest(method: "thread/read", params: params)
+            _ = try await sendRequest(method: "session/resume", params: .object([
+                "sessionId": .string(threadId),
+            ]))
             return false
         } catch {
             return shouldTreatAsThreadNotFound(error)
@@ -1100,33 +584,7 @@ extension CodeRoverService {
         }
 
         do {
-            let snapshot = try await readThreadTurnStateSnapshot(threadId: normalizedThreadID)
-
-            if let runningTurnID = snapshot.interruptibleTurnID {
-                markThreadAsRunning(normalizedThreadID)
-                protectedRunningFallbackThreadIDs.remove(normalizedThreadID)
-                activeTurnIdByThread[normalizedThreadID] = runningTurnID
-                threadIdByTurnID[runningTurnID] = normalizedThreadID
-                activeTurnId = runningTurnID
-                return true
-            }
-
-            if snapshot.hasInterruptibleTurnWithoutID {
-                markThreadAsRunning(normalizedThreadID)
-                protectedRunningFallbackThreadIDs.insert(normalizedThreadID)
-            } else {
-                runningThreadIDs.remove(normalizedThreadID)
-                protectedRunningFallbackThreadIDs.remove(normalizedThreadID)
-            }
-
-            if let existingTurnID = activeTurnIdByThread.removeValue(forKey: normalizedThreadID) {
-                if threadIdByTurnID[existingTurnID] == normalizedThreadID {
-                    threadIdByTurnID.removeValue(forKey: existingTurnID)
-                }
-                if activeTurnId == existingTurnID {
-                    activeTurnId = nil
-                }
-            }
+            _ = try await ensureThreadResumed(threadId: normalizedThreadID, force: true)
             return true
         } catch {
             debugSyncLog("in-flight turn refresh failed thread=\(normalizedThreadID): \(error.localizedDescription)")
@@ -1150,82 +608,42 @@ extension CodeRoverService {
         protectedRunningFallbackThreadIDs.insert(threadId)
         beginForegroundAggressivePolling(threadId: threadId)
 
-        var includeStructuredSkillItems = supportsStructuredSkillInput && !skillMentions.isEmpty
-        var imageURLKey = "url"
         let threadCapabilities = threads.first(where: { $0.id == threadId })?.capabilities
             ?? currentRuntimeProvider().supports
-        let runtimeSupportsPlanMode = supportsTurnCollaborationMode && threadCapabilities.planMode
-        var effectiveCollaborationMode = runtimeSupportsPlanMode ? collaborationMode : nil
-        var didDowngradePlanModeForRuntime = collaborationMode != nil && effectiveCollaborationMode == nil
+        let effectiveCollaborationMode = (supportsTurnCollaborationMode && threadCapabilities.planMode)
+            ? collaborationMode
+            : nil
 
-        while true {
-            do {
-                try await syncACPSessionConfiguration(
-                    threadId: threadId,
-                    collaborationMode: effectiveCollaborationMode
-                )
-                let requestParams = try buildTurnStartRequestParams(
-                    threadId: threadId,
-                    userInput: userInput,
-                    attachments: attachments,
-                    skillMentions: skillMentions,
-                    messageId: pendingMessageId,
-                    imageURLKey: imageURLKey,
-                    includeStructuredSkillItems: includeStructuredSkillItems,
-                    collaborationMode: effectiveCollaborationMode
-                )
-                let response = try await sendRequestWithSandboxFallback(
-                    method: "turn/start",
-                    baseParams: requestParams
-                )
-                handleSuccessfulTurnStartResponse(
-                    response,
-                    pendingMessageId: pendingMessageId,
-                    threadId: threadId
-                )
-                if didDowngradePlanModeForRuntime {
-                    appendSystemMessage(
-                        threadId: threadId,
-                        text: "Plan mode is not supported by this runtime. Sent as a normal turn instead."
-                    )
-                }
-                return
-            } catch {
-                if includeStructuredSkillItems,
-                   shouldRetryTurnStartWithoutSkillItems(error) {
-                    // Disable structured skill input for this runtime after first incompatibility signal.
-                    supportsStructuredSkillInput = false
-                    includeStructuredSkillItems = false
-                    continue
-                }
-
-                if imageURLKey == "url",
-                   !attachments.isEmpty,
-                   shouldRetryTurnStartWithImageURLField(error) {
-                    imageURLKey = "image_url"
-                    continue
-                }
-
-                if effectiveCollaborationMode != nil,
-                   shouldRetryTurnStartWithoutCollaborationMode(error) {
-                    // Remember the runtime limitation so future plan-mode sends skip the rejected field.
-                    supportsTurnCollaborationMode = false
-                    effectiveCollaborationMode = nil
-                    didDowngradePlanModeForRuntime = true
-                    continue
-                }
-
-                try handleTurnStartFailure(
-                    error,
-                    pendingMessageId: pendingMessageId,
-                    threadId: threadId
-                )
-                return
-            }
+        do {
+            try await syncACPSessionConfiguration(
+                threadId: threadId,
+                collaborationMode: effectiveCollaborationMode
+            )
+            let requestParams = try buildTurnStartRequestParams(
+                threadId: threadId,
+                userInput: userInput,
+                attachments: attachments,
+                messageId: pendingMessageId
+            )
+            let response = try await sendRequest(
+                method: "session/prompt",
+                params: .object(requestParams)
+            )
+            handleSuccessfulTurnStartResponse(
+                response,
+                pendingMessageId: pendingMessageId,
+                threadId: threadId
+            )
+        } catch {
+            try handleTurnStartFailure(
+                error,
+                pendingMessageId: pendingMessageId,
+                threadId: threadId
+            )
         }
     }
 
-    // Steers an active turn using the same mixed input-item encoding as turn/start.
+    // Steers an active turn using the same payload contract as session/prompt.
     func steerTurn(
         userInput: String,
         threadId: String,
@@ -1234,109 +652,13 @@ extension CodeRoverService {
         skillMentions: [TurnSkillMention] = [],
         shouldAppendUserMessage: Bool = true
     ) async throws {
-        let normalizedThreadID = normalizedInterruptIdentifier(threadId) ?? threadId
-        let pendingMessageId = shouldAppendUserMessage
-            ? appendUserMessage(threadId: normalizedThreadID, text: userInput, attachments: attachments)
-            : ""
-        let threadCapabilities = threads.first(where: { $0.id == normalizedThreadID })?.capabilities
-            ?? currentRuntimeProvider().supports
-        guard threadCapabilities.turnSteer else {
-            let error = CodeRoverServiceError.invalidInput("Steering is not supported for this runtime")
-            handleSteerFailure(error, pendingMessageId: pendingMessageId, threadId: normalizedThreadID)
-            throw error
-        }
-        var resolvedExpectedTurnID = normalizedInterruptIdentifier(expectedTurnId)
-        if resolvedExpectedTurnID == nil {
-            do {
-                resolvedExpectedTurnID = try await resolveInFlightTurnID(threadId: normalizedThreadID)
-            } catch {
-                handleSteerFailure(error, pendingMessageId: pendingMessageId, threadId: normalizedThreadID)
-                throw error
-            }
-        }
-
-        guard let initialTurnID = resolvedExpectedTurnID else {
-            let error = CodeRoverServiceError.invalidInput("No active turn available to steer")
-            handleSteerFailure(error, pendingMessageId: pendingMessageId, threadId: normalizedThreadID)
-            throw error
-        }
-
-        var includeStructuredSkillItems = supportsStructuredSkillInput && !skillMentions.isEmpty
-        var imageURLKey = "url"
-        var currentExpectedTurnID = initialTurnID
-        var didRetryWithRefreshedTurnID = false
-
-        while true {
-            let params: RPCObject = [
-                "threadId": .string(normalizedThreadID),
-                "expectedTurnId": .string(currentExpectedTurnID),
-                "input": .array(
-                    makeTurnInputPayload(
-                        userInput: userInput,
-                        attachments: attachments,
-                        imageURLKey: imageURLKey,
-                        skillMentions: skillMentions,
-                        includeStructuredSkillItems: includeStructuredSkillItems
-                    )
-                ),
-            ]
-            var mutableParams = params
-            if !pendingMessageId.isEmpty {
-                mutableParams["messageId"] = .string(pendingMessageId)
-            }
-
-            do {
-                let response = try await sendRequest(method: "turn/steer", params: .object(mutableParams))
-                let resolvedTurnID = extractTurnID(from: response.result) ?? currentExpectedTurnID
-                markMessageDeliveryState(
-                    threadId: normalizedThreadID,
-                    messageId: pendingMessageId,
-                    state: .confirmed,
-                    turnId: resolvedTurnID
-                )
-                activeTurnId = resolvedTurnID
-                activeTurnIdByThread[normalizedThreadID] = resolvedTurnID
-                threadIdByTurnID[resolvedTurnID] = normalizedThreadID
-                markThreadAsRunning(normalizedThreadID)
-                protectedRunningFallbackThreadIDs.remove(normalizedThreadID)
-                return
-            } catch {
-                if includeStructuredSkillItems,
-                   shouldRetryTurnStartWithoutSkillItems(error) {
-                    supportsStructuredSkillInput = false
-                    includeStructuredSkillItems = false
-                    continue
-                }
-
-                if imageURLKey == "url",
-                   !attachments.isEmpty,
-                   shouldRetryTurnStartWithImageURLField(error) {
-                    imageURLKey = "image_url"
-                    continue
-                }
-
-                if !didRetryWithRefreshedTurnID,
-                   shouldRetrySteerWithRefreshedTurnID(error) {
-                    do {
-                        if let refreshedTurnID = try await resolveInFlightTurnID(threadId: normalizedThreadID),
-                           refreshedTurnID != currentExpectedTurnID {
-                            didRetryWithRefreshedTurnID = true
-                            currentExpectedTurnID = refreshedTurnID
-                            activeTurnId = refreshedTurnID
-                            activeTurnIdByThread[normalizedThreadID] = refreshedTurnID
-                            threadIdByTurnID[refreshedTurnID] = normalizedThreadID
-                            continue
-                        }
-                    } catch {
-                        handleSteerFailure(error, pendingMessageId: pendingMessageId, threadId: normalizedThreadID)
-                        throw error
-                    }
-                }
-
-                handleSteerFailure(error, pendingMessageId: pendingMessageId, threadId: normalizedThreadID)
-                throw error
-            }
-        }
+        _ = userInput
+        _ = threadId
+        _ = expectedTurnId
+        _ = attachments
+        _ = skillMentions
+        _ = shouldAppendUserMessage
+        throw CodeRoverServiceError.invalidInput("Steering is not available in ACP-native iOS yet.")
     }
 
     func userFacingTurnErrorMessage(from error: Error) -> String {
@@ -1355,137 +677,24 @@ extension CodeRoverService {
         return trimmed.isEmpty ? "Error while sending message" : trimmed
     }
 
-    // Normalizes outgoing turn input so we can support mixed text + image messages.
-    func makeTurnInputPayload(
-        userInput: String,
-        attachments: [ImageAttachment],
-        imageURLKey: String,
-        skillMentions: [TurnSkillMention] = [],
-        includeStructuredSkillItems: Bool = true
-    ) -> [JSONValue] {
-        var inputItems: [JSONValue] = []
-
-        for attachment in attachments {
-            guard let payloadDataURL = attachment.payloadDataURL,
-                  !payloadDataURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                continue
-            }
-
-            inputItems.append(
-                .object([
-                    "type": .string("image"),
-                    imageURLKey: .string(payloadDataURL),
-                ])
-            )
-        }
-
-        let trimmedText = userInput.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmedText.isEmpty {
-            inputItems.append(
-                .object([
-                    "type": .string("text"),
-                    "text": .string(trimmedText),
-                ])
-            )
-        }
-
-        if includeStructuredSkillItems {
-            for mention in skillMentions {
-                let normalizedSkillID = mention.id.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !normalizedSkillID.isEmpty else {
-                    continue
-                }
-
-                var payload: RPCObject = [
-                    "type": .string("skill"),
-                    "id": .string(normalizedSkillID),
-                ]
-
-                if let name = mention.name?.trimmingCharacters(in: .whitespacesAndNewlines),
-                   !name.isEmpty {
-                    payload["name"] = .string(name)
-                }
-
-                if let path = mention.path?.trimmingCharacters(in: .whitespacesAndNewlines),
-                   !path.isEmpty {
-                    payload["path"] = .string(path)
-                }
-
-                inputItems.append(.object(payload))
-            }
-        }
-
-        return inputItems
-    }
-
-    // Builds turn/start params so retries can switch only the input-item encoding.
+    // Builds ACP session/prompt params for one user turn.
     func buildTurnStartRequestParams(
         threadId: String,
         userInput: String,
         attachments: [ImageAttachment],
-        skillMentions: [TurnSkillMention],
-        messageId: String,
-        imageURLKey: String,
-        includeStructuredSkillItems: Bool,
-        collaborationMode: CollaborationModeModeKind?
+        messageId: String
     ) throws -> RPCObject {
         var params: RPCObject = [
-            "threadId": .string(threadId),
-            "input": .array(
-                makeTurnInputPayload(
-                    userInput: userInput,
-                    attachments: attachments,
-                    imageURLKey: imageURLKey,
-                    skillMentions: skillMentions,
-                    includeStructuredSkillItems: includeStructuredSkillItems
-                )
-            ),
+            "sessionId": .string(threadId),
+            "prompt": .array(buildACPPromptBlocks(userInput: userInput, attachments: attachments)),
         ]
         if !messageId.isEmpty {
             params["messageId"] = .string(messageId)
         }
-        // Keep the legacy top-level fields populated so plan-mode turns still honor
-        // the user's selected model on runtimes that do not read collaboration settings.
-        if let modelIdentifier = runtimeModelIdentifierForTurn() {
-            params["model"] = .string(modelIdentifier)
-        }
-        if let effort = selectedReasoningEffortForSelectedModel() {
-            params["effort"] = .string(effort)
-        }
-        if let collaborationModePayload = try buildCollaborationModePayload(for: collaborationMode) {
-            params["collaborationMode"] = collaborationModePayload
-        }
         return params
     }
 
-    // Encodes collaborationMode while allowing the selected mode to supply built-in instructions.
-    func buildCollaborationModePayload(for mode: CollaborationModeModeKind?) throws -> JSONValue? {
-        guard let mode else {
-            return nil
-        }
-
-        let resolvedModel = runtimeModelIdentifierForTurn()
-            ?? selectedModelOption()?.model
-            ?? availableModels.first?.model
-            ?? selectedModelId
-        guard let resolvedModel,
-              !resolvedModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw CodeRoverServiceError.invalidResponse(
-                "Plan mode requires an available model before starting a plan turn."
-            )
-        }
-
-        return .object([
-            "mode": .string(mode.rawValue),
-            "settings": .object([
-                "model": .string(resolvedModel),
-                "reasoning_effort": selectedReasoningEffortForSelectedModel().map(JSONValue.string) ?? .null,
-                "developer_instructions": .null,
-            ]),
-        ])
-    }
-
-    // Applies common failure bookkeeping for turn/start primary and fallback attempts.
+    // Applies common failure bookkeeping for session/prompt primary and fallback attempts.
     func handleTurnStartFailure(
         _ error: Error,
         pendingMessageId: String,
@@ -1505,7 +714,7 @@ extension CodeRoverService {
         throw error
     }
 
-    // Handles successful turn/start bookkeeping for both primary and fallback payload schemas.
+    // Handles successful session/prompt bookkeeping for both primary and fallback payload schemas.
     func handleSuccessfulTurnStartResponse(
         _ response: RPCMessage,
         pendingMessageId: String,
@@ -1532,7 +741,7 @@ extension CodeRoverService {
             protectedRunningFallbackThreadIDs.remove(threadId)
             beginAssistantMessage(threadId: threadId, turnId: turnID)
         } else if let fallbackTurnID {
-            debugRuntimeLog("turn/start response missing turnId thread=\(threadId) fallbackTurn=\(fallbackTurnID)")
+            debugRuntimeLog("session/prompt response missing turnId thread=\(threadId) fallbackTurn=\(fallbackTurnID)")
         }
 
         if let index = threads.firstIndex(where: { $0.id == threadId }) {
@@ -1678,135 +887,6 @@ extension CodeRoverService {
         lastErrorMessage = userFacingTurnErrorMessage(from: error)
     }
 
-    // Some server versions expect `image_url` instead of `url` for image items.
-    func shouldRetryTurnStartWithImageURLField(_ error: Error) -> Bool {
-        guard let serviceError = error as? CodeRoverServiceError,
-              case .rpcError(let rpcError) = serviceError else {
-            return false
-        }
-
-        let message = rpcError.message.lowercased()
-        guard message.contains("image_url") else {
-            return false
-        }
-
-        return message.contains("missing")
-            || message.contains("unknown field")
-            || message.contains("expected")
-            || message.contains("invalid")
-    }
-
-    // Detects legacy servers that reject input items with `type: "skill"`.
-    func shouldRetryTurnStartWithoutSkillItems(_ error: Error) -> Bool {
-        guard let serviceError = error as? CodeRoverServiceError,
-              case .rpcError(let rpcError) = serviceError else {
-            return false
-        }
-
-        let message = rpcError.message.lowercased()
-        guard message.contains("skill") else {
-            return false
-        }
-
-        return message.contains("unknown")
-            || message.contains("unsupported")
-            || message.contains("invalid")
-            || message.contains("expected")
-            || message.contains("unrecognized")
-            || message.contains("type")
-            || message.contains("field")
-    }
-
-    // Detects runtimes that reject plan-mode `collaborationMode` without `experimentalApi`.
-    func shouldRetryTurnStartWithoutCollaborationMode(_ error: Error) -> Bool {
-        guard let serviceError = error as? CodeRoverServiceError,
-              case .rpcError(let rpcError) = serviceError else {
-            return false
-        }
-
-        let message = rpcError.message.lowercased()
-        guard message.contains("collaborationmode") || message.contains("collaboration_mode") else {
-            return false
-        }
-
-        return message.contains("experimentalapi")
-            || message.contains("unsupported")
-            || message.contains("unknown")
-            || message.contains("unexpected")
-            || message.contains("unrecognized")
-            || message.contains("invalid")
-            || message.contains("field")
-            || message.contains("mode")
-    }
-
-    // Parses `result.files` so tests can validate decoding without transport wiring.
-    func decodeFuzzyFileMatches(from result: JSONValue?) -> [FuzzyFileMatch]? {
-        guard let resultObject = result?.objectValue,
-              let filesValue = resultObject["files"] else {
-            return nil
-        }
-
-        return decodeModel([FuzzyFileMatch].self, from: filesValue)
-    }
-
-    // Parses skills/list payloads from both bucketed and flat server response shapes.
-    func decodeSkillMetadata(from result: JSONValue?) -> [SkillMetadata]? {
-        guard let resultObject = result?.objectValue else {
-            return nil
-        }
-
-        var collectedSkills: [SkillMetadata] = []
-        var hasSkillContainer = false
-
-        if let dataItems = resultObject["data"]?.arrayValue {
-            hasSkillContainer = true
-            for item in dataItems {
-                guard let itemObject = item.objectValue else {
-                    continue
-                }
-                if let skillsValue = itemObject["skills"],
-                   let decodedSkills = decodeModel([SkillMetadata].self, from: skillsValue) {
-                    collectedSkills.append(contentsOf: decodedSkills)
-                }
-            }
-
-            if collectedSkills.isEmpty,
-               let decodedSkills = decodeModel([SkillMetadata].self, from: .array(dataItems)) {
-                collectedSkills.append(contentsOf: decodedSkills)
-            }
-        }
-
-        if collectedSkills.isEmpty,
-           let skillsValue = resultObject["skills"],
-           let decodedSkills = decodeModel([SkillMetadata].self, from: skillsValue) {
-            hasSkillContainer = true
-            collectedSkills.append(contentsOf: decodedSkills)
-        } else if resultObject["skills"] != nil {
-            hasSkillContainer = true
-        }
-
-        return hasSkillContainer ? collectedSkills : nil
-    }
-
-    func shouldRetrySkillsListWithCwdFallback(_ error: Error) -> Bool {
-        guard let serviceError = error as? CodeRoverServiceError,
-              case .rpcError(let rpcError) = serviceError else {
-            return false
-        }
-
-        guard rpcError.code == -32600 || rpcError.code == -32602 else {
-            return false
-        }
-
-        let message = rpcError.message.lowercased()
-        return message.contains("invalid")
-            || message.contains("unknown field")
-            || message.contains("unrecognized field")
-            || message.contains("missing field")
-            || message.contains("expected")
-            || message.contains("cwds")
-    }
-
     // Sends turn interruption request with camelCase or snake_case param keys for compatibility.
     func sendInterruptRequest(
         turnId: String,
@@ -1816,7 +896,7 @@ extension CodeRoverService {
         let resolvedThreadID = normalizedInterruptIdentifier(threadId)
             ?? threadIdByTurnID[turnId]
         guard let resolvedThreadID else {
-            throw CodeRoverServiceError.invalidInput("turn/interrupt requires a threadId")
+            throw CodeRoverServiceError.invalidInput("session/cancel requires a threadId")
         }
         try await sendNotification(
             method: "session/cancel",
@@ -1833,108 +913,14 @@ extension CodeRoverService {
         return trimmed.isEmpty ? nil : trimmed
     }
 
-    // Resolves the currently running turn id from thread/read when local state becomes stale.
+    // Resolves the currently running turn id from local ACP session state.
     func resolveInFlightTurnID(threadId: String) async throws -> String? {
-        let snapshot = try await readThreadTurnStateSnapshot(threadId: threadId)
-        return snapshot.interruptibleTurnID ?? snapshot.latestTurnID
-    }
-
-    // Parses turn status values from thread/read turn objects.
-    func normalizedInterruptTurnStatus(from turnObject: [String: JSONValue]) -> String? {
-        let status = turnObject["status"]?.stringValue
-            ?? turnObject["turnStatus"]?.stringValue
-            ?? turnObject["turn_status"]?.stringValue
-
-        guard let status else { return nil }
-
-        let trimmed = status.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-
-        return trimmed
-            .replacingOccurrences(of: "_", with: "")
-            .replacingOccurrences(of: "-", with: "")
-            .lowercased()
-    }
-
-    // Marks statuses that can still accept turn/interrupt.
-    func isInterruptibleTurnStatus(_ normalizedStatus: String?) -> Bool {
-        guard let normalizedStatus else {
-            return true
+        if let turnId = activeTurnIdByThread[threadId] {
+            return turnId
         }
 
-        if normalizedStatus.contains("inprogress")
-            || normalizedStatus.contains("running")
-            || normalizedStatus.contains("pending")
-            || normalizedStatus.contains("started") {
-            return true
-        }
-
-        if normalizedStatus.contains("complete")
-            || normalizedStatus.contains("failed")
-            || normalizedStatus.contains("error")
-            || normalizedStatus.contains("interrupt")
-            || normalizedStatus.contains("cancel")
-            || normalizedStatus.contains("stopped") {
-            return false
-        }
-
-        return true
-    }
-
-    // Retries with snake_case params for strict or legacy server parsers.
-    func shouldRetryInterruptWithSnakeCaseParams(_ error: Error) -> Bool {
-        guard let serviceError = error as? CodeRoverServiceError,
-              case .rpcError(let rpcError) = serviceError else {
-            return false
-        }
-
-        guard rpcError.code == -32600 || rpcError.code == -32602 else {
-            return false
-        }
-
-        let message = rpcError.message.lowercased()
-        let hints = ["turnid", "threadid", "turn_id", "thread_id", "unknown field", "missing field", "invalid"]
-        return hints.contains { message.contains($0) }
-    }
-
-    // Reads thread/read(includeTurns=true) and extracts both running and latest turn metadata.
-    func readThreadTurnStateSnapshot(threadId: String) async throws -> (
-        interruptibleTurnID: String?,
-        hasInterruptibleTurnWithoutID: Bool,
-        latestTurnID: String?
-    ) {
-        let params: JSONValue = .object([
-            "threadId": .string(threadId),
-            "includeTurns": .bool(true),
-        ])
-
-        let response = try await sendRequest(method: "thread/read", params: params)
-        guard let threadObject = response.result?.objectValue?["thread"]?.objectValue else {
-            return (nil, false, nil)
-        }
-
-        let turnObjects = threadObject["turns"]?.arrayValue?.compactMap { $0.objectValue } ?? []
-        guard let latestTurnObject = turnObjects.last else {
-            return (nil, false, nil)
-        }
-
-        let latestTurnID = normalizedInterruptIdentifier(
-            latestTurnObject["id"]?.stringValue
-                ?? latestTurnObject["turnId"]?.stringValue
-                ?? latestTurnObject["turn_id"]?.stringValue
-        )
-        let latestStatus = normalizedInterruptTurnStatus(from: latestTurnObject)
-
-        // Missing status should stay permissive so incomplete payloads do not clear live UI state.
-        guard isInterruptibleTurnStatus(latestStatus) else {
-            return (nil, false, latestTurnID)
-        }
-
-        if let latestTurnID {
-            return (latestTurnID, false, latestTurnID)
-        }
-
-        return (nil, true, latestTurnID)
+        _ = try await ensureThreadResumed(threadId: threadId, force: true)
+        return activeTurnIdByThread[threadId]
     }
 
     // Retries after refreshing turn id when local activeTurn cache is stale.
@@ -1961,49 +947,4 @@ extension CodeRoverService {
         return hints.contains { message.contains($0) }
     }
 
-    // Retries steer once after refreshing the active turn id when the server rejects the precondition.
-    func shouldRetrySteerWithRefreshedTurnID(_ error: Error) -> Bool {
-        shouldRetryInterruptWithRefreshedTurnID(error)
-    }
-
-    // Converts absolute match paths to root-relative output when older servers return full paths.
-    func normalizeFuzzyFilePath(path: String, root: String) -> String {
-        let trimmedPath = path.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedPath.isEmpty else {
-            return path
-        }
-
-        let normalizedRoot = normalizedFuzzyRootPath(root)
-        guard !normalizedRoot.isEmpty else {
-            return trimmedPath
-        }
-
-        if normalizedRoot == "/" {
-            return trimmedPath.hasPrefix("/") ? String(trimmedPath.dropFirst()) : trimmedPath
-        }
-
-        let rootPrefix = normalizedRoot.hasSuffix("/") ? normalizedRoot : "\(normalizedRoot)/"
-        if trimmedPath.hasPrefix(rootPrefix) {
-            return String(trimmedPath.dropFirst(rootPrefix.count))
-        }
-
-        return trimmedPath
-    }
-
-    private func normalizedFuzzyRootPath(_ root: String) -> String {
-        var normalized = root.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !normalized.isEmpty else {
-            return ""
-        }
-
-        if normalized == "/" {
-            return normalized
-        }
-
-        while normalized.hasSuffix("/") {
-            normalized.removeLast()
-        }
-
-        return normalized.isEmpty ? "/" : normalized
-    }
 }

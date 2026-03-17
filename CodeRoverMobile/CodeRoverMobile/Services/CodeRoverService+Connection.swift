@@ -97,10 +97,7 @@ extension CodeRoverService {
         finalizeAllStreamingState()
         messagePersistenceDebounceTask?.cancel()
         messagePersistenceDebounceTask = nil
-        messagePersistence.save(
-            messagesByThread: messagesByThread,
-            historyStateByThread: historyStateByThread
-        )
+        messagePersistence.save(messagesByThread: messagesByThread)
         assistantCompletionFingerprintByThread.removeAll()
         runningThreadIDs.removeAll()
         protectedRunningFallbackThreadIDs.removeAll()
@@ -113,7 +110,6 @@ extension CodeRoverService {
             shouldAutoReconnectOnForeground = false
             connectionRecoveryState = .idle
         }
-        supportsStructuredSkillInput = true
         supportsTurnCollaborationMode = false
         stopSyncLoop()
         postConnectSyncTask?.cancel()
@@ -237,17 +233,40 @@ extension CodeRoverService {
 
     // Runs the post-connect sync work that is useful but not required to mark the socket usable.
     func performPostConnectSyncPass(preferredThreadId: String? = nil) async {
-        try? await listProviders()
-        try? await listThreads()
+        do {
+            try await listProviders()
+        } catch {
+            debugRuntimeLog("post-connect agent/list failed: \(error.localizedDescription)")
+        }
+
+        do {
+            try await listThreads()
+        } catch {
+            debugSyncLog("post-connect session/list failed: \(error.localizedDescription)")
+            presentConnectionErrorIfNeeded(
+                error,
+                fallbackMessage: "Unable to load chats from the paired Mac. Reconnect and try again."
+            )
+        }
+
         let resolvedPreferredThreadId = normalizedInterruptIdentifier(preferredThreadId)
         if let resolvedPreferredThreadId {
             activeThreadId = resolvedPreferredThreadId
+        } else {
+            normalizeActiveThreadSelectionAfterThreadRefresh()
         }
-        try? await listModels(provider: currentRuntimeProviderID())
+
+        do {
+            try await listModels(provider: currentRuntimeProviderID())
+        } catch {
+            debugRuntimeLog("post-connect model/list failed: \(error.localizedDescription)")
+        }
+
         if let threadId = activeThreadId
             ?? resolvedPreferredThreadId
             ?? threads.first(where: { $0.syncState == .live })?.id {
             await syncActiveThreadState(threadId: threadId)
+            normalizeActiveThreadSelectionAfterThreadRefresh()
         }
     }
 
@@ -272,7 +291,6 @@ extension CodeRoverService {
         endBackgroundRunGraceTask(reason: "server-switch")
         shouldAutoReconnectOnForeground = false
         connectionRecoveryState = .idle
-        supportsStructuredSkillInput = true
         supportsTurnCollaborationMode = false
         resumedThreadIDs.removeAll()
         clearHydrationCaches()

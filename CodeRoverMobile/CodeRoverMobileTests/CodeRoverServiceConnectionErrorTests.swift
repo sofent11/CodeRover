@@ -49,4 +49,28 @@ final class CodeRoverServiceConnectionErrorTests: XCTestCase {
             "Connection was interrupted. Tap Reconnect to try again."
         )
     }
+
+    func testPostConnectSyncSurfacesSessionListFailure() async {
+        let service = CodeRoverService()
+
+        service.requestTransportOverride = { method, _ in
+            switch method {
+            case "_coderover/agent/list":
+                return RPCMessage(id: .integer(1), result: .object(["agents": .array([])]))
+            case "session/list":
+                throw CodeRoverServiceError.invalidInput("session/list timed out")
+            case "_coderover/model/list":
+                return RPCMessage(id: .integer(2), result: .object(["items": .array([])]))
+            default:
+                return RPCMessage(id: .integer(999), result: .object([:]))
+            }
+        }
+
+        await service.performPostConnectSyncPass()
+
+        XCTAssertEqual(
+            service.lastErrorMessage,
+            "Unable to load chats from the paired Mac. Reconnect and try again."
+        )
+    }
 }

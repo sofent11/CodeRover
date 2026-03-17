@@ -49,18 +49,13 @@ final class TurnComposerSendAvailabilityTests: XCTestCase {
         service.isConnected = true
 
         let viewModel = TurnViewModel()
-        let rawInput = "Please update @TurnView.swift"
-        let rawMention = TurnComposerMentionedFile(
-            fileName: "TurnView.swift",
-            path: "Views/Turn/TurnView.swift"
-        )
+        let rawInput = "Please update TurnView.swift"
         let attachment = ImageAttachment(
             thumbnailBase64JPEG: "thumb",
             payloadDataURL: "data:image/jpeg;base64,AAAA"
         )
 
         viewModel.input = rawInput
-        viewModel.composerMentionedFiles = [rawMention]
         viewModel.composerAttachments = [
             TurnComposerImageAttachment(id: "attachment-1", state: .ready(attachment))
         ]
@@ -70,7 +65,6 @@ final class TurnComposerSendAvailabilityTests: XCTestCase {
 
         XCTAssertFalse(viewModel.isSending)
         XCTAssertEqual(viewModel.input, rawInput)
-        XCTAssertEqual(viewModel.composerMentionedFiles, [rawMention])
         XCTAssertEqual(viewModel.readyComposerAttachments, [attachment])
         XCTAssertEqual(viewModel.composerAttachments.count, 1)
     }

@@ -54,19 +54,7 @@ struct TurnComposerHostView: View {
             steeringDraftID: viewModel.steeringDraftID,
             activeTurnID: activeTurnID,
             isThreadRunning: isThreadRunning,
-            composerMentionedFiles: viewModel.composerMentionedFiles,
-            composerMentionedSkills: viewModel.composerMentionedSkills,
-            fileAutocompleteItems: viewModel.fileAutocompleteItems,
-            isFileAutocompleteVisible: viewModel.isFileAutocompleteVisible,
-            isFileAutocompleteLoading: viewModel.isFileAutocompleteLoading,
-            fileAutocompleteQuery: viewModel.fileAutocompleteQuery,
-            skillAutocompleteItems: viewModel.skillAutocompleteItems,
-            isSkillAutocompleteVisible: viewModel.isSkillAutocompleteVisible,
-            isSkillAutocompleteLoading: viewModel.isSkillAutocompleteLoading,
-            skillAutocompleteQuery: viewModel.skillAutocompleteQuery,
             slashCommandPanelState: isCodexThread ? viewModel.slashCommandPanelState : .hidden,
-            composerReviewSelection: isCodexThread ? viewModel.composerReviewSelection : nil,
-            hasComposerContentConflictingWithReview: viewModel.hasComposerContentConflictingWithReview,
             orderedModelOptions: orderedModelOptions,
             selectedModelID: coderover.selectedModelOption()?.id,
             selectedModelTitle: selectedModelTitle,
@@ -104,22 +92,6 @@ struct TurnComposerHostView: View {
             onStopTurn: { turnID in
                 viewModel.interruptTurn(turnID, coderover: coderover, threadID: thread.id)
             },
-            onInputChangedForFileAutocomplete: { text in
-                viewModel.onInputChangedForFileAutocomplete(
-                    text,
-                    coderover: coderover,
-                    thread: thread,
-                    activeTurnID: activeTurnID
-                )
-            },
-            onInputChangedForSkillAutocomplete: { text in
-                viewModel.onInputChangedForSkillAutocomplete(
-                    text,
-                    coderover: coderover,
-                    thread: thread,
-                    activeTurnID: activeTurnID
-                )
-            },
             onInputChangedForSlashCommandAutocomplete: { text in
                 viewModel.onInputChangedForSlashCommandAutocomplete(
                     text,
@@ -127,18 +99,12 @@ struct TurnComposerHostView: View {
                     isEnabled: isCodexThread
                 )
             },
-            onSelectFileAutocomplete: viewModel.onSelectFileAutocomplete,
-            onSelectSkillAutocomplete: viewModel.onSelectSkillAutocomplete,
             onSelectSlashCommand: { command in
                 viewModel.onSelectSlashCommand(command)
                 if command == .status {
                     onShowStatus()
                 }
             },
-            onSelectCodeReviewTarget: viewModel.onSelectCodeReviewTarget,
-            onRemoveMentionedFile: viewModel.removeMentionedFile,
-            onRemoveMentionedSkill: viewModel.removeMentionedSkill,
-            onRemoveComposerReviewSelection: viewModel.clearComposerReviewSelection,
             onPasteImageData: { imageDataItems in
                 viewModel.enqueuePastedImageData(imageDataItems, coderover: coderover)
             },

@@ -22,12 +22,10 @@ extension CodeRoverService {
 
         let requestID: JSONValue = .string(UUID().uuidString)
         let requestKey = idKey(from: requestID)
-        let translatedRequest = translateLegacyRequestToACP(method: method, params: params)
-
         let request = RPCMessage(
             id: requestID,
-            method: translatedRequest.method,
-            params: translatedRequest.params,
+            method: method,
+            params: params,
             includeJSONRPC: false
         )
         let requestContext = pendingRequestContext(method: method, params: params)
@@ -78,12 +76,11 @@ extension CodeRoverService {
             return
         }
         debugRuntimeLog("rpc -> notify \(summarizeIncomingNotification(method: method, paramsObject: params?.objectValue))")
-        let translatedRequest = translateLegacyRequestToACP(method: method, params: params)
         let notification = RPCMessage(
             jsonrpc: nil,
             id: nil,
-            method: translatedRequest.method,
-            params: translatedRequest.params,
+            method: method,
+            params: params,
             result: nil,
             error: nil
         )
@@ -292,7 +289,7 @@ extension CodeRoverService {
     func completePendingTurnStartIfNeeded(threadId: String, turnId: String?) {
         let matchingEntry = pendingRequestContexts
             .filter { _, context in
-                context.method == "turn/start" && context.threadId == threadId
+                context.method == "session/prompt" && context.threadId == threadId
             }
             .min { lhs, rhs in
                 lhs.value.createdAt < rhs.value.createdAt

@@ -104,107 +104,6 @@ enum CodeRoverReviewTarget {
     case baseBranch
 }
 
-struct CodeRoverRateLimitWindow: Equatable, Sendable {
-    let usedPercent: Int
-    let windowDurationMins: Int?
-    let resetsAt: Date?
-
-    var clampedUsedPercent: Int {
-        min(max(usedPercent, 0), 100)
-    }
-
-    var remainingPercent: Int {
-        max(0, 100 - clampedUsedPercent)
-    }
-}
-
-struct CodeRoverRateLimitDisplayRow: Identifiable, Equatable, Sendable {
-    let id: String
-    let label: String
-    let window: CodeRoverRateLimitWindow
-}
-
-struct CodeRoverRateLimitBucket: Identifiable, Equatable, Sendable {
-    let limitId: String
-    let limitName: String?
-    let primary: CodeRoverRateLimitWindow?
-    let secondary: CodeRoverRateLimitWindow?
-
-    var id: String { limitId }
-
-    var primaryOrSecondary: CodeRoverRateLimitWindow? {
-        primary ?? secondary
-    }
-
-    var displayRows: [CodeRoverRateLimitDisplayRow] {
-        var rows: [CodeRoverRateLimitDisplayRow] = []
-
-        if let primary {
-            rows.append(
-                CodeRoverRateLimitDisplayRow(
-                    id: "\(limitId)-primary",
-                    label: Self.label(for: primary, fallback: limitName ?? limitId),
-                    window: primary
-                )
-            )
-        }
-
-        if let secondary {
-            rows.append(
-                CodeRoverRateLimitDisplayRow(
-                    id: "\(limitId)-secondary",
-                    label: Self.label(for: secondary, fallback: limitName ?? limitId),
-                    window: secondary
-                )
-            )
-        }
-
-        return rows
-    }
-
-    var sortDurationMins: Int {
-        primaryOrSecondary?.windowDurationMins ?? Int.max
-    }
-
-    var displayLabel: String {
-        if let durationLabel = Self.durationLabel(minutes: primaryOrSecondary?.windowDurationMins) {
-            return durationLabel
-        }
-
-        let trimmedName = limitName?.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let trimmedName, !trimmedName.isEmpty {
-            return trimmedName
-        }
-
-        return limitId
-    }
-
-    private static func label(for window: CodeRoverRateLimitWindow, fallback: String) -> String {
-        durationLabel(minutes: window.windowDurationMins) ?? fallback
-    }
-
-    private static func durationLabel(minutes: Int?) -> String? {
-        guard let minutes, minutes > 0 else { return nil }
-
-        let weekMinutes = 7 * 24 * 60
-        let dayMinutes = 24 * 60
-
-        if minutes % weekMinutes == 0 {
-            return minutes == weekMinutes ? "Weekly" : "\(minutes / weekMinutes)w"
-        }
-
-        if minutes % dayMinutes == 0 {
-            return "\(minutes / dayMinutes)d"
-        }
-
-        if minutes % 60 == 0 {
-            return "\(minutes / 60)h"
-        }
-
-        return "\(minutes)m"
-    }
-}
-
 @MainActor
 @Observable
 final class CodeRoverService {
@@ -259,7 +158,6 @@ final class CodeRoverService {
     var messageRevisionByThread: [String: Int] = [:]
     // Caches the last published timeline signature so no-op sync merges do not trigger UI work.
     var lastPublishedMessageSignatureByThread: [String: Int] = [:]
-    var historyStateByThread: [String: ThreadHistoryState] = [:]
     // Tracks locally started turns whose first realtime item may legitimately bridge over a server-seeded user cursor.
     var pendingRealtimeSeededTurnIDByThread: [String: String] = [:]
     // Keeps foreground aggressive polling scoped to active/recently-started Codex turns instead of every open thread.
@@ -299,12 +197,8 @@ final class CodeRoverService {
     var modelsErrorMessage: String?
     var notificationAuthorizationStatus: UNAuthorizationStatus = .notDetermined
     var pendingNotificationOpenThreadID: String?
-    var supportsStructuredSkillInput = true
-    // Runtime compatibility flag for `turn/start.collaborationMode` plan turns.
+    // Runtime compatibility flag for ACP plan-mode session configuration.
     var supportsTurnCollaborationMode = false
-    var rateLimitBuckets: [CodeRoverRateLimitBucket] = []
-    var isLoadingRateLimits = false
-    var rateLimitsErrorMessage: String?
     // User-initiated disconnects can request that the shell returns to the home screen.
     var shouldReturnHomeAfterDisconnect = false
 
@@ -385,11 +279,6 @@ final class CodeRoverService {
     var hydratedThreadIDs: Set<String> = []
     var loadingThreadIDs: Set<String> = []
     var resumedThreadIDs: Set<String> = []
-    var pendingRealtimeHistoryCatchUpThreadIDs: Set<String> = []
-    var realtimeHistoryCatchUpTaskByThread: [String: Task<Void, Never>] = [:]
-    var olderHistoryBackfillTaskByThread: [String: Task<Void, Never>] = [:]
-    var pendingHistoryChangedRefreshThreadIDs: Set<String> = []
-    var historyChangedRefreshTaskByThread: [String: Task<Void, Never>] = [:]
     var isAppInForeground = true
     var threadListSyncTask: Task<Void, Never>?
     var activeThreadSyncTask: Task<Void, Never>?
@@ -462,8 +351,6 @@ final class CodeRoverService {
                 }
             )
         }
-        self.historyStateByThread = loadedCache.historyStateByThread
-
         let loadedChangeSets = aiChangeSetPersistence.load()
         self.aiChangeSetsByID = loadedChangeSets.reduce(into: [:]) { partialResult, changeSet in
             partialResult[changeSet.id] = changeSet

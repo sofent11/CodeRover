@@ -9,7 +9,14 @@ import Foundation
 
 struct PersistedConversationCache: Codable {
     var messagesByThread: [String: [ChatMessage]]
-    var historyStateByThread: [String: ThreadHistoryState]
+}
+
+private struct LegacyPersistedConversationCache: Codable {
+    var messagesByThread: [String: [ChatMessage]]
+    var historyStateByThread: [String: LegacyIgnoredHistoryState]?
+}
+
+private struct LegacyIgnoredHistoryState: Codable {
 }
 
 struct MessagePersistence {
@@ -38,10 +45,14 @@ struct MessagePersistence {
                 if let envelope = try? decoder.decode(PersistedConversationCache.self, from: decrypted) {
                     return sanitizedForPersistence(envelope)
                 }
+                if let legacyEnvelope = try? decoder.decode(LegacyPersistedConversationCache.self, from: decrypted) {
+                    return PersistedConversationCache(
+                        messagesByThread: sanitizedForPersistence(legacyEnvelope.messagesByThread)
+                    )
+                }
                 if let legacyMessages = try? decoder.decode([String: [ChatMessage]].self, from: decrypted) {
                     return PersistedConversationCache(
-                        messagesByThread: sanitizedForPersistence(legacyMessages),
-                        historyStateByThread: [:]
+                        messagesByThread: sanitizedForPersistence(legacyMessages)
                     )
                 }
             }
@@ -49,27 +60,27 @@ struct MessagePersistence {
             if let envelope = try? decoder.decode(PersistedConversationCache.self, from: data) {
                 return sanitizedForPersistence(envelope)
             }
+            if let legacyEnvelope = try? decoder.decode(LegacyPersistedConversationCache.self, from: data) {
+                return PersistedConversationCache(
+                    messagesByThread: sanitizedForPersistence(legacyEnvelope.messagesByThread)
+                )
+            }
 
             if let legacyMessages = try? decoder.decode([String: [ChatMessage]].self, from: data) {
                 return PersistedConversationCache(
-                    messagesByThread: sanitizedForPersistence(legacyMessages),
-                    historyStateByThread: [:]
+                    messagesByThread: sanitizedForPersistence(legacyMessages)
                 )
             }
         }
 
-        return PersistedConversationCache(messagesByThread: [:], historyStateByThread: [:])
+        return PersistedConversationCache(messagesByThread: [:])
     }
 
     // Persists all thread timelines atomically to avoid corrupt partial writes.
-    func save(
-        messagesByThread: [String: [ChatMessage]],
-        historyStateByThread: [String: ThreadHistoryState]
-    ) {
+    func save(messagesByThread: [String: [ChatMessage]]) {
         let encoder = JSONEncoder()
         let envelope = PersistedConversationCache(
-            messagesByThread: sanitizedForPersistence(messagesByThread),
-            historyStateByThread: sanitizedHistoryStateForPersistence(historyStateByThread)
+            messagesByThread: sanitizedForPersistence(messagesByThread)
         )
         guard let plaintext = try? encoder.encode(envelope),
               let data = encryptPersistedPayload(plaintext) else {
@@ -137,19 +148,7 @@ struct MessagePersistence {
 
     private func sanitizedForPersistence(_ cache: PersistedConversationCache) -> PersistedConversationCache {
         PersistedConversationCache(
-            messagesByThread: sanitizedForPersistence(cache.messagesByThread),
-            historyStateByThread: sanitizedHistoryStateForPersistence(cache.historyStateByThread)
+            messagesByThread: sanitizedForPersistence(cache.messagesByThread)
         )
-    }
-
-    private func sanitizedHistoryStateForPersistence(
-        _ value: [String: ThreadHistoryState]
-    ) -> [String: ThreadHistoryState] {
-        value.mapValues { state in
-            var sanitized = state
-            sanitized.isLoadingOlder = false
-            sanitized.isTailRefreshing = false
-            return sanitized
-        }
     }
 }

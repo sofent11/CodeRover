@@ -2,14 +2,12 @@
 // Purpose: Renders the turn composer input, queued-draft actions, attachments, and send/stop controls.
 // Layer: View Component (orchestrator)
 // Exports: TurnComposerView
-// Depends on: SwiftUI, ComposerAttachmentsPreview, FileAutocompletePanel, SkillAutocompletePanel, ComposerBottomBar, QueuedDraftsPanel, FileMentionChip, TurnComposerInputTextView
+// Depends on: SwiftUI, ComposerAttachmentsPreview, ComposerBottomBar, QueuedDraftsPanel, TurnComposerInputTextView
 
 import SwiftUI
 import UIKit
 
 struct TurnComposerView: View {
-    @Environment(\.colorScheme) private var colorScheme
-
     @Binding var input: String
     let isInputFocused: Binding<Bool>
 
@@ -26,19 +24,7 @@ struct TurnComposerView: View {
     let steeringDraftID: String?
     let activeTurnID: String?
     let isThreadRunning: Bool
-    let composerMentionedFiles: [TurnComposerMentionedFile]
-    let composerMentionedSkills: [TurnComposerMentionedSkill]
-    let fileAutocompleteItems: [FuzzyFileMatch]
-    let isFileAutocompleteVisible: Bool
-    let isFileAutocompleteLoading: Bool
-    let fileAutocompleteQuery: String
-    let skillAutocompleteItems: [SkillMetadata]
-    let isSkillAutocompleteVisible: Bool
-    let isSkillAutocompleteLoading: Bool
-    let skillAutocompleteQuery: String
     let slashCommandPanelState: TurnComposerSlashCommandPanelState
-    let composerReviewSelection: TurnComposerReviewSelection?
-    let hasComposerContentConflictingWithReview: Bool
 
     let orderedModelOptions: [ModelOption]
     let selectedModelID: String?
@@ -77,16 +63,8 @@ struct TurnComposerView: View {
     let onSetPlanModeArmed: (Bool) -> Void
     let onRemoveAttachment: (String) -> Void
     let onStopTurn: (String?) -> Void
-    let onInputChangedForFileAutocomplete: (String) -> Void
-    let onInputChangedForSkillAutocomplete: (String) -> Void
     let onInputChangedForSlashCommandAutocomplete: (String) -> Void
-    let onSelectFileAutocomplete: (FuzzyFileMatch) -> Void
-    let onSelectSkillAutocomplete: (SkillMetadata) -> Void
     let onSelectSlashCommand: (TurnComposerSlashCommand) -> Void
-    let onSelectCodeReviewTarget: (TurnComposerReviewTarget) -> Void
-    let onRemoveMentionedFile: (String) -> Void
-    let onRemoveMentionedSkill: (String) -> Void
-    let onRemoveComposerReviewSelection: () -> Void
     let onPasteImageData: ([Data]) -> Void
     let onResumeQueue: () -> Void
     let onSteerQueuedDraft: (String) -> Void
@@ -102,35 +80,10 @@ struct TurnComposerView: View {
                 offlineComposerBanner
             }
 
-            if isFileAutocompleteVisible {
-                FileAutocompletePanel(
-                    items: fileAutocompleteItems,
-                    isLoading: isFileAutocompleteLoading,
-                    query: fileAutocompleteQuery,
-                    onSelect: onSelectFileAutocomplete
-                )
-            }
-
-            if isSkillAutocompleteVisible {
-                SkillAutocompletePanel(
-                    items: skillAutocompleteItems,
-                    isLoading: isSkillAutocompleteLoading,
-                    query: skillAutocompleteQuery,
-                    onSelect: onSelectSkillAutocomplete
-                )
-            }
-
             if slashCommandPanelState != .hidden {
                 SlashCommandAutocompletePanel(
                     state: slashCommandPanelState,
-                    hasComposerContentConflictingWithReview: hasComposerContentConflictingWithReview,
-                    showsGitBranchSelector: showsGitBranchSelector,
-                    isLoadingGitBranchTargets: isLoadingGitBranchTargets,
-                    selectedGitBaseBranch: selectedGitBaseBranch,
-                    gitDefaultBranch: gitDefaultBranch,
-                    onSelectCommand: onSelectSlashCommand,
-                    onSelectReviewTarget: onSelectCodeReviewTarget,
-                    onClose: onRemoveComposerReviewSelection
+                    onSelectCommand: onSelectSlashCommand
                 )
             }
 
@@ -167,47 +120,6 @@ struct TurnComposerView: View {
                     .padding(.bottom, 8)
                 }
 
-                if !composerMentionedFiles.isEmpty {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 6) {
-                            ForEach(composerMentionedFiles) { file in
-                                FileMentionChip(fileName: file.fileName) {
-                                    onRemoveMentionedFile(file.id)
-                                }
-                            }
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 16)
-                    .padding(.top, 10)
-                }
-
-                if !composerMentionedSkills.isEmpty {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 6) {
-                            ForEach(composerMentionedSkills) { skill in
-                                SkillMentionChip(skillName: skill.name) {
-                                    onRemoveMentionedSkill(skill.id)
-                                }
-                            }
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 16)
-                    .padding(.top, 8)
-                }
-
-                if let reviewSelection = composerReviewSelection {
-                    TurnComposerReviewSelectionChip(
-                        selection: reviewSelection,
-                        selectedGitBaseBranch: selectedGitBaseBranch,
-                        gitDefaultBranch: gitDefaultBranch,
-                        onRemove: onRemoveComposerReviewSelection
-                    )
-                    .padding(.horizontal, 16)
-                    .padding(.top, 8)
-                }
-
                 ZStack(alignment: .topLeading) {
                     if input.isEmpty {
                         Text("Ask for follow-up changes, or type / for Codex commands")
@@ -229,18 +141,9 @@ struct TurnComposerView: View {
                     .frame(height: composerInputHeight)
                 }
                 .padding(.horizontal, 16)
-                .padding(
-                    .top,
-                    composerAttachments.isEmpty
-                        && composerMentionedFiles.isEmpty
-                        && composerMentionedSkills.isEmpty
-                        && composerReviewSelection == nil
-                        ? 14 : 8
-                )
+                .padding(.top, composerAttachments.isEmpty ? 14 : 8)
                 .padding(.bottom, 12)
                 .onChange(of: input) { _, newValue in
-                    onInputChangedForFileAutocomplete(newValue)
-                    onInputChangedForSkillAutocomplete(newValue)
                     onInputChangedForSlashCommandAutocomplete(newValue)
                 }
 
@@ -428,67 +331,9 @@ struct TurnComposerView: View {
     private var branchChevronFont: Font { AppFont.system(size: 9, weight: .regular) }
 }
 
-private struct TurnComposerReviewSelectionChip: View {
-    let selection: TurnComposerReviewSelection
-    let selectedGitBaseBranch: String
-    let gitDefaultBranch: String
-    let onRemove: () -> Void
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "ladybug")
-                .font(AppFont.system(size: 12, weight: .semibold))
-                .foregroundStyle(Color(.systemOrange))
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Code Review")
-                    .font(AppFont.caption(weight: .semibold))
-                Text(subtitle)
-                    .font(AppFont.caption2())
-                    .foregroundStyle(.secondary)
-            }
-
-            Spacer(minLength: 8)
-
-            Button(action: onRemove) {
-                Image(systemName: "xmark")
-                    .font(AppFont.system(size: 10, weight: .bold))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 22, height: 22)
-                    .background(Color(.secondarySystemFill), in: Circle())
-            }
-            .buttonStyle(.plain)
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .background(Color(.secondarySystemFill), in: Capsule())
-    }
-
-    private var subtitle: String {
-        switch selection.target {
-        case .uncommittedChanges:
-            return "Review current local changes"
-        case .baseBranch:
-            let selectedBranch = selectedGitBaseBranch.trimmingCharacters(in: .whitespacesAndNewlines)
-            let defaultBranch = gitDefaultBranch.trimmingCharacters(in: .whitespacesAndNewlines)
-            let branch = !selectedBranch.isEmpty ? selectedBranch : (!defaultBranch.isEmpty ? defaultBranch : "base branch")
-            return "Review against \(branch)"
-        case .none:
-            return "Choose what the reviewer should compare"
-        }
-    }
-}
-
 private struct SlashCommandAutocompletePanel: View {
     let state: TurnComposerSlashCommandPanelState
-    let hasComposerContentConflictingWithReview: Bool
-    let showsGitBranchSelector: Bool
-    let isLoadingGitBranchTargets: Bool
-    let selectedGitBaseBranch: String
-    let gitDefaultBranch: String
     let onSelectCommand: (TurnComposerSlashCommand) -> Void
-    let onSelectReviewTarget: (TurnComposerReviewTarget) -> Void
-    let onClose: () -> Void
 
     private static let rowHeight: CGFloat = 50
     private static let maxVisibleRows = 6
@@ -500,8 +345,6 @@ private struct SlashCommandAutocompletePanel: View {
                 EmptyView()
             case .commands(let query):
                 commandList(query: query)
-            case .codeReviewTargets:
-                reviewTargetList
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -524,7 +367,6 @@ private struct SlashCommandAutocompletePanel: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     ForEach(items) { item in
-                        let isEnabled = isCommandEnabled(item)
                         Button {
                             HapticFeedback.shared.triggerImpactFeedback(style: .light)
                             onSelectCommand(item)
@@ -532,16 +374,16 @@ private struct SlashCommandAutocompletePanel: View {
                             HStack(spacing: 10) {
                                 Image(systemName: item.symbolName)
                                     .font(AppFont.system(size: 15, weight: .semibold))
-                                    .foregroundStyle(isEnabled ? .primary : .secondary)
+                                    .foregroundStyle(.primary)
                                     .frame(width: 22)
 
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text(item.title)
                                         .font(AppFont.subheadline(weight: .semibold))
-                                        .foregroundStyle(isEnabled ? .primary : .secondary)
+                                        .foregroundStyle(.primary)
                                         .lineLimit(1)
 
-                                    Text(commandSubtitle(for: item))
+                                    Text(item.subtitle)
                                         .font(AppFont.caption2())
                                         .foregroundStyle(.secondary)
                                         .lineLimit(1)
@@ -560,122 +402,12 @@ private struct SlashCommandAutocompletePanel: View {
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(AutocompleteRowButtonStyle())
-                        .disabled(!isEnabled)
                     }
                 }
             }
             .scrollIndicators(.visible)
             .frame(maxHeight: Self.rowHeight * CGFloat(min(items.count, Self.maxVisibleRows)))
         }
-    }
-
-    private var reviewTargetList: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 10) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Code Review")
-                        .font(AppFont.subheadline(weight: .semibold))
-                    Text("Choose what the reviewer should compare.")
-                        .font(AppFont.caption())
-                        .foregroundStyle(.secondary)
-                }
-
-                Spacer(minLength: 8)
-
-                Button(action: onClose) {
-                    Image(systemName: "xmark")
-                        .font(AppFont.system(size: 11, weight: .bold))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 28, height: 28)
-                        .background(Color(.secondarySystemFill), in: Circle())
-                }
-                .buttonStyle(.plain)
-            }
-            .padding(.horizontal, 12)
-            .padding(.top, 10)
-            .padding(.bottom, 6)
-
-            reviewTargetButton(
-                target: .uncommittedChanges,
-                subtitle: "Review everything currently modified in the repo",
-                isEnabled: true
-            )
-
-            if showsGitBranchSelector {
-                reviewTargetButton(
-                    target: .baseBranch,
-                    subtitle: baseBranchSubtitle,
-                    isEnabled: isBaseBranchTargetAvailable
-                )
-            }
-        }
-    }
-
-    private func reviewTargetButton(
-        target: TurnComposerReviewTarget,
-        subtitle: String,
-        isEnabled: Bool
-    ) -> some View {
-        Button {
-            HapticFeedback.shared.triggerImpactFeedback(style: .light)
-            onSelectReviewTarget(target)
-        } label: {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(target.title)
-                    .font(AppFont.subheadline(weight: .semibold))
-                    .foregroundStyle(isEnabled ? .primary : .secondary)
-                Text(subtitle)
-                    .font(AppFont.caption2())
-                    .foregroundStyle(.secondary)
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .frame(height: Self.rowHeight)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(AutocompleteRowButtonStyle())
-        .disabled(!isEnabled)
-    }
-
-    private var resolvedBaseBranchName: String? {
-        let trimmedSelected = selectedGitBaseBranch.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmedSelected.isEmpty {
-            return trimmedSelected
-        }
-
-        let trimmedDefault = gitDefaultBranch.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmedDefault.isEmpty ? nil : trimmedDefault
-    }
-
-    private var isBaseBranchTargetAvailable: Bool {
-        resolvedBaseBranchName != nil
-    }
-
-    private var baseBranchSubtitle: String {
-        if let resolvedBaseBranchName {
-            return "Diff against \(resolvedBaseBranchName)"
-        }
-        if isLoadingGitBranchTargets {
-            return "Loading base branches..."
-        }
-        return "Pick a base branch first"
-    }
-
-    private func isCommandEnabled(_ command: TurnComposerSlashCommand) -> Bool {
-        switch command {
-        case .codeReview:
-            return !hasComposerContentConflictingWithReview
-        case .status:
-            return true
-        }
-    }
-
-    private func commandSubtitle(for command: TurnComposerSlashCommand) -> String {
-        guard isCommandEnabled(command) else {
-            return "Clear draft text, files, skills, and images first"
-        }
-        return command.subtitle
     }
 }
 
@@ -713,19 +445,7 @@ private struct QueuedDraftsPanelPreviewWrapper: View {
                 steeringDraftID: nil,
                 activeTurnID: nil,
                 isThreadRunning: true,
-                composerMentionedFiles: [],
-                composerMentionedSkills: [],
-                fileAutocompleteItems: [],
-                isFileAutocompleteVisible: false,
-                isFileAutocompleteLoading: false,
-                fileAutocompleteQuery: "",
-                skillAutocompleteItems: [],
-                isSkillAutocompleteVisible: false,
-                isSkillAutocompleteLoading: false,
-                skillAutocompleteQuery: "",
                 slashCommandPanelState: .hidden,
-                composerReviewSelection: nil,
-                hasComposerContentConflictingWithReview: false,
                 orderedModelOptions: [],
                 selectedModelID: nil,
                 selectedModelTitle: "GPT-5.3-Codex",
@@ -759,16 +479,8 @@ private struct QueuedDraftsPanelPreviewWrapper: View {
                 onSetPlanModeArmed: { _ in },
                 onRemoveAttachment: { _ in },
                 onStopTurn: { _ in },
-                onInputChangedForFileAutocomplete: { _ in },
-                onInputChangedForSkillAutocomplete: { _ in },
                 onInputChangedForSlashCommandAutocomplete: { _ in },
-                onSelectFileAutocomplete: { _ in },
-                onSelectSkillAutocomplete: { _ in },
                 onSelectSlashCommand: { _ in },
-                onSelectCodeReviewTarget: { _ in },
-                onRemoveMentionedFile: { _ in },
-                onRemoveMentionedSkill: { _ in },
-                onRemoveComposerReviewSelection: {},
                 onPasteImageData: { _ in },
                 onResumeQueue: {},
                 onSteerQueuedDraft: { _ in },

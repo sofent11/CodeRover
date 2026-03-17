@@ -63,13 +63,7 @@ extension CodeRoverService {
             if lastErrorMessage == "The Mac bridge did not respond in time. Reconnect and try again." {
                 lastErrorMessage = nil
             }
-            continuation.resume(
-                returning: translateACPResponseIfNeeded(
-                    originalMethod: requestContext?.method ?? "",
-                    originalParams: requestContext?.params,
-                    response: message
-                )
-            )
+            continuation.resume(returning: message)
         }
     }
 
@@ -88,50 +82,6 @@ extension CodeRoverService {
                 requestID: requestID,
                 paramsObject: params?.objectValue
             )
-            return
-        }
-
-        if method == "item/tool/requestUserInput" {
-            handleStructuredUserInputRequest(
-                requestID: requestID,
-                paramsObject: params?.objectValue
-            )
-            return
-        }
-
-        if method == "item/commandExecution/requestApproval"
-            || method == "item/fileChange/requestApproval"
-            || method.hasSuffix("requestApproval") {
-            let paramsObject = params?.objectValue
-            let request = CodeRoverApprovalRequest(
-                id: idKey(from: requestID),
-                requestID: requestID,
-                method: method,
-                command: paramsObject?["command"]?.stringValue,
-                reason: paramsObject?["reason"]?.stringValue,
-                threadId: paramsObject?["threadId"]?.stringValue,
-                turnId: paramsObject?["turnId"]?.stringValue,
-                params: params
-            )
-
-            if selectedAccessMode == .fullAccess {
-                Task { @MainActor [weak self] in
-                    guard let self else { return }
-                    do {
-                        debugRuntimeLog("auto-approve triggered method=\(method)")
-                        try await sendResponse(
-                            id: requestID,
-                            result: .string("accept")
-                        )
-                    } catch {
-                        debugRuntimeLog("auto-approve failed method=\(method): \(error.localizedDescription)")
-                        pendingApproval = request
-                    }
-                }
-                return
-            }
-
-            pendingApproval = request
             return
         }
 
@@ -156,42 +106,6 @@ extension CodeRoverService {
         case "session/update":
             handleACPSessionUpdate(paramsObject)
 
-        case "thread/started":
-            handleThreadStarted(paramsObject)
-
-        case "thread/name/updated":
-            handleThreadNameUpdated(paramsObject)
-
-        case "thread/status/changed":
-            handleThreadStatusChanged(paramsObject)
-
-        case "thread/history/changed":
-            handleThreadHistoryChanged(paramsObject)
-
-        case "timeline/turnUpdated":
-            handleCanonicalTimelineTurnUpdated(paramsObject)
-
-        case "timeline/itemStarted":
-            handleCanonicalTimelineItemEvent(paramsObject, eventKind: .started)
-
-        case "timeline/itemTextUpdated":
-            handleCanonicalTimelineItemEvent(paramsObject, eventKind: .textUpdated)
-
-        case "timeline/itemCompleted":
-            handleCanonicalTimelineItemEvent(paramsObject, eventKind: .completed)
-
-        case "thread/tokenUsage/updated":
-            handleThreadTokenUsageUpdated(paramsObject)
-
-        case "account/rateLimits/updated":
-            handleRateLimitsUpdated(paramsObject)
-
-        case "error", "turn/failed":
-            handleErrorNotification(paramsObject)
-
-        case "serverRequest/resolved":
-            handleServerRequestResolved(paramsObject)
-
         default:
             return
         }
@@ -212,7 +126,7 @@ extension CodeRoverService {
     }
 
     // Mirrors desktop behavior: when server pushes a thread rename, update local
-    // title immediately instead of waiting for the next thread/list refresh.
+    // title immediately instead of waiting for the next session-list refresh.
     private func handleThreadNameUpdated(_ paramsObject: IncomingParamsObject?) {
         guard let paramsObject else {
             return
@@ -266,6 +180,7 @@ extension CodeRoverService {
         let threadId = resolveThreadID(from: paramsObject)
         let turnID = extractTurnIDForTurnLifecycleEvent(from: paramsObject)
         debugRuntimeLog("turn started thread=\(threadId ?? "none") turn=\(turnID ?? "none")")
+        let isHydratingTranscriptReplay = threadId.map { loadingThreadIDs.contains($0) } ?? false
 
         if let threadId {
             markThreadAsRunning(threadId)
@@ -293,7 +208,9 @@ extension CodeRoverService {
             activeTurnId = turnID
         }
 
-        requestImmediateSync(threadId: threadId ?? activeThreadId)
+        if !isHydratingTranscriptReplay {
+            requestImmediateSync(threadId: threadId ?? activeThreadId)
+        }
     }
 
     func handleTurnCompleted(_ paramsObject: IncomingParamsObject?) {
@@ -313,6 +230,7 @@ extension CodeRoverService {
                 from: paramsObject,
                 turnFailureMessage: turnFailureMessage
             )
+            let isHydratingTranscriptReplay = loadingThreadIDs.contains(threadId)
             let hasPendingStructuredInput = hasPendingStructuredUserInputPrompt(
                 threadId: threadId,
                 turnId: resolvedTurnID
@@ -320,14 +238,16 @@ extension CodeRoverService {
             recordTurnTerminalState(threadId: threadId, turnId: resolvedTurnID, state: terminalState)
             noteTurnFinished(turnId: resolvedTurnID)
             markTurnCompleted(threadId: threadId, turnId: resolvedTurnID)
-            if terminalState == .completed, !hasPendingStructuredInput {
+            if terminalState == .completed, !hasPendingStructuredInput, !isHydratingTranscriptReplay {
                 markReadyIfUnread(threadId: threadId)
                 notifyRunCompletionIfNeeded(threadId: threadId, turnId: resolvedTurnID, result: .completed)
-            } else if terminalState == .failed {
+            } else if terminalState == .failed, !isHydratingTranscriptReplay {
                 markFailedIfUnread(threadId: threadId)
                 notifyRunCompletionIfNeeded(threadId: threadId, turnId: resolvedTurnID, result: .failed)
             }
-            requestImmediateSync(threadId: threadId)
+            if !isHydratingTranscriptReplay {
+                requestImmediateSync(threadId: threadId)
+            }
 
             guard let turnFailureMessage else {
                 return
@@ -574,15 +494,6 @@ extension CodeRoverService {
         }
 
         let sourceMethod = firstStringValue(in: paramsObject, keys: ["sourceMethod", "rawMethod"]) ?? "unknown"
-        if sourceMethod == "thread/read" {
-            debugRuntimeLog(
-                "thread history changed refresh thread=\(threadId) "
-                + "source=\(sourceMethod) mode=tail"
-            )
-            scheduleThreadHistoryCatchUp(threadId: threadId)
-            return
-        }
-
         let eventObject = envelopeEventObject(from: paramsObject)
         let advancedRealtimeCursor = handleRealtimeHistoryEvent(
             threadId: threadId,
@@ -1052,8 +963,8 @@ extension CodeRoverService {
         paramsObject?["msg"]?.objectValue ?? paramsObject?["event"]?.objectValue
     }
 
-    // Turn lifecycle notifications sometimes carry the turn id as top-level `id`.
-    // Accept that shape only for turn/started and turn/completed handling.
+    // Some lifecycle payloads still carry the turn id as top-level `id`.
+    // Keep this fallback only for run-state synthesis around ACP session updates.
     private func extractTurnIDForTurnLifecycleEvent(from paramsObject: IncomingParamsObject?) -> String? {
         if let turnID = extractTurnID(from: paramsObject) {
             return turnID

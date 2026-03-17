@@ -1,7 +1,7 @@
 // FILE: CodeRoverService+AcpAdapter.swift
-// Purpose: Translates legacy service RPC usage onto ACP session APIs and `_coderover/*` extensions.
-// Layer: Service adapter
-// Exports: CodeRoverService ACP request/response + inbound update helpers
+// Purpose: ACP-native session mapping, prompt encoding, and inbound update helpers.
+// Layer: Service support
+// Exports: CodeRoverService ACP helpers
 // Depends on: CodeRoverService state, RPCMessage, JSONValue
 
 import Foundation
@@ -11,11 +11,6 @@ private let acpHistoryFormatter: ISO8601DateFormatter = {
     formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
     return formatter
 }()
-
-struct ACPWireRequest {
-    let method: String
-    let params: JSONValue?
-}
 
 extension CodeRoverService {
     func syncACPSessionConfiguration(
@@ -64,254 +59,208 @@ extension CodeRoverService {
         }
     }
 
-    func translateLegacyRequestToACP(method: String, params: JSONValue?) -> ACPWireRequest {
-        let paramsObject = params?.objectValue ?? [:]
+    func buildACPPromptBlocks(
+        userInput: String,
+        attachments: [ImageAttachment]
+    ) -> [JSONValue] {
+        var promptBlocks: [JSONValue] = []
 
-        if method == "runtime/provider/list" {
-            return ACPWireRequest(method: "_coderover/agent/list", params: params)
+        for attachment in attachments {
+            guard let payloadDataURL = attachment.payloadDataURL,
+                  let imageBlock = buildACPImageBlock(from: payloadDataURL) else {
+                continue
+            }
+            promptBlocks.append(imageBlock)
         }
 
-        if method == "model/list" {
-            return ACPWireRequest(method: "_coderover/model/list", params: translateProviderSelectorParams(paramsObject))
-        }
-
-        if method == "skills/list" {
-            return ACPWireRequest(method: "_coderover/skills/list", params: params)
-        }
-
-        if method == "fuzzyFileSearch" {
-            return ACPWireRequest(method: "_coderover/fuzzy_file_search", params: params)
-        }
-
-        if method.hasPrefix("git/") {
-            return ACPWireRequest(
-                method: "_coderover/\(method)",
-                params: params
-            )
-        }
-
-        if method.hasPrefix("workspace/") {
-            return ACPWireRequest(
-                method: "_coderover/\(method)",
-                params: params
-            )
-        }
-
-        if method.hasPrefix("desktop/") {
-            return ACPWireRequest(
-                method: "_coderover/\(method)",
-                params: params
-            )
-        }
-
-        if method == "thread/contextWindow/read" {
-            return ACPWireRequest(
-                method: "_coderover/context_window/read",
-                params: .object([
-                    "sessionId": paramsObject["threadId"] ?? paramsObject["thread_id"] ?? .null,
-                    "turnId": paramsObject["turnId"] ?? paramsObject["turn_id"] ?? .null,
+        let trimmedText = userInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedText.isEmpty {
+            promptBlocks.append(
+                .object([
+                    "type": .string("text"),
+                    "text": .string(trimmedText),
                 ])
             )
         }
 
-        if method == "thread/list" {
-            var acpParams = paramsObject
-            if let archived = paramsObject["archived"] {
-                acpParams["_meta"] = .object([
-                    "coderover": .object([
-                        "archived": archived,
-                    ]),
-                ])
-                acpParams.removeValue(forKey: "archived")
-            }
-            return ACPWireRequest(method: "session/list", params: .object(acpParams))
-        }
-
-        if method == "thread/start" {
-            let provider = paramsObject["provider"]?.stringValue ?? selectedProviderID
-            var metaCoderover: RPCObject = [
-                "agentId": .string(runtimeProviderID(for: provider)),
-            ]
-            if let model = paramsObject["model"]?.stringValue,
-               !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                metaCoderover["model"] = .string(model)
-            }
-            var acpParams: RPCObject = [
-                "_meta": .object([
-                    "coderover": .object(metaCoderover),
-                ]),
-            ]
-            if let cwd = paramsObject["cwd"] ?? paramsObject["currentWorkingDirectory"] {
-                acpParams["cwd"] = cwd
-            }
-            if let model = paramsObject["model"] {
-                acpParams["modelId"] = model
-            }
-            return ACPWireRequest(method: "session/new", params: .object(acpParams))
-        }
-
-        if method == "thread/resume" {
-            let sessionId = paramsObject["threadId"] ?? paramsObject["thread_id"] ?? .null
-            let threadID = paramsObject["threadId"]?.stringValue ?? paramsObject["thread_id"]?.stringValue
-            let shouldWarmResume = shouldPreferACPWarmResume(threadId: threadID)
-            return ACPWireRequest(
-                method: shouldWarmResume ? "session/resume" : "session/load",
-                params: .object([
-                    "sessionId": sessionId,
-                    "modelId": paramsObject["model"] ?? .null,
-                ])
-            )
-        }
-
-        if method == "thread/read" {
-            let sessionId = paramsObject["threadId"] ?? paramsObject["thread_id"] ?? .null
-            let includeTurns = paramsObject["includeTurns"]?.boolValue ?? true
-            let historyMode = paramsObject["history"]?.objectValue?["mode"]?.stringValue
-            let wireMethod =
-                (!includeTurns && historyMode == nil)
-                ? "session/resume"
-                : "session/load"
-            return ACPWireRequest(
-                method: wireMethod,
-                params: .object([
-                    "sessionId": sessionId,
-                ])
-            )
-        }
-
-        if method == "turn/start" || method == "turn/steer" {
-            let sessionId = paramsObject["threadId"] ?? paramsObject["thread_id"] ?? .null
-            let promptBlocks = translateLegacyInputItemsToAcpPrompt(paramsObject["input"]?.arrayValue ?? [])
-            var acpParams: RPCObject = [
-                "sessionId": sessionId,
-                "prompt": .array(promptBlocks),
-            ]
-            if let messageId = paramsObject["messageId"] {
-                acpParams["messageId"] = messageId
-            }
-            if let model = paramsObject["model"] {
-                acpParams["modelId"] = model
-            }
-            if let effort = paramsObject["effort"] {
-                acpParams["_meta"] = .object([
-                    "coderover": .object([
-                        "reasoningEffort": effort,
-                    ]),
-                ])
-            }
-            return ACPWireRequest(method: "session/prompt", params: .object(acpParams))
-        }
-
-        if method == "thread/name/set" {
-            return ACPWireRequest(
-                method: "_coderover/session/set_title",
-                params: .object([
-                    "sessionId": paramsObject["threadId"] ?? paramsObject["thread_id"] ?? .null,
-                    "title": paramsObject["name"] ?? .null,
-                ])
-            )
-        }
-
-        if method == "thread/archive" || method == "thread/unarchive" {
-            return ACPWireRequest(
-                method: method == "thread/archive"
-                    ? "_coderover/session/archive"
-                    : "_coderover/session/unarchive",
-                params: .object([
-                    "sessionId": paramsObject["threadId"] ?? paramsObject["thread_id"] ?? .null,
-                ])
-            )
-        }
-
-        return ACPWireRequest(method: method, params: params)
+        return promptBlocks
     }
 
-    func translateACPResponseIfNeeded(
-        originalMethod: String,
-        originalParams: JSONValue?,
-        response: RPCMessage
-    ) -> RPCMessage {
-        guard response.error == nil else {
-            return response
+    func decodeAcpProviders(from result: JSONValue?) -> [RuntimeProvider] {
+        let items = result?.objectValue?["agents"]?.arrayValue ?? []
+        return items.compactMap { value in
+            guard let object = value.objectValue else {
+                return nil
+            }
+
+            let id = normalizedIdentifier(object["id"]?.stringValue) ?? "codex"
+            let title = normalizedIdentifier(object["name"]?.stringValue) ?? id.capitalized
+            let coderoverMeta = object["_meta"]?.objectValue?["coderover"]?.objectValue
+            let capabilities = coderoverMeta?["supports"].flatMap { decodeModel(RuntimeCapabilities.self, from: $0) }
+                ?? availableProviders.first(where: { $0.id == id })?.supports
+                ?? .codexDefault
+            let defaultModelId = normalizedIdentifier(coderoverMeta?["defaultModelId"]?.stringValue)
+
+            return RuntimeProvider(
+                id: id,
+                title: title,
+                supports: capabilities,
+                accessModes: defaultRuntimeAccessModes(),
+                defaultModelId: defaultModelId
+            )
+        }
+    }
+
+    func decodeAcpModelOptions(from result: JSONValue?) -> [ModelOption] {
+        let object = result?.objectValue
+        let items = object?["items"]?.arrayValue ?? object?["models"]?.arrayValue ?? []
+
+        return items.compactMap { value in
+            if let object = value.objectValue,
+               let coderoverRecord = object["_meta"]?.objectValue?["coderover"]?.objectValue,
+               let decoded = decodeModel(ModelOption.self, from: .object(coderoverRecord)) {
+                return decoded
+            }
+
+            guard let object = value.objectValue else {
+                return nil
+            }
+
+            let modelId = normalizedIdentifier(object["modelId"]?.stringValue)
+                ?? normalizedIdentifier(object["id"]?.stringValue)
+                ?? normalizedIdentifier(object["model"]?.stringValue)
+                ?? "model"
+            let displayName = normalizedIdentifier(object["name"]?.stringValue)
+                ?? normalizedIdentifier(object["displayName"]?.stringValue)
+                ?? modelId
+            let description = normalizedIdentifier(object["description"]?.stringValue) ?? ""
+            let currentDefault = object["isDefault"]?.boolValue ?? false
+
+            return ModelOption(
+                id: modelId,
+                model: modelId,
+                displayName: displayName,
+                description: description,
+                isDefault: currentDefault,
+                supportedReasoningEfforts: defaultReasoningEfforts(),
+                defaultReasoningEffort: defaultReasoningEfforts().first?.reasoningEffort
+            )
+        }
+    }
+
+    func decodeAcpSessionInfo(from value: JSONValue) -> ConversationThread? {
+        guard let object = value.objectValue else {
+            return nil
         }
 
-        switch originalMethod {
-        case "runtime/provider/list":
-            return RPCMessage(
-                id: response.id,
-                result: .object([
-                    "providers": .array(buildLegacyProviders(from: response.result)),
-                ]),
-                includeJSONRPC: false
-            )
-
-        case "model/list":
-            return RPCMessage(
-                id: response.id,
-                result: .object([
-                    "items": .array(buildLegacyModelItems(from: response.result)),
-                ]),
-                includeJSONRPC: false
-            )
-
-        case "thread/list":
-            return RPCMessage(
-                id: response.id,
-                result: .object(buildLegacyThreadListResult(from: response.result)),
-                includeJSONRPC: false
-            )
-
-        case "thread/start":
-            if let resultObject = response.result?.objectValue,
-               let threadValue = buildLegacyThreadSummary(from: resultObject) {
-                return RPCMessage(
-                    id: response.id,
-                    result: .object([
-                        "thread": threadValue,
-                    ]),
-                    includeJSONRPC: false
-                )
-            }
-            return response
-
-        case "thread/read", "thread/resume":
-            guard let paramsObject = originalParams?.objectValue,
-                  let threadId = normalizedIdentifier(
-                    paramsObject["threadId"]?.stringValue ?? paramsObject["thread_id"]?.stringValue
-                  ) else {
-                return response
-            }
-            let includeTurns = paramsObject["includeTurns"]?.boolValue ?? true
-            let threadValue = buildSyntheticLegacyThreadValue(threadId: threadId, includeTurns: includeTurns)
-            return RPCMessage(
-                id: response.id,
-                result: .object([
-                    "thread": threadValue,
-                    "historyWindow": .object([
-                        "hasOlder": .bool(false),
-                        "hasNewer": .bool(false),
-                    ]),
-                ]),
-                includeJSONRPC: false
-            )
-
-        case "turn/start", "turn/steer":
-            let paramsObject = originalParams?.objectValue
-            let threadId = normalizedIdentifier(
-                paramsObject?["threadId"]?.stringValue ?? paramsObject?["thread_id"]?.stringValue
-            )
-            var resultObject: RPCObject = [:]
-            if let threadId {
-                resultObject["threadId"] = .string(threadId)
-                if let turnId = activeTurnIdByThread[threadId] {
-                    resultObject["turnId"] = .string(turnId)
-                }
-            }
-            return RPCMessage(id: response.id, result: .object(resultObject), includeJSONRPC: false)
-
-        default:
-            return response
+        let sessionId = normalizedIdentifier(object["sessionId"]?.stringValue)
+            ?? normalizedIdentifier(object["id"]?.stringValue)
+        guard let sessionId else {
+            return nil
         }
+
+        let coderoverMeta = object["_meta"]?.objectValue?["coderover"]?.objectValue
+        let provider = normalizedIdentifier(coderoverMeta?["agentId"]?.stringValue) ?? "codex"
+        let title = normalizedIdentifier(object["title"]?.stringValue)
+        let updatedAt = object["updatedAt"]?.stringValue.flatMap(parseACPISO8601Date)
+        let archived = object["archived"]?.boolValue
+            ?? coderoverMeta?["archived"]?.boolValue
+            ?? false
+        let capabilities = coderoverMeta?["capabilities"].flatMap { decodeModel(RuntimeCapabilities.self, from: $0) }
+            ?? availableProviders.first(where: { $0.id == provider })?.supports
+            ?? .codexDefault
+
+        var metadata: [String: JSONValue] = [:]
+        if let providerTitle = availableProviders.first(where: { $0.id == provider })?.title {
+            metadata["providerTitle"] = .string(providerTitle)
+        }
+
+        return ConversationThread(
+            id: sessionId,
+            title: title,
+            name: title,
+            preview: normalizedIdentifier(coderoverMeta?["preview"]?.stringValue),
+            createdAt: nil,
+            updatedAt: updatedAt,
+            cwd: normalizedIdentifier(object["cwd"]?.stringValue),
+            provider: provider,
+            providerSessionId: normalizedIdentifier(coderoverMeta?["providerSessionId"]?.stringValue),
+            capabilities: capabilities,
+            metadata: metadata.isEmpty ? nil : metadata,
+            syncState: archived ? .archivedLocal : .live
+        )
+    }
+
+    @discardableResult
+    func applyAcpSessionState(
+        sessionId: String,
+        stateObject: RPCObject,
+        preferredProjectPath: String? = nil,
+        title: String? = nil,
+        providerHint: String? = nil
+    ) -> ConversationThread {
+        let coderoverMeta = stateObject["_meta"]?.objectValue?["coderover"]?.objectValue
+        let provider = normalizedIdentifier(coderoverMeta?["agentId"]?.stringValue)
+            ?? normalizedIdentifier(providerHint)
+            ?? threads.first(where: { $0.id == sessionId })?.provider
+            ?? "codex"
+        let existingThread = threads.first(where: { $0.id == sessionId })
+        let modes = stateObject["modes"]?.objectValue
+        let availableModes = modes?["availableModes"]?.arrayValue ?? []
+        let supportsPlan = availableModes.contains { modeValue in
+            normalizedIdentifier(modeValue.objectValue?["id"]?.stringValue) == CollaborationModeModeKind.plan.rawValue
+        }
+        let baseCapabilities = existingThread?.capabilities
+            ?? availableProviders.first(where: { $0.id == provider })?.supports
+            ?? .codexDefault
+        let capabilities = RuntimeCapabilities(
+            planMode: supportsPlan || baseCapabilities.planMode,
+            structuredUserInput: baseCapabilities.structuredUserInput,
+            inlineApproval: baseCapabilities.inlineApproval,
+            turnSteer: false,
+            reasoningOptions: baseCapabilities.reasoningOptions,
+            desktopRefresh: baseCapabilities.desktopRefresh,
+            desktopRestart: baseCapabilities.desktopRestart
+        )
+
+        let resolvedTitle = normalizedIdentifier(title)
+            ?? existingThread?.title
+            ?? existingThread?.name
+        let resolvedCwd = preferredProjectPath
+            ?? existingThread?.cwd
+
+        let currentModelId = normalizedIdentifier(
+            stateObject["models"]?.objectValue?["currentModelId"]?.stringValue
+        )
+        let currentModeId = normalizedIdentifier(modes?["currentModeId"]?.stringValue)
+
+        var metadata = existingThread?.metadata ?? [:]
+        if let providerTitle = availableProviders.first(where: { $0.id == provider })?.title {
+            metadata["providerTitle"] = .string(providerTitle)
+        }
+        if let currentModelId {
+            metadata["currentModelId"] = .string(currentModelId)
+        }
+        if let currentModeId {
+            metadata["currentModeId"] = .string(currentModeId)
+        }
+
+        let thread = ConversationThread(
+            id: sessionId,
+            title: resolvedTitle,
+            name: resolvedTitle,
+            preview: existingThread?.preview,
+            createdAt: existingThread?.createdAt,
+            updatedAt: existingThread?.updatedAt ?? Date(),
+            cwd: resolvedCwd,
+            provider: provider,
+            providerSessionId: existingThread?.providerSessionId,
+            capabilities: capabilities,
+            metadata: metadata.isEmpty ? nil : metadata,
+            syncState: existingThread?.syncState ?? .live
+        )
+        upsertThread(thread)
+        return thread
     }
 
     func handleACPSessionUpdate(_ paramsObject: IncomingParamsObject?) {
@@ -361,6 +310,12 @@ extension CodeRoverService {
 
         case "usage_update":
             handleACPUsageUpdate(sessionId: sessionId, updateObject: updateObject)
+
+        case "current_mode_update":
+            _ = applyAcpSessionState(sessionId: sessionId, stateObject: ["modes": .object(updateObject)])
+
+        case "config_option_update":
+            _ = applyAcpSessionState(sessionId: sessionId, stateObject: ["configOptions": updateObject["configOptions"] ?? .array([])])
 
         default:
             return
@@ -451,379 +406,18 @@ extension CodeRoverService {
             requestID: requestID
         )
     }
-}
-
-private extension CodeRoverService {
-    func translateProviderSelectorParams(_ paramsObject: RPCObject) -> JSONValue {
-        guard let provider = paramsObject["provider"] else {
-            return .object(paramsObject)
-        }
-        var translated = paramsObject
-        translated["_meta"] = .object([
-            "coderover": .object([
-                "agentId": provider,
-            ]),
-        ])
-        return .object(translated)
-    }
-
-    func shouldPreferACPWarmResume(threadId: String?) -> Bool {
-        guard let threadId else { return false }
-        let hasMessages = !(messagesByThread[threadId] ?? []).isEmpty
-        return resumedThreadIDs.contains(threadId) && hydratedThreadIDs.contains(threadId) && hasMessages
-    }
-
-    func translateLegacyInputItemsToAcpPrompt(_ items: [JSONValue]) -> [JSONValue] {
-        items.compactMap { item in
-            guard let object = item.objectValue,
-                  let type = normalizedIdentifier(object["type"]?.stringValue) else {
-                return nil
-            }
-
-            switch type {
-            case "text":
-                guard let text = normalizedIdentifier(object["text"]?.stringValue) else { return nil }
-                return .object([
-                    "type": .string("text"),
-                    "text": .string(text),
-                ])
-
-            case "image":
-                guard let rawValue = object["url"]?.stringValue ?? object["image_url"]?.stringValue,
-                      let imageBlock = buildACPImageBlock(from: rawValue) else {
-                    return nil
-                }
-                return imageBlock
-
-            case "skill":
-                let id = normalizedIdentifier(object["id"]?.stringValue) ?? "skill"
-                let name = normalizedIdentifier(object["name"]?.stringValue) ?? id
-                let uri = normalizedIdentifier(object["path"]?.stringValue) ?? "skill://\(id)"
-                return .object([
-                    "type": .string("resource_link"),
-                    "uri": .string(uri),
-                    "name": .string(name),
-                    "title": .string(name),
-                    "_meta": .object([
-                        "coderover": .object([
-                            "inputType": .string("skill"),
-                            "id": .string(id),
-                            "path": .string(uri),
-                        ]),
-                    ]),
-                ])
-
-            default:
-                return nil
-            }
-        }
-    }
-
-    func buildACPImageBlock(from rawValue: String) -> JSONValue? {
-        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            return nil
-        }
-
-        if let (mimeType, data) = parseDataURL(trimmed) {
-            return .object([
-                "type": .string("image"),
-                "data": .string(data),
-                "mimeType": .string(mimeType),
-            ])
-        }
-
-        return .object([
-            "type": .string("resource_link"),
-            "uri": .string(trimmed),
-            "name": .string((trimmed as NSString).lastPathComponent.isEmpty ? trimmed : (trimmed as NSString).lastPathComponent),
-            "title": .string(trimmed),
-            "_meta": .object([
-                "coderover": .object([
-                    "inputType": .string("local_image"),
-                    "path": .string(trimmed),
-                ]),
-            ]),
-        ])
-    }
-
-    func parseDataURL(_ value: String) -> (mimeType: String, data: String)? {
-        guard value.hasPrefix("data:"),
-              let separator = value.range(of: ";base64,") else {
-            return nil
-        }
-
-        let mimeStart = value.index(value.startIndex, offsetBy: 5)
-        let mimeType = String(value[mimeStart..<separator.lowerBound])
-        let dataStart = separator.upperBound
-        let data = String(value[dataStart...])
-        guard !mimeType.isEmpty, !data.isEmpty else {
-            return nil
-        }
-        return (mimeType, data)
-    }
-
-    func buildLegacyProviders(from result: JSONValue?) -> [JSONValue] {
-        let items = result?.objectValue?["agents"]?.arrayValue ?? []
-        return items.compactMap { value in
-            guard let object = value.objectValue else { return nil }
-            let coderoverMeta = object["_meta"]?.objectValue?["coderover"]?.objectValue
-            let supports = coderoverMeta?["supports"] ?? .object([:])
-            return .object([
-                "id": object["id"] ?? .string("codex"),
-                "title": object["name"] ?? object["title"] ?? .string("Codex"),
-                "supports": supports,
-                "accessModes": .array([
-                    .object(["id": .string("on-request"), "title": .string("On-Request")]),
-                    .object(["id": .string("full-access"), "title": .string("Full access")]),
-                ]),
-                "defaultModelId": coderoverMeta?["defaultModelId"] ?? .null,
-            ])
-        }
-    }
-
-    func buildLegacyModelItems(from result: JSONValue?) -> [JSONValue] {
-        result?.objectValue?["items"]?.arrayValue
-            ?? result?.objectValue?["models"]?.arrayValue
-            ?? []
-    }
-
-    func buildLegacyThreadListResult(from result: JSONValue?) -> RPCObject {
-        let sessions = result?.objectValue?["sessions"]?.arrayValue ?? []
-        let threads = sessions.compactMap { value -> JSONValue? in
-            guard let object = value.objectValue else { return nil }
-            return buildLegacyThreadSummary(from: object)
-        }
-        var payload: RPCObject = [
-            "data": .array(threads),
-        ]
-        if let nextCursor = result?.objectValue?["nextCursor"] {
-            payload["nextCursor"] = nextCursor
-        }
-        return payload
-    }
-
-    func buildLegacyThreadSummary(from sessionObject: RPCObject) -> JSONValue? {
-        let sessionId = normalizedIdentifier(sessionObject["sessionId"]?.stringValue)
-        guard let sessionId else { return nil }
-
-        let coderoverMeta = sessionObject["_meta"]?.objectValue?["coderover"]?.objectValue
-        var threadObject: RPCObject = [
-            "id": .string(sessionId),
-            "provider": coderoverMeta?["agentId"] ?? .string("codex"),
-        ]
-        if let title = normalizedIdentifier(sessionObject["title"]?.stringValue) {
-            threadObject["title"] = .string(title)
-            threadObject["name"] = .string(title)
-        }
-        if let cwd = sessionObject["cwd"] {
-            threadObject["cwd"] = cwd
-        }
-        if let updatedAt = sessionObject["updatedAt"] {
-            threadObject["updatedAt"] = updatedAt
-        }
-        if let preview = coderoverMeta?["preview"] {
-            threadObject["preview"] = preview
-        }
-        if let capabilities = coderoverMeta?["capabilities"] {
-            threadObject["capabilities"] = capabilities
-        }
-        if let providerSessionId = coderoverMeta?["providerSessionId"] {
-            threadObject["providerSessionId"] = providerSessionId
-        }
-        return .object(threadObject)
-    }
-
-    func buildSyntheticLegacyThreadValue(threadId: String, includeTurns: Bool) -> JSONValue {
-        let existingThread = threads.first(where: { $0.id == threadId })
-        var threadObject: RPCObject = [
-            "id": .string(threadId),
-            "provider": .string(existingThread?.provider ?? "codex"),
-        ]
-
-        if let displayTitle = normalizedIdentifier(existingThread?.name ?? existingThread?.title) {
-            threadObject["title"] = .string(displayTitle)
-            threadObject["name"] = .string(displayTitle)
-        }
-        if let cwd = normalizedIdentifier(existingThread?.cwd) {
-            threadObject["cwd"] = .string(cwd)
-        }
-        if let preview = normalizedIdentifier(existingThread?.preview) {
-            threadObject["preview"] = .string(preview)
-        }
-        if let updatedAt = existingThread?.updatedAt ?? existingThread?.createdAt {
-            threadObject["updatedAt"] = .string(acpHistoryFormatter.string(from: updatedAt))
-        }
-        if let usage = contextWindowUsageByThread[threadId] {
-            threadObject["usage"] = .object([
-                "tokensUsed": .integer(usage.tokensUsed),
-                "tokenLimit": .integer(usage.tokenLimit),
-            ])
-        }
-        if includeTurns {
-            threadObject["turns"] = .array(buildSyntheticLegacyTurns(threadId: threadId))
-        }
-
-        return .object(threadObject)
-    }
-
-    func buildSyntheticLegacyTurns(threadId: String) -> [JSONValue] {
-        let canonicalMessages = messages(for: threadId)
-            .filter { $0.deliveryState == .confirmed }
-
-        let grouped = Dictionary(grouping: canonicalMessages) { normalizedIdentifier($0.turnId) ?? "__no_turn__" }
-        let sortedGroups = grouped.values.sorted { lhs, rhs in
-            let lhsOrder = lhs.map { $0.timelineOrdinal ?? $0.orderIndex }.min() ?? Int.max
-            let rhsOrder = rhs.map { $0.timelineOrdinal ?? $0.orderIndex }.min() ?? Int.max
-            if lhsOrder != rhsOrder {
-                return lhsOrder < rhsOrder
-            }
-            let lhsDate = lhs.map(\.createdAt).min() ?? .distantPast
-            let rhsDate = rhs.map(\.createdAt).min() ?? .distantPast
-            return lhsDate < rhsDate
-        }
-
-        var turns: [JSONValue] = sortedGroups.map { messages in
-            let sortedMessages = messages.sorted { lhs, rhs in
-                let lhsOrder = lhs.timelineOrdinal ?? lhs.orderIndex
-                let rhsOrder = rhs.timelineOrdinal ?? rhs.orderIndex
-                if lhsOrder != rhsOrder {
-                    return lhsOrder < rhsOrder
-                }
-                if lhs.createdAt != rhs.createdAt {
-                    return lhs.createdAt < rhs.createdAt
-                }
-                return lhs.id < rhs.id
-            }
-
-            let turnId = sortedMessages.compactMap { normalizedIdentifier($0.turnId) }.first
-            let createdAt = sortedMessages.map(\.createdAt).min() ?? Date()
-            let turnStatus = syntheticTurnStatus(threadId: threadId, turnId: turnId)
-            return .object([
-                "id": turnId.map(JSONValue.string) ?? .null,
-                "createdAt": .string(acpHistoryFormatter.string(from: createdAt)),
-                "status": .string(turnStatus),
-                "items": .array(sortedMessages.compactMap { buildSyntheticLegacyItem(from: $0) }),
-            ])
-        }
-
-        if turns.isEmpty, protectedRunningFallbackThreadIDs.contains(threadId) || runningThreadIDs.contains(threadId) {
-            turns.append(
-                .object([
-                    "status": .string("running"),
-                    "items": .array([]),
-                ])
-            )
-        }
-
-        return turns
-    }
-
-    func syntheticTurnStatus(threadId: String, turnId: String?) -> String {
-        if let turnId,
-           activeTurnIdByThread[threadId] == turnId,
-           threadHasActiveOrRunningTurn(threadId) {
-            return "running"
-        }
-        if turnId == nil,
-           protectedRunningFallbackThreadIDs.contains(threadId) || runningThreadIDs.contains(threadId) {
-            return "running"
-        }
-        if let turnId,
-           let terminalState = terminalStateByTurnID[turnId] {
-            return terminalState.rawValue
-        }
-        if let terminalState = latestTurnTerminalStateByThread[threadId] {
-            return terminalState.rawValue
-        }
-        return "completed"
-    }
-
-    func buildSyntheticLegacyItem(from message: ChatMessage) -> JSONValue? {
-        var item: RPCObject = [
-            "id": .string(message.id),
-            "status": .string(message.timelineStatus ?? (message.isStreaming ? "running" : "completed")),
-        ]
-
-        if let ordinal = message.timelineOrdinal {
-            item["ordinal"] = .integer(ordinal)
-        }
-
-        switch message.kind {
-        case .thinking:
-            item["type"] = .string("reasoning")
-            item["text"] = .string(message.text)
-
-        case .fileChange:
-            item["type"] = .string("file_change")
-            item["text"] = .string(message.text)
-
-        case .commandExecution:
-            item["type"] = .string("command_execution")
-            item["text"] = .string(message.text)
-            if let details = message.itemId.flatMap({ commandExecutionDetailsByItemID[$0] }) {
-                item["command"] = .string(details.fullCommand)
-                if let cwd = normalizedIdentifier(details.cwd) {
-                    item["cwd"] = .string(cwd)
-                }
-                if let exitCode = details.exitCode {
-                    item["exitCode"] = .integer(exitCode)
-                }
-                if let durationMs = details.durationMs {
-                    item["durationMs"] = .integer(durationMs)
-                }
-            }
-
-        case .plan:
-            item["type"] = .string("plan")
-            item["text"] = .string(message.text)
-            if let planState = message.planState {
-                if let explanation = normalizedIdentifier(planState.explanation) {
-                    item["explanation"] = .string(explanation)
-                    item["summary"] = .string(explanation)
-                }
-                item["plan"] = .array(planState.steps.map { step in
-                    .object([
-                        "step": .string(step.step),
-                        "status": .string(step.status.rawValue),
-                    ])
-                })
-            }
-
-        case .userInputPrompt:
-            return nil
-
-        case .chat:
-            item["type"] = .string(message.role == .user ? "user_message" : "agent_message")
-            if !message.text.isEmpty {
-                item["text"] = .string(message.text)
-            }
-            if !message.attachments.isEmpty {
-                item["content"] = .array(message.attachments.compactMap { attachment in
-                    let source = attachment.payloadDataURL ?? attachment.sourceURL
-                    guard let source,
-                          !source.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                        return nil
-                    }
-                    return .object([
-                        "type": .string("image"),
-                        "url": .string(source),
-                    ])
-                })
-            }
-            item["role"] = .string(message.role.rawValue)
-        }
-
-        item["createdAt"] = .string(acpHistoryFormatter.string(from: message.createdAt))
-        return .object(item)
-    }
 
     func handleACPSessionInfoUpdate(sessionId: String, updateObject: RPCObject) {
         let coderoverMeta = updateObject["_meta"]?.objectValue?["coderover"]?.objectValue
-        let agentId = normalizedIdentifier(coderoverMeta?["agentId"]?.stringValue) ?? threads.first(where: { $0.id == sessionId })?.provider ?? "codex"
+        let agentId = normalizedIdentifier(coderoverMeta?["agentId"]?.stringValue)
+            ?? threads.first(where: { $0.id == sessionId })?.provider
+            ?? "codex"
         let title = normalizedIdentifier(updateObject["title"]?.stringValue)
         let cwd = normalizedIdentifier(updateObject["cwd"]?.stringValue)
+            ?? normalizedIdentifier(coderoverMeta?["cwd"]?.stringValue)
         let updatedAt = updateObject["updatedAt"]?.stringValue.flatMap(parseACPISO8601Date)
+        let archived = updateObject["archived"]?.boolValue
+            ?? coderoverMeta?["archived"]?.boolValue
 
         var thread = threads.first(where: { $0.id == sessionId }) ?? ConversationThread(id: sessionId, provider: agentId)
         if let title {
@@ -839,36 +433,51 @@ private extension CodeRoverService {
             thread.updatedAt = Date()
         }
         thread.provider = agentId
+        if let archived {
+            thread.syncState = archived ? .archivedLocal : .live
+        }
+        if thread.capabilities == nil {
+            thread.capabilities = availableProviders.first(where: { $0.id == agentId })?.supports ?? .codexDefault
+        }
         upsertThread(thread)
 
-        let runState = normalizedIdentifier(updateObject["runState"]?.stringValue)
-            ?? normalizedIdentifier(coderoverMeta?["runState"]?.stringValue)
+        let runState = normalizedIdentifier(coderoverMeta?["runState"]?.stringValue)
         let turnId = extractAcpTurnId(from: coderoverMeta) ?? activeTurnIdByThread[sessionId]
-        let errorMessage = normalizedIdentifier(updateObject["errorMessage"]?.stringValue)
-            ?? normalizedIdentifier(coderoverMeta?["errorMessage"]?.stringValue)
+        let errorMessage = normalizedIdentifier(coderoverMeta?["errorMessage"]?.stringValue)
 
         guard let runState else {
             return
         }
 
-        var lifecycleParams: IncomingParamsObject = [
-            "threadId": .string(sessionId),
-            "status": .string(runState),
-        ]
-        if let turnId {
-            lifecycleParams["turnId"] = .string(turnId)
-        }
-        if let errorMessage {
-            lifecycleParams["error"] = .object([
-                "message": .string(errorMessage),
-            ])
-            lifecycleParams["errorMessage"] = .string(errorMessage)
-        }
-
-        if runState == "running" {
+        switch runState {
+        case "running":
+            var lifecycleParams: IncomingParamsObject = [
+                "threadId": .string(sessionId),
+                "status": .string(runState),
+            ]
+            if let turnId {
+                lifecycleParams["turnId"] = .string(turnId)
+            }
             handleTurnStarted(lifecycleParams)
-        } else {
+
+        case "completed", "failed", "stopped", "cancelled":
+            var lifecycleParams: IncomingParamsObject = [
+                "threadId": .string(sessionId),
+                "status": .string(runState == "cancelled" ? "stopped" : runState),
+            ]
+            if let turnId {
+                lifecycleParams["turnId"] = .string(turnId)
+            }
+            if let errorMessage {
+                lifecycleParams["error"] = .object([
+                    "message": .string(errorMessage),
+                ])
+                lifecycleParams["errorMessage"] = .string(errorMessage)
+            }
             handleTurnCompleted(lifecycleParams)
+
+        default:
+            return
         }
     }
 
@@ -936,14 +545,19 @@ private extension CodeRoverService {
         let explanation = normalizedIdentifier(coderoverMeta?["explanation"]?.stringValue)
         let entries = updateObject["entries"]?.arrayValue ?? []
         let steps = entries.compactMap { entry -> CodeRoverPlanStep? in
-            guard let object = entry.objectValue,
-                  let step = normalizedIdentifier(object["step"]?.stringValue),
-                  let rawStatus = normalizedIdentifier(object["status"]?.stringValue) else {
+            guard let object = entry.objectValue else {
                 return nil
             }
-            guard let status = CodeRoverPlanStepStatus(rawValue: rawStatus) else {
+
+            let step = normalizedIdentifier(object["content"]?.stringValue)
+                ?? normalizedIdentifier(object["step"]?.stringValue)
+            let rawStatus = normalizedIdentifier(object["status"]?.stringValue)
+            guard let step,
+                  let rawStatus,
+                  let status = CodeRoverPlanStepStatus(rawValue: rawStatus) else {
                 return nil
             }
+
             return CodeRoverPlanStep(step: step, status: status)
         }
         let planState = CodeRoverPlanState(explanation: explanation, steps: steps)
@@ -1125,5 +739,52 @@ private extension CodeRoverService {
                 options: options
             )
         }
+    }
+}
+
+private extension CodeRoverService {
+    func defaultRuntimeAccessModes() -> [RuntimeAccessModeOption] {
+        [
+            RuntimeAccessModeOption(id: "on-request", title: "On-Request"),
+            RuntimeAccessModeOption(id: "full-access", title: "Full access"),
+        ]
+    }
+
+    func defaultReasoningEfforts() -> [ReasoningEffortOption] {
+        [
+            ReasoningEffortOption(reasoningEffort: "low", description: "Low"),
+            ReasoningEffortOption(reasoningEffort: "medium", description: "Medium"),
+            ReasoningEffortOption(reasoningEffort: "high", description: "High"),
+        ]
+    }
+
+    func buildACPImageBlock(from rawValue: String) -> JSONValue? {
+        guard let parsed = parseACPDataURL(rawValue) else {
+            return nil
+        }
+
+        return .object([
+            "type": .string("image"),
+            "data": .string(parsed.data),
+            "mimeType": .string(parsed.mimeType),
+        ])
+    }
+
+    func parseACPDataURL(_ value: String) -> (mimeType: String, data: String)? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix("data:"),
+              let commaIndex = trimmed.firstIndex(of: ",") else {
+            return nil
+        }
+
+        let header = String(trimmed[..<commaIndex])
+        let data = String(trimmed[trimmed.index(after: commaIndex)...])
+        guard !data.isEmpty else {
+            return nil
+        }
+
+        let headerParts = header.dropFirst("data:".count).split(separator: ";", omittingEmptySubsequences: false)
+        let mimeType = headerParts.first.map(String.init).flatMap(normalizedIdentifier) ?? "image/jpeg"
+        return (mimeType: mimeType, data: data)
     }
 }

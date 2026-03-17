@@ -54,6 +54,7 @@ import {
   handleRuntimeExtensionMethod,
   isRuntimeExtensionMethod,
 } from "./extension-router";
+import { debugError } from "../debug-log";
 
 type UnknownRecord = Record<string, unknown>;
 const THREAD_LIST_CURSOR_VERSION = 1;
@@ -161,7 +162,6 @@ export function createRuntimeManager({
   const pendingPromptErrors = new Map<string, string>();
   const seenAcpToolCallsBySession = new Map<string, Set<string>>();
   const activeRunsBySession = new Map<string, ActiveRunEntry>();
-  let lastExternalSyncAt = 0;
   async function handleClientMessage(rawMessage: string): Promise<boolean> {
     let parsed: UnknownRecord | null = null;
     try {
@@ -1120,8 +1120,11 @@ export function createRuntimeManager({
     const archivedFilter = readAcpArchivedFilter(params);
     const requestedLimit = normalizePositiveInteger(params.limit) || DEFAULT_THREAD_LIST_PAGE_SIZE;
     const cursor = decodeThreadListCursor(params.cursor);
-    let mergedThreads = store
-      .listSessionMetas()
+    await acpSessionManager.ensureSessionCacheReady({
+      archived: archivedFilter ?? false,
+    });
+    let mergedThreads = acpSessionManager
+      .listSessions({ archived: archivedFilter ?? false })
       .map((sessionMeta) => summarizeSessionForList(buildManagedSessionObject(
         sessionMeta,
         store.getSessionHistory(sessionMeta.id)?.turns || []
@@ -1173,19 +1176,28 @@ export function createRuntimeManager({
     const sessionId = requireSessionId(params);
     const sessionMeta = await requireSessionMeta(sessionId);
     assertAcpAgentMatches(sessionMeta, params);
-    const client = await acpSessionManager.getClient(sessionMeta.provider);
-    await client.loadSession({
-      sessionId: sessionMeta.providerSessionId || sessionId,
-      ...(sessionMeta.cwd ? { cwd: sessionMeta.cwd } : {}),
-    });
-    const replayMessages = store.getSessionTranscriptMessages(sessionId);
-    if (replayMessages.length === 0) {
+    const replayState = readStoredSessionReplayState(sessionId);
+    try {
+      const client = await acpSessionManager.getClient(sessionMeta.provider);
+      await client.loadSession({
+        sessionId: sessionMeta.providerSessionId || sessionId,
+        ...(sessionMeta.cwd ? { cwd: sessionMeta.cwd } : {}),
+      });
+    } catch (error) {
+      if (!replayState.hasReplay) {
+        throw error;
+      }
+      debugError(
+        `${logPrefix} ACP session/load failed for ${sessionId}; replaying local transcript instead: ${formatErrorMessage(error)}`
+      );
+    }
+    if (replayState.messages.length === 0) {
       emitProjectedAcpMessage(
         projectSessionInfoFromSessionObject(buildManagedSessionObject(store.getSessionMeta(sessionId) || sessionMeta)),
         { recordTranscript: false }
       );
     } else {
-      replayMessages.forEach((message) => {
+      replayState.messages.forEach((message) => {
         sendServerMessage(JSON.stringify({
           jsonrpc: "2.0",
           method: message.method,
@@ -1200,11 +1212,21 @@ export function createRuntimeManager({
     const sessionId = requireSessionId(params);
     const sessionMeta = await requireSessionMeta(sessionId);
     assertAcpAgentMatches(sessionMeta, params);
-    const client = await acpSessionManager.getClient(sessionMeta.provider);
-    await client.resumeSession({
-      sessionId: sessionMeta.providerSessionId || sessionId,
-      ...(sessionMeta.cwd ? { cwd: sessionMeta.cwd } : {}),
-    });
+    const replayState = readStoredSessionReplayState(sessionId);
+    try {
+      const client = await acpSessionManager.getClient(sessionMeta.provider);
+      await client.resumeSession({
+        sessionId: sessionMeta.providerSessionId || sessionId,
+        ...(sessionMeta.cwd ? { cwd: sessionMeta.cwd } : {}),
+      });
+    } catch (error) {
+      if (!replayState.hasReplay) {
+        throw error;
+      }
+      debugError(
+        `${logPrefix} ACP session/resume failed for ${sessionId}; falling back to local session state: ${formatErrorMessage(error)}`
+      );
+    }
     return buildAcpSessionState(sessionMeta);
   }
 
@@ -1447,7 +1469,12 @@ export function createRuntimeManager({
     const handle = sessionRuntimeIndex.get(threadMeta.id);
     const modes = buildAcpModeState(threadMeta, handle?.mode || null);
     const configOptions = buildAcpConfigOptions(threadMeta);
-    const models = await buildAcpModelState(threadMeta);
+    const models = await buildAcpModelState(threadMeta).catch((error) => {
+      debugError(
+        `${logPrefix} ACP model/list failed for ${threadMeta.id}; omitting models from session state: ${formatErrorMessage(error)}`
+      );
+      return null;
+    });
     return {
       ...(modes ? { modes } : {}),
       ...(configOptions.length > 0 ? { configOptions } : {}),
@@ -1465,7 +1492,7 @@ export function createRuntimeManager({
     const sessionMeta = sessionId ? (store.getSessionMeta(sessionId) || sessionObjectToMeta(asObject(thread))) : null;
     return {
       sessionId,
-      cwd: firstNonEmptyString([thread.cwd]) || process.cwd(),
+      ...(firstNonEmptyString([thread.cwd]) ? { cwd: firstNonEmptyString([thread.cwd]) } : {}),
       ...(normalizeOptionalString(thread.name) || normalizeOptionalString(thread.title)
         ? { title: normalizeOptionalString(thread.name) || normalizeOptionalString(thread.title) }
         : {}),
@@ -1545,6 +1572,29 @@ export function createRuntimeManager({
       availableModels: models,
       currentModelId: threadMeta.model || normalizeOptionalString(asObject(models[0]).modelId) || "model",
     };
+  }
+
+  function readStoredSessionReplayState(sessionId: string): {
+    hasReplay: boolean;
+    messages: ReturnType<RuntimeStore["getSessionTranscriptMessages"]>;
+  } {
+    const history = store.getSessionHistory(sessionId);
+    let messages = store.getSessionTranscriptMessages(sessionId);
+
+    // Older checkpoints may exist without a synthesized ACP transcript yet.
+    if (messages.length === 0 && history?.turns?.length) {
+      store.saveSessionHistory(sessionId, history);
+      messages = store.getSessionTranscriptMessages(sessionId);
+    }
+
+    return {
+      hasReplay: messages.length > 0 || Boolean(history?.turns?.length),
+      messages,
+    };
+  }
+
+  function formatErrorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
   }
 
   function buildRuntimePromptParams(

@@ -63,10 +63,18 @@ export interface RuntimeSessionMeta {
   archived: boolean;
 }
 
+export interface RuntimeProviderSessionListState {
+  provider: ProviderId;
+  archived: boolean;
+  nextCursor: string | null;
+  syncedAt: string | null;
+}
+
 interface RuntimeStoreIndex {
   version: number;
   sessions: Record<string, RuntimeSessionMeta>;
   providerSessions: Record<string, string>;
+  providerListCursors: Record<string, RuntimeProviderSessionListState>;
 }
 
 interface RuntimeSessionCheckpoint {
@@ -99,6 +107,7 @@ export interface RuntimeStore {
   deleteSession(sessionId: unknown): boolean;
   findSessionIdByProviderSession(provider: unknown, providerSessionId: unknown): string | null;
   flush(): void;
+  getProviderSessionListState(provider: unknown, archived?: boolean): RuntimeProviderSessionListState;
   getSessionHistory(sessionId: unknown): RuntimeSessionHistory | null;
   getSessionMeta(sessionId: unknown): RuntimeSessionMeta | null;
   getSessionTranscriptMessages(sessionId: unknown): JsonRpcNotificationShape[];
@@ -106,6 +115,11 @@ export interface RuntimeStore {
   saveSessionHistory(sessionId: unknown, history: unknown): RuntimeSessionHistory;
   shutdown(): void;
   bindProviderSession(sessionId: unknown, provider: unknown, providerSessionId: unknown): RuntimeSessionMeta | null;
+  updateProviderSessionListState(
+    provider: unknown,
+    archived: boolean,
+    updater: (state: RuntimeProviderSessionListState) => RuntimeProviderSessionListState | null | undefined
+  ): RuntimeProviderSessionListState;
   updateSessionMeta(
     sessionId: unknown,
     updater: (entry: RuntimeSessionMeta) => RuntimeSessionMeta | null | undefined
@@ -115,17 +129,34 @@ export interface RuntimeStore {
 }
 
 const DEFAULT_STORE_DIR = path.join(os.homedir(), ".coderover", "runtime");
+const DEFAULT_CODEX_HOME_DIR = path.join(os.homedir(), ".codex");
 const INDEX_FILE = "index.json";
 const SESSIONS_DIR = "sessions";
-const INDEX_VERSION = 1;
+const LEGACY_THREADS_DIR = "threads";
+const INDEX_VERSION = 2;
 
-export function createRuntimeStore({ baseDir = DEFAULT_STORE_DIR }: { baseDir?: string } = {}): RuntimeStore {
+export function createRuntimeStore(
+  {
+    baseDir = DEFAULT_STORE_DIR,
+    codexHomeDir = DEFAULT_CODEX_HOME_DIR,
+  }: {
+    baseDir?: string;
+    codexHomeDir?: string;
+  } = {}
+): RuntimeStore {
   const indexPath = path.join(baseDir, INDEX_FILE);
   const sessionsDir = path.join(baseDir, SESSIONS_DIR);
+  const legacyThreadsDir = path.join(baseDir, LEGACY_THREADS_DIR);
   fs.mkdirSync(sessionsDir, { recursive: true });
 
   let indexState = loadIndex(indexPath);
   let writeTimer: NodeJS.Timeout | null = null;
+
+  const migratedLegacyThreads = migrateLegacyThreadFiles();
+  const importedCodexSessions = importCodexSessionIndex();
+  if (migratedLegacyThreads || importedCodexSessions) {
+    persistIndex(indexPath, indexState);
+  }
 
   function listSessionMetas(): RuntimeSessionMeta[] {
     return Object.values(indexState.sessions)
@@ -141,6 +172,18 @@ export function createRuntimeStore({ baseDir = DEFAULT_STORE_DIR }: { baseDir?: 
 
     const entry = indexState.sessions[normalizedSessionId];
     return entry ? { ...entry } : null;
+  }
+
+  function getProviderSessionListState(
+    provider: unknown,
+    archived: boolean = false
+  ): RuntimeProviderSessionListState {
+    const normalizedProvider = normalizeProvider(provider);
+    const key = providerListCursorKey(normalizedProvider, archived);
+    const existing = indexState.providerListCursors[key];
+    return existing
+      ? { ...existing }
+      : defaultProviderSessionListState(normalizedProvider, archived);
   }
 
   function getSessionHistory(sessionId: unknown): RuntimeSessionHistory | null {
@@ -316,6 +359,19 @@ export function createRuntimeStore({ baseDir = DEFAULT_STORE_DIR }: { baseDir?: 
     return upsertSessionMeta(next);
   }
 
+  function updateProviderSessionListState(
+    provider: unknown,
+    archived: boolean,
+    updater: (state: RuntimeProviderSessionListState) => RuntimeProviderSessionListState | null | undefined
+  ): RuntimeProviderSessionListState {
+    const current = getProviderSessionListState(provider, archived);
+    const next = updater({ ...current }) || current;
+    const normalized = normalizeProviderSessionListState(next, current.provider, archived);
+    indexState.providerListCursors[providerListCursorKey(normalized.provider, normalized.archived)] = normalized;
+    scheduleIndexWrite();
+    return { ...normalized };
+  }
+
   function bindProviderSession(
     sessionId: unknown,
     provider: unknown,
@@ -396,6 +452,88 @@ export function createRuntimeStore({ baseDir = DEFAULT_STORE_DIR }: { baseDir?: 
     rewriteTranscriptFromHistory(sessionId, history);
   }
 
+  function migrateLegacyThreadFiles(): boolean {
+    if (!fs.existsSync(legacyThreadsDir)) {
+      return false;
+    }
+
+    let didMutate = false;
+    const legacyPaths = fs.readdirSync(legacyThreadsDir)
+      .filter((entry) => entry.endsWith(".json"))
+      .map((entry) => path.join(legacyThreadsDir, entry));
+
+    for (const legacyPath of legacyPaths) {
+      const migrated = migrateLegacyThreadFile(legacyPath);
+      didMutate = migrated || didMutate;
+    }
+
+    return didMutate;
+  }
+
+  function migrateLegacyThreadFile(legacyPath: string): boolean {
+    let parsed: UnknownRecord | null = null;
+    try {
+      parsed = JSON.parse(fs.readFileSync(legacyPath, "utf8")) as UnknownRecord;
+    } catch {
+      return false;
+    }
+
+    const sessionId = normalizeNonEmptyString(parsed.threadId)
+      || normalizeNonEmptyString(parsed.sessionId)
+      || path.basename(legacyPath, ".json");
+    if (!sessionId) {
+      return false;
+    }
+
+    const history = normalizeSessionHistory(parsed, sessionId);
+    const existing = getSessionMeta(sessionId);
+    const stats = safeStat(legacyPath);
+    const createdAt = deriveLegacyHistoryCreatedAt(history, stats);
+    const updatedAt = deriveLegacyHistoryUpdatedAt(history, stats);
+    const sessionMeta = normalizeSessionMeta({
+      ...(existing || {}),
+      id: sessionId,
+      provider: existing?.provider || inferProviderFromSessionId(sessionId),
+      providerSessionId: existing?.providerSessionId || findLegacyProviderSessionId(sessionId),
+      preview: existing?.preview || deriveLegacyPreview(history),
+      createdAt,
+      updatedAt,
+    });
+
+    indexState.sessions[sessionId] = sessionMeta;
+    const providerKey = providerSessionKey(sessionMeta.provider, sessionMeta.providerSessionId);
+    if (providerKey) {
+      indexState.providerSessions[providerKey] = sessionId;
+    }
+
+    if (!fs.existsSync(sessionCheckpointPath(sessionId)) || !fs.existsSync(sessionTranscriptPath(sessionId))) {
+      migrateLegacyHistory(sessionId, history);
+    }
+
+    return true;
+  }
+
+  function findLegacyProviderSessionId(sessionId: string): string | null {
+    const sessionMeta = indexState.sessions[sessionId];
+    if (sessionMeta?.providerSessionId) {
+      return sessionMeta.providerSessionId;
+    }
+
+    const provider = inferProviderFromSessionId(sessionId);
+    for (const [providerKey, mappedSessionId] of Object.entries(indexState.providerSessions)) {
+      if (mappedSessionId !== sessionId) {
+        continue;
+      }
+
+      const prefix = `${provider}:`;
+      if (providerKey.startsWith(prefix)) {
+        return providerKey.slice(prefix.length) || null;
+      }
+    }
+
+    return provider === "codex" ? sessionId : null;
+  }
+
   function rewriteTranscriptFromHistory(sessionId: string, history: RuntimeSessionHistory): void {
     const sessionMeta = getSessionMeta(sessionId);
     const notifications = buildAcpReplayNotifications({
@@ -443,6 +581,47 @@ export function createRuntimeStore({ baseDir = DEFAULT_STORE_DIR }: { baseDir?: 
     return path.join(sessionsDir, `${sessionId}.stream.ndjson`);
   }
 
+  function importCodexSessionIndex(): boolean {
+    const codexSessionIndexPath = path.join(codexHomeDir, "session_index.jsonl");
+    if (!fs.existsSync(codexSessionIndexPath)) {
+      return false;
+    }
+
+    const entries = readCodexSessionIndexEntries(codexSessionIndexPath);
+    if (entries.length === 0) {
+      return false;
+    }
+
+    const rolloutPathsBySessionId = indexCodexRolloutPaths(codexHomeDir);
+    let didMutate = false;
+
+    for (const entry of entries) {
+      const existing = indexState.sessions[entry.id];
+      const rolloutPath = rolloutPathsBySessionId.get(entry.id) || null;
+      const rolloutMeta = rolloutPath ? readCodexRolloutMeta(rolloutPath) : null;
+      const nextMeta = normalizeSessionMeta({
+        ...(existing || {}),
+        id: entry.id,
+        provider: "codex",
+        providerSessionId: existing?.providerSessionId || entry.id,
+        title: existing?.title || entry.title,
+        name: existing?.name || entry.title,
+        preview: existing?.preview || entry.title,
+        cwd: existing?.cwd || rolloutMeta?.cwd || null,
+        createdAt: existing?.createdAt || rolloutMeta?.createdAt || entry.updatedAt,
+        updatedAt: entry.updatedAt,
+      });
+
+      if (!existing || JSON.stringify(existing) !== JSON.stringify(nextMeta)) {
+        indexState.sessions[entry.id] = nextMeta;
+        didMutate = true;
+      }
+      syncProviderSessionIndex(entry.id, nextMeta.provider, nextMeta.providerSessionId);
+    }
+
+    return didMutate;
+  }
+
   function readSessionCheckpointOrLegacy(
     sessionId: string
   ): { kind: "checkpoint"; history: RuntimeSessionHistory } | { kind: "legacy"; history: RuntimeSessionHistory } {
@@ -467,6 +646,7 @@ export function createRuntimeStore({ baseDir = DEFAULT_STORE_DIR }: { baseDir?: 
     deleteSession,
     findSessionIdByProviderSession,
     flush,
+    getProviderSessionListState,
     getSessionHistory,
     getSessionMeta,
     getSessionTranscriptMessages,
@@ -474,10 +654,106 @@ export function createRuntimeStore({ baseDir = DEFAULT_STORE_DIR }: { baseDir?: 
     saveSessionHistory,
     shutdown,
     bindProviderSession,
+    updateProviderSessionListState,
     updateSessionMeta,
     updateSessionProjection,
     upsertSessionMeta,
   };
+}
+
+function readCodexSessionIndexEntries(indexPath: string): Array<{
+  id: string;
+  title: string | null;
+  updatedAt: string;
+}> {
+  try {
+    const lines = fs.readFileSync(indexPath, "utf8")
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+    const latestById = new Map<string, { id: string; title: string | null; updatedAt: string }>();
+
+    for (const line of lines) {
+      const parsed = JSON.parse(line) as UnknownRecord;
+      const id = normalizeNonEmptyString(parsed.id);
+      const rawUpdatedAt = normalizeNonEmptyString(parsed.updated_at || parsed.updatedAt);
+      if (!id || !rawUpdatedAt) {
+        continue;
+      }
+      latestById.set(id, {
+        id,
+        title: firstNonEmptyString([parsed.thread_name, parsed.threadName]),
+        updatedAt: toIsoDateString(rawUpdatedAt),
+      });
+    }
+
+    return Array.from(latestById.values());
+  } catch {
+    return [];
+  }
+}
+
+function indexCodexRolloutPaths(codexHomeDir: string): Map<string, string> {
+  const candidates = [
+    path.join(codexHomeDir, "sessions"),
+    path.join(codexHomeDir, "archived_sessions"),
+  ];
+  const rolloutPathsBySessionId = new Map<string, string>();
+
+  for (const root of candidates) {
+    if (!fs.existsSync(root)) {
+      continue;
+    }
+    walkCodexRolloutPaths(root, rolloutPathsBySessionId);
+  }
+
+  return rolloutPathsBySessionId;
+}
+
+function walkCodexRolloutPaths(root: string, rolloutPathsBySessionId: Map<string, string>): void {
+  for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+    const absolutePath = path.join(root, entry.name);
+    if (entry.isDirectory()) {
+      walkCodexRolloutPaths(absolutePath, rolloutPathsBySessionId);
+      continue;
+    }
+    const sessionId = extractCodexSessionIdFromRolloutName(entry.name);
+    if (sessionId && !rolloutPathsBySessionId.has(sessionId)) {
+      rolloutPathsBySessionId.set(sessionId, absolutePath);
+    }
+  }
+}
+
+function extractCodexSessionIdFromRolloutName(filename: string): string | null {
+  const match = filename.match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i);
+  return match?.[1] || null;
+}
+
+function readCodexRolloutMeta(rolloutPath: string): { cwd: string | null; createdAt: string | null } | null {
+  try {
+    const lines = fs.readFileSync(rolloutPath, "utf8")
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+    for (const line of lines) {
+      const parsed = JSON.parse(line) as UnknownRecord;
+      if (normalizeNonEmptyString(parsed.type) !== "session_meta") {
+        continue;
+      }
+      const payload = normalizeObject(parsed.payload);
+      return {
+        cwd: firstNonEmptyPath([payload?.cwd]),
+        createdAt: (() => {
+          const rawCreatedAt = normalizeNonEmptyString(parsed.timestamp)
+            || normalizeNonEmptyString(payload?.timestamp);
+          return rawCreatedAt ? toIsoDateString(rawCreatedAt) : null;
+        })(),
+      };
+    }
+  } catch {
+    return null;
+  }
+  return null;
 }
 
 function loadIndex(indexPath: string): RuntimeStoreIndex {
@@ -502,6 +778,7 @@ function defaultIndex(): RuntimeStoreIndex {
     version: INDEX_VERSION,
     sessions: {},
     providerSessions: {},
+    providerListCursors: {},
   };
 }
 
@@ -546,7 +823,44 @@ function normalizeIndex(input: unknown): RuntimeStoreIndex {
     }
   }
 
+  if (record.providerListCursors && typeof record.providerListCursors === "object") {
+    for (const [key, value] of Object.entries(record.providerListCursors as Record<string, unknown>)) {
+      const normalizedKey = normalizeNonEmptyString(key);
+      if (!normalizedKey || !value || typeof value !== "object") {
+        continue;
+      }
+      const [providerPart, scopePart] = normalizedKey.split(":");
+      normalized.providerListCursors[normalizedKey] = normalizeProviderSessionListState(
+        value,
+        normalizeProvider(providerPart),
+        scopePart === "archived"
+      );
+    }
+  }
+
   return normalized;
+}
+
+function normalizeProviderSessionListState(
+  input: unknown,
+  fallbackProvider: unknown,
+  fallbackArchived: boolean
+): RuntimeProviderSessionListState {
+  const record = input && typeof input === "object" ? (input as UnknownRecord) : {};
+  const provider = normalizeProvider(record.provider || fallbackProvider);
+  const archived = typeof record.archived === "boolean" ? record.archived : fallbackArchived;
+  return {
+    provider,
+    archived,
+    nextCursor: normalizeOptionalString(record.nextCursor || record.next_cursor),
+    syncedAt: (() => {
+      const rawSyncedAt = record.syncedAt || record.synced_at;
+      if (rawSyncedAt == null || rawSyncedAt === "") {
+        return null;
+      }
+      return toIsoDateString(rawSyncedAt);
+    })(),
+  };
 }
 
 function normalizeSessionMeta(input: unknown): RuntimeSessionMeta {
@@ -695,6 +1009,22 @@ function providerSessionKey(provider: unknown, providerSessionId: unknown): stri
   return `${normalizedProvider}:${normalizedSessionId}`;
 }
 
+function providerListCursorKey(provider: unknown, archived: boolean): string {
+  return `${normalizeProvider(provider)}:${archived ? "archived" : "active"}`;
+}
+
+function defaultProviderSessionListState(
+  provider: unknown,
+  archived: boolean
+): RuntimeProviderSessionListState {
+  return {
+    provider: normalizeProvider(provider),
+    archived,
+    nextCursor: null,
+    syncedAt: null,
+  };
+}
+
 function normalizeSessionId(value: unknown, provider: unknown): string {
   const normalized = normalizeNonEmptyString(value);
   if (normalized) {
@@ -826,6 +1156,62 @@ function normalizeTranscriptMessage(message: unknown): JsonRpcNotificationShape 
       update: asObject(params.update),
     },
   };
+}
+
+function deriveLegacyPreview(history: RuntimeSessionHistory): string | null {
+  for (const turn of history.turns) {
+    for (const item of turn.items) {
+      const preview = firstNonEmptyString([item.text, item.message, item.summary]);
+      if (preview) {
+        return preview;
+      }
+    }
+  }
+  return null;
+}
+
+function deriveLegacyHistoryCreatedAt(
+  history: RuntimeSessionHistory,
+  stats: fs.Stats | null
+): string {
+  const candidates = history.turns.flatMap((turn) => [
+    turn.createdAt,
+    ...turn.items.map((item) => item.createdAt),
+  ])
+    .map((value) => Date.parse(value || ""))
+    .filter((value) => !Number.isNaN(value));
+
+  if (candidates.length > 0) {
+    return new Date(Math.min(...candidates)).toISOString();
+  }
+
+  return toIsoDateString(stats?.birthtimeMs || stats?.mtimeMs || Date.now());
+}
+
+function deriveLegacyHistoryUpdatedAt(
+  history: RuntimeSessionHistory,
+  stats: fs.Stats | null
+): string {
+  const candidates = history.turns.flatMap((turn) => [
+    turn.createdAt,
+    ...turn.items.map((item) => item.createdAt),
+  ])
+    .map((value) => Date.parse(value || ""))
+    .filter((value) => !Number.isNaN(value));
+
+  if (candidates.length > 0) {
+    return new Date(Math.max(...candidates)).toISOString();
+  }
+
+  return toIsoDateString(stats?.mtimeMs || stats?.birthtimeMs || Date.now());
+}
+
+function safeStat(filePath: string): fs.Stats | null {
+  try {
+    return fs.statSync(filePath);
+  } catch {
+    return null;
+  }
 }
 
 function projectHistoryFromTranscript(

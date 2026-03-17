@@ -11,12 +11,14 @@ import { createRuntimeStore, type RuntimeStore } from "../src/runtime-store";
 
 function createTempStore(): { store: RuntimeStore; cleanup(): void } {
   const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "coderover-runtime-store-"));
-  const store = createRuntimeStore({ baseDir });
+  const codexHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), "coderover-runtime-store-codex-"));
+  const store = createRuntimeStore({ baseDir, codexHomeDir });
   return {
     store,
     cleanup() {
       store.shutdown();
       fs.rmSync(baseDir, { recursive: true, force: true });
+      fs.rmSync(codexHomeDir, { recursive: true, force: true });
     },
   };
 }
@@ -103,6 +105,7 @@ test("runtime store keeps archive and name overlays in the session index", () =>
 
 test("runtime store migrates legacy history files into checkpoint + ACP transcript", () => {
   const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "coderover-runtime-store-legacy-"));
+  const codexHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), "coderover-runtime-store-codex-"));
 
   try {
     fs.mkdirSync(path.join(baseDir, "sessions"), { recursive: true });
@@ -145,7 +148,7 @@ test("runtime store migrates legacy history files into checkpoint + ACP transcri
       ],
     }, null, 2));
 
-    const store = createRuntimeStore({ baseDir });
+    const store = createRuntimeStore({ baseDir, codexHomeDir });
     try {
       const thread = store.getSessionMeta("claude:legacy-thread");
       assert.equal(thread?.providerSessionId, "session-legacy");
@@ -176,6 +179,167 @@ test("runtime store migrates legacy history files into checkpoint + ACP transcri
     }
   } finally {
     fs.rmSync(baseDir, { recursive: true, force: true });
+    fs.rmSync(codexHomeDir, { recursive: true, force: true });
+  }
+});
+
+test("runtime store migrates legacy thread files when the ACP session index is empty", () => {
+  const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "coderover-runtime-store-thread-legacy-"));
+  const codexHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), "coderover-runtime-store-codex-"));
+
+  try {
+    fs.mkdirSync(path.join(baseDir, "threads"), { recursive: true });
+    fs.writeFileSync(path.join(baseDir, "index.json"), JSON.stringify({
+      version: 1,
+      sessions: {},
+      providerSessions: {
+        "claude:session-legacy": "claude:legacy-thread",
+      },
+    }, null, 2));
+    fs.writeFileSync(path.join(baseDir, "threads", "claude:legacy-thread.json"), JSON.stringify({
+      threadId: "claude:legacy-thread",
+      turns: [
+        {
+          id: "turn-legacy",
+          createdAt: "2026-03-11T01:00:00.000Z",
+          status: "completed",
+          items: [
+            {
+              id: "item-user",
+              type: "user_message",
+              role: "user",
+              text: "legacy prompt",
+              content: [{ type: "text", text: "legacy prompt" }],
+              createdAt: "2026-03-11T01:00:00.000Z",
+            },
+            {
+              id: "item-assistant",
+              type: "agent_message",
+              role: "assistant",
+              text: "legacy answer",
+              content: [{ type: "text", text: "legacy answer" }],
+              createdAt: "2026-03-11T01:01:00.000Z",
+            },
+          ],
+        },
+      ],
+    }, null, 2));
+
+    const store = createRuntimeStore({ baseDir, codexHomeDir });
+    try {
+      const session = store.getSessionMeta("claude:legacy-thread");
+      assert.equal(session?.provider, "claude");
+      assert.equal(session?.providerSessionId, "session-legacy");
+      assert.equal(session?.preview, "legacy prompt");
+
+      const listed = store.listSessionMetas();
+      assert.equal(listed.length, 1);
+      assert.equal(listed[0]?.id, "claude:legacy-thread");
+
+      const history = store.getSessionHistory("claude:legacy-thread");
+      assert.equal(history?.turns.length, 1);
+
+      const transcript = store.getSessionTranscriptMessages("claude:legacy-thread");
+      assert.ok(transcript.some((message) =>
+        message.method === "session/update"
+        && message.params?.update?.sessionUpdate === "user_message_chunk"
+      ));
+      assert.ok(transcript.some((message) =>
+        message.method === "session/update"
+        && message.params?.update?.sessionUpdate === "agent_message_chunk"
+      ));
+      assert.ok(fs.existsSync(path.join(baseDir, "sessions", "claude:legacy-thread.json")));
+      assert.ok(fs.existsSync(path.join(baseDir, "sessions", "claude:legacy-thread.stream.ndjson")));
+    } finally {
+      store.shutdown();
+    }
+  } finally {
+    fs.rmSync(baseDir, { recursive: true, force: true });
+    fs.rmSync(codexHomeDir, { recursive: true, force: true });
+  }
+});
+
+test("runtime store imports Codex local sessions from the local Codex index", () => {
+  const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "coderover-runtime-store-codex-"));
+  const codexHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), "coderover-codex-home-"));
+
+  try {
+    fs.mkdirSync(path.join(codexHomeDir, "sessions", "2026", "03", "17"), { recursive: true });
+    fs.writeFileSync(path.join(codexHomeDir, "session_index.jsonl"), [
+      JSON.stringify({
+        id: "019cfb46-7e95-7272-91b4-a4b9686f7ec8",
+        thread_name: "Complete iOS ACP Native migration",
+        updated_at: "2026-03-17T10:11:47.400521Z",
+      }),
+    ].join("\n"));
+    fs.writeFileSync(
+      path.join(codexHomeDir, "sessions", "2026", "03", "17", "rollout-2026-03-17T18-10-27-019cfb46-7e95-7272-91b4-a4b9686f7ec8.jsonl"),
+      [
+        JSON.stringify({
+          timestamp: "2026-03-17T10:10:00.000Z",
+          type: "session_meta",
+          payload: {
+            id: "019cfb46-7e95-7272-91b4-a4b9686f7ec8",
+            cwd: "/Users/me/work/remodex",
+          },
+        }),
+      ].join("\n")
+    );
+
+    const store = createRuntimeStore({ baseDir, codexHomeDir });
+    try {
+      const session = store.getSessionMeta("019cfb46-7e95-7272-91b4-a4b9686f7ec8");
+      assert.equal(session?.provider, "codex");
+      assert.equal(session?.providerSessionId, "019cfb46-7e95-7272-91b4-a4b9686f7ec8");
+      assert.equal(session?.title, "Complete iOS ACP Native migration");
+      assert.equal(session?.cwd, "/Users/me/work/remodex");
+      assert.equal(
+        store.findSessionIdByProviderSession("codex", "019cfb46-7e95-7272-91b4-a4b9686f7ec8"),
+        "019cfb46-7e95-7272-91b4-a4b9686f7ec8"
+      );
+    } finally {
+      store.shutdown();
+    }
+  } finally {
+    fs.rmSync(baseDir, { recursive: true, force: true });
+    fs.rmSync(codexHomeDir, { recursive: true, force: true });
+  }
+});
+
+test("runtime store persists provider session list cursors across reloads", () => {
+  const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "coderover-runtime-store-cursors-"));
+  const codexHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), "coderover-runtime-store-cursors-codex-"));
+
+  try {
+    const store = createRuntimeStore({ baseDir, codexHomeDir });
+    store.updateProviderSessionListState("claude", false, () => ({
+      provider: "claude",
+      archived: false,
+      nextCursor: "cursor-active-1",
+      syncedAt: "2026-03-17T12:00:00.000Z",
+    }));
+    store.updateProviderSessionListState("claude", true, () => ({
+      provider: "claude",
+      archived: true,
+      nextCursor: null,
+      syncedAt: "2026-03-17T12:01:00.000Z",
+    }));
+    store.shutdown();
+
+    const reloaded = createRuntimeStore({ baseDir, codexHomeDir });
+    try {
+      const active = reloaded.getProviderSessionListState("claude", false);
+      const archived = reloaded.getProviderSessionListState("claude", true);
+      assert.equal(active.nextCursor, "cursor-active-1");
+      assert.equal(active.syncedAt, "2026-03-17T12:00:00.000Z");
+      assert.equal(archived.nextCursor, null);
+      assert.equal(archived.syncedAt, "2026-03-17T12:01:00.000Z");
+    } finally {
+      reloaded.shutdown();
+    }
+  } finally {
+    fs.rmSync(baseDir, { recursive: true, force: true });
+    fs.rmSync(codexHomeDir, { recursive: true, force: true });
   }
 });
 

@@ -27,8 +27,10 @@ interface RpcMessage {
 
 interface ManagerFixture {
   baseDir: string;
+  codexHomeDir: string;
   manager: RuntimeManager;
   messages: RpcMessage[];
+  store: RuntimeStore;
   cleanup(): void;
 }
 
@@ -40,7 +42,8 @@ function createManagerFixture(
 ): ManagerFixture {
   const messages: RpcMessage[] = [];
   const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "coderover-runtime-manager-"));
-  const store = createRuntimeStore({ baseDir });
+  const codexHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), "coderover-runtime-manager-codex-"));
+  const store = createRuntimeStore({ baseDir, codexHomeDir });
   const sessionRuntimeIndex = createSessionRuntimeIndex({ baseDir });
   const acpSessionManager = (acpSessionManagerFactory || ((deps) => createMockAcpSessionManager(deps)))({
     store,
@@ -58,11 +61,14 @@ function createManagerFixture(
 
   return {
     baseDir,
+    codexHomeDir,
     manager,
     messages,
+    store,
     cleanup() {
       manager.shutdown();
       fs.rmSync(baseDir, { recursive: true, force: true });
+      fs.rmSync(codexHomeDir, { recursive: true, force: true });
     },
   };
 }
@@ -72,6 +78,11 @@ function createMockAcpSessionManager({
   sessionRuntimeIndex,
   onPrompt,
   createProviderSessionId,
+  onEnsureSessionCacheReady,
+  getClientError = null,
+  loadSessionError = null,
+  resumeSessionError = null,
+  listModelsError = null,
 }: {
   store: RuntimeStore;
   sessionRuntimeIndex: SessionRuntimeIndex;
@@ -81,6 +92,11 @@ function createMockAcpSessionManager({
     emitUpdate(update: UnknownRecord): void;
   }) => Promise<{ stopReason?: string | null; usage?: unknown }>;
   createProviderSessionId?: (agentId: string) => string;
+  onEnsureSessionCacheReady?: (params: { archived?: boolean; force?: boolean }) => Promise<void>;
+  getClientError?: Error | null;
+  loadSessionError?: Error | null;
+  resumeSessionError?: Error | null;
+  listModelsError?: Error | null;
 }): AcpSessionManager {
   const sessionListeners = new Set<(notification: { sessionId: string | null; update: Record<string, unknown> }) => void>();
   const requestListeners = new Set<(request: {
@@ -116,11 +132,17 @@ function createMockAcpSessionManager({
       return true;
     },
     async listModels() {
+      if (listModelsError) {
+        throw listModelsError;
+      }
       return {
         items: [{ id: "sonnet", model: "sonnet", title: "Sonnet" }],
       };
     },
     async loadSession() {
+      if (loadSessionError) {
+        throw loadSessionError;
+      }
       return {};
     },
     async newSession() {
@@ -158,6 +180,9 @@ function createMockAcpSessionManager({
     async respondError() {},
     async respondSuccess() {},
     async resumeSession() {
+      if (resumeSessionError) {
+        throw resumeSessionError;
+      }
       return {};
     },
     async setConfigOption() {
@@ -203,7 +228,13 @@ function createMockAcpSessionManager({
       });
       return threadMeta;
     },
+    async ensureSessionCacheReady(params = {}) {
+      await onEnsureSessionCacheReady?.(params);
+    },
     async getClient() {
+      if (getClientError) {
+        throw getClientError;
+      }
       return client as Awaited<ReturnType<AcpSessionManager["getClient"]>>;
     },
     getSessionMeta(sessionId: string): RuntimeSessionMeta | null {
@@ -211,6 +242,9 @@ function createMockAcpSessionManager({
     },
     listSessions({ archived = false } = {}) {
       return store.listSessionMetas().filter((entry) => Boolean(entry.archived) === archived);
+    },
+    async refreshSessions(params = {}) {
+      await onEnsureSessionCacheReady?.(params);
     },
     shutdown() {},
   };
@@ -305,6 +339,41 @@ test("session/new and session/list expose ACP session summaries with bound agent
   }
 });
 
+test("session/list waits for ACP cache hydration before returning bridge-backed results", async () => {
+  const fixture = createManagerFixture(({ store, sessionRuntimeIndex }) =>
+    createMockAcpSessionManager({
+      store,
+      sessionRuntimeIndex,
+      async onEnsureSessionCacheReady() {
+        if (store.listSessionMetas().length > 0) {
+          return;
+        }
+
+        const now = new Date().toISOString();
+        store.createSession({
+          id: "gemini:hydrated",
+          provider: "gemini",
+          providerSessionId: "provider-gemini-hydrated",
+          title: "Hydrated Gemini Session",
+          cwd: "/tmp/hydrated",
+          createdAt: now,
+          updatedAt: now,
+        });
+      },
+    })
+  );
+
+  try {
+    const listed = await request(fixture, "acp-session-list-hydrated", "session/list", {});
+    const listResponse = responseById(listed, "acp-session-list-hydrated");
+    assert.equal(listResponse.result.sessions.length, 1);
+    assert.equal(listResponse.result.sessions[0].sessionId, "gemini:hydrated");
+    assert.equal(listResponse.result.sessions[0].title, "Hydrated Gemini Session");
+  } finally {
+    fixture.cleanup();
+  }
+});
+
 test("session/prompt streams ACP updates and session/load replays ACP history", async () => {
   const fixture = createManagerFixture(({ store, sessionRuntimeIndex }) =>
     createMockAcpSessionManager({
@@ -362,6 +431,124 @@ test("session/prompt streams ACP updates and session/load replays ACP history", 
   }
 });
 
+test("session/load replays local ACP history when provider load and model lookup fail", async () => {
+  const fixture = createManagerFixture(({ store, sessionRuntimeIndex }) =>
+    createMockAcpSessionManager({
+      store,
+      sessionRuntimeIndex,
+      loadSessionError: new Error("Invalid params"),
+      listModelsError: new Error("model/list unavailable"),
+    })
+  );
+
+  try {
+    const created = await request(fixture, "acp-load-fallback-new", "session/new", {
+      cwd: "/tmp/acp-load-fallback-demo",
+      _meta: { coderover: { agentId: "claude" } },
+    });
+    const sessionId = responseById(created, "acp-load-fallback-new").result.sessionId as string;
+
+    fixture.store.saveSessionHistory(sessionId, {
+      sessionId,
+      turns: [
+        {
+          id: "turn-fallback",
+          createdAt: "2026-03-17T10:00:00.000Z",
+          status: "completed",
+          items: [
+            {
+              id: "item-user",
+              type: "user_message",
+              role: "user",
+              text: "legacy prompt",
+              content: [{ type: "text", text: "legacy prompt" }],
+              createdAt: "2026-03-17T10:00:00.000Z",
+            },
+            {
+              id: "item-assistant",
+              type: "agent_message",
+              role: "assistant",
+              text: "legacy answer",
+              content: [{ type: "text", text: "legacy answer" }],
+              createdAt: "2026-03-17T10:01:00.000Z",
+            },
+          ],
+        },
+      ],
+    });
+
+    const loaded = await request(fixture, "acp-load-fallback", "session/load", { sessionId });
+    const response = responseById(loaded, "acp-load-fallback");
+    assert.equal(response.result._meta.coderover.agentId, "claude");
+    assert.equal(response.error, undefined);
+    assert.equal(response.result.models, undefined);
+    assert.ok(loaded.some((message) =>
+      message.method === "session/update"
+      && message.params?.sessionId === sessionId
+      && message.params?.update?.sessionUpdate === "user_message_chunk"
+    ));
+    assert.ok(loaded.some((message) =>
+      message.method === "session/update"
+      && message.params?.sessionId === sessionId
+      && message.params?.update?.sessionUpdate === "agent_message_chunk"
+    ));
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("session/load replays local ACP history when the provider client cannot be restored", async () => {
+  const fixture = createManagerFixture(({ store, sessionRuntimeIndex }) =>
+    createMockAcpSessionManager({
+      store,
+      sessionRuntimeIndex,
+      getClientError: new Error("provider unavailable"),
+    })
+  );
+
+  try {
+    const created = await request(fixture, "acp-load-client-fallback-new", "session/new", {
+      cwd: "/tmp/acp-load-client-fallback-demo",
+      _meta: { coderover: { agentId: "gemini" } },
+    });
+    const sessionId = responseById(created, "acp-load-client-fallback-new").result.sessionId as string;
+
+    fixture.store.saveSessionHistory(sessionId, {
+      sessionId,
+      turns: [
+        {
+          id: "turn-client-fallback",
+          createdAt: "2026-03-17T10:05:00.000Z",
+          status: "completed",
+          items: [
+            {
+              id: "item-assistant",
+              type: "agent_message",
+              role: "assistant",
+              text: "offline answer",
+              content: [{ type: "text", text: "offline answer" }],
+              createdAt: "2026-03-17T10:06:00.000Z",
+            },
+          ],
+        },
+      ],
+    });
+
+    const loaded = await request(fixture, "acp-load-client-fallback", "session/load", { sessionId });
+    const response = responseById(loaded, "acp-load-client-fallback");
+    assert.equal(response.error, undefined);
+    assert.equal(response.result._meta.coderover.agentId, "gemini");
+    assert.equal(response.result.models, undefined);
+    assert.ok(loaded.some((message) =>
+      message.method === "session/update"
+      && message.params?.sessionId === sessionId
+      && message.params?.update?.sessionUpdate === "agent_message_chunk"
+    ));
+  } finally {
+    fixture.cleanup();
+  }
+});
+
 test("_coderover/session/set_title and archive update ACP session listings", async () => {
   const fixture = createManagerFixture();
   try {
@@ -406,6 +593,46 @@ test("session/resume returns ACP session state for an existing session", async (
 
     const resumed = await request(fixture, "resume-session", "session/resume", { sessionId });
     const response = responseById(resumed, "resume-session");
+    assert.equal(response.result._meta.coderover.agentId, "claude");
+    assert.equal(response.result.models.currentModelId, "sonnet");
+    assert.equal(response.result.modes.currentModeId, "default");
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("session/resume falls back to local session state when provider resume fails", async () => {
+  const fixture = createManagerFixture(({ store, sessionRuntimeIndex }) =>
+    createMockAcpSessionManager({
+      store,
+      sessionRuntimeIndex,
+      resumeSessionError: new Error("Internal error"),
+    })
+  );
+
+  try {
+    const created = await request(fixture, "resume-fallback-new", "session/new", {
+      cwd: "/tmp/resume-fallback-demo",
+      modelId: "sonnet",
+      _meta: { coderover: { agentId: "claude" } },
+    });
+    const sessionId = responseById(created, "resume-fallback-new").result.sessionId as string;
+
+    fixture.store.saveSessionHistory(sessionId, {
+      sessionId,
+      turns: [
+        {
+          id: "turn-resume-fallback",
+          createdAt: "2026-03-17T11:00:00.000Z",
+          status: "completed",
+          items: [],
+        },
+      ],
+    });
+
+    const resumed = await request(fixture, "resume-fallback", "session/resume", { sessionId });
+    const response = responseById(resumed, "resume-fallback");
+    assert.equal(response.error, undefined);
     assert.equal(response.result._meta.coderover.agentId, "claude");
     assert.equal(response.result.models.currentModelId, "sonnet");
     assert.equal(response.result.modes.currentModeId, "default");

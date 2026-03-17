@@ -42,6 +42,7 @@ export interface AcpProcessClient {
   initialize(params: Record<string, unknown>): Promise<AcpClientInitializeResult>;
   isRunning(): boolean;
   listModels(params?: Record<string, unknown>): Promise<Record<string, unknown>>;
+  listSessions(params?: Record<string, unknown>): Promise<Record<string, unknown>>;
   loadSession(params: Record<string, unknown>): Promise<AcpClientLoadSessionResult>;
   newSession(params: Record<string, unknown>): Promise<AcpClientNewSessionResult>;
   onServerRequest(listener: (request: AcpClientServerRequest) => void): () => boolean;
@@ -147,6 +148,10 @@ export function createAcpProcessClient(commandLine: string): AcpProcessClient {
     return await rpcClient.request("model/list", params);
   }
 
+  async function listSessions(params: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
+    return await rpcClient.request("session/list", params);
+  }
+
   async function loadSession(params: Record<string, unknown>): Promise<AcpClientLoadSessionResult> {
     return await rpcClient.request("session/load", params);
   }
@@ -202,6 +207,7 @@ export function createAcpProcessClient(commandLine: string): AcpProcessClient {
       return child.exitCode == null && child.signalCode == null;
     },
     listModels,
+    listSessions,
     loadSession,
     newSession,
     onServerRequest,

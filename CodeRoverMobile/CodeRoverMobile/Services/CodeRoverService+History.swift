@@ -1,5 +1,5 @@
 // FILE: CodeRoverService+History.swift
-// Purpose: Parses thread/read history payloads into normalized timeline messages.
+// Purpose: Shared timeline normalization helpers used by ACP transcript hydration and realtime updates.
 // Layer: Service
 // Exports: CodeRoverService history parsing helpers
 // Depends on: ChatMessage, JSONValue
@@ -8,7 +8,7 @@ import Foundation
 import UIKit
 
 extension CodeRoverService {
-    // Decodes thread/read(includeTurns=true) payload into chronological message timeline.
+    // Decodes a provider transcript payload into chronological timeline messages.
     func decodeMessagesFromThreadRead(
         threadId: String,
         threadObject: [String: JSONValue],
@@ -223,7 +223,7 @@ extension CodeRoverService {
             .map { "\($0.key)=\($0.value)" }
             .joined(separator: ",")
         debugRuntimeLog(
-            "thread/read decode thread=\(threadId) turns=\(turns.count) messages=\(result.count) "
+            "history decode thread=\(threadId) turns=\(turns.count) messages=\(result.count) "
             + "itemTypes=\(typeSummary.isEmpty ? "none" : typeSummary)"
         )
 
@@ -491,71 +491,6 @@ extension CodeRoverService {
         }
 
         return attachments
-    }
-
-    func messageHistoryAnchor(for message: ChatMessage) -> ThreadHistoryAnchor {
-        ThreadHistoryAnchor(
-            itemId: message.itemId,
-            createdAt: message.createdAt,
-            turnId: message.turnId
-        )
-    }
-
-    func decodeHistoryAnchor(from object: [String: JSONValue]?) -> ThreadHistoryAnchor? {
-        guard let object else { return nil }
-        let itemId = object["itemId"]?.stringValue ?? object["item_id"]?.stringValue
-        let turnId = object["turnId"]?.stringValue ?? object["turn_id"]?.stringValue
-
-        if let rawCreatedAt = object["createdAt"]?.doubleValue ?? object["created_at"]?.doubleValue {
-            return ThreadHistoryAnchor(itemId: itemId, createdAt: decodeUnixTimestamp(rawCreatedAt), turnId: turnId)
-        }
-        if let rawCreatedAt = object["createdAt"]?.stringValue ?? object["created_at"]?.stringValue,
-           let parsed = parseHistoryDateString(rawCreatedAt) {
-            return ThreadHistoryAnchor(itemId: itemId, createdAt: parsed, turnId: turnId)
-        }
-
-        return nil
-    }
-
-    func buildLegacyHistoryStateIfNeeded(threadId: String) {
-        guard historyStateByThread[threadId] == nil else { return }
-        historyStateByThread[threadId] = ThreadHistoryState()
-    }
-
-    func mergeHistoryWindow(
-        threadId: String,
-        mode: ThreadHistoryWindowMode,
-        historyMessages _: [ChatMessage],
-        olderCursor: String?,
-        newerCursor: String?,
-        hasOlder: Bool,
-        hasNewer: Bool
-    ) {
-        buildLegacyHistoryStateIfNeeded(threadId: threadId)
-
-        var state = historyStateByThread[threadId] ?? ThreadHistoryState()
-
-        switch mode {
-        case .tail:
-            state.oldestCursor = normalizedHistoryCursor(olderCursor)
-            state.newestCursor = normalizedHistoryCursor(newerCursor)
-            state.hasNewerOnServer = hasNewer
-            state.hasOlderOnServer = hasOlder
-        case .before:
-            if let olderCursor = normalizedHistoryCursor(olderCursor) {
-                state.oldestCursor = olderCursor
-            }
-            state.hasOlderOnServer = hasOlder
-        case .after:
-            if let newerCursor = normalizedHistoryCursor(newerCursor) {
-                state.newestCursor = newerCursor
-            }
-            state.hasNewerOnServer = hasNewer
-        }
-
-        state.isLoadingOlder = false
-        state.isTailRefreshing = false
-        historyStateByThread[threadId] = state
     }
 
     func decodeHistoryTimestamp(from object: [String: JSONValue]) -> Date? {
@@ -1423,11 +1358,5 @@ extension CodeRoverService {
         default:
             return []
         }
-    }
-}
-
-private extension CodeRoverService {
-    func maxAnchor(_ lhs: ThreadHistoryAnchor, _ rhs: ThreadHistoryAnchor) -> ThreadHistoryAnchor {
-        lhs.createdAt >= rhs.createdAt ? lhs : rhs
     }
 }
