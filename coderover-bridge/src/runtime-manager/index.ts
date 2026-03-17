@@ -33,9 +33,12 @@ import { createCodexAdapter, type CodexAdapter } from "../providers/codex-adapte
 import { createClaudeAdapter } from "../providers/claude-adapter";
 import { createGeminiAdapter } from "../providers/gemini-adapter";
 import {
-  projectRuntimeEventToMobileProtocol,
-  type ProjectedMobileProtocolMessage,
-} from "../runtime-engine/mobile-protocol-projector";
+  ACP_PROTOCOL_VERSION,
+  buildAcpReplayNotifications,
+  normalizeRunState,
+  projectRuntimeEventToAcpProtocol,
+  type ProjectedAcpProtocolMessage,
+} from "../runtime-engine/acp-protocol";
 import { createCodexRuntimeEngine } from "../runtime-engine/codex-engine";
 import { createManagedProviderRuntimeEngine } from "../runtime-engine/managed-provider-engine";
 import {
@@ -90,6 +93,13 @@ interface PendingClientRequest {
   threadId: string | null;
   resolve(value: unknown): void;
   reject(error: Error): void;
+}
+
+interface PendingPromptRequest {
+  requestId: JsonRpcId;
+  sessionId: string;
+  userMessageId: string | null;
+  resolveCompletion(): void;
 }
 
 interface ActiveRunEntry {
@@ -224,6 +234,10 @@ export function createRuntimeManager({
     baseDir: store.baseDir,
   });
   const pendingClientRequests = new Map<string, PendingClientRequest>();
+  const pendingPromptRequests = new Map<string, PendingPromptRequest>();
+  const pendingPromptUsage = new Map<string, UnknownRecord | null>();
+  const pendingPromptErrors = new Map<string, string>();
+  const seenAcpToolCallsBySession = new Map<string, Set<string>>();
   const activeRunsByThread = new Map<string, ActiveRunEntry>();
   const codexHistoryCache = new Map<string, CodexHistorySnapshot>();
   const codexObservedThreadWatchers = new Map<string, ObservedCodexThreadWatcher>();
@@ -344,27 +358,108 @@ export function createRuntimeManager({
             Array.from(providerEngines.values(), (engine) => engine.initialize(params))
           );
           if (requestId != null) {
-            sendApplicationMessage(buildRpcSuccess(requestId, { bridgeManaged: true }));
+            sendServerMessage(buildRpcSuccess(requestId, buildAcpInitializeResult(params)));
           }
           return true;
+
+        case "_coderover/agent/list":
+          return await handleRequestWithResponse(requestId, async () => ({
+            agents: listRuntimeProviders().map((provider) => ({
+              id: provider.id,
+              name: provider.title,
+              description: `${provider.title} runtime`,
+              _meta: {
+                coderover: {
+                  agentId: provider.id,
+                  supports: provider.supports,
+                  defaultModelId: provider.defaultModelId,
+                },
+              },
+            })),
+            defaultAgentId: "codex",
+          }));
+
+        case "_coderover/model/list":
+        case "model/list":
+          return await handleRequestWithResponse(requestId, async () => {
+            await ensureExternalThreadsIndexed();
+            const provider = resolveAcpAgentId(params);
+            return buildAcpModelListResult(await getProviderEngine(provider).listModels(params));
+          });
+
+        case "_coderover/skills/list":
+        case "skills/list":
+          return await handleRequestWithResponse(requestId, async () => {
+            await ensureCodexWarm();
+            const result = await codexAdapter.listSkills(params || {});
+            return normalizeSkillsResult(result);
+          });
+
+        case "_coderover/fuzzy_file_search":
+        case "fuzzyFileSearch":
+          return await handleRequestWithResponse(requestId, async () => {
+            await ensureCodexWarm();
+            const result = await codexAdapter.fuzzyFileSearch(params || {});
+            return normalizeFuzzyFileResult(result);
+          });
+
+        case "session/list":
+          return await handleRequestWithResponse(requestId, async () => {
+            await ensureExternalThreadsIndexed();
+            return handleAcpSessionList(params);
+          });
+
+        case "session/new":
+          return await handleRequestWithResponse(requestId, async () => {
+            return handleAcpSessionNew(params);
+          });
+
+        case "session/load":
+          return await handleRequestWithResponse(requestId, async () => {
+            return handleAcpSessionLoad(params);
+          });
+
+        case "session/resume":
+          return await handleRequestWithResponse(requestId, async () => {
+            return handleAcpSessionResume(params);
+          });
+
+        case "session/prompt":
+          if (requestId == null) {
+            throw createRuntimeError(ERROR_INVALID_PARAMS, "session/prompt requires a request id");
+          }
+          await handleAcpSessionPrompt(requestId, params);
+          return true;
+
+        case "session/cancel":
+          await handleAcpSessionCancel(params);
+          return true;
+
+        case "session/set_mode":
+          return await handleRequestWithResponse(requestId, async () => {
+            return handleAcpSetMode(params);
+          });
+
+        case "session/set_config_option":
+          return await handleRequestWithResponse(requestId, async () => {
+            return handleAcpSetConfigOption(params);
+          });
+
+        case "session/set_model":
+          return await handleRequestWithResponse(requestId, async () => {
+            return handleAcpSetModel(params);
+          });
 
         case "initialized":
           return true;
 
         case "runtime/provider/list":
           if (requestId != null) {
-            sendApplicationMessage(buildRpcSuccess(requestId, {
+            sendServerMessage(buildRpcSuccess(requestId, {
               providers: listRuntimeProviders(),
             }));
           }
           return true;
-
-        case "model/list":
-          return await handleRequestWithResponse(requestId, async () => {
-            await ensureExternalThreadsIndexed();
-            const provider = resolveProviderId(params);
-            return getProviderEngine(provider).listModels(params);
-          });
 
         case "collaborationMode/list":
           return await handleRequestWithResponse(requestId, async () => ({
@@ -413,10 +508,13 @@ export function createRuntimeManager({
             return engine.compactThread(threadMeta, params);
           });
 
+        case "_coderover/session/set_title":
         case "thread/name/set":
           return await handleRequestWithResponse(requestId, async () => {
-            const threadMeta = await requireThreadMeta(params.threadId || params.thread_id);
-            const nextName = normalizeOptionalString(params.name);
+            const threadMeta = await requireThreadMeta(
+              params.sessionId || params.threadId || params.thread_id
+            );
+            const nextName = normalizeOptionalString(params.title || params.name);
             const updatedMeta = store.updateThreadMeta(threadMeta.id, (entry) => ({
               ...entry,
               name: nextName,
@@ -433,11 +531,15 @@ export function createRuntimeManager({
             };
           });
 
+        case "_coderover/session/archive":
+        case "_coderover/session/unarchive":
         case "thread/archive":
         case "thread/unarchive":
           return await handleRequestWithResponse(requestId, async () => {
-            const threadMeta = await requireThreadMeta(params.threadId || params.thread_id);
-            const archived = method === "thread/archive";
+            const threadMeta = await requireThreadMeta(
+              params.sessionId || params.threadId || params.thread_id
+            );
+            const archived = method === "thread/archive" || method === "_coderover/session/archive";
             const updatedMeta = store.updateThreadMeta(threadMeta.id, (entry) => ({
               ...entry,
               archived,
@@ -489,7 +591,7 @@ export function createRuntimeManager({
 
         default:
           if (requestId != null) {
-            sendApplicationMessage(buildRpcError(requestId, ERROR_METHOD_NOT_FOUND, `Unsupported method: ${method}`));
+            sendServerMessage(buildRpcError(requestId, ERROR_METHOD_NOT_FOUND, `Unsupported method: ${method}`));
             return true;
           }
           return false;
@@ -501,7 +603,7 @@ export function createRuntimeManager({
       }
 
       const code = Number.isInteger(error.code) ? error.code : ERROR_INTERNAL;
-      sendApplicationMessage(buildRpcError(requestId, code, error.message || "Internal runtime error"));
+      sendServerMessage(buildRpcError(requestId, code, error.message || "Internal runtime error"));
       return true;
     }
   }
@@ -544,13 +646,13 @@ export function createRuntimeManager({
 
     if (canonicalNotifications.length > 0) {
       canonicalNotifications.forEach((message) => {
-        sendApplicationMessage(message);
+        sendServerMessage(message);
         logCodexRealtimeEvent("phone-out", message);
       });
     } else if (!suppressRawFallback) {
       const decoratedMessage = decorateCodexTransportMessage(rawMessage, parsedMessage);
-      sendApplicationMessage(decoratedMessage);
-      logCodexRealtimeEvent("phone-out", decoratedMessage);
+      debugLog(`${logPrefix} [acp] suppress raw codex fallback method=${String(asObject(parsedMessage).method || "unknown")}`);
+      logCodexRealtimeEvent("phone-out:suppressed", decoratedMessage);
     }
 
     if (shouldEmitHistoryChangedForCodexChange(historyChange)) {
@@ -834,10 +936,13 @@ export function createRuntimeManager({
         const errorRecord = asObject(parsed.error);
         pending.reject(new Error(normalizeOptionalString(errorRecord.message) || "Client rejected server request"));
       } else {
-        pending.resolve(parsed.result);
+        pending.resolve(normalizeClientResponseResult(pending.method, parsed.result));
       }
 
-      if (pending.method === "item/tool/requestUserInput") {
+      if (
+        pending.method === "item/tool/requestUserInput"
+        || pending.method === "_coderover/session/request_input"
+      ) {
         sendNotification("serverRequest/resolved", {
           requestId: parsed.id,
           threadId: pending.threadId,
@@ -863,7 +968,7 @@ export function createRuntimeManager({
       return true;
     }
     const result = await handler();
-    sendApplicationMessage(buildRpcSuccess(requestId, result));
+    sendServerMessage(buildRpcSuccess(requestId, result));
     return true;
   }
 
@@ -1783,7 +1888,7 @@ export function createRuntimeManager({
       return;
     }
 
-    sendApplicationMessage(JSON.stringify({
+    sendServerMessage(JSON.stringify({
       jsonrpc: "2.0",
       method: "thread/history/changed",
       params: change,
@@ -2847,10 +2952,13 @@ export function createRuntimeManager({
       .filter(Boolean)
       .join("\n")
       .trim();
+    const clientUserMessageId = normalizeOptionalString(
+      asObject(asObject(params._meta).coderover).userMessageId
+    );
 
     if (inputItems.length > 0) {
       turnRecord.items.push({
-        id: randomUUID(),
+        id: clientUserMessageId || randomUUID(),
         type: "user_message",
         role: "user",
         content: inputItems.map((item) => ({ ...asObject(item) })),
@@ -3277,7 +3385,7 @@ export function createRuntimeManager({
         resolve,
         reject,
       });
-      sendApplicationMessage(JSON.stringify({
+      sendServerMessage(JSON.stringify({
         jsonrpc: "2.0",
         id: requestId,
         method,
@@ -3286,8 +3394,8 @@ export function createRuntimeManager({
     });
   }
 
-  function projectRuntimeEvent(event: RuntimeEvent): ProjectedMobileProtocolMessage {
-    return projectRuntimeEventToMobileProtocol(event);
+  function projectRuntimeEvent(event: RuntimeEvent): ProjectedAcpProtocolMessage {
+    return projectRuntimeEventToAcpProtocol(event);
   }
 
   function emitRuntimeEvent(event: RuntimeEvent): void {
@@ -3295,7 +3403,18 @@ export function createRuntimeManager({
     if (projected.kind !== "notification") {
       throw new Error(`Runtime event ${event.kind} requires a request handler`);
     }
-    sendNotification(projected.method, projected.params);
+    emitProjectedAcpMessage(projected);
+    if (event.kind === "token_usage") {
+      pendingPromptUsage.set(event.threadId, asObject((projected.params.update as UnknownRecord).usage));
+      return;
+    }
+    if (event.kind === "runtime_error") {
+      pendingPromptErrors.set(event.threadId, event.message);
+      return;
+    }
+    if (event.kind === "turn_completed") {
+      resolvePendingPromptRequest(event.threadId, event.status);
+    }
   }
 
   function requestFromRuntimeEvent(event: RuntimeEvent): Promise<unknown> {
@@ -3439,7 +3558,7 @@ export function createRuntimeManager({
     const decoratedParams = decorateNotificationWithHistoryMetadata(method, params, (threadId: string) =>
       readManagedHistorySnapshot(threadId)
     );
-    sendApplicationMessage(JSON.stringify({
+    sendServerMessage(JSON.stringify({
       jsonrpc: "2.0",
       method,
       params: decoratedParams,
@@ -3537,6 +3656,1024 @@ export function createRuntimeManager({
     return {
       files,
     };
+  }
+
+  function buildAcpInitializeResult(params: UnknownRecord): UnknownRecord {
+    const requestedVersion = typeof params.protocolVersion === "number"
+      ? params.protocolVersion
+      : ACP_PROTOCOL_VERSION;
+    return {
+      protocolVersion: requestedVersion,
+      agentInfo: {
+        name: "coderover_bridge",
+        title: "CodeRover Bridge",
+        version: "0.1.0",
+      },
+      agentCapabilities: {
+        loadSession: true,
+        promptCapabilities: {
+          image: true,
+        },
+        sessionCapabilities: {
+          list: {},
+          resume: {},
+        },
+      },
+    };
+  }
+
+  function readExplicitAcpAgentId(params: UnknownRecord): string | null {
+    const meta = asObject(params._meta);
+    const coderoverMeta = asObject(meta?.coderover);
+    const explicitAgentId = firstNonEmptyString([
+      coderoverMeta.agentId
+        || null,
+      coderoverMeta.provider,
+      params.provider,
+      params.agentId,
+    ]);
+    return explicitAgentId ? resolveProviderId(explicitAgentId) : null;
+  }
+
+  function resolveAcpAgentId(params: UnknownRecord): string {
+    return readExplicitAcpAgentId(params) || "codex";
+  }
+
+  function buildAcpModelListResult(result: unknown): { models: unknown[]; items: unknown[] } {
+    const normalized = normalizeModelListResult(result);
+    const items = Array.isArray(normalized.items) ? normalized.items : [];
+    return {
+      models: items.map((entry) => {
+        const record = asObject(entry);
+        return {
+          modelId: normalizeOptionalString(record.model) || normalizeOptionalString(record.id) || "model",
+          name: normalizeOptionalString(record.title)
+            || normalizeOptionalString(record.displayName)
+            || normalizeOptionalString(record.id)
+            || "Model",
+          ...(normalizeOptionalString(record.description)
+            ? { description: normalizeOptionalString(record.description) }
+            : {}),
+          _meta: {
+            coderover: record,
+          },
+        };
+      }),
+      items,
+    };
+  }
+
+  async function handleAcpSessionList(params: UnknownRecord): Promise<UnknownRecord> {
+    const archivedFilter = readAcpArchivedFilter(params);
+    const requestedLimit = normalizePositiveInteger(params.limit) || DEFAULT_THREAD_LIST_PAGE_SIZE;
+    const cursor = decodeThreadListCursor(params.cursor);
+    const providerThreads = await Promise.all(
+      Array.from(providerEngines.values(), (engine) => engine.listThreads(params))
+    );
+    let mergedThreads = mergeThreadLists(providerThreads.flat())
+      .map((thread) => summarizeThreadForList(thread));
+
+    if (archivedFilter != null) {
+      mergedThreads = mergedThreads.filter((thread) => Boolean(thread.archived) === archivedFilter);
+    }
+    if (normalizeOptionalString(params.cwd)) {
+      mergedThreads = mergedThreads.filter((thread) =>
+        firstNonEmptyString([thread.cwd, thread.current_working_directory, thread.working_directory]) === normalizeOptionalString(params.cwd)
+      );
+    }
+
+    const page = paginateThreadList(mergedThreads, {
+      archived: Boolean(archivedFilter),
+      limit: requestedLimit,
+      cursor,
+    });
+
+    return {
+      sessions: await Promise.all(page.threads.map((thread) => buildAcpSessionInfo(thread))),
+      nextCursor: page.nextCursor,
+    };
+  }
+
+  async function handleAcpSessionNew(params: UnknownRecord): Promise<UnknownRecord> {
+    const provider = resolveAcpAgentId(params);
+    const startResult = await getProviderEngine(provider).startThread({
+      cwd: normalizeOptionalString(params.cwd),
+      model: readAcpRequestedModel(params),
+      provider,
+    });
+    const thread = extractThreadFromResult(startResult);
+    if (!thread?.id) {
+      throw createRuntimeError(ERROR_INTERNAL, "session/new did not return a session thread");
+    }
+    const threadMeta = await requireThreadMeta(thread.id);
+    const sessionState = await buildAcpSessionState(threadMeta);
+    return {
+      sessionId: thread.id,
+      ...sessionState,
+      _meta: {
+        coderover: {
+          agentId: provider,
+        },
+      },
+    };
+  }
+
+  async function handleAcpSessionLoad(params: UnknownRecord): Promise<UnknownRecord> {
+    const sessionId = requireSessionId(params);
+    const threadMeta = await requireThreadMeta(sessionId);
+    assertAcpAgentMatches(threadMeta, params);
+    await getProviderEngine(threadMeta.provider).resumeThread(threadMeta, {
+      threadId: sessionId,
+      model: readAcpRequestedModel(params),
+    });
+    const refreshedThread = await getProviderEngine(threadMeta.provider).readThread(threadMeta, {
+      threadId: sessionId,
+    });
+    const thread = extractThreadFromResult(refreshedThread) || buildManagedThreadObject(
+      store.getThreadMeta(sessionId) || threadMeta,
+      store.getThreadHistory(sessionId)?.turns || []
+    );
+    buildAcpReplayNotifications(thread).forEach((notification) => {
+      emitProjectedAcpMessage(notification);
+    });
+    return buildAcpSessionState(threadMeta);
+  }
+
+  async function handleAcpSessionResume(params: UnknownRecord): Promise<UnknownRecord> {
+    const sessionId = requireSessionId(params);
+    const threadMeta = await requireThreadMeta(sessionId);
+    assertAcpAgentMatches(threadMeta, params);
+    await getProviderEngine(threadMeta.provider).resumeThread(threadMeta, {
+      threadId: sessionId,
+      model: readAcpRequestedModel(params),
+    });
+    return buildAcpSessionState(threadMeta);
+  }
+
+  async function handleAcpSessionPrompt(
+    requestId: JsonRpcId,
+    params: UnknownRecord
+  ): Promise<void> {
+    const sessionId = requireSessionId(params);
+    const threadMeta = await requireThreadMeta(sessionId);
+    const prompt = Array.isArray(params.prompt) ? params.prompt : [];
+    const userMessageId = normalizeOptionalString(params.messageId) || randomUUID();
+    const runtimeParams = buildRuntimePromptParams(threadMeta, params, userMessageId);
+
+    buildPromptUserChunks(sessionId, prompt, userMessageId).forEach((notification) => {
+      emitProjectedAcpMessage(notification);
+    });
+
+    const completionPromise = new Promise<void>((resolve) => {
+      pendingPromptRequests.set(sessionId, {
+        requestId,
+        sessionId,
+        userMessageId,
+        resolveCompletion: resolve,
+      });
+    });
+    pendingPromptUsage.delete(sessionId);
+    pendingPromptErrors.delete(sessionId);
+
+    try {
+      await getProviderEngine(threadMeta.provider).startTurn(threadMeta, runtimeParams);
+    } catch (error) {
+      const pending = pendingPromptRequests.get(sessionId);
+      pendingPromptRequests.delete(sessionId);
+      const code = Number.isInteger((error as RuntimeErrorShape).code)
+        ? Number((error as RuntimeErrorShape).code)
+        : ERROR_INTERNAL;
+      sendServerMessage(buildRpcError(requestId, code, (error as Error).message || "Prompt failed"));
+      pending?.resolveCompletion();
+    }
+
+    await completionPromise;
+  }
+
+  async function handleAcpSessionCancel(params: UnknownRecord): Promise<void> {
+    const sessionId = requireSessionId(params);
+    const threadMeta = await requireThreadMeta(sessionId);
+    await getProviderEngine(threadMeta.provider).interruptTurn(threadMeta, {
+      threadId: sessionId,
+    });
+  }
+
+  async function handleAcpSetMode(params: UnknownRecord): Promise<UnknownRecord> {
+    const sessionId = requireSessionId(params);
+    const modeId = normalizeOptionalString(params.modeId);
+    if (!modeId) {
+      throw createRuntimeError(ERROR_INVALID_PARAMS, "modeId is required");
+    }
+    const threadMeta = await requireThreadMeta(sessionId);
+    updateThreadSessionOwnerState(sessionId, threadSessionIndex.get(sessionId)?.ownerState || "idle");
+    threadSessionIndex.upsert({
+      ...(threadSessionIndex.get(sessionId) || {
+        threadId: sessionId,
+        provider: threadMeta.provider,
+      }),
+      mode: modeId,
+      updatedAt: new Date().toISOString(),
+    });
+    emitProjectedAcpMessage({
+      kind: "notification",
+      method: "session/update",
+      params: {
+        sessionId,
+        update: {
+          sessionUpdate: "current_mode_update",
+          currentModeId: modeId,
+          _meta: {
+            coderover: {
+              threadId: sessionId,
+            },
+          },
+        },
+      },
+    });
+    return {};
+  }
+
+  async function handleAcpSetConfigOption(params: UnknownRecord): Promise<UnknownRecord> {
+    const sessionId = requireSessionId(params);
+    const configId = normalizeOptionalString(params.configId);
+    if (!configId) {
+      throw createRuntimeError(ERROR_INVALID_PARAMS, "configId is required");
+    }
+    const threadMeta = await requireThreadMeta(sessionId);
+    const nextValue = normalizeAcpConfigValue(params);
+    const updatedMeta = store.updateThreadMeta(sessionId, (entry) => ({
+      ...entry,
+      metadata: {
+        ...(entry.metadata || {}),
+        acpConfig: {
+          ...(asObject((entry.metadata || {}).acpConfig) || {}),
+          [configId]: nextValue,
+        },
+      },
+      updatedAt: new Date().toISOString(),
+    })) || threadMeta;
+    emitProjectedAcpMessage({
+      kind: "notification",
+      method: "session/update",
+      params: {
+        sessionId,
+        update: {
+          sessionUpdate: "config_option_update",
+          configOptions: buildAcpConfigOptions(updatedMeta),
+        },
+      },
+    });
+    return {
+      configOptions: buildAcpConfigOptions(updatedMeta),
+    };
+  }
+
+  async function handleAcpSetModel(params: UnknownRecord): Promise<UnknownRecord> {
+    const sessionId = requireSessionId(params);
+    const modelId = normalizeOptionalString(params.modelId);
+    if (!modelId) {
+      throw createRuntimeError(ERROR_INVALID_PARAMS, "modelId is required");
+    }
+    const threadMeta = await requireThreadMeta(sessionId);
+    store.updateThreadMeta(sessionId, (entry) => ({
+      ...entry,
+      model: modelId,
+      updatedAt: new Date().toISOString(),
+    }));
+    return {};
+  }
+
+  async function buildAcpSessionState(threadMeta: RuntimeThreadMeta): Promise<UnknownRecord> {
+    const handle = threadSessionIndex.get(threadMeta.id);
+    const modes = buildAcpModeState(threadMeta, handle?.mode || null);
+    const configOptions = buildAcpConfigOptions(threadMeta);
+    const models = await buildAcpModelState(threadMeta);
+    return {
+      ...(modes ? { modes } : {}),
+      ...(configOptions.length > 0 ? { configOptions } : {}),
+      ...(models ? { models } : {}),
+      _meta: {
+        coderover: {
+          agentId: threadMeta.provider,
+        },
+      },
+    };
+  }
+
+  async function buildAcpSessionInfo(thread: RuntimeThreadShape): Promise<UnknownRecord> {
+    const threadId = normalizeOptionalString(thread.id) || "";
+    const threadMeta = threadId ? (store.getThreadMeta(threadId) || threadObjectToMeta(asObject(thread))) : null;
+    return {
+      sessionId: threadId,
+      cwd: firstNonEmptyString([thread.cwd, thread.current_working_directory, thread.working_directory]) || process.cwd(),
+      ...(normalizeOptionalString(thread.name) || normalizeOptionalString(thread.title)
+        ? { title: normalizeOptionalString(thread.name) || normalizeOptionalString(thread.title) }
+        : {}),
+      ...(normalizeTimestampString(thread.updatedAt) ? { updatedAt: normalizeTimestampString(thread.updatedAt) } : {}),
+      _meta: {
+        coderover: {
+          agentId: normalizeOptionalString(thread.provider) || threadMeta?.provider || "codex",
+          archived: Boolean(thread.archived || threadMeta?.archived),
+          preview: normalizeOptionalString(thread.preview),
+          providerSessionId: normalizeOptionalString(thread.providerSessionId) || threadMeta?.providerSessionId || null,
+          capabilities: threadMeta?.capabilities || asObject(thread.capabilities),
+        },
+      },
+    };
+  }
+
+  function buildAcpModeState(
+    threadMeta: RuntimeThreadMeta,
+    currentMode: string | null
+  ): UnknownRecord | null {
+    const supportsPlan = Boolean(getRuntimeProvider(threadMeta.provider).supports.planMode);
+    const availableModes = [
+      { id: "default", name: "Default" },
+      ...(supportsPlan ? [{ id: "plan", name: "Plan" }] : []),
+    ];
+    return {
+      availableModes,
+      currentModeId: currentMode || "default",
+    };
+  }
+
+  function buildAcpConfigOptions(threadMeta: RuntimeThreadMeta): UnknownRecord[] {
+    const acpConfig = asObject((threadMeta.metadata || {}).acpConfig);
+    const accessMode = normalizeOptionalString(acpConfig.access_mode) || "on-request";
+    const options: UnknownRecord[] = [{
+      configId: "access_mode",
+      name: "Access mode",
+      category: "_coderover_access_mode",
+      type: "select",
+      value: {
+        currentValue: accessMode,
+        options: [
+          { value: "on-request", name: "On-Request" },
+          { value: "full-access", name: "Full access" },
+        ],
+      },
+    }];
+    const reasoningEffort = normalizeOptionalString(acpConfig.reasoning_effort);
+    if (reasoningEffort) {
+      options.push({
+        configId: "reasoning_effort",
+        name: "Reasoning effort",
+        category: "thought_level",
+        type: "select",
+        value: {
+          currentValue: reasoningEffort,
+          options: [
+            { value: "low", name: "Low" },
+            { value: "medium", name: "Medium" },
+            { value: "high", name: "High" },
+          ],
+        },
+      });
+    }
+    return options;
+  }
+
+  async function buildAcpModelState(threadMeta: RuntimeThreadMeta): Promise<UnknownRecord | null> {
+    const result = await getProviderEngine(threadMeta.provider).listModels({ provider: threadMeta.provider });
+    const normalized = buildAcpModelListResult(result);
+    const models = Array.isArray(normalized.models) ? normalized.models : [];
+    if (models.length === 0) {
+      return null;
+    }
+    return {
+      availableModels: models,
+      currentModelId: threadMeta.model || normalizeOptionalString(asObject(models[0]).modelId) || "model",
+    };
+  }
+
+  function buildRuntimePromptParams(
+    threadMeta: RuntimeThreadMeta,
+    params: UnknownRecord,
+    userMessageId: string
+  ): UnknownRecord {
+    const handle = threadSessionIndex.get(threadMeta.id);
+    const meta = asObject(params._meta);
+    const coderoverMeta = asObject(meta.coderover);
+    return {
+      threadId: threadMeta.id,
+      input: normalizeAcpPrompt(params.prompt),
+      model: readAcpRequestedModel(params) || handle?.model || threadMeta.model || null,
+      collaborationMode: (handle?.mode || "default") === "plan"
+        ? {
+          mode: "plan",
+          settings: {
+            model: readAcpRequestedModel(params) || handle?.model || threadMeta.model || null,
+            reasoning_effort: readStoredReasoningEffort(threadMeta),
+            developer_instructions: null,
+          },
+        }
+        : null,
+      _meta: {
+        coderover: {
+          ...coderoverMeta,
+          userMessageId,
+        },
+      },
+      approvalPolicy: readApprovalPolicy(threadMeta),
+      effort: readStoredReasoningEffort(threadMeta),
+    };
+  }
+
+  function buildPromptUserChunks(
+    sessionId: string,
+    prompt: unknown[],
+    userMessageId: string
+  ): ProjectedAcpProtocolMessage[] {
+    return prompt
+      .map((entry) => normalizeAcpContentBlock(entry))
+      .filter((entry): entry is UnknownRecord => Boolean(entry))
+      .map((content) => ({
+        kind: "notification",
+        method: "session/update",
+        params: {
+          sessionId,
+          update: {
+            sessionUpdate: "user_message_chunk",
+            messageId: userMessageId,
+            content,
+            _meta: {
+              coderover: {
+                threadId: sessionId,
+                itemId: userMessageId,
+                role: "user",
+              },
+            },
+          },
+        },
+      }));
+  }
+
+  function readAcpArchivedFilter(params: UnknownRecord): boolean | null {
+    const meta = asObject(params._meta);
+    const coderoverMeta = asObject(meta?.coderover);
+    if (typeof coderoverMeta.archived === "boolean") {
+      return coderoverMeta.archived;
+    }
+    if (typeof params.archived === "boolean") {
+      return params.archived;
+    }
+    return null;
+  }
+
+  function readAcpRequestedModel(params: UnknownRecord): string | null {
+    const meta = asObject(params._meta);
+    const coderoverMeta = asObject(meta?.coderover);
+    return normalizeOptionalString(coderoverMeta.model)
+      || normalizeOptionalString(params.modelId)
+      || normalizeOptionalString(params.model);
+  }
+
+  function readStoredReasoningEffort(threadMeta: RuntimeThreadMeta): string | null {
+    return normalizeOptionalString(asObject((threadMeta.metadata || {}).acpConfig).reasoning_effort);
+  }
+
+  function readApprovalPolicy(threadMeta: RuntimeThreadMeta): string {
+    const accessMode = normalizeOptionalString(asObject((threadMeta.metadata || {}).acpConfig).access_mode);
+    return accessMode === "full-access" ? "never" : "on-request";
+  }
+
+  function requireSessionId(params: UnknownRecord): string {
+    const sessionId = normalizeOptionalString(params.sessionId || params.threadId || params.thread_id);
+    if (!sessionId) {
+      throw createRuntimeError(ERROR_INVALID_PARAMS, "sessionId is required");
+    }
+    return sessionId;
+  }
+
+  function assertAcpAgentMatches(threadMeta: RuntimeThreadMeta, params: UnknownRecord): void {
+    const requestedAgentId = readExplicitAcpAgentId(params);
+    if (requestedAgentId && requestedAgentId !== threadMeta.provider) {
+      throw createRuntimeError(
+        ERROR_INVALID_PARAMS,
+        `Session ${threadMeta.id} belongs to agent ${threadMeta.provider}, not ${requestedAgentId}`
+      );
+    }
+  }
+
+  function normalizeAcpConfigValue(params: UnknownRecord): string | boolean | null {
+    if (params.type === "boolean" && typeof params.value === "boolean") {
+      return params.value;
+    }
+    return normalizeOptionalString(params.value);
+  }
+
+  function normalizeAcpPrompt(prompt: unknown): UnknownRecord[] {
+    const blocks = Array.isArray(prompt) ? prompt : [];
+    return blocks
+      .map((entry) => normalizeAcpPromptBlock(entry))
+      .filter((entry): entry is UnknownRecord => Boolean(entry));
+  }
+
+  function normalizeAcpPromptBlock(block: unknown): UnknownRecord | null {
+    const record = asObject(block);
+    const type = normalizeOptionalString(record.type);
+    if (type === "text") {
+      const text = normalizeOptionalString(record.text);
+      return text ? { type: "text", text } : null;
+    }
+    if (type === "image") {
+      const data = normalizeOptionalString(record.data);
+      const mimeType = normalizeOptionalString(record.mimeType) || "application/octet-stream";
+      if (!data) {
+        return null;
+      }
+      return {
+        type: "image",
+        url: `data:${mimeType};base64,${data}`,
+      };
+    }
+    if (type === "resource_link") {
+      const meta = asObject(record._meta);
+      const coderoverMeta = asObject(meta.coderover);
+      const inputType = normalizeOptionalString(coderoverMeta.inputType);
+      if (inputType === "skill" || normalizeOptionalString(coderoverMeta.id)) {
+        return {
+          type: "skill",
+          id: normalizeOptionalString(coderoverMeta.id)
+            || normalizeOptionalString(record.name)
+            || normalizeOptionalString(record.title)
+            || "skill",
+          name: normalizeOptionalString(record.name) || normalizeOptionalString(record.title),
+          path: normalizeOptionalString(record.uri),
+        };
+      }
+      const resourceTitle = normalizeOptionalString(record.title)
+        || normalizeOptionalString(record.name)
+        || normalizeOptionalString(record.uri);
+      return resourceTitle
+        ? { type: "text", text: resourceTitle }
+        : null;
+    }
+    return null;
+  }
+
+  function normalizeAcpContentBlock(block: unknown): UnknownRecord | null {
+    const record = asObject(block);
+    const type = normalizeOptionalString(record.type);
+    if (type === "text") {
+      const text = normalizeOptionalString(record.text);
+      return text ? { type: "text", text } : null;
+    }
+    if (type === "image") {
+      const data = normalizeOptionalString(record.data);
+      const mimeType = normalizeOptionalString(record.mimeType) || "application/octet-stream";
+      return data
+        ? {
+          type: "image",
+          data,
+          mimeType,
+          ...(normalizeOptionalString(record.uri) ? { uri: normalizeOptionalString(record.uri) } : {}),
+        }
+        : null;
+    }
+    if (type === "resource_link") {
+      const uri = normalizeOptionalString(record.uri);
+      const name = normalizeOptionalString(record.name) || normalizeOptionalString(record.title) || uri;
+      return uri && name
+        ? {
+          type: "resource_link",
+          uri,
+          name,
+          ...(normalizeOptionalString(record.title) ? { title: normalizeOptionalString(record.title) } : {}),
+          ...(record._meta ? { _meta: record._meta } : {}),
+        }
+        : null;
+    }
+    return null;
+  }
+
+  function emitProjectedAcpMessage(projected: ProjectedAcpProtocolMessage): void {
+    if (projected.kind !== "notification") {
+      return;
+    }
+    const params = asObject(projected.params);
+    const sessionId = normalizeOptionalString(params.sessionId);
+    const update = asObject(params.update);
+    const toolCallId = normalizeOptionalString(update.toolCallId);
+    if (sessionId && toolCallId && normalizeOptionalString(update.sessionUpdate) === "tool_call") {
+      const seenToolCalls = seenAcpToolCallsBySession.get(sessionId) || new Set<string>();
+      if (seenToolCalls.has(toolCallId)) {
+        update.sessionUpdate = "tool_call_update";
+      } else {
+        seenToolCalls.add(toolCallId);
+        seenAcpToolCallsBySession.set(sessionId, seenToolCalls);
+      }
+    }
+    sendServerMessage(JSON.stringify({
+      jsonrpc: "2.0",
+      method: projected.method,
+      params: {
+        sessionId,
+        update,
+      },
+    }));
+  }
+
+  function resolvePendingPromptRequest(sessionId: string, status: string | null): void {
+    const pending = pendingPromptRequests.get(sessionId);
+    if (!pending) {
+      return;
+    }
+    pendingPromptRequests.delete(sessionId);
+    const failureMessage = pendingPromptErrors.get(sessionId);
+    const usage = pendingPromptUsage.get(sessionId);
+    pendingPromptErrors.delete(sessionId);
+    pendingPromptUsage.delete(sessionId);
+    seenAcpToolCallsBySession.delete(sessionId);
+    if (normalizeRunState(status) === "failed") {
+      sendServerMessage(buildRpcError(
+        pending.requestId,
+        ERROR_INTERNAL,
+        failureMessage || "Prompt failed"
+      ));
+      pending.resolveCompletion();
+      return;
+    }
+    sendServerMessage(buildRpcSuccess(pending.requestId, {
+      stopReason: normalizeRunState(status) === "stopped" ? "cancelled" : "end_turn",
+      ...(usage && Object.keys(usage).length > 0 ? { usage } : {}),
+      ...(pending.userMessageId ? { userMessageId: pending.userMessageId } : {}),
+    }));
+    pending.resolveCompletion();
+  }
+
+  function normalizeClientResponseResult(method: string, result: unknown): unknown {
+    if (method !== "session/request_permission") {
+      return result;
+    }
+    const response = asObject(result);
+    const outcome = asObject(response.outcome);
+    if (normalizeOptionalString(outcome.outcome) === "cancelled") {
+      return "decline";
+    }
+    const optionId = normalizeOptionalString(outcome.optionId);
+    switch (optionId) {
+      case "allow_once":
+        return "accept";
+      case "allow_always":
+        return "acceptForSession";
+      case "reject_always":
+      case "reject_once":
+        return "decline";
+      default:
+        return result;
+    }
+  }
+
+  function sendServerMessage(rawMessage: string): void {
+    const translated = translateBridgeMessageToAcp(rawMessage);
+    if (!translated) {
+      return;
+    }
+    sendApplicationMessage(translated);
+  }
+
+  function translateBridgeMessageToAcp(rawMessage: string): string | null {
+    let parsed: UnknownRecord | null = null;
+    try {
+      parsed = JSON.parse(rawMessage);
+    } catch {
+      return rawMessage;
+    }
+    if (!parsed) {
+      return rawMessage;
+    }
+    const method = normalizeOptionalString(parsed.method);
+    if (!method || parsed.id != null) {
+      return rawMessage;
+    }
+    if (method === "session/update" || method === "session/request_permission" || method.startsWith("_coderover/")) {
+      return rawMessage;
+    }
+
+    const translated = translateLegacyNotificationToAcp(method, asObject(parsed.params));
+    if (!translated) {
+      return null;
+    }
+    return JSON.stringify({
+      jsonrpc: "2.0",
+      method: translated.method,
+      params: translated.params,
+    });
+  }
+
+  function translateLegacyNotificationToAcp(
+    method: string,
+    params: UnknownRecord
+  ): ProjectedAcpProtocolMessage | null {
+    if (method === "thread/started") {
+      const thread = asObject(params.thread);
+      return {
+        kind: "notification",
+        method: "session/update",
+        params: {
+          sessionId: normalizeOptionalString(thread.id) || "",
+          update: {
+            sessionUpdate: "session_info_update",
+            ...(normalizeOptionalString(thread.name) || normalizeOptionalString(thread.title)
+              ? { title: normalizeOptionalString(thread.name) || normalizeOptionalString(thread.title) }
+              : {}),
+            ...(normalizeTimestampString(thread.updatedAt) ? { updatedAt: normalizeTimestampString(thread.updatedAt) } : {}),
+            _meta: {
+              coderover: {
+                threadId: normalizeOptionalString(thread.id) || "",
+                runState: "idle",
+                agentId: normalizeOptionalString(thread.provider) || "codex",
+                preview: normalizeOptionalString(thread.preview),
+              },
+            },
+          },
+        },
+      };
+    }
+
+    if (method === "thread/name/updated") {
+      const threadId = extractLegacyThreadId(params);
+      return threadId
+        ? {
+          kind: "notification",
+          method: "session/update",
+          params: {
+            sessionId: threadId,
+            update: {
+              sessionUpdate: "session_info_update",
+              title: normalizeOptionalString(params.name),
+              _meta: {
+                coderover: {
+                  threadId,
+                },
+              },
+            },
+          },
+        }
+        : null;
+    }
+
+    if (method === "timeline/turnUpdated") {
+      const threadId = extractLegacyThreadId(params);
+      if (!threadId) {
+        return null;
+      }
+      return {
+        kind: "notification",
+        method: "session/update",
+        params: {
+          sessionId: threadId,
+          update: {
+            sessionUpdate: "session_info_update",
+            _meta: {
+              coderover: {
+                threadId,
+                turnId: normalizeOptionalString(params.turnId),
+                runState: normalizeOptionalString(params.state) || normalizeOptionalString(params.status),
+              },
+            },
+          },
+        },
+      };
+    }
+
+    if (method === "timeline/itemStarted" || method === "timeline/itemTextUpdated" || method === "timeline/itemCompleted") {
+      return translateLegacyTimelineItemToAcp(params, method);
+    }
+
+    if (method === "thread/tokenUsage/updated") {
+      const threadId = extractLegacyThreadId(params);
+      return threadId
+        ? {
+          kind: "notification",
+          method: "session/update",
+          params: {
+            sessionId: threadId,
+            update: {
+              sessionUpdate: "usage_update",
+              usage: asObject(params.usage),
+              _meta: {
+                coderover: {
+                  threadId,
+                },
+              },
+            },
+          },
+        }
+        : null;
+    }
+
+    if (method === "error" || method === "turn/failed" || method === "thread/status/changed" || method === "thread/history/changed") {
+      const threadId = extractLegacyThreadId(params);
+      if (!threadId) {
+        return null;
+      }
+      return {
+        kind: "notification",
+        method: "session/update",
+        params: {
+          sessionId: threadId,
+          update: {
+            sessionUpdate: "session_info_update",
+            ...(normalizeOptionalString(params.updatedAt) ? { updatedAt: normalizeOptionalString(params.updatedAt) } : {}),
+            _meta: {
+              coderover: {
+                threadId,
+                sourceMethod: normalizeOptionalString(params.sourceMethod) || method,
+                runState: normalizeOptionalString(params.status) || normalizeOptionalString(asObject(params.status).type),
+                errorMessage: normalizeOptionalString(params.message),
+                historyChanged: method === "thread/history/changed",
+              },
+            },
+          },
+        },
+      };
+    }
+
+    if (method === "serverRequest/resolved") {
+      return null;
+    }
+
+    return {
+      kind: "notification",
+      method: "session/update",
+      params: {
+        sessionId: extractLegacyThreadId(params) || "unknown-session",
+        update: {
+          sessionUpdate: "session_info_update",
+          _meta: {
+            coderover: {
+              threadId: extractLegacyThreadId(params) || "unknown-session",
+              rawMethod: method,
+              rawParams: params,
+            },
+          },
+        },
+      },
+    };
+  }
+
+  function translateLegacyTimelineItemToAcp(
+    params: UnknownRecord,
+    method: string
+  ): ProjectedAcpProtocolMessage | null {
+    const threadId = extractLegacyThreadId(params);
+    const itemId = normalizeOptionalString(
+      params.timelineItemId || params.timeline_item_id || params.itemId || params.item_id || params.id
+    );
+    if (!threadId || !itemId) {
+      return null;
+    }
+    const turnId = normalizeOptionalString(params.turnId || params.turn_id);
+    const kind = normalizeOptionalString(params.kind) || "chat";
+    const text = normalizeOptionalString(params.text) || "";
+    const status = normalizeOptionalString(params.status)
+      || (method === "timeline/itemCompleted" ? "completed" : "streaming");
+
+    if (kind === "thinking") {
+      return {
+        kind: "notification",
+        method: "session/update",
+        params: {
+          sessionId: threadId,
+          update: {
+            sessionUpdate: "agent_thought_chunk",
+            messageId: itemId,
+            content: {
+              type: "text",
+              text,
+            },
+            _meta: {
+              coderover: {
+                threadId,
+                turnId,
+                itemId,
+              },
+            },
+          },
+        },
+      };
+    }
+
+    if (kind === "plan") {
+      return {
+        kind: "notification",
+        method: "session/update",
+        params: {
+          sessionId: threadId,
+          update: {
+            sessionUpdate: "plan",
+            entries: extractLegacyPlanEntries(params),
+            _meta: {
+              coderover: {
+                threadId,
+                turnId,
+                itemId,
+                text,
+              },
+            },
+          },
+        },
+      };
+    }
+
+    if (kind === "fileChange" || kind === "commandExecution") {
+      return {
+        kind: "notification",
+        method: "session/update",
+        params: {
+          sessionId: threadId,
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId: itemId,
+            title: kind === "commandExecution"
+              ? normalizeOptionalString(params.command) || "Command"
+              : normalizeOptionalString(params.toolName) || "Tool call",
+            kind: kind === "commandExecution" ? "execute" : "edit",
+            status: method === "timeline/itemCompleted" ? "completed" : "in_progress",
+            ...(text
+              ? {
+                content: [{
+                  type: "content",
+                  content: {
+                    type: "text",
+                    text,
+                  },
+                }],
+              }
+              : {}),
+            ...(kind === "commandExecution"
+              ? {
+                rawInput: {
+                  command: normalizeOptionalString(params.command),
+                  cwd: normalizeOptionalString(params.cwd),
+                },
+                rawOutput: {
+                  exitCode: params.exitCode,
+                  durationMs: params.durationMs,
+                },
+              }
+              : {}),
+            _meta: {
+              coderover: {
+                threadId,
+                turnId,
+                itemId,
+                legacyKind: kind,
+              },
+            },
+          },
+        },
+      };
+    }
+
+    return {
+      kind: "notification",
+      method: "session/update",
+      params: {
+        sessionId: threadId,
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          messageId: itemId,
+          content: {
+            type: "text",
+            text,
+          },
+          _meta: {
+            coderover: {
+              threadId,
+              turnId,
+              itemId,
+              role: normalizeOptionalString(params.role) || "assistant",
+              status,
+            },
+          },
+        },
+      },
+    };
+  }
+
+  function extractLegacyThreadId(params: UnknownRecord): string | null {
+    return normalizeOptionalString(
+      params.threadId
+      || params.thread_id
+      || asObject(params.thread).id
+      || asObject(asObject(params.event).thread).id
+    );
+  }
+
+  function extractLegacyPlanEntries(params: UnknownRecord): UnknownRecord[] {
+    const planState = asObject(params.planState);
+    const steps = Array.isArray(planState.steps) ? planState.steps : [];
+    return steps.map((entry) => {
+      const record = asObject(entry);
+      return {
+        content: normalizeOptionalString(record.step) || "Step",
+        status: normalizeOptionalString(record.status) || "pending",
+        priority: "medium",
+      };
+    });
   }
 
   function findThreadIdByTurnId(turnId: unknown): string | null {

@@ -174,6 +174,7 @@ class SecureBridgeClient(
     }
 
     suspend fun sendRequest(method: String, params: JsonObject?): JsonElement? {
+        val translated = translateRequest(method, params)
         val id = JsonPrimitive(java.util.UUID.randomUUID().toString())
         val responseDeferred = CompletableDeferred<JsonObject>()
         pendingResponses[responseKey(id)] = responseDeferred
@@ -181,9 +182,9 @@ class SecureBridgeClient(
             JsonObject(
                 buildMap {
                     put("id", id)
-                    put("method", JsonPrimitive(method))
-                    if (params != null) {
-                        put("params", params)
+                    put("method", JsonPrimitive(translated.first))
+                    if (translated.second != null) {
+                        put("params", translated.second!!)
                     }
                 },
             ),
@@ -200,12 +201,16 @@ class SecureBridgeClient(
     }
 
     suspend fun sendNotification(method: String, params: JsonObject?) {
+        if (method == "initialized") {
+            return
+        }
+        val translated = translateRequest(method, params)
         sendRpcMessage(
             JsonObject(
                 buildMap {
-                    put("method", JsonPrimitive(method))
-                    if (params != null) {
-                        put("params", params)
+                    put("method", JsonPrimitive(translated.first))
+                    if (translated.second != null) {
+                        put("params", translated.second!!)
                     }
                 },
             ),
@@ -462,10 +467,28 @@ class SecureBridgeClient(
                     method == "item/commandExecution/requestApproval" ||
                     method == "item/fileChange/requestApproval" ||
                     method.endsWith("requestApproval") ||
-                    method == "item/tool/requestUserInput"
+                    method == "item/tool/requestUserInput" ||
+                    method == "session/request_permission" ||
+                    method == "_coderover/session/request_input"
                 ) {
-                    if (method.endsWith("requestApproval") && currentAccessMode == AccessMode.FULL_ACCESS) {
-                        sendResponse(id, JsonPrimitive("accept"))
+                    if ((method.endsWith("requestApproval") || method == "session/request_permission") &&
+                        currentAccessMode == AccessMode.FULL_ACCESS
+                    ) {
+                        val approvalResponse =
+                            if (method == "session/request_permission") {
+                                JsonObject(
+                                    mapOf(
+                                        "outcome" to JsonObject(
+                                            mapOf(
+                                                "optionId" to JsonPrimitive("allow_always"),
+                                            ),
+                                        ),
+                                    ),
+                                )
+                            } else {
+                                JsonPrimitive("accept")
+                            }
+                        sendResponse(id, approvalResponse)
                     } else {
                         onApprovalRequest(id, method, params)
                     }
@@ -523,6 +546,79 @@ class SecureBridgeClient(
         if (!sent) {
             throw IllegalStateException("Unable to send message to CodeRover bridge.")
         }
+    }
+
+    private fun translateRequest(method: String, params: JsonObject?): Pair<String, JsonObject?> {
+        if (method == "runtime/provider/list") {
+            return "_coderover/agent/list" to params
+        }
+
+        if (method == "model/list") {
+            val provider = params?.string("provider")
+            val translatedParams = if (provider != null) {
+                JsonObject(
+                    params.toMutableMap().apply {
+                        put(
+                            "_meta",
+                            JsonObject(
+                                mapOf(
+                                    "coderover" to JsonObject(
+                                        mapOf(
+                                            "agentId" to JsonPrimitive(provider),
+                                        ),
+                                    ),
+                                ),
+                            ),
+                        )
+                    },
+                )
+            } else {
+                params
+            }
+            return "_coderover/model/list" to translatedParams
+        }
+
+        if (method == "skills/list") {
+            return "_coderover/skills/list" to params
+        }
+
+        if (method == "fuzzyFileSearch") {
+            return "_coderover/fuzzy_file_search" to params
+        }
+
+        if (method.startsWith("git/") || method.startsWith("workspace/") || method.startsWith("desktop/")) {
+            return "_coderover/$method" to params
+        }
+
+        if (method == "thread/contextWindow/read") {
+            val translatedParams = buildJsonObject {
+                put("sessionId", params?.get("threadId") ?: params?.get("thread_id") ?: JsonNull)
+                params?.get("turnId")?.let { put("turnId", it) }
+                params?.get("turn_id")?.let { put("turnId", it) }
+            }
+            return "_coderover/context_window/read" to translatedParams
+        }
+
+        if (method == "thread/name/set") {
+            val translatedParams = buildJsonObject {
+                put("sessionId", params?.get("threadId") ?: params?.get("thread_id") ?: JsonNull)
+                put("title", params?.get("name") ?: JsonNull)
+            }
+            return "_coderover/session/set_title" to translatedParams
+        }
+
+        if (method == "thread/archive" || method == "thread/unarchive") {
+            val translatedParams = buildJsonObject {
+                put("sessionId", params?.get("threadId") ?: params?.get("thread_id") ?: JsonNull)
+            }
+            return if (method == "thread/archive") {
+                "_coderover/session/archive" to translatedParams
+            } else {
+                "_coderover/session/unarchive" to translatedParams
+            }
+        }
+
+        return method to params
     }
 
     private suspend fun sendRawControl(message: JsonObject) {

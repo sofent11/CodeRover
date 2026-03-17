@@ -63,12 +63,34 @@ extension CodeRoverService {
             if lastErrorMessage == "The Mac bridge did not respond in time. Reconnect and try again." {
                 lastErrorMessage = nil
             }
-            continuation.resume(returning: message)
+            continuation.resume(
+                returning: translateACPResponseIfNeeded(
+                    originalMethod: requestContext?.method ?? "",
+                    originalParams: requestContext?.params,
+                    response: message
+                )
+            )
         }
     }
 
     // Handles server-initiated RPC requests like approval prompts.
     func handleServerRequest(method: String, requestID: JSONValue, params: JSONValue?) {
+        if method == "session/request_permission" {
+            handleACPRequestPermission(
+                requestID: requestID,
+                paramsObject: params?.objectValue
+            )
+            return
+        }
+
+        if method == "_coderover/session/request_input" {
+            handleACPStructuredInputRequest(
+                requestID: requestID,
+                paramsObject: params?.objectValue
+            )
+            return
+        }
+
         if method == "item/tool/requestUserInput" {
             handleStructuredUserInputRequest(
                 requestID: requestID,
@@ -131,6 +153,9 @@ extension CodeRoverService {
         debugRuntimeLog("notify <- \(summarizeIncomingNotification(method: method, paramsObject: paramsObject))")
 
         switch method {
+        case "session/update":
+            handleACPSessionUpdate(paramsObject)
+
         case "thread/started":
             handleThreadStarted(paramsObject)
 
@@ -237,7 +262,7 @@ extension CodeRoverService {
         requestImmediateSync(threadId: threadId)
     }
 
-    private func handleTurnStarted(_ paramsObject: IncomingParamsObject?) {
+    func handleTurnStarted(_ paramsObject: IncomingParamsObject?) {
         let threadId = resolveThreadID(from: paramsObject)
         let turnID = extractTurnIDForTurnLifecycleEvent(from: paramsObject)
         debugRuntimeLog("turn started thread=\(threadId ?? "none") turn=\(turnID ?? "none")")
@@ -271,7 +296,7 @@ extension CodeRoverService {
         requestImmediateSync(threadId: threadId ?? activeThreadId)
     }
 
-    private func handleTurnCompleted(_ paramsObject: IncomingParamsObject?) {
+    func handleTurnCompleted(_ paramsObject: IncomingParamsObject?) {
         let completedTurnID = extractTurnIDForTurnLifecycleEvent(from: paramsObject)
         let turnFailureMessage = parseTurnFailureMessage(from: paramsObject)
 
@@ -797,6 +822,9 @@ extension CodeRoverService {
         eventObject: IncomingParamsObject?,
         itemObject: IncomingParamsObject? = nil
     ) -> String? {
+        if let itemId = paramsObject?["_meta"]?.objectValue?["coderover"]?.objectValue?["itemId"]?.stringValue, !itemId.isEmpty { return itemId }
+        if let itemId = paramsObject?["toolCallId"]?.stringValue, !itemId.isEmpty { return itemId }
+        if let itemId = paramsObject?["messageId"]?.stringValue, !itemId.isEmpty { return itemId }
         if let itemId = itemObject?["timelineItemId"]?.stringValue, !itemId.isEmpty { return itemId }
         if let itemId = itemObject?["timeline_item_id"]?.stringValue, !itemId.isEmpty { return itemId }
         if let itemId = itemObject?["id"]?.stringValue, !itemId.isEmpty { return itemId }
@@ -812,6 +840,8 @@ extension CodeRoverService {
         if let itemId = paramsObject?["item"]?.objectValue?["id"]?.stringValue, !itemId.isEmpty { return itemId }
         if let itemId = eventObject?["timelineItemId"]?.stringValue, !itemId.isEmpty { return itemId }
         if let itemId = eventObject?["timeline_item_id"]?.stringValue, !itemId.isEmpty { return itemId }
+        if let itemId = eventObject?["toolCallId"]?.stringValue, !itemId.isEmpty { return itemId }
+        if let itemId = eventObject?["messageId"]?.stringValue, !itemId.isEmpty { return itemId }
         if let itemId = eventObject?["itemId"]?.stringValue, !itemId.isEmpty { return itemId }
         if let itemId = eventObject?["item_id"]?.stringValue, !itemId.isEmpty { return itemId }
         if let itemId = eventObject?["call_id"]?.stringValue, !itemId.isEmpty { return itemId }
@@ -947,10 +977,14 @@ extension CodeRoverService {
     func extractThreadID(from paramsObject: IncomingParamsObject?) -> String? {
         guard let paramsObject else { return nil }
 
+        if let threadId = normalizedIdentifier(paramsObject["sessionId"]?.stringValue) { return threadId }
         if let threadId = normalizedIdentifier(paramsObject["threadId"]?.stringValue) { return threadId }
         if let threadId = normalizedIdentifier(paramsObject["thread_id"]?.stringValue) { return threadId }
         if let threadId = normalizedIdentifier(paramsObject["conversationId"]?.stringValue) { return threadId }
         if let threadId = normalizedIdentifier(paramsObject["conversation_id"]?.stringValue) { return threadId }
+        if let threadId = normalizedIdentifier(paramsObject["_meta"]?.objectValue?["coderover"]?.objectValue?["threadId"]?.stringValue) {
+            return threadId
+        }
         if let threadId = normalizedIdentifier(paramsObject["thread"]?.objectValue?["id"]?.stringValue) { return threadId }
         if let threadId = normalizedIdentifier(paramsObject["turn"]?.objectValue?["threadId"]?.stringValue) { return threadId }
         if let threadId = normalizedIdentifier(paramsObject["turn"]?.objectValue?["thread_id"]?.stringValue) { return threadId }
@@ -958,10 +992,14 @@ extension CodeRoverService {
         if let threadId = normalizedIdentifier(paramsObject["item"]?.objectValue?["thread_id"]?.stringValue) { return threadId }
 
         let eventObject = envelopeEventObject(from: paramsObject)
+        if let threadId = normalizedIdentifier(eventObject?["sessionId"]?.stringValue) { return threadId }
         if let threadId = normalizedIdentifier(eventObject?["threadId"]?.stringValue) { return threadId }
         if let threadId = normalizedIdentifier(eventObject?["thread_id"]?.stringValue) { return threadId }
         if let threadId = normalizedIdentifier(eventObject?["conversationId"]?.stringValue) { return threadId }
         if let threadId = normalizedIdentifier(eventObject?["conversation_id"]?.stringValue) { return threadId }
+        if let threadId = normalizedIdentifier(eventObject?["_meta"]?.objectValue?["coderover"]?.objectValue?["threadId"]?.stringValue) {
+            return threadId
+        }
         if let threadId = normalizedIdentifier(eventObject?["thread"]?.objectValue?["id"]?.stringValue) { return threadId }
         if let threadId = normalizedIdentifier(eventObject?["turn"]?.objectValue?["threadId"]?.stringValue) { return threadId }
         if let threadId = normalizedIdentifier(eventObject?["turn"]?.objectValue?["thread_id"]?.stringValue) { return threadId }
@@ -983,6 +1021,9 @@ extension CodeRoverService {
     func extractTurnID(from paramsObject: IncomingParamsObject?) -> String? {
         guard let paramsObject else { return nil }
 
+        if let turnId = normalizedIdentifier(paramsObject["_meta"]?.objectValue?["coderover"]?.objectValue?["turnId"]?.stringValue) {
+            return turnId
+        }
         if let turnId = extractTurnID(from: paramsObject["turn"]) { return turnId }
         if let turnId = normalizedIdentifier(paramsObject["turnId"]?.stringValue) { return turnId }
         if let turnId = normalizedIdentifier(paramsObject["turn_id"]?.stringValue) { return turnId }
@@ -990,6 +1031,9 @@ extension CodeRoverService {
         if let turnId = normalizedIdentifier(paramsObject["item"]?.objectValue?["turn_id"]?.stringValue) { return turnId }
 
         let eventObject = envelopeEventObject(from: paramsObject)
+        if let turnId = normalizedIdentifier(eventObject?["_meta"]?.objectValue?["coderover"]?.objectValue?["turnId"]?.stringValue) {
+            return turnId
+        }
         if let turnId = normalizedIdentifier(eventObject?["turnId"]?.stringValue) { return turnId }
         if let turnId = normalizedIdentifier(eventObject?["turn_id"]?.stringValue) { return turnId }
         if let turnId = extractTurnID(from: eventObject?["turn"]) { return turnId }

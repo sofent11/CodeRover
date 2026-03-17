@@ -453,11 +453,25 @@ extension CodeRoverService {
         }
 
         let normalizedMethod = request.method.trimmingCharacters(in: .whitespacesAndNewlines)
+        let isAcpPermission = normalizedMethod.hasPrefix("session/request_permission")
         let isCommandApproval = normalizedMethod == "item/commandExecution/requestApproval"
             || normalizedMethod == "item/command_execution/request_approval"
-        let decision = (forSession && isCommandApproval) ? "acceptForSession" : "accept"
+            || normalizedMethod == "session/request_permission/execute"
 
-        try await sendResponse(id: request.requestID, result: .string(decision))
+        if isAcpPermission {
+            let optionId = (forSession && isCommandApproval) ? "allow_always" : "allow_once"
+            try await sendResponse(
+                id: request.requestID,
+                result: .object([
+                    "outcome": .object([
+                        "optionId": .string(optionId),
+                    ]),
+                ])
+            )
+        } else {
+            let decision = (forSession && isCommandApproval) ? "acceptForSession" : "accept"
+            try await sendResponse(id: request.requestID, result: .string(decision))
+        }
         pendingApproval = nil
     }
 
@@ -467,7 +481,19 @@ extension CodeRoverService {
             throw CodeRoverServiceError.noPendingApproval
         }
 
-        try await sendResponse(id: request.requestID, result: .string("decline"))
+        let normalizedMethod = request.method.trimmingCharacters(in: .whitespacesAndNewlines)
+        if normalizedMethod.hasPrefix("session/request_permission") {
+            try await sendResponse(
+                id: request.requestID,
+                result: .object([
+                    "outcome": .object([
+                        "optionId": .string("reject_once"),
+                    ]),
+                ])
+            )
+        } else {
+            try await sendResponse(id: request.requestID, result: .string("decline"))
+        }
         pendingApproval = nil
     }
 
@@ -478,14 +504,16 @@ extension CodeRoverService {
     ) async throws {
         try await sendResponse(
             id: requestID,
-            result: buildStructuredUserInputResponse(answersByQuestionID: answersByQuestionID)
+            result: .object([
+                "answers": .object(buildStructuredUserInputACPAnswers(answersByQuestionID: answersByQuestionID)),
+            ])
         )
     }
 
-    func buildStructuredUserInputResponse(
+    func buildStructuredUserInputACPAnswers(
         answersByQuestionID: [String: [String]]
-    ) -> JSONValue {
-        let answersObject = answersByQuestionID.reduce(into: RPCObject()) { result, entry in
+    ) -> RPCObject {
+        answersByQuestionID.reduce(into: RPCObject()) { result, entry in
             let filteredAnswers = entry.value
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
                 .filter { !$0.isEmpty }
@@ -493,10 +521,6 @@ extension CodeRoverService {
                 "answers": .array(filteredAnswers.map(JSONValue.string)),
             ])
         }
-
-        return .object([
-            "answers": .object(answersObject),
-        ])
     }
 
     private func continueReviewStart(
@@ -1136,11 +1160,16 @@ extension CodeRoverService {
 
         while true {
             do {
+                try await syncACPSessionConfiguration(
+                    threadId: threadId,
+                    collaborationMode: effectiveCollaborationMode
+                )
                 let requestParams = try buildTurnStartRequestParams(
                     threadId: threadId,
                     userInput: userInput,
                     attachments: attachments,
                     skillMentions: skillMentions,
+                    messageId: pendingMessageId,
                     imageURLKey: imageURLKey,
                     includeStructuredSkillItems: includeStructuredSkillItems,
                     collaborationMode: effectiveCollaborationMode
@@ -1251,9 +1280,13 @@ extension CodeRoverService {
                     )
                 ),
             ]
+            var mutableParams = params
+            if !pendingMessageId.isEmpty {
+                mutableParams["messageId"] = .string(pendingMessageId)
+            }
 
             do {
-                let response = try await sendRequest(method: "turn/steer", params: .object(params))
+                let response = try await sendRequest(method: "turn/steer", params: .object(mutableParams))
                 let resolvedTurnID = extractTurnID(from: response.result) ?? currentExpectedTurnID
                 markMessageDeliveryState(
                     threadId: normalizedThreadID,
@@ -1391,6 +1424,7 @@ extension CodeRoverService {
         userInput: String,
         attachments: [ImageAttachment],
         skillMentions: [TurnSkillMention],
+        messageId: String,
         imageURLKey: String,
         includeStructuredSkillItems: Bool,
         collaborationMode: CollaborationModeModeKind?
@@ -1407,6 +1441,9 @@ extension CodeRoverService {
                 )
             ),
         ]
+        if !messageId.isEmpty {
+            params["messageId"] = .string(messageId)
+        }
         // Keep the legacy top-level fields populated so plan-mode turns still honor
         // the user's selected model on runtimes that do not read collaboration settings.
         if let modelIdentifier = runtimeModelIdentifierForTurn() {
@@ -1776,12 +1813,17 @@ extension CodeRoverService {
         threadId: String?,
         useSnakeCaseParams: Bool
     ) async throws {
-        var params: RPCObject = [:]
-        params[useSnakeCaseParams ? "turn_id" : "turnId"] = .string(turnId)
-        if let threadId {
-            params[useSnakeCaseParams ? "thread_id" : "threadId"] = .string(threadId)
+        let resolvedThreadID = normalizedInterruptIdentifier(threadId)
+            ?? threadIdByTurnID[turnId]
+        guard let resolvedThreadID else {
+            throw CodeRoverServiceError.invalidInput("turn/interrupt requires a threadId")
         }
-        _ = try await sendRequest(method: "turn/interrupt", params: .object(params))
+        try await sendNotification(
+            method: "session/cancel",
+            params: .object([
+                "sessionId": .string(resolvedThreadID),
+            ])
+        )
     }
 
     // Normalizes ids coming from UI/runtime state before RPC usage.

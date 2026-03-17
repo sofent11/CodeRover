@@ -75,8 +75,8 @@ export function handleWorkspaceRequest(rawMessage: string, sendResponse: SendRes
     return false;
   }
 
-  const method = typeof parsed.method === "string" ? parsed.method.trim() : "";
-  if (!method.startsWith("workspace/")) {
+  const method = normalizeWorkspaceMethod(parsed.method);
+  if (!method) {
     return false;
   }
 
@@ -101,6 +101,17 @@ export function handleWorkspaceRequest(rawMessage: string, sendResponse: SendRes
     });
 
   return true;
+}
+
+function normalizeWorkspaceMethod(value: unknown): string | null {
+  const method = typeof value === "string" ? value.trim() : "";
+  if (!method) {
+    return null;
+  }
+  if (method.startsWith("_coderover/workspace/")) {
+    return method.replace(/^_coderover\//, "");
+  }
+  return null;
 }
 
 function parseWorkspaceRequest(rawMessage: string): ParsedWorkspaceRequest | null {

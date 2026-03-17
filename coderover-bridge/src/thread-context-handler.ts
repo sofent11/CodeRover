@@ -29,7 +29,7 @@ export function handleThreadContextRequest(rawMessage: string, sendResponse: Sen
     return false;
   }
 
-  const method = typeof parsed?.method === "string" ? parsed.method.trim() : "";
+  const method = normalizeThreadContextMethod(parsed?.method);
   if (method !== "thread/contextWindow/read") {
     return false;
   }
@@ -56,6 +56,17 @@ export function handleThreadContextRequest(rawMessage: string, sendResponse: Sen
     });
 
   return true;
+}
+
+function normalizeThreadContextMethod(value: unknown): string | null {
+  const method = typeof value === "string" ? value.trim() : "";
+  if (!method) {
+    return null;
+  }
+  if (method === "_coderover/context_window/read") {
+    return "thread/contextWindow/read";
+  }
+  return null;
 }
 
 async function handleThreadContextRead(params: ThreadContextReadParams) {

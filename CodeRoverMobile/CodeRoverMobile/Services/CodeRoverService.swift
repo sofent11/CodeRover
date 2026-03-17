@@ -56,6 +56,7 @@ struct CodeRoverSecureControlWaiter {
 struct CodeRoverPendingRequestContext {
     let method: String
     let threadId: String?
+    let params: JSONValue?
     let createdAt: Date
 }
 

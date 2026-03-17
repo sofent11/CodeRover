@@ -32,6 +32,8 @@ import com.coderover.android.data.model.QueuedTurnDraft
 import com.coderover.android.data.model.SECURE_PROTOCOL_VERSION
 import com.coderover.android.data.model.SecureConnectionState
 import com.coderover.android.data.model.SkillMetadata
+import com.coderover.android.data.model.RuntimeAccessModeOption
+import com.coderover.android.data.model.RuntimeCapabilities
 import com.coderover.android.data.model.StructuredUserInputOption
 import com.coderover.android.data.model.StructuredUserInputQuestion
 import com.coderover.android.data.model.StructuredUserInputRequest
@@ -727,8 +729,10 @@ class CodeRoverRepository(context: Context) {
                 return@launch
             }
 
+            val pendingMessageId = UUID.randomUUID().toString()
             appendLocalMessage(
                 ChatMessage(
+                    id = pendingMessageId,
                     threadId = threadId,
                     role = MessageRole.USER,
                     text = payload.text,
@@ -737,26 +741,24 @@ class CodeRoverRepository(context: Context) {
                 ),
             )
 
-            val steerBaseParams = buildJsonObject(
-                "threadId" to JsonPrimitive(threadId)
-            )
-
             var includeStructuredSkillItems = payload.skillMentions.isNotEmpty()
             var didRetryWithRefreshedTurnId = false
 
             runCatching {
                 while (true) {
-                    val params = steerBaseParams.copyWith(
-                        "expectedTurnId" to JsonPrimitive(activeTurnId),
-                        "input" to buildTurnInputItems(
+                    val params = buildJsonObject(
+                        "sessionId" to JsonPrimitive(threadId),
+                        "messageId" to JsonPrimitive(pendingMessageId),
+                        "prompt" to buildAcpPromptBlocks(
                             text = payload.text,
                             attachments = payload.attachments,
                             skillMentions = payload.skillMentions,
                             includeStructuredSkillItems = includeStructuredSkillItems,
                         ),
+                        "modelId" to state.value.selectedModelId?.let(::JsonPrimitive),
                     )
                     try {
-                        requestWithSandboxFallback("turn/steer", params)
+                        activeClient().sendRequest("session/prompt", params)
                         break
                     } catch (failure: Throwable) {
                         if (includeStructuredSkillItems && shouldRetryTurnStartWithoutSkillItems(failure)) {
@@ -834,8 +836,10 @@ class CodeRoverRepository(context: Context) {
                 return@launch
             }
 
+            val pendingMessageId = UUID.randomUUID().toString()
             appendLocalMessage(
                 ChatMessage(
+                    id = pendingMessageId,
                     threadId = threadId,
                     role = MessageRole.USER,
                     text = trimmed,
@@ -856,6 +860,7 @@ class CodeRoverRepository(context: Context) {
                     attachments = attachments,
                     skillMentions = skillMentions,
                     usePlanMode = usePlanMode,
+                    userMessageId = pendingMessageId,
                     selectedModel = selectedModel,
                 )
             }.onFailure { failure ->
@@ -1030,12 +1035,11 @@ class CodeRoverRepository(context: Context) {
                 copy(activeTurnIdByThread = activeTurnIdByThread + (threadId to turnId))
             }
             runCatching {
-                activeClient().sendRequest(
-                    method = "turn/interrupt",
+                activeClient().sendNotification(
+                    method = "session/cancel",
                     params = JsonObject(
                         mapOf(
-                            "turnId" to JsonPrimitive(turnId),
-                            "threadId" to JsonPrimitive(threadId),
+                            "sessionId" to JsonPrimitive(threadId),
                         ),
                     ),
                 )
@@ -1065,9 +1069,24 @@ class CodeRoverRepository(context: Context) {
         scope.launch {
             val request = state.value.pendingApproval ?: return@launch
             runCatching {
+                val result: JsonElement = if (request.method.startsWith("session/request_permission")) {
+                    JsonObject(
+                        mapOf(
+                            "outcome" to JsonObject(
+                                mapOf(
+                                    "optionId" to JsonPrimitive(
+                                        if (approve) "allow_once" else "reject_once",
+                                    ),
+                                ),
+                            ),
+                        ),
+                    )
+                } else {
+                    JsonPrimitive(if (approve) "accept" else "reject")
+                }
                 activeClient().sendResponse(
                     id = request.requestId,
-                    result = JsonPrimitive(if (approve) "accept" else "reject"),
+                    result = result,
                 )
             }
             updateState { copy(pendingApproval = null) }
@@ -1408,7 +1427,8 @@ class CodeRoverRepository(context: Context) {
                         "clientInfo" to clientInfo,
                         "capabilities" to JsonObject(
                             mapOf(
-                                "experimentalApi" to JsonPrimitive(true),
+                                "sessionModes" to JsonPrimitive(true),
+                                "promptContent" to JsonPrimitive(true),
                             ),
                         ),
                     ),
@@ -1424,7 +1444,6 @@ class CodeRoverRepository(context: Context) {
                 ),
             )
         }.getOrThrow()
-        client.sendNotification("initialized", null)
     }
 
     private suspend fun listProviders() {
@@ -1434,9 +1453,28 @@ class CodeRoverRepository(context: Context) {
         )?.jsonObjectOrNull() ?: return
         val providers = (
             result["providers"]?.jsonArrayOrNull()
+                ?: result["agents"]?.jsonArrayOrNull()
                 ?: result["items"]?.jsonArrayOrNull()
                 ?: JsonArray(emptyList())
-            ).mapNotNull { it.jsonObjectOrNull()?.let(RuntimeProvider::fromJson) }
+            ).mapNotNull { value ->
+                val objectValue = value.jsonObjectOrNull() ?: return@mapNotNull null
+                val coderoverMeta = objectValue["_meta"]?.jsonObjectOrNull()
+                    ?.get("coderover")?.jsonObjectOrNull()
+                val id = objectValue.string("id") ?: return@mapNotNull null
+                val title = objectValue.string("title")
+                    ?: objectValue.string("name")
+                    ?: id.replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
+                RuntimeProvider(
+                    id = id,
+                    title = title,
+                    supports = RuntimeCapabilities.fromJson(coderoverMeta?.get("supports")?.jsonObjectOrNull()),
+                    accessModes = listOf(
+                        RuntimeAccessModeOption(id = AccessMode.ON_REQUEST.rawValue, title = AccessMode.ON_REQUEST.displayName),
+                        RuntimeAccessModeOption(id = AccessMode.FULL_ACCESS.rawValue, title = AccessMode.FULL_ACCESS.displayName),
+                    ),
+                    defaultModelId = coderoverMeta?.string("defaultModelId"),
+                )
+            }
         val normalizedProviders = if (providers.isEmpty()) {
             listOf(RuntimeProvider.CODEX_DEFAULT)
         } else {
@@ -1556,31 +1594,33 @@ class CodeRoverRepository(context: Context) {
         archived: Boolean,
         cursor: JsonElement? = JsonNull,
     ): ThreadListPage {
-        val params = buildJsonObject(
-            "cursor" to (cursor ?: JsonNull),
-            "limit" to JsonPrimitive(60),
-            "archived" to if (archived) JsonPrimitive(true) else null,
-            "sourceKinds" to JsonArray(
-                listOf(
-                    JsonPrimitive("cli"),
-                    JsonPrimitive("vscode"),
-                    JsonPrimitive("appServer"),
-                    JsonPrimitive("exec"),
-                    JsonPrimitive("unknown"),
-                ),
-            ),
-        )
-        val result = activeClient().sendRequest("thread/list", params)?.jsonObjectOrNull() ?: return ThreadListPage(
+        val params = kotlinx.serialization.json.buildJsonObject {
+            put("cursor", cursor ?: JsonNull)
+            put("limit", JsonPrimitive(60))
+            if (archived) {
+                put(
+                    "_meta",
+                    JsonObject(
+                        mapOf(
+                            "coderover" to JsonObject(
+                                mapOf(
+                                    "archived" to JsonPrimitive(true),
+                                ),
+                            ),
+                        ),
+                    ),
+                )
+            }
+        }
+        val result = activeClient().sendRequest("session/list", params)?.jsonObjectOrNull() ?: return ThreadListPage(
             threads = emptyList(),
             nextCursor = JsonNull,
             hasMore = false,
         )
-        val items = result["data"]?.jsonArrayOrNull()
-            ?: result["items"]?.jsonArrayOrNull()
-            ?: result["threads"]?.jsonArrayOrNull()
+        val items = result["sessions"]?.jsonArrayOrNull()
             ?: JsonArray(emptyList())
         val threads = items
-            .mapNotNull { it.jsonObjectOrNull()?.let(ThreadSummary::fromJson) }
+            .mapNotNull { it.jsonObjectOrNull()?.let(::threadSummaryFromSessionInfo) }
             .map { thread ->
                 if (archived) {
                     thread.copy(syncState = ThreadSyncState.ARCHIVED_LOCAL)
@@ -1661,24 +1701,12 @@ class CodeRoverRepository(context: Context) {
     }
 
     private suspend fun loadThreadHistory(threadId: String) {
-        val currentState = state.value
-        val hasLocalMessages = currentState.messagesByThread[threadId].orEmpty().isNotEmpty()
-        val newestCursor = normalizedHistoryCursor(currentState.historyStateByThread[threadId]?.newestCursor)
-        if (hasLocalMessages && newestCursor != null) {
-            catchUpThreadHistoryToLatest(
-                threadId = threadId,
-                initialCursor = newestCursor,
-                allowTailFallback = true,
-                fallbackThreadObject = null,
-            )
-        } else {
-            loadTailThreadHistory(
-                threadId = threadId,
-                replaceLocalHistory = hasLocalMessages && newestCursor == null,
-                fallbackThreadObject = null,
-                prefetchOlderInBackground = !hasLocalMessages,
-            )
-        }
+        loadTailThreadHistory(
+            threadId = threadId,
+            replaceLocalHistory = false,
+            fallbackThreadObject = null,
+            prefetchOlderInBackground = false,
+        )
     }
 
     private suspend fun loadTailThreadHistory(
@@ -1687,136 +1715,78 @@ class CodeRoverRepository(context: Context) {
         fallbackThreadObject: JsonObject?,
         prefetchOlderInBackground: Boolean = false,
     ) {
-        val historyResult = try {
+        val historyLoaded = try {
             activeClient().sendRequest(
-                method = "thread/read",
+                method = "session/load",
                 params = buildJsonObject(
-                    "threadId" to JsonPrimitive(threadId),
-                    "history" to buildJsonObject(
-                        "mode" to JsonPrimitive("tail"),
-                        "limit" to JsonPrimitive(50),
-                    ),
+                    "sessionId" to JsonPrimitive(threadId),
                 ),
-            )?.jsonObjectOrNull()
+            )
+            true
         } catch (failure: Throwable) {
             if (fallbackThreadObject == null) {
                 throw failure
             }
-            Log.w(TAG, "thread/read tail refresh failed; falling back to resume snapshot threadId=$threadId", failure)
-            null
+            Log.w(TAG, "session/load tail refresh failed; falling back to local snapshot threadId=$threadId", failure)
+            false
         }
-        val threadObject = historyResult?.threadPayload() ?: fallbackThreadObject ?: return
-        val summaryThreadObject = fallbackThreadObject ?: threadObject
-        ThreadSummary.fromJson(summaryThreadObject)?.let { thread ->
-            updateState {
-                copy(threads = upsertThread(threads, thread.copy(syncState = ThreadSyncState.LIVE)))
+        if (!historyLoaded && fallbackThreadObject == null) {
+            return
+        }
+        fallbackThreadObject?.let { threadObject ->
+            ThreadSummary.fromJson(threadObject)?.let { thread ->
+                updateState {
+                    copy(threads = upsertThread(threads, thread.copy(syncState = ThreadSyncState.LIVE)))
+                }
             }
         }
-        extractContextWindowUsageIfAvailable(threadId, threadObject)
-        val history = decodeMessagesFromThreadRead(
-            threadId = threadId,
-            threadObject = threadObject,
-            latestLimit = 50,
-        )
-        val historyWindow = decodeHistoryWindow(historyResult, history)
-        val activeTurnId = resolveActiveTurnId(summaryThreadObject)
-        applyHistoryWindow(
-            threadId = threadId,
-            mode = "tail",
-            history = history,
-            historyWindow = historyWindow,
-            replaceLocalHistory = replaceLocalHistory,
-            activeTurnId = activeTurnId,
-            replaceRunningState = true,
-        )
-        if (prefetchOlderInBackground && historyWindow.hasOlder) {
-            scheduleOlderHistoryBackfill(threadId)
+        if (state.value.threads.none { it.id == threadId }) {
+            updateState {
+                copy(threads = upsertThread(threads, ThreadSummary(id = threadId, syncState = ThreadSyncState.LIVE)))
+            }
         }
+        markAcpHistoryLoaded(threadId)
     }
 
     private suspend fun loadNewerThreadHistoryIfNeeded(
         threadId: String,
         cursor: String,
     ): NewerHistoryResult {
-        val result = activeClient().sendRequest(
-            method = "thread/read",
+        val beforeCount = state.value.messagesByThread[threadId].orEmpty().size
+        activeClient().sendRequest(
+            method = "session/load",
             params = buildJsonObject(
-                "threadId" to JsonPrimitive(threadId),
-                "history" to buildJsonObject(
-                    "mode" to JsonPrimitive("after"),
-                    "limit" to JsonPrimitive(50),
-                    "cursor" to JsonPrimitive(cursor),
-                ),
+                "sessionId" to JsonPrimitive(threadId),
             ),
-        )?.jsonObjectOrNull() ?: return NewerHistoryResult(cursor, false, false, 0)
-        val threadObject = result.threadPayload() ?: return NewerHistoryResult(cursor, false, false, 0)
-        ThreadSummary.fromJson(threadObject)?.let { thread ->
-            updateState {
-                copy(threads = upsertThread(threads, thread.copy(syncState = ThreadSyncState.LIVE)))
-            }
-        }
-        extractContextWindowUsageIfAvailable(threadId, threadObject)
-        val history = decodeMessagesFromThreadRead(threadId, threadObject)
-        val historyWindow = decodeHistoryWindow(result, history)
-        val activeTurnId = resolveActiveTurnId(threadObject)
-        applyHistoryWindow(
-            threadId = threadId,
-            mode = "after",
-            history = history,
-            historyWindow = historyWindow,
-            replaceLocalHistory = false,
-            activeTurnId = activeTurnId,
-            replaceRunningState = false,
         )
-        val nextCursor = normalizedHistoryCursor(historyWindow.newerCursor) ?: cursor
+        markAcpHistoryLoaded(threadId)
+        val afterCount = state.value.messagesByThread[threadId].orEmpty().size
         return NewerHistoryResult(
-            newestCursor = nextCursor,
-            hasNewer = historyWindow.hasNewer,
-            didAdvance = history.isNotEmpty() && nextCursor != cursor,
-            itemCount = history.size,
+            newestCursor = null,
+            hasNewer = false,
+            didAdvance = afterCount > beforeCount,
+            itemCount = maxOf(0, afterCount - beforeCount),
         )
     }
 
     suspend fun loadOlderThreadHistory(threadId: String) {
-        val currentState = state.value
-        val historyState = currentState.historyStateByThread[threadId]
-        val requestCursor = nextOlderHistoryCursor(historyState)
-        if (requestCursor == null) {
-            refreshThreadHistory(threadId, reason = "older-bootstrap-empty")
-            return
-        }
-
         updateState {
             copy(
                 historyStateByThread = historyStateByThread + (
-                    threadId to (historyState ?: ThreadHistoryState()).copy(isLoadingOlder = true)
+                    threadId to ((historyStateByThread[threadId] ?: ThreadHistoryState()).copy(isLoadingOlder = true))
                 ),
             )
         }
 
         runCatching {
             activeClient().sendRequest(
-                method = "thread/read",
+                method = "session/load",
                 params = buildJsonObject(
-                    "threadId" to JsonPrimitive(threadId),
-                    "history" to buildJsonObject(
-                        "mode" to JsonPrimitive("before"),
-                        "limit" to JsonPrimitive(50),
-                        "cursor" to JsonPrimitive(requestCursor),
-                    ),
+                    "sessionId" to JsonPrimitive(threadId),
                 ),
-            )?.jsonObjectOrNull()
-        }.onSuccess { result ->
-            val threadObject = result?.threadPayload() ?: return@onSuccess
-            val history = decodeMessagesFromThreadRead(threadId, threadObject)
-            val historyWindow = decodeHistoryWindow(result, history)
-            applyHistoryWindow(
-                threadId = threadId,
-                mode = "before",
-                history = history,
-                historyWindow = historyWindow,
-                replaceLocalHistory = false,
             )
+        }.onSuccess {
+            markAcpHistoryLoaded(threadId)
         }.onFailure {
             updateState {
                 copy(
@@ -1930,35 +1900,11 @@ class CodeRoverRepository(context: Context) {
         allowTailFallback: Boolean,
         fallbackThreadObject: JsonObject? = null,
     ) {
-        var cursor = initialCursor
-        var pageCount = 0
-        var itemCount = 0
-
-        while (pageCount < 200 && itemCount < 10_000) {
-            try {
-                val result = loadNewerThreadHistoryIfNeeded(threadId, cursor)
-                val nextCursor = normalizedHistoryCursor(result.newestCursor)
-                if (!result.didAdvance || nextCursor == null) {
-                    break
-                }
-                cursor = nextCursor
-                pageCount += 1
-                itemCount += maxOf(result.itemCount, 1)
-                if (!result.hasNewer) {
-                    break
-                }
-            } catch (failure: Throwable) {
-                if (!allowTailFallback || !isInvalidHistoryCursorError(failure)) {
-                    throw failure
-                }
-                loadTailThreadHistory(
-                    threadId = threadId,
-                    replaceLocalHistory = state.value.messagesByThread[threadId].orEmpty().isNotEmpty(),
-                    fallbackThreadObject = fallbackThreadObject,
-                )
-                break
-            }
-        }
+        loadTailThreadHistory(
+            threadId = threadId,
+            replaceLocalHistory = false,
+            fallbackThreadObject = fallbackThreadObject,
+        )
     }
 
     private fun scheduleRealtimeHistoryCatchUp(
@@ -2232,17 +2178,14 @@ class CodeRoverRepository(context: Context) {
     }
 
     private suspend fun resolveActiveTurnId(threadId: String): String? {
-        val result = activeClient().sendRequest(
-            method = "thread/read",
-            params = JsonObject(
-                mapOf(
-                    "threadId" to JsonPrimitive(threadId),
-                    "includeTurns" to JsonPrimitive(true),
-                ),
+        state.value.activeTurnIdByThread[threadId]?.let { return it }
+        activeClient().sendRequest(
+            method = "session/load",
+            params = buildJsonObject(
+                "sessionId" to JsonPrimitive(threadId),
             ),
-        )?.jsonObjectOrNull() ?: return null
-        val threadObject = result["thread"]?.jsonObjectOrNull() ?: return null
-        return resolveActiveTurnId(threadObject)
+        )
+        return state.value.activeTurnIdByThread[threadId] ?: latestTurnIdFromMessages(threadId)
     }
 
     private fun resolveActiveTurnId(threadObject: JsonObject): String? {
@@ -3002,6 +2945,33 @@ class CodeRoverRepository(context: Context) {
         }
     }
 
+    private fun mergeStreamText(existingText: String, incomingText: String): String {
+        if (existingText.isEmpty()) {
+            return incomingText
+        }
+        if (incomingText.isEmpty()) {
+            return existingText
+        }
+        if (incomingText == existingText || existingText.endsWith(incomingText)) {
+            return existingText
+        }
+        if (incomingText.length > existingText.length && incomingText.startsWith(existingText)) {
+            return incomingText
+        }
+        if (existingText.length > incomingText.length && existingText.startsWith(incomingText)) {
+            return existingText
+        }
+
+        val maxOverlap = minOf(existingText.length, incomingText.length)
+        for (overlap in maxOverlap downTo 1) {
+            if (existingText.takeLast(overlap) == incomingText.take(overlap)) {
+                return existingText + incomingText.drop(overlap)
+            }
+        }
+
+        return existingText + incomingText
+    }
+
     private fun removeLatestMatchingUserMessage(
         threadId: String,
         text: String,
@@ -3093,7 +3063,7 @@ class CodeRoverRepository(context: Context) {
             ?: state.value.messagesByThread[threadId].orEmpty().firstOrNull { it.id == timelineItemId }
         val existingText = existingCanonicalMessage?.text.orEmpty()
         val nextText = when {
-            textMode == "append" -> existingText + incomingText
+            textMode == "append" -> mergeStreamText(existingText, incomingText)
             incomingText.isBlank() -> existingText
             else -> incomingText
         }
@@ -3153,15 +3123,22 @@ class CodeRoverRepository(context: Context) {
                 if (epoch != connectionEpoch.get()) {
                     return@SecureBridgeClient
                 }
-                if (method == "item/tool/requestUserInput") {
+                if (method == "_coderover/session/request_input" || method == "item/tool/requestUserInput") {
+                    val sessionId = params?.string("sessionId")
                     val threadId = params?.string("threadId")
+                    val resolvedThreadId = sessionId ?: threadId
+                    val coderoverMeta = params?.get("_meta")?.jsonObjectOrNull()
+                        ?.get("coderover")?.jsonObjectOrNull()
                     val turnId = params?.string("turnId")
-                    if (threadId != null && turnId != null) {
-                        val itemId = params.string("itemId") ?: "request-${responseKey(id)}"
-                        val questions = decodeStructuredUserInputQuestions(params["questions"])
+                        ?: coderoverMeta?.string("turnId")
+                    if (resolvedThreadId != null && turnId != null) {
+                        val itemId = params?.string("itemId")
+                            ?: coderoverMeta?.string("itemId")
+                            ?: "request-${responseKey(id)}"
+                        val questions = decodeStructuredUserInputQuestions(params?.get("questions"))
                         if (questions.isNotEmpty()) {
                             upsertStructuredUserInputPrompt(
-                                threadId = threadId,
+                                threadId = resolvedThreadId,
                                 turnId = turnId,
                                 itemId = itemId,
                                 request = StructuredUserInputRequest(
@@ -3172,16 +3149,22 @@ class CodeRoverRepository(context: Context) {
                         }
                     }
                 } else {
+                    val toolCall = params?.get("toolCall")?.jsonObjectOrNull()
+                    val rawInput = toolCall?.get("rawInput")?.jsonObjectOrNull()
+                    val coderoverMeta = toolCall?.get("_meta")?.jsonObjectOrNull()
+                        ?.get("coderover")?.jsonObjectOrNull()
                     updateState {
                         copy(
                             pendingApproval = ApprovalRequest(
                                 id = responseKey(id),
                                 requestId = id,
                                 method = method,
-                                command = params?.string("command"),
-                                reason = params?.string("reason"),
-                                threadId = params?.string("threadId"),
-                                turnId = params?.string("turnId"),
+                                command = rawInput?.string("command")
+                                    ?: params?.string("command")
+                                    ?: toolCall?.string("title"),
+                                reason = rawInput?.string("reason") ?: params?.string("reason"),
+                                threadId = params?.string("sessionId") ?: params?.string("threadId"),
+                                turnId = coderoverMeta?.string("turnId") ?: params?.string("turnId"),
                             ),
                         )
                     }
@@ -3248,6 +3231,10 @@ class CodeRoverRepository(context: Context) {
 
     private suspend fun handleNotification(method: String, params: JsonObject?) {
         when (method) {
+            "session/update" -> {
+                handleAcpSessionUpdate(params)
+            }
+
             "thread/started" -> {
                 val thread = params?.get("thread")?.jsonObjectOrNull()?.let(ThreadSummary::fromJson) ?: return
                 updateState { copy(threads = upsertThread(threads, thread)) }
@@ -3354,6 +3341,390 @@ class CodeRoverRepository(context: Context) {
             payload
         }
         handleTurnCompletedNotification(synthesized)
+    }
+
+    private fun handleAcpSessionUpdate(params: JsonObject?) {
+        val payload = params ?: return
+        val sessionId = normalizedIdentifier(payload.string("sessionId")) ?: return
+        val update = payload["update"]?.jsonObjectOrNull() ?: return
+        when (update.string("sessionUpdate")) {
+            "session_info_update" -> handleAcpSessionInfoUpdate(sessionId, update)
+            "user_message_chunk" -> upsertAcpMessageChunk(sessionId, update, MessageRole.USER, MessageKind.CHAT, false)
+            "agent_message_chunk" -> upsertAcpMessageChunk(sessionId, update, MessageRole.ASSISTANT, MessageKind.CHAT, true)
+            "agent_thought_chunk" -> upsertAcpMessageChunk(sessionId, update, MessageRole.SYSTEM, MessageKind.THINKING, true)
+            "plan" -> upsertAcpPlanUpdate(sessionId, update)
+            "tool_call", "tool_call_update" -> upsertAcpToolCall(sessionId, update)
+            "usage_update" -> handleAcpUsageUpdate(sessionId, update)
+        }
+    }
+
+    private fun handleAcpSessionInfoUpdate(sessionId: String, update: JsonObject) {
+        val coderoverMeta = update["_meta"]?.jsonObjectOrNull()?.get("coderover")?.jsonObjectOrNull()
+        val thread = threadSummaryFromSessionInfo(
+            JsonObject(
+                buildMap {
+                    put("sessionId", JsonPrimitive(sessionId))
+                    update["title"]?.let { put("title", it) }
+                    update["updatedAt"]?.let { put("updatedAt", it) }
+                    coderoverMeta?.let { put("_meta", JsonObject(mapOf("coderover" to it))) }
+                },
+            ),
+        ) ?: ThreadSummary(id = sessionId)
+        updateState {
+            copy(threads = upsertThread(threads, thread.copy(syncState = ThreadSyncState.LIVE)))
+        }
+
+        val runState = firstNonBlank(
+            update.string("runState"),
+            coderoverMeta?.string("runState"),
+        ) ?: return
+        val lifecycleParams = kotlinx.serialization.json.buildJsonObject {
+            put("threadId", JsonPrimitive(sessionId))
+            put("status", JsonPrimitive(runState))
+            firstNonBlank(
+                update.string("turnId"),
+                coderoverMeta?.string("turnId"),
+            )?.let { put("turnId", JsonPrimitive(it)) }
+            firstNonBlank(
+                update.string("errorMessage"),
+                coderoverMeta?.string("errorMessage"),
+            )?.let {
+                put("errorMessage", JsonPrimitive(it))
+                put("error", JsonObject(mapOf("message" to JsonPrimitive(it))))
+            }
+        }
+        if (normalizeMethodToken(runState) == "running") {
+            val threadId = state.value.resolveRealtimeThreadId(lifecycleParams) ?: sessionId
+            markRealtimeTurnStarted(threadId = threadId, turnId = lifecycleParams.resolveTurnId())
+        } else {
+            handleTurnCompletedNotification(lifecycleParams)
+        }
+    }
+
+    private fun upsertAcpMessageChunk(
+        sessionId: String,
+        update: JsonObject,
+        role: MessageRole,
+        kind: MessageKind,
+        defaultStreaming: Boolean,
+    ) {
+        val coderoverMeta = update["_meta"]?.jsonObjectOrNull()?.get("coderover")?.jsonObjectOrNull()
+        val messageId = firstNonBlank(update.string("messageId"), coderoverMeta?.string("itemId")) ?: return
+        val turnId = firstNonBlank(coderoverMeta?.string("turnId"), state.value.activeTurnIdByThread[sessionId])
+        val existing = threadTimelineStateByThread[sessionId]?.message(messageId)
+            ?: state.value.messagesByThread[sessionId].orEmpty().firstOrNull { it.id == messageId }
+        val text = extractAcpText(update["content"])
+        val attachments = extractAcpAttachments(update["content"])
+        val mergedText = when {
+            text.isBlank() -> existing?.text.orEmpty()
+            else -> mergeStreamText(existing?.text.orEmpty(), text)
+        }
+        val message = (existing ?: ChatMessage(
+            id = messageId,
+            threadId = sessionId,
+            role = role,
+            kind = kind,
+            text = mergedText,
+            turnId = turnId,
+            itemId = messageId,
+            isStreaming = defaultStreaming,
+            orderIndex = nextOrderIndex(),
+            attachments = attachments,
+        )).copy(
+            role = role,
+            kind = kind,
+            text = mergedText,
+            turnId = turnId ?: existing?.turnId,
+            itemId = messageId,
+            isStreaming = defaultStreaming,
+            attachments = if (attachments.isEmpty()) existing?.attachments.orEmpty() else existing?.attachments.orEmpty() + attachments,
+        )
+        val renderedMessages = upsertThreadTimelineMessage(message)
+        updateState {
+            copy(
+                messagesByThread = messagesByThread + (sessionId to renderedMessages),
+                threads = threads.refreshThreadSummaryFromMessages(sessionId, renderedMessages),
+            )
+        }
+    }
+
+    private fun upsertAcpPlanUpdate(sessionId: String, update: JsonObject) {
+        val coderoverMeta = update["_meta"]?.jsonObjectOrNull()?.get("coderover")?.jsonObjectOrNull()
+        val itemId = coderoverMeta?.string("itemId") ?: "plan-$sessionId"
+        val explanation = firstNonBlank(coderoverMeta?.string("explanation"), coderoverMeta?.string("text"))
+        val planState = PlanState(
+            explanation = explanation,
+            steps = update["entries"]?.jsonArrayOrNull().orEmpty().mapNotNull { entry ->
+                val objectValue = entry.jsonObjectOrNull() ?: return@mapNotNull null
+                val step = objectValue.string("step") ?: return@mapNotNull null
+                val status = PlanStepStatus.fromRawValue(objectValue.string("status")) ?: return@mapNotNull null
+                PlanStep(step = step, status = status)
+            },
+        )
+        upsertCanonicalTimelineMessage(
+            threadId = sessionId,
+            turnId = firstNonBlank(coderoverMeta?.string("turnId"), state.value.activeTurnIdByThread[sessionId]),
+            timelineItemId = itemId,
+            providerItemId = null,
+            role = MessageRole.SYSTEM,
+            kind = MessageKind.PLAN,
+            incomingText = explanation ?: "Planning...",
+            textMode = "replace",
+            isStreaming = true,
+            timelineOrdinal = null,
+            timelineStatus = "running",
+            fileChanges = emptyList(),
+            commandState = null,
+            planState = planState,
+        )
+    }
+
+    private fun upsertAcpToolCall(sessionId: String, update: JsonObject) {
+        val coderoverMeta = update["_meta"]?.jsonObjectOrNull()?.get("coderover")?.jsonObjectOrNull()
+        val itemId = firstNonBlank(update.string("toolCallId"), coderoverMeta?.string("itemId")) ?: return
+        val turnId = firstNonBlank(coderoverMeta?.string("turnId"), state.value.activeTurnIdByThread[sessionId])
+        val toolKind = normalizeMethodToken(update.string("kind").orEmpty())
+        val text = extractAcpText(update["content"])
+        val status = normalizedIdentifier(update.string("status"))
+        val messageKind = if (toolKind == "execute") MessageKind.COMMAND_EXECUTION else MessageKind.FILE_CHANGE
+        val commandState = if (messageKind == MessageKind.COMMAND_EXECUTION) {
+            val rawInput = update["rawInput"]?.jsonObjectOrNull()
+            val rawOutput = update["rawOutput"]?.jsonObjectOrNull()
+            CommandState(
+                shortCommand = shortCommandPreview(
+                    firstNonBlank(rawInput?.string("command"), update.string("title")) ?: "command",
+                ),
+                fullCommand = firstNonBlank(rawInput?.string("command"), update.string("title")) ?: "command",
+                phase = CommandPhase.fromStatus(status, completedFallback = status == "completed"),
+                cwd = rawInput?.string("cwd"),
+                exitCode = rawOutput?.int("exitCode"),
+                durationMs = rawOutput?.int("durationMs"),
+                outputTail = text,
+            )
+        } else {
+            null
+        }
+        upsertCanonicalTimelineMessage(
+            threadId = sessionId,
+            turnId = turnId,
+            timelineItemId = itemId,
+            providerItemId = null,
+            role = MessageRole.SYSTEM,
+            kind = messageKind,
+            incomingText = text,
+            textMode = "append",
+            isStreaming = status == null || status == "in_progress",
+            timelineOrdinal = null,
+            timelineStatus = status,
+            fileChanges = emptyList(),
+            commandState = commandState,
+            planState = null,
+        )
+    }
+
+    private fun handleAcpUsageUpdate(sessionId: String, update: JsonObject) {
+        val usageObject = update["usage"]?.jsonObjectOrNull() ?: return
+        extractContextWindowUsage(usageObject)?.let { usage ->
+            updateState {
+                copy(contextWindowUsageByThread = contextWindowUsageByThread + (sessionId to usage))
+            }
+        }
+    }
+
+    private suspend fun syncAcpSessionConfiguration(threadId: String, usePlanMode: Boolean) {
+        activeClient().sendRequest(
+            method = "session/set_mode",
+            params = buildJsonObject(
+                "sessionId" to JsonPrimitive(threadId),
+                "modeId" to JsonPrimitive(if (usePlanMode) "plan" else "default"),
+            ),
+        )
+        state.value.selectedModelId?.let { modelId ->
+            activeClient().sendRequest(
+                method = "session/set_model",
+                params = buildJsonObject(
+                    "sessionId" to JsonPrimitive(threadId),
+                    "modelId" to JsonPrimitive(modelId),
+                ),
+            )
+        }
+        activeClient().sendRequest(
+            method = "session/set_config_option",
+            params = buildJsonObject(
+                "sessionId" to JsonPrimitive(threadId),
+                "configId" to JsonPrimitive("access_mode"),
+                "value" to JsonPrimitive(
+                    if (state.value.accessMode == AccessMode.FULL_ACCESS) "full-access" else "on-request",
+                ),
+            ),
+        )
+        state.value.selectedReasoningEffort?.let { effort ->
+            activeClient().sendRequest(
+                method = "session/set_config_option",
+                params = buildJsonObject(
+                    "sessionId" to JsonPrimitive(threadId),
+                    "configId" to JsonPrimitive("reasoning_effort"),
+                    "value" to JsonPrimitive(effort),
+                ),
+            )
+        }
+    }
+
+    private fun buildAcpPromptBlocks(
+        text: String,
+        attachments: List<ImageAttachment>,
+        skillMentions: List<TurnSkillMention>,
+        includeStructuredSkillItems: Boolean,
+    ): JsonArray {
+        val blocks = mutableListOf<JsonElement>()
+        attachments.forEach { attachment ->
+            val dataUrl = attachment.payloadDataURL?.trim().takeUnless { it.isNullOrEmpty() } ?: return@forEach
+            parseDataUrl(dataUrl)?.let { (mimeType, data) ->
+                blocks += JsonObject(
+                    mapOf(
+                        "type" to JsonPrimitive("image"),
+                        "data" to JsonPrimitive(data),
+                        "mimeType" to JsonPrimitive(mimeType),
+                    ),
+                )
+            }
+        }
+        text.trim().takeIf(String::isNotEmpty)?.let {
+            blocks += JsonObject(
+                mapOf(
+                    "type" to JsonPrimitive("text"),
+                    "text" to JsonPrimitive(it),
+                ),
+            )
+        }
+        if (includeStructuredSkillItems) {
+            skillMentions.forEach { mention ->
+                val id = mention.id.trim().takeIf(String::isNotEmpty) ?: return@forEach
+                val name = mention.name?.trim()?.takeIf(String::isNotEmpty) ?: id
+                val uri = mention.path?.trim()?.takeIf(String::isNotEmpty) ?: "skill://$id"
+                blocks += JsonObject(
+                    mapOf(
+                        "type" to JsonPrimitive("resource_link"),
+                        "uri" to JsonPrimitive(uri),
+                        "name" to JsonPrimitive(name),
+                        "title" to JsonPrimitive(name),
+                        "_meta" to JsonObject(
+                            mapOf(
+                                "coderover" to JsonObject(
+                                    mapOf(
+                                        "inputType" to JsonPrimitive("skill"),
+                                        "id" to JsonPrimitive(id),
+                                        "path" to JsonPrimitive(uri),
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                )
+            }
+        }
+        return JsonArray(blocks)
+    }
+
+    private fun parseDataUrl(value: String): Pair<String, String>? {
+        if (!value.startsWith("data:")) {
+            return null
+        }
+        val separator = ";base64,"
+        val separatorIndex = value.indexOf(separator)
+        if (separatorIndex <= 5) {
+            return null
+        }
+        val mimeType = value.substring(5, separatorIndex)
+        val data = value.substring(separatorIndex + separator.length)
+        if (mimeType.isBlank() || data.isBlank()) {
+            return null
+        }
+        return mimeType to data
+    }
+
+    private fun extractAcpText(value: JsonElement?): String {
+        val objectValue = value?.jsonObjectOrNull()
+        if (objectValue?.string("type") == "text") {
+            return objectValue.string("text").orEmpty()
+        }
+        return value?.jsonArrayOrNull().orEmpty()
+            .mapNotNull { item ->
+                val wrapper = item.jsonObjectOrNull() ?: return@mapNotNull null
+                val content = wrapper["content"]?.jsonObjectOrNull() ?: wrapper
+                if (content.string("type") == "text") {
+                    content.string("text")
+                } else {
+                    null
+                }
+            }
+            .joinToString(separator = "")
+    }
+
+    private fun extractAcpAttachments(value: JsonElement?): List<ImageAttachment> {
+        return value?.jsonArrayOrNull().orEmpty().mapNotNull { item ->
+            val wrapper = item.jsonObjectOrNull() ?: return@mapNotNull null
+            val content = wrapper["content"]?.jsonObjectOrNull() ?: wrapper
+            if (content.string("type") != "image") {
+                return@mapNotNull null
+            }
+            val data = content.string("data")
+            val mimeType = content.string("mimeType") ?: "image/jpeg"
+            val payloadDataUrl = if (data != null) "data:$mimeType;base64,$data" else null
+            ImageAttachment(
+                thumbnailBase64JPEG = "",
+                payloadDataURL = payloadDataUrl,
+                sourceUrl = content.string("uri"),
+            )
+        }
+    }
+
+    private fun threadSummaryFromSessionInfo(session: JsonObject): ThreadSummary? {
+        val sessionId = session.string("sessionId") ?: return null
+        val coderoverMeta = session["_meta"]?.jsonObjectOrNull()?.get("coderover")?.jsonObjectOrNull()
+        return ThreadSummary(
+            id = sessionId,
+            title = session.string("title"),
+            name = session.string("title"),
+            preview = coderoverMeta?.string("preview"),
+            updatedAt = session.string("updatedAt")?.let(::parseTimestamp),
+            cwd = session.string("cwd"),
+            provider = coderoverMeta?.string("agentId") ?: "codex",
+            providerSessionId = coderoverMeta?.string("providerSessionId"),
+            capabilities = RuntimeCapabilities.fromJson(coderoverMeta?.get("capabilities")?.jsonObjectOrNull()),
+            syncState = if (coderoverMeta?.bool("archived") == true) ThreadSyncState.ARCHIVED_LOCAL else ThreadSyncState.LIVE,
+        )
+    }
+
+    private fun markAcpHistoryLoaded(threadId: String) {
+        updateState {
+            val currentHistoryState = historyStateByThread[threadId] ?: ThreadHistoryState()
+            copy(
+                historyStateByThread = historyStateByThread + (
+                    threadId to currentHistoryState.copy(
+                        oldestCursor = null,
+                        newestCursor = null,
+                        hasOlderOnServer = false,
+                        hasNewerOnServer = false,
+                        isLoadingOlder = false,
+                        isTailRefreshing = false,
+                    )
+                ),
+                threads = threads.map { thread ->
+                    if (thread.id == threadId) thread.copy(syncState = ThreadSyncState.LIVE) else thread
+                },
+            )
+        }
+    }
+
+    private fun latestTurnIdFromMessages(threadId: String): String? {
+        return state.value.messagesByThread[threadId]
+            .orEmpty()
+            .asReversed()
+            .firstOrNull { !it.turnId.isNullOrBlank() }
+            ?.turnId
+            ?.trim()
+            ?.takeIf(String::isNotEmpty)
     }
 
     private fun handleCanonicalTimelineItemEvent(
@@ -3612,8 +3983,10 @@ class CodeRoverRepository(context: Context) {
         if (usePlanMode && selectedModel == null) {
             throw IllegalStateException("Plan mode requires an available model before starting a turn.")
         }
+        val pendingMessageId = UUID.randomUUID().toString()
         appendLocalMessage(
             ChatMessage(
+                id = pendingMessageId,
                 threadId = threadId,
                 role = MessageRole.USER,
                 text = trimmed,
@@ -3634,6 +4007,7 @@ class CodeRoverRepository(context: Context) {
                 attachments = attachments,
                 skillMentions = skillMentions,
                 usePlanMode = usePlanMode,
+                userMessageId = pendingMessageId,
                 selectedModel = selectedModel,
             )
         } catch (failure: Throwable) {
@@ -3653,27 +4027,30 @@ class CodeRoverRepository(context: Context) {
         attachments: List<ImageAttachment>,
         skillMentions: List<TurnSkillMention>,
         usePlanMode: Boolean,
+        userMessageId: String,
         selectedModel: ModelOption?,
     ) {
         var includeStructuredSkillItems = skillMentions.isNotEmpty()
         while (true) {
-            val params = buildJsonObject(
-                "threadId" to JsonPrimitive(threadId),
-                "input" to buildTurnInputItems(
-                    text = text,
-                    attachments = attachments,
-                    skillMentions = skillMentions,
-                    includeStructuredSkillItems = includeStructuredSkillItems,
-                ),
-                "model" to state.value.selectedModelId?.let(::JsonPrimitive),
-                "effort" to state.value.selectedReasoningEffort?.let(::JsonPrimitive),
-                "collaborationMode" to state.value.turnStartCollaborationMode(
-                    usePlanMode = usePlanMode,
-                    selectedModel = selectedModel,
-                ),
-            )
             try {
-                val response = requestWithSandboxFallback("turn/start", params)?.jsonObjectOrNull()
+                syncAcpSessionConfiguration(
+                    threadId = threadId,
+                    usePlanMode = usePlanMode,
+                )
+                val response = activeClient().sendRequest(
+                    method = "session/prompt",
+                    params = buildJsonObject(
+                        "sessionId" to JsonPrimitive(threadId),
+                        "messageId" to JsonPrimitive(userMessageId),
+                        "prompt" to buildAcpPromptBlocks(
+                            text = text,
+                            attachments = attachments,
+                            skillMentions = skillMentions,
+                            includeStructuredSkillItems = includeStructuredSkillItems,
+                        ),
+                        "modelId" to state.value.selectedModelId?.let(::JsonPrimitive),
+                    ),
+                )?.jsonObjectOrNull()
                 markRealtimeTurnStarted(
                     threadId = threadId,
                     turnId = response.resolveTurnId(),
@@ -3984,19 +4361,28 @@ class CodeRoverRepository(context: Context) {
 
     private suspend fun startThread(preferredProjectPath: String?, providerId: String? = null): ThreadSummary? {
         val resolvedProviderId = normalizeProviderId(providerId ?: state.value.selectedProviderId)
-        val params = buildJsonObject(
-            "provider" to JsonPrimitive(resolvedProviderId),
-            "model" to store.loadSelectedModelId(resolvedProviderId)?.let(::JsonPrimitive),
-            "cwd" to preferredProjectPath?.trim()?.takeIf(String::isNotEmpty)?.let(::JsonPrimitive),
-        )
-        val response = requestWithSandboxFallback("thread/start", params)
+        val params = kotlinx.serialization.json.buildJsonObject {
+            preferredProjectPath?.trim()?.takeIf(String::isNotEmpty)?.let { put("cwd", JsonPrimitive(it)) }
+            store.loadSelectedModelId(resolvedProviderId)?.let { put("modelId", JsonPrimitive(it)) }
+            put(
+                "_meta",
+                JsonObject(
+                    mapOf(
+                        "coderover" to JsonObject(
+                            mapOf(
+                                "agentId" to JsonPrimitive(resolvedProviderId),
+                            ),
+                        ),
+                    ),
+                ),
+            )
+        }
+        val response = activeClient().sendRequest("session/new", params)
         val thread = response
             ?.jsonObjectOrNull()
-            ?.get("thread")
-            ?.jsonObjectOrNull()
-            ?.let(ThreadSummary::fromJson)
+            ?.let(::threadSummaryFromSessionInfo)
             ?: run {
-                updateError("thread/start did not return a thread.")
+                updateError("session/new did not return a session.")
                 return null
             }
         updateState {
@@ -4349,19 +4735,23 @@ internal fun JsonObject?.resolveThreadId(): String? {
     val envelopeEvent = payload.envelopeEventObject()
     val nestedEvent = payload["event"]?.jsonObjectOrNull()
     return firstNonBlank(
+        payload.normalizedIdentifier("sessionId"),
         payload.normalizedIdentifier("threadId"),
         payload.normalizedIdentifier("thread_id"),
         payload.normalizedIdentifier("conversationId"),
         payload.normalizedIdentifier("conversation_id"),
+        payload["_meta"]?.jsonObjectOrNull()?.get("coderover")?.jsonObjectOrNull()?.normalizedIdentifier("threadId"),
         payload["thread"]?.jsonObjectOrNull()?.normalizedIdentifier("id"),
         payload["turn"]?.jsonObjectOrNull()?.normalizedIdentifier("threadId"),
         payload["turn"]?.jsonObjectOrNull()?.normalizedIdentifier("thread_id"),
         payload["item"]?.jsonObjectOrNull()?.normalizedIdentifier("threadId"),
         payload["item"]?.jsonObjectOrNull()?.normalizedIdentifier("thread_id"),
+        envelopeEvent?.normalizedIdentifier("sessionId"),
         envelopeEvent?.normalizedIdentifier("threadId"),
         envelopeEvent?.normalizedIdentifier("thread_id"),
         envelopeEvent?.normalizedIdentifier("conversationId"),
         envelopeEvent?.normalizedIdentifier("conversation_id"),
+        envelopeEvent?.get("_meta")?.jsonObjectOrNull()?.get("coderover")?.jsonObjectOrNull()?.normalizedIdentifier("threadId"),
         envelopeEvent?.get("thread")?.jsonObjectOrNull()?.normalizedIdentifier("id"),
         envelopeEvent?.get("turn")?.jsonObjectOrNull()?.normalizedIdentifier("threadId"),
         envelopeEvent?.get("turn")?.jsonObjectOrNull()?.normalizedIdentifier("thread_id"),
@@ -4382,11 +4772,13 @@ internal fun JsonObject?.resolveTurnId(): String? {
     val envelopeEvent = payload.envelopeEventObject()
     val nestedEvent = payload["event"]?.jsonObjectOrNull()
     return firstNonBlank(
+        payload["_meta"]?.jsonObjectOrNull()?.get("coderover")?.jsonObjectOrNull()?.normalizedIdentifier("turnId"),
         payload["turn"]?.jsonObjectOrNull()?.normalizedIdentifier("id"),
         payload.normalizedIdentifier("turnId"),
         payload.normalizedIdentifier("turn_id"),
         payload["item"]?.jsonObjectOrNull()?.normalizedIdentifier("turnId"),
         payload["item"]?.jsonObjectOrNull()?.normalizedIdentifier("turn_id"),
+        envelopeEvent?.get("_meta")?.jsonObjectOrNull()?.get("coderover")?.jsonObjectOrNull()?.normalizedIdentifier("turnId"),
         envelopeEvent?.normalizedIdentifier("turnId"),
         envelopeEvent?.normalizedIdentifier("turn_id"),
         envelopeEvent?.get("turn")?.jsonObjectOrNull()?.normalizedIdentifier("id"),
@@ -4403,6 +4795,9 @@ internal fun JsonObject?.resolveItemId(): String? {
     val envelopeEvent = payload.envelopeEventObject()
     val nestedEvent = payload["event"]?.jsonObjectOrNull()
     return firstNonBlank(
+        payload.normalizedIdentifier("toolCallId"),
+        payload.normalizedIdentifier("messageId"),
+        payload["_meta"]?.jsonObjectOrNull()?.get("coderover")?.jsonObjectOrNull()?.normalizedIdentifier("itemId"),
         payload.normalizedIdentifier("timelineItemId"),
         payload.normalizedIdentifier("timeline_item_id"),
         payload.normalizedIdentifier("itemId"),
@@ -4411,6 +4806,8 @@ internal fun JsonObject?.resolveItemId(): String? {
         payload["item"]?.jsonObjectOrNull()?.normalizedIdentifier("id"),
         payload["item"]?.jsonObjectOrNull()?.normalizedIdentifier("timelineItemId"),
         payload["item"]?.jsonObjectOrNull()?.normalizedIdentifier("timeline_item_id"),
+        envelopeEvent?.normalizedIdentifier("toolCallId"),
+        envelopeEvent?.normalizedIdentifier("messageId"),
         envelopeEvent?.normalizedIdentifier("timelineItemId"),
         envelopeEvent?.normalizedIdentifier("timeline_item_id"),
         envelopeEvent?.normalizedIdentifier("itemId"),

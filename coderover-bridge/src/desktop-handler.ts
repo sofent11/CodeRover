@@ -84,8 +84,8 @@ export function handleDesktopRequest(
     return false;
   }
 
-  const method = readNonEmptyString(parsed.method);
-  if (!method || !method.startsWith("desktop/")) {
+  const method = normalizeDesktopMethod(parsed.method);
+  if (!method) {
     return false;
   }
 
@@ -110,6 +110,17 @@ export function handleDesktopRequest(
     });
 
   return true;
+}
+
+function normalizeDesktopMethod(value: unknown): string | null {
+  const method = readNonEmptyString(value);
+  if (!method) {
+    return null;
+  }
+  if (method.startsWith("_coderover/desktop/")) {
+    return method.replace(/^_coderover\//, "");
+  }
+  return null;
 }
 
 function parseDesktopRequest(rawMessage: string): ParsedDesktopRequest | null {

@@ -9,7 +9,7 @@ import Network
 import UIKit
 
 extension CodeRoverService {
-    // Opens the WebSocket and performs initialize/initialized handshake.
+    // Opens the WebSocket and performs ACP initialize handshake.
     func connect(
         serverURL: String,
         token: String,
@@ -149,31 +149,16 @@ extension CodeRoverService {
             "version": .string(appVersion),
         ])
 
-        // Ask for experimental APIs up front so plan mode can use `collaborationMode`
-        // on runtimes that support it, while keeping a legacy handshake fallback.
-        let modernParams: JSONValue = .object([
+        let initializeParams: JSONValue = .object([
             "clientInfo": clientInfo,
             "capabilities": .object([
-                "experimentalApi": .bool(true),
+                "sessionModes": .bool(true),
+                "promptContent": .bool(true),
             ]),
         ])
 
-        do {
-            _ = try await sendRequest(method: "initialize", params: modernParams)
-            supportsTurnCollaborationMode = await runtimeSupportsPlanCollaborationMode()
-        } catch {
-            guard shouldRetryInitializeWithoutCapabilities(error) else {
-                throw error
-            }
-
-            let legacyParams: JSONValue = .object([
-                "clientInfo": clientInfo,
-            ])
-            _ = try await sendRequest(method: "initialize", params: legacyParams)
-            supportsTurnCollaborationMode = false
-        }
-
-        try await sendNotification(method: "initialized", params: nil)
+        _ = try await sendRequest(method: "initialize", params: initializeParams)
+        supportsTurnCollaborationMode = await runtimeSupportsPlanCollaborationMode()
         isInitialized = true
     }
 
@@ -318,14 +303,9 @@ extension CodeRoverService {
             || message.contains("field")
     }
 
-    // Uses the documented experimental listing endpoint instead of assuming initialize implies plan support.
+    // ACP sessions carry mode switching directly; we only need a coarse runtime gate here.
     func runtimeSupportsPlanCollaborationMode() async -> Bool {
-        do {
-            let response = try await sendRequest(method: "collaborationMode/list", params: nil)
-            return responseContainsPlanCollaborationMode(response)
-        } catch {
-            return false
-        }
+        true
     }
 
     // Accepts the current app-server result shapes without depending on one exact field name.

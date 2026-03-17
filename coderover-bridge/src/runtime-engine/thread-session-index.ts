@@ -109,6 +109,7 @@ export function createThreadSessionIndex(
       version: INDEX_VERSION,
       sessions: state.sessions,
     }, null, 2);
+    fs.mkdirSync(path.dirname(indexPath), { recursive: true });
     const tempPath = `${indexPath}.${process.pid}.${Date.now()}.tmp`;
     fs.writeFileSync(tempPath, `${payload}\n`);
     fs.renameSync(tempPath, indexPath);

@@ -105,8 +105,8 @@ export function handleGitRequest(rawMessage: string, sendResponse: SendResponse)
     return false;
   }
 
-  const method = readNonEmptyString(parsed.method);
-  if (!method || !method.startsWith("git/")) {
+  const method = normalizeGitMethod(parsed.method);
+  if (!method) {
     return false;
   }
 
@@ -131,6 +131,17 @@ export function handleGitRequest(rawMessage: string, sendResponse: SendResponse)
     });
 
   return true;
+}
+
+function normalizeGitMethod(value: unknown): string | null {
+  const method = readNonEmptyString(value);
+  if (!method) {
+    return null;
+  }
+  if (method.startsWith("_coderover/git/")) {
+    return method.replace(/^_coderover\//, "");
+  }
+  return null;
 }
 
 function parseGitRequest(rawMessage: string): ParsedGitRequest | null {

@@ -22,11 +22,12 @@ extension CodeRoverService {
 
         let requestID: JSONValue = .string(UUID().uuidString)
         let requestKey = idKey(from: requestID)
+        let translatedRequest = translateLegacyRequestToACP(method: method, params: params)
 
         let request = RPCMessage(
             id: requestID,
-            method: method,
-            params: params,
+            method: translatedRequest.method,
+            params: translatedRequest.params,
             includeJSONRPC: false
         )
         let requestContext = pendingRequestContext(method: method, params: params)
@@ -73,12 +74,16 @@ extension CodeRoverService {
 
     // Sends a fire-and-forget RPC notification.
     func sendNotification(method: String, params: JSONValue?) async throws {
+        if method == "initialized" {
+            return
+        }
         debugRuntimeLog("rpc -> notify \(summarizeIncomingNotification(method: method, paramsObject: params?.objectValue))")
+        let translatedRequest = translateLegacyRequestToACP(method: method, params: params)
         let notification = RPCMessage(
             jsonrpc: nil,
             id: nil,
-            method: method,
-            params: params,
+            method: translatedRequest.method,
+            params: translatedRequest.params,
             result: nil,
             error: nil
         )
@@ -272,12 +277,14 @@ extension CodeRoverService {
 
     func pendingRequestContext(method: String, params: JSONValue?) -> CodeRoverPendingRequestContext {
         let paramsObject = params?.objectValue
-        let threadId = paramsObject?["threadId"]?.stringValue
+        let threadId = paramsObject?["sessionId"]?.stringValue
+            ?? paramsObject?["threadId"]?.stringValue
             ?? paramsObject?["thread_id"]?.stringValue
 
         return CodeRoverPendingRequestContext(
             method: method,
             threadId: threadId,
+            params: params,
             createdAt: Date()
         )
     }
