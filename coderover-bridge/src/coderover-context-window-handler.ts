@@ -5,9 +5,7 @@ import { readLatestContextWindowUsage } from "./rollout-watch";
 
 interface ContextWindowReadParams {
   sessionId?: unknown;
-  session_id?: unknown;
   turnId?: unknown;
-  turn_id?: unknown;
 }
 
 interface ContextWindowError extends Error {
@@ -64,12 +62,12 @@ function normalizeContextWindowMethod(value: unknown): string | null {
 }
 
 async function handleContextWindowRead(params: ContextWindowReadParams) {
-  const sessionId = readString(params.sessionId) || readString(params.session_id);
+  const sessionId = readString(params.sessionId);
   if (!sessionId) {
     throw contextWindowError("missing_session_id", "_coderover/context_window/read requires a sessionId.");
   }
 
-  const turnId = readString(params.turnId) || readString(params.turn_id);
+  const turnId = readString(params.turnId);
   const result = readLatestContextWindowUsage({
     sessionId,
     ...(turnId ? { turnId } : {}),

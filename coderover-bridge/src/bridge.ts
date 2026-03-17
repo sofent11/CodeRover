@@ -144,7 +144,8 @@ export function startBridge(): void {
   }
 
   function rememberSessionFromMessage(source: string, rawMessage: string): void {
-    const sessionId = extractSessionId(rawMessage);
+    const parsed = safeParseJSON(rawMessage);
+    const sessionId = parsed ? extractBridgeMessageSessionId(parsed) : null;
     if (!sessionId || sessionId.startsWith("claude:") || sessionId.startsWith("gemini:")) {
       return;
     }
@@ -182,18 +183,6 @@ export function startBridge(): void {
   }
 }
 
-function extractSessionIdFromMessage(rawMessage: string): string | null {
-  return extractSessionId(rawMessage);
-}
-
-function extractSessionId(rawMessage: string): string | null {
-  const parsed = safeParseJSON(rawMessage);
-  if (!parsed) {
-    return null;
-  }
-  return extractBridgeMessageSessionId(parsed);
-}
-
 function readString(value: unknown): string | null {
   return typeof value === "string" && value ? value : null;
 }
@@ -214,9 +203,24 @@ function summarizeBridgeMessage(rawMessage: string): string {
   const method = readString(parsed.method);
   const id = readString(parsed.id) || (typeof parsed.id === "number" ? String(parsed.id) : null);
   const params = asRecord(parsed.params);
-  const sessionId = extractBridgeMessageSessionIdForLogs(parsed);
-  const turnId = extractBridgeMessageTurnId(params);
-  const itemId = extractBridgeMessageItemId(params);
+  const update = asRecord(params?.update);
+  const meta = asRecord(update?._meta);
+  const sessionId = (
+    extractBridgeMessageSessionId(parsed)
+    || readString(asRecord(meta?.coderover)?.sessionId)
+  );
+  const turn = asRecord(params?.turn);
+  const item = asRecord(params?.item);
+  const turnId = (
+    readString(params?.turnId)
+    || readString(turn?.id)
+    || readString(item?.turnId)
+  );
+  const itemId = (
+    readString(params?.itemId)
+    || readString(item?.id)
+    || readString(params?.messageId)
+  );
   const parts: string[] = [];
 
   if (method) {
@@ -243,63 +247,15 @@ function summarizeBridgeMessage(rawMessage: string): string {
   return parts.join(" ");
 }
 
-function extractBridgeMessageSessionIdForLogs(parsed: JsonRecord): string | null {
-  const params = asRecord(parsed.params);
-  const update = asRecord(params?.update);
-  const meta = asRecord(update?._meta);
-  return (
-    extractBridgeMessageSessionId(parsed)
-    || extractBridgeSessionIdFromResult(parsed)
-    || extractCoderoverSessionId(asRecord(meta?.coderover))
-  );
-}
-
 function extractBridgeMessageSessionId(parsed: JsonRecord): string | null {
   const params = asRecord(parsed.params);
   const update = asRecord(params?.update);
   const result = asRecord(parsed.result);
   return (
     readString(params?.sessionId)
-    || readString(params?.session_id)
     || readString(result?.sessionId)
-    || readString(result?.session_id)
-    || extractCoderoverSessionId(asRecord(asRecord(update?._meta)?.coderover))
+    || readString(asRecord(asRecord(update?._meta)?.coderover)?.sessionId)
   );
-}
-
-function extractBridgeSessionIdFromResult(parsed: JsonRecord): string | null {
-  const result = asRecord(parsed.result);
-  if (!result) {
-    return null;
-  }
-  return readString(result.sessionId) || readString(result.session_id);
-}
-
-function extractBridgeMessageTurnId(params: JsonRecord | null): string | null {
-  const turn = asRecord(params?.turn);
-  const item = asRecord(params?.item);
-  return (
-    readString(params?.turnId)
-    || readString(params?.turn_id)
-    || readString(turn?.id)
-    || readString(item?.turnId)
-    || readString(item?.turn_id)
-  );
-}
-
-function extractBridgeMessageItemId(params: JsonRecord | null): string | null {
-  const item = asRecord(params?.item);
-  return (
-    readString(params?.itemId)
-    || readString(params?.item_id)
-    || readString(item?.id)
-    || readString(params?.messageId)
-    || readString(params?.message_id)
-  );
-}
-
-function extractCoderoverSessionId(coderoverMeta: JsonRecord | null): string | null {
-  return readString(coderoverMeta?.sessionId) || readString(coderoverMeta?.threadId);
 }
 
 function safeParseJSON(value: string): JsonRecord | null {

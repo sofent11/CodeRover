@@ -109,8 +109,6 @@ export interface RuntimeThreadShape {
   capabilities?: Record<string, unknown> | null;
   turns?: RuntimeTurnShape[];
   archived?: boolean;
-  current_working_directory?: string | null;
-  working_directory?: string | null;
   [key: string]: unknown;
 }
 

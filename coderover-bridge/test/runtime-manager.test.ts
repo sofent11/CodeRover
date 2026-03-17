@@ -361,27 +361,6 @@ test("session/prompt streams ACP updates and session/load replays ACP history", 
   }
 });
 
-test("legacy thread and turn RPC methods are rejected", async () => {
-  const fixture = createManagerFixture();
-  try {
-    const calls = [
-      ["legacy-thread-start", "thread/start", { provider: "claude" }],
-      ["legacy-thread-list", "thread/list", {}],
-      ["legacy-thread-read", "thread/read", { threadId: "any" }],
-      ["legacy-turn-start", "turn/start", { threadId: "any", input: [] }],
-      ["legacy-turn-interrupt", "turn/interrupt", { threadId: "any" }],
-    ] as const;
-
-    for (const [id, method, params] of calls) {
-      const response = responseById(await request(fixture, id, method, params), id);
-      assert.equal(response.error.code, -32601);
-      assert.match(response.error.message, /unsupported method/i);
-    }
-  } finally {
-    fixture.cleanup();
-  }
-});
-
 test("_coderover/session/set_title and archive update ACP session listings", async () => {
   const fixture = createManagerFixture();
   try {

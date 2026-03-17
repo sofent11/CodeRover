@@ -18,7 +18,6 @@ export interface OpenLastActiveSessionOptions {
 
 const STATE_DIR = path.join(os.homedir(), ".coderover");
 const STATE_FILE = path.join(STATE_DIR, "last-session.json");
-const LEGACY_STATE_FILE = path.join(STATE_DIR, "last-thread.json");
 const DEFAULT_BUNDLE_ID = "com.sofent.CodeRover";
 
 export function rememberActiveSession(sessionId: unknown, source: unknown): boolean {
@@ -52,23 +51,19 @@ export function openLastActiveSession(
 }
 
 function readState(): LastActiveSessionState | null {
-  const statePath = fs.existsSync(STATE_FILE)
-    ? STATE_FILE
-    : (fs.existsSync(LEGACY_STATE_FILE) ? LEGACY_STATE_FILE : null);
-  if (!statePath) {
+  if (!fs.existsSync(STATE_FILE)) {
     return null;
   }
 
-  const raw = fs.readFileSync(statePath, "utf8");
+  const raw = fs.readFileSync(STATE_FILE, "utf8");
   const parsed = JSON.parse(raw) as {
     sessionId?: unknown;
-    threadId?: unknown;
     source?: unknown;
     updatedAt?: unknown;
   };
   const sessionId = typeof parsed.sessionId === "string" && parsed.sessionId
     ? parsed.sessionId
-    : (typeof parsed.threadId === "string" && parsed.threadId ? parsed.threadId : null);
+    : null;
   if (!sessionId) {
     return null;
   }

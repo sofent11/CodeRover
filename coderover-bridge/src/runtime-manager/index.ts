@@ -34,6 +34,7 @@ import {
   ACP_PROTOCOL_VERSION,
   buildAcpReplayNotifications,
   normalizeRunState,
+  projectSessionInfoFromSessionObject,
   projectRuntimeEventToAcpProtocol,
   type ProjectedAcpProtocolMessage,
 } from "../runtime-engine/acp-protocol";
@@ -204,20 +205,11 @@ export function createRuntimeManager({
           }));
 
         case "_coderover/model/list":
-        case "model/list":
           return await handleRequestWithResponse(requestId, async () => {
             const provider = resolveAcpAgentId(params);
             const client = await acpSessionManager.getClient(provider);
             return buildAcpModelListResult(await client.listModels(params));
           });
-
-        case "_coderover/skills/list":
-        case "skills/list":
-          throw createMethodError("skills/list is no longer supported by the bridge protocol");
-
-        case "_coderover/fuzzy_file_search":
-        case "fuzzyFileSearch":
-          throw createMethodError("fuzzyFileSearch is no longer supported by the bridge protocol");
 
         case "session/list":
           return await handleRequestWithResponse(requestId, async () => {
@@ -268,9 +260,7 @@ export function createRuntimeManager({
 
         case "_coderover/session/set_title":
           return await handleRequestWithResponse(requestId, async () => {
-            const sessionMeta = await requireSessionMeta(
-              params.sessionId || params.threadId || params.thread_id
-            );
+            const sessionMeta = await requireSessionMeta(params.sessionId);
             const nextName = normalizeOptionalString(params.title || params.name);
             const updatedMeta = store.updateSessionMeta(sessionMeta.id, (entry) => ({
               ...entry,
@@ -304,9 +294,7 @@ export function createRuntimeManager({
         case "_coderover/session/archive":
         case "_coderover/session/unarchive":
           return await handleRequestWithResponse(requestId, async () => {
-            const sessionMeta = await requireSessionMeta(
-              params.sessionId || params.threadId || params.thread_id
-            );
+            const sessionMeta = await requireSessionMeta(params.sessionId);
             const archived = method === "_coderover/session/archive";
             const updatedMeta = store.updateSessionMeta(sessionMeta.id, (entry) => ({
               ...entry,
@@ -915,7 +903,7 @@ export function createRuntimeManager({
     if ("sessionId" in event) {
       return normalizeOptionalString(event.sessionId);
     }
-    return normalizeOptionalString(event.thread?.id);
+    return null;
   }
 
   function upsertSessionRuntimeRecord({
@@ -993,11 +981,7 @@ export function createRuntimeManager({
         || normalizeOptionalString(threadObject.id),
       providerSessionId: normalizeOptionalString(threadObject.providerSessionId)
         || normalizeOptionalString(threadObject.id),
-      cwd: firstNonEmptyString([
-        threadObject.cwd,
-        threadObject.current_working_directory,
-        threadObject.working_directory,
-      ]),
+      cwd: firstNonEmptyString([threadObject.cwd]),
       model: normalizeOptionalString(threadObject.model),
       ownerState: "idle",
     });
@@ -1030,17 +1014,6 @@ export function createRuntimeManager({
     });
   }
 
-  function sendSessionStartedNotification(sessionObject: RuntimeThreadShape): void {
-    emitRuntimeEvent({
-      kind: "thread_started",
-      thread: sessionObject,
-    });
-  }
-
-  function upsertOverlayFromSession(sessionObject: RuntimeThreadShape): void {
-    store.upsertSessionMeta(sessionObjectToMeta(sessionObject));
-    syncSessionRuntimeFromThreadObject(sessionObject);
-  }
 
   function buildManagedSessionObject(
     sessionMeta: RuntimeSessionMeta,
@@ -1051,15 +1024,6 @@ export function createRuntimeManager({
       turns,
       getRuntimeProvider
     );
-  }
-
-  function buildSessionListResult(payload: RuntimeThreadShape[] | {
-    threads: RuntimeThreadShape[];
-    nextCursor?: string | number | null;
-    hasMore?: boolean;
-    pageSize?: number | null;
-  }): unknown {
-    return managedRuntimeHelpers.buildSessionListResult(payload, normalizePositiveInteger);
   }
 
   function sessionObjectToMeta(sessionObject: UnknownRecord): RuntimeSessionMeta {
@@ -1081,20 +1045,8 @@ export function createRuntimeManager({
     };
   }
 
-  function normalizeSkillsResult(result: unknown): unknown {
-    const skills = extractArray(result, ["skills", "result.skills", "result.data"]);
-    return {
-      skills,
-      data: Array.isArray(skills) ? skills : [],
-    };
-  }
 
-  function normalizeFuzzyFileResult(result: unknown): { files: unknown[] } {
-    const files = extractArray(result, ["files", "result.files"]);
-    return {
-      files,
-    };
-  }
+
 
   function buildAcpInitializeResult(params: UnknownRecord): UnknownRecord {
     const requestedVersion = typeof params.protocolVersion === "number"
@@ -1175,7 +1127,7 @@ export function createRuntimeManager({
     mergedThreads = mergedThreads.filter((thread) => Boolean(thread.archived) === (archivedFilter ?? false));
     if (normalizeOptionalString(params.cwd)) {
       mergedThreads = mergedThreads.filter((thread) =>
-        firstNonEmptyString([thread.cwd, thread.current_working_directory, thread.working_directory]) === normalizeOptionalString(params.cwd)
+        firstNonEmptyString([thread.cwd]) === normalizeOptionalString(params.cwd)
       );
     }
 
@@ -1202,7 +1154,7 @@ export function createRuntimeManager({
       engineSessionId: sessionMeta.providerSessionId || sessionMeta.id,
       mode: "default",
     });
-    sendSessionStartedNotification(buildManagedSessionObject(sessionMeta));
+    emitProjectedAcpMessage(projectSessionInfoFromSessionObject(buildManagedSessionObject(sessionMeta)));
     const sessionState = await buildAcpSessionState(sessionMeta);
     return {
       sessionId: sessionMeta.id,
@@ -1503,7 +1455,7 @@ export function createRuntimeManager({
     const sessionMeta = sessionId ? (store.getSessionMeta(sessionId) || sessionObjectToMeta(asObject(thread))) : null;
     return {
       sessionId,
-      cwd: firstNonEmptyString([thread.cwd, thread.current_working_directory, thread.working_directory]) || process.cwd(),
+      cwd: firstNonEmptyString([thread.cwd]) || process.cwd(),
       ...(normalizeOptionalString(thread.name) || normalizeOptionalString(thread.title)
         ? { title: normalizeOptionalString(thread.name) || normalizeOptionalString(thread.title) }
         : {}),
@@ -1892,7 +1844,7 @@ export function createRuntimeManager({
   }
 
   function requireSessionId(params: UnknownRecord): string {
-    const sessionId = normalizeOptionalString(params.sessionId || params.threadId || params.thread_id);
+    const sessionId = normalizeOptionalString(params.sessionId);
     if (!sessionId) {
       throw createRuntimeError(ERROR_INVALID_PARAMS, "sessionId is required");
     }
@@ -2090,11 +2042,7 @@ export function createRuntimeManager({
 }
 
 function summarizeSessionForList(session: RuntimeThreadShape): RuntimeThreadShape {
-  const cwd = firstNonEmptySessionPath([
-    session.cwd,
-    session.current_working_directory,
-    session.working_directory,
-  ]);
+  const cwd = firstNonEmptyString([session.cwd]);
   return {
     id: normalizeOptionalString(session.id) || undefined,
     provider: normalizeOptionalString(session.provider) || "codex",
@@ -2107,14 +2055,12 @@ function summarizeSessionForList(session: RuntimeThreadShape): RuntimeThreadShap
     createdAt: normalizeTimestampString(session.createdAt) || null,
     updatedAt: normalizeTimestampString(session.updatedAt) || null,
     capabilities: asObject(session.capabilities),
-    metadata: summarizeSessionMetadata(session.metadata),
+    metadata: (() => {
+      const record = asObject(session.metadata);
+      const providerTitle = normalizeOptionalString(record?.providerTitle);
+      return providerTitle ? { providerTitle } : null;
+    })(),
   };
-}
-
-function summarizeSessionMetadata(metadata: unknown): UnknownRecord | null {
-  const record = asObject(metadata);
-  const providerTitle = normalizeOptionalString(record?.providerTitle);
-  return providerTitle ? { providerTitle } : null;
 }
 
 function paginateSessionList(
@@ -2200,15 +2146,7 @@ function collectInitialVisibleSessionIds(
 }
 
 function sessionProjectKey(session: RuntimeThreadShape): string {
-  return firstNonEmptySessionPath([
-    session.cwd,
-    session.current_working_directory,
-    session.working_directory,
-  ]) || "__no_project__";
-}
-
-function firstNonEmptySessionPath(values: unknown[]): string | null {
-  return firstNonEmptyString(values);
+  return firstNonEmptyString([session.cwd]) || "__no_project__";
 }
 
 function encodeThreadListCursor(offset: number): string {
@@ -2239,10 +2177,6 @@ function extractArray(value: unknown, candidatePaths: string[]): unknown[] {
 
 function readPath(root: unknown, path: string): unknown {
   return historyHelpers.readPath(root, path);
-}
-
-function mergeThreadLists(threads: RuntimeThreadShape[]): RuntimeThreadShape[] {
-  return historyHelpers.mergeThreadLists(threads);
 }
 
 function normalizeTimestampString(value: unknown): string | null {
@@ -2283,14 +2217,6 @@ function normalizeInputItems(input: unknown): RuntimeInputItem[] {
   return normalizerHelpers.normalizeInputItems(input);
 }
 
-function normalizeInputItem(entry: unknown): RuntimeInputItem | null {
-  return normalizerHelpers.normalizeInputItem(entry);
-}
-
-function normalizeInputType(value: unknown): string {
-  return normalizerHelpers.normalizeInputType(value);
-}
-
 function normalizePlanState(planState: unknown) {
   return normalizerHelpers.normalizePlanState(planState);
 }
@@ -2299,19 +2225,8 @@ function buildCommandPreview(command: unknown, status: unknown, exitCode: unknow
   return normalizerHelpers.buildCommandPreview(command, status, exitCode);
 }
 
-function buildProviderMetadata(provider: unknown): { providerTitle: string } {
-  return managedRuntimeHelpers.buildProviderMetadata(
-    provider,
-    getRuntimeProvider
-  );
-}
-
 function resolveProviderId(value: unknown): string {
   return managedRuntimeHelpers.resolveProviderId(value, normalizeOptionalString);
-}
-
-function createMethodError(message: string): RuntimeErrorShape {
-  return routingHelpers.createMethodError(ERROR_METHOD_NOT_FOUND, message);
 }
 
 function createRuntimeError(code: number, message: string): RuntimeErrorShape {

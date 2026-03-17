@@ -671,17 +671,9 @@ function extractSessionId(message: JsonRecord): string | null {
   const turn = asRecord(params.turn);
   const candidates = [
     params?.sessionId,
-    params?.session_id,
     result?.sessionId,
-    result?.session_id,
     coderoverMeta?.sessionId,
-    coderoverMeta?.threadId,
-    params.threadId,
-    params.conversationId,
     thread?.id,
-    thread?.threadId,
-    turn?.threadId,
-    turn?.conversationId,
   ];
 
   for (const candidate of candidates) {

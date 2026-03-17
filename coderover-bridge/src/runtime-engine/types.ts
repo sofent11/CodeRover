@@ -20,11 +20,6 @@ export interface RuntimeSessionHandle {
   updatedAt: string;
 }
 
-export interface RuntimeThreadStartedEvent {
-  kind: "thread_started";
-  thread: RuntimeThreadShape;
-}
-
 export interface RuntimeTurnStartedEvent {
   kind: "turn_started";
   sessionId: string;
@@ -122,7 +117,6 @@ export interface RuntimeErrorEvent {
 }
 
 export type RuntimeEvent =
-  | RuntimeThreadStartedEvent
   | RuntimeTurnStartedEvent
   | RuntimeTurnCompletedEvent
   | RuntimeAssistantDeltaEvent

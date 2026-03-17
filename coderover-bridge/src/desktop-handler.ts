@@ -35,10 +35,7 @@ type DesktopExecutor = (
 
 interface DesktopRequestParams extends JsonObject {
   sessionId?: unknown;
-  session_id?: unknown;
   provider?: unknown;
-  threadId?: unknown;
-  thread_id?: unknown;
 }
 
 interface ParsedDesktopRequest {
@@ -266,9 +263,6 @@ function providerTitle(provider: DesktopProvider): string {
 function resolveSessionId(params: DesktopRequestParams): string {
   return (
     readNonEmptyString(params.sessionId)
-    || readNonEmptyString(params.session_id)
-    || readNonEmptyString(params.threadId)
-    || readNonEmptyString(params.thread_id)
     || ""
   );
 }

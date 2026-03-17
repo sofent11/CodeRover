@@ -120,7 +120,7 @@ test("session/update cancels the fallback and refreshes the concrete thread rout
         sessionUpdate: "session_info_update",
         _meta: {
           coderover: {
-            threadId: "thread-123",
+            sessionId: "thread-123",
             runState: "running",
           },
         },
@@ -250,7 +250,7 @@ test("completion session/update bypasses duplicate-target dedupe and still stops
         sessionUpdate: "session_info_update",
         _meta: {
           coderover: {
-            threadId: "thread-789",
+            sessionId: "thread-789",
             turnId: "turn-789",
             runState: "completed",
           },
@@ -269,7 +269,7 @@ test("completion session/update bypasses duplicate-target dedupe and still stops
         sessionUpdate: "session_info_update",
         _meta: {
           coderover: {
-            threadId: "thread-789",
+            sessionId: "thread-789",
             turnId: "turn-789",
             runState: "completed",
           },
@@ -325,7 +325,7 @@ test("completion session/update is retried after a slow in-flight refresh finish
         sessionUpdate: "session_info_update",
         _meta: {
           coderover: {
-            threadId: "thread-slow",
+            sessionId: "thread-slow",
             turnId: "turn-slow",
             runState: "completed",
           },
@@ -385,7 +385,7 @@ test("completion refresh keeps its own thread target even if another thread queu
         sessionUpdate: "session_info_update",
         _meta: {
           coderover: {
-            threadId: "thread-a",
+            sessionId: "thread-a",
             turnId: "turn-a",
             runState: "completed",
           },

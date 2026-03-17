@@ -96,44 +96,44 @@ test("runtime store keeps archive and name overlays in the session index", () =>
   }
 });
 
-test("runtime store loads legacy snake_case thread metadata and history items", () => {
+test("runtime store loads persisted session metadata and history items", () => {
   const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "coderover-runtime-store-legacy-"));
 
   try {
-    fs.mkdirSync(path.join(baseDir, "threads"), { recursive: true });
+    fs.mkdirSync(path.join(baseDir, "sessions"), { recursive: true });
     fs.writeFileSync(path.join(baseDir, "index.json"), JSON.stringify({
       version: 1,
-      threads: {
+      sessions: {
         "claude:legacy-thread": {
           id: "claude:legacy-thread",
           provider: "claude",
-          provider_session_id: "session-legacy",
+          providerSessionId: "session-legacy",
           title: "Legacy Claude thread",
-          first_prompt: "Initial prompt",
+          preview: "Initial prompt",
           cwd: "/tmp/legacy-project",
-          created_at: "2026-03-10T00:00:00.000Z",
-          updated_at: "2026-03-11T00:00:00.000Z",
+          createdAt: "2026-03-10T00:00:00.000Z",
+          updatedAt: "2026-03-11T00:00:00.000Z",
           archived: false,
         },
       },
       providerSessions: {},
     }, null, 2));
-    fs.writeFileSync(path.join(baseDir, "threads", "claude:legacy-thread.json"), JSON.stringify({
-      thread_id: "claude:legacy-thread",
+    fs.writeFileSync(path.join(baseDir, "sessions", "claude:legacy-thread.json"), JSON.stringify({
+      sessionId: "claude:legacy-thread",
       turns: [
         {
-          turn_id: "turn-legacy",
-          created_at: "2026-03-11T01:00:00.000Z",
+          id: "turn-legacy",
+          createdAt: "2026-03-11T01:00:00.000Z",
           status: "completed",
           items: [
             {
-              item_id: "item-legacy",
+              id: "item-legacy",
               type: "agent_message",
               role: "assistant",
               text: "legacy hello",
               content: [{ type: "text", text: "legacy hello" }],
               explanation: "keep me",
-              file_changes: [{ path: "README.md" }],
+              fileChanges: [{ path: "README.md" }],
             },
           ],
         },

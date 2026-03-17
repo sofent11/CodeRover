@@ -36,9 +36,6 @@ export function projectRuntimeEventToAcpProtocol(
   event: RuntimeEvent
 ): ProjectedAcpProtocolMessage {
   switch (event.kind) {
-    case "thread_started":
-      return projectThreadStarted(event.thread);
-
     case "turn_started": {
       const sessionId = readRuntimeEventSessionId(event);
       return sessionInfoUpdate(sessionId, {
@@ -253,9 +250,6 @@ function readRuntimeEventSessionId(event: RuntimeEvent): string {
   if ("sessionId" in event && typeof event.sessionId === "string" && event.sessionId) {
     return event.sessionId;
   }
-  if ("threadId" in event && typeof event.threadId === "string" && event.threadId) {
-    return event.threadId;
-  }
   throw new Error(`Runtime event ${event.kind} is missing a sessionId`);
 }
 
@@ -268,7 +262,7 @@ export function buildAcpReplayNotifications(
   }
 
   const notifications: ProjectedAcpNotification[] = [];
-  notifications.push(projectThreadStarted(threadObject) as ProjectedAcpNotification);
+  notifications.push(projectSessionInfoFromSessionObject(threadObject));
 
   const turns = Array.isArray(threadObject.turns) ? threadObject.turns : [];
   turns.forEach((turn) => {
@@ -445,19 +439,17 @@ function buildReplayNotificationsForItem(
   return [];
 }
 
-function projectThreadStarted(thread: RuntimeThreadShape): ProjectedAcpProtocolMessage {
-  const sessionId = normalizeString(thread.id) || "";
+export function projectSessionInfoFromSessionObject(session: RuntimeThreadShape): ProjectedAcpNotification {
+  const sessionId = normalizeString(session.id) || "";
   return sessionInfoUpdate(sessionId, {
-    title: normalizeString(thread.name) || normalizeString(thread.title),
-    updatedAt: normalizeString(thread.updatedAt),
+    title: normalizeString(session.name) || normalizeString(session.title),
+    updatedAt: normalizeString(session.updatedAt),
     runState: "idle",
-    agentId: normalizeString(thread.provider) || "codex",
-    providerSessionId: normalizeString(thread.providerSessionId),
-    preview: normalizeString(thread.preview),
-    archived: Boolean(thread.archived),
-    cwd: normalizeString(thread.cwd)
-      || normalizeString(thread.current_working_directory)
-      || normalizeString(thread.working_directory),
+    agentId: normalizeString(session.provider) || "codex",
+    providerSessionId: normalizeString(session.providerSessionId),
+    preview: normalizeString(session.preview),
+    archived: Boolean(session.archived),
+    cwd: normalizeString(session.cwd),
   });
 }
 

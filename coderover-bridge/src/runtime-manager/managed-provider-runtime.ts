@@ -3,24 +3,12 @@
 
 import type {
   ManagedSessionMeta,
-  RuntimeSessionListPayload,
   RuntimeSessionMetaHelpers,
 } from "./types";
 import type { RuntimeThreadShape } from "../bridge-types";
 
 type ProviderDefinition = ReturnType<RuntimeSessionMetaHelpers["getRuntimeProvider"]>;
-type ProviderResolver = (value: unknown) => string;
-type NormalizePositiveInteger = (value: unknown) => number | null;
 const THREAD_LIST_PREVIEW_LIMIT = 600;
-
-export function buildProviderMetadata(
-  provider: unknown,
-  getRuntimeProvider: (providerId: unknown) => ProviderDefinition
-): { providerTitle: string } {
-  return {
-    providerTitle: getRuntimeProvider(provider).title,
-  };
-}
 
 export function resolveProviderId(
   value: unknown,
@@ -85,32 +73,6 @@ export function truncateThreadPreview(preview: unknown): string | null {
   return `${normalized.slice(0, THREAD_LIST_PREVIEW_LIMIT - 1)}…`;
 }
 
-export function buildSessionListResult(
-  payload: RuntimeSessionListPayload | RuntimeThreadShape[],
-  normalizePositiveInteger: NormalizePositiveInteger
-): {
-  data: RuntimeThreadShape[];
-  items: RuntimeThreadShape[];
-  threads: RuntimeThreadShape[];
-  nextCursor?: string | number | null;
-  hasMore?: boolean;
-  pageSize?: number;
-} {
-  const threads = Array.isArray(payload) ? payload : payload.threads || [];
-  return {
-    data: threads,
-    items: threads,
-    threads,
-    ...(Array.isArray(payload)
-      ? {}
-      : {
-        nextCursor: payload.nextCursor ?? null,
-        hasMore: Boolean(payload.hasMore),
-        pageSize: normalizePositiveInteger(payload.pageSize) || threads.length,
-      }),
-  };
-}
-
 export function sessionObjectToMeta(
   sessionObject: Record<string, unknown>,
   helpers: RuntimeSessionMetaHelpers
@@ -124,11 +86,7 @@ export function sessionObjectToMeta(
     title: helpers.normalizeOptionalString(sessionObject.title),
     name: helpers.normalizeOptionalString(sessionObject.name),
     preview: helpers.normalizeOptionalString(sessionObject.preview),
-    cwd: helpers.firstNonEmptyString([
-      sessionObject.cwd,
-      sessionObject.current_working_directory,
-      sessionObject.working_directory,
-    ]),
+    cwd: helpers.firstNonEmptyString([sessionObject.cwd]),
     model: helpers.normalizeOptionalString(sessionObject.model),
     metadata: {
       ...(helpers.asObject(sessionObject.metadata) as Record<string, unknown>),
@@ -136,8 +94,8 @@ export function sessionObjectToMeta(
     },
     capabilities: (sessionObject.capabilities as Record<string, unknown> | null)
       || helpers.getRuntimeProvider(providerId).supports,
-    createdAt: String(sessionObject.createdAt || sessionObject.created_at || new Date().toISOString()),
-    updatedAt: String(sessionObject.updatedAt || sessionObject.updated_at || new Date().toISOString()),
+    createdAt: String(sessionObject.createdAt || new Date().toISOString()),
+    updatedAt: String(sessionObject.updatedAt || new Date().toISOString()),
     archived: Boolean(sessionObject.archived),
   };
 }

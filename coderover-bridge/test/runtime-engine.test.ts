@@ -37,7 +37,7 @@ async function waitFor(predicate: () => boolean, timeoutMs = 1_000): Promise<voi
 test("projectRuntimeEventToAcpProtocol projects plan and approval events onto ACP", () => {
   const planProjection = projectRuntimeEventToAcpProtocol({
     kind: "plan_update",
-    threadId: "thread-1",
+    sessionId: "thread-1",
     turnId: "turn-1",
     itemId: "plan-1",
     explanation: "Inspect the failing path",
@@ -53,7 +53,7 @@ test("projectRuntimeEventToAcpProtocol projects plan and approval events onto AC
 
   const approvalProjection = projectRuntimeEventToAcpProtocol({
     kind: "approval_request",
-    threadId: "thread-1",
+    sessionId: "thread-1",
     turnId: "turn-1",
     itemId: "approval-1",
     method: "item/commandExecution/requestApproval",

@@ -300,7 +300,7 @@ test("secure transport round-trips encrypted payloads after a trusted reconnect 
 
   const inboundEnvelope = encryptEnvelope(
     {
-      payloadText: JSON.stringify({ id: "request-1", method: "thread/list", params: {} }),
+      payloadText: JSON.stringify({ id: "request-1", method: "session/list", params: {} }),
     },
     phoneToMacKey,
     "iphone",
@@ -322,7 +322,7 @@ test("secure transport round-trips encrypted payloads after a trusted reconnect 
   );
 
   assert.deepEqual(applicationMessages, [
-    JSON.stringify({ id: "request-1", method: "thread/list", params: {} }),
+    JSON.stringify({ id: "request-1", method: "session/list", params: {} }),
   ]);
 });
 
