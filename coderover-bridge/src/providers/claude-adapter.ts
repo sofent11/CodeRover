@@ -201,7 +201,33 @@ export function createClaudeAdapter({
 
     const turns: RuntimeStoreTurn[] = [];
     let currentTurn: RuntimeStoreTurn | null = null;
-    let virtualTimeMs = Date.now() - (messages.length * 2 * 1000);
+    let virtualTimeMs = Date.now() - ((messages.length + 1) * 2 * 1000);
+
+    const firstRole = normalizeOptionalString(messages[0]?.type);
+    const hasInitialUserPrompt = firstRole === "user" || firstRole === "human";
+    if (!hasInitialUserPrompt && currentThreadMeta.preview) {
+      currentTurn = {
+        id: `turn-initial-${createHash("md5").update(currentThreadMeta.preview).digest("hex")}`,
+        createdAt: new Date(virtualTimeMs++).toISOString(),
+        status: "completed",
+        items: [{
+          id: `item-initial-${createHash("md5").update(currentThreadMeta.preview).digest("hex")}`,
+          type: "user_message",
+          role: "user",
+          createdAt: new Date(virtualTimeMs++).toISOString(),
+          content: [{ type: "text", text: currentThreadMeta.preview }],
+          text: currentThreadMeta.preview,
+          message: null,
+          status: null,
+          command: null,
+          metadata: null,
+          plan: null,
+          summary: null,
+          fileChanges: [],
+        }],
+      };
+      turns.push(currentTurn);
+    }
 
     messages.forEach((message, index) => {
       const role = normalizeOptionalString(message?.type);
@@ -213,7 +239,7 @@ export function createClaudeAdapter({
         .update(`${index}-${role}-${message.uuid || ""}`)
         .digest("hex");
 
-      if (role === "user" || !currentTurn) {
+      if (role === "user" || role === "human" || !currentTurn) {
         currentTurn = {
           id: `turn-${deterministicId}`,
           createdAt: new Date(virtualTimeMs++).toISOString(),
@@ -780,7 +806,7 @@ function buildClaudeHistoryItems({
 }): RuntimeStoreItem[] {
   const normalizedMessageId = normalizeOptionalString(messageId) || randomUUID();
 
-  if (role === "user") {
+  if (role === "user" || role === "human") {
     const text = extractClaudeMessageText(message);
     return [{
       id: normalizedMessageId,
@@ -852,6 +878,10 @@ function extractClaudeAssistantText(message: unknown): string {
 }
 
 function extractClaudeMessageText(message: unknown): string {
+  if (typeof message === "string") {
+    return message.trim();
+  }
+
   const messageObject = asRecord(message);
   if (!messageObject) {
     return "";
