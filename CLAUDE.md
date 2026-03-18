@@ -43,5 +43,7 @@ This repo is local-first now. Do not reintroduce hosted-service assumptions, rem
 ```bash
 cd coderover-bridge
 bun install
-bun run start
+bun run build
+coderover daemon
+coderover status
 ```

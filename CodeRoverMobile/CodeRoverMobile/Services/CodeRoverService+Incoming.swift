@@ -396,6 +396,14 @@ extension CodeRoverService {
             )
         }
 
+        if isStreaming {
+            finalizeSupersededCanonicalStreamingMessages(
+                threadId: threadId,
+                turnId: turnId,
+                keeping: timelineItemId
+            )
+        }
+
         upsertCanonicalTimelineMessage(
             threadId: threadId,
             turnId: turnId,
@@ -806,6 +814,62 @@ extension CodeRoverService {
         _ = upsertThreadTimelineMessage(message)
         persistMessages()
         updateCurrentOutput(for: threadId)
+    }
+
+    private func finalizeSupersededCanonicalStreamingMessages(
+        threadId: String,
+        turnId: String?,
+        keeping timelineItemId: String
+    ) {
+        guard let normalizedTurnId = normalizedIdentifier(turnId) else {
+            return
+        }
+
+        let overlayMessages = (messagesByThread[threadId] ?? []).filter { !Self.isCanonicalTimelineMessage($0) }
+        var state = threadTimelineStateByThread[threadId]
+            ?? ThreadTimelineState(
+                messages: (messagesByThread[threadId] ?? []).filter { Self.isCanonicalTimelineMessage($0) }
+            )
+        let candidateIDs = state.renderedMessages().compactMap { message -> String? in
+            guard message.id != timelineItemId,
+                  message.turnId == normalizedTurnId,
+                  message.isStreaming,
+                  shouldFinalizeSupersededCanonicalStreamingMessage(message) else {
+                return nil
+            }
+            return message.id
+        }
+
+        guard !candidateIDs.isEmpty else {
+            return
+        }
+
+        for candidateID in candidateIDs {
+            guard var candidate = state.message(for: candidateID) else {
+                continue
+            }
+            candidate.isStreaming = false
+            state.upsert(candidate)
+        }
+
+        threadTimelineStateByThread[threadId] = state
+        messagesByThread[threadId] = Self.mergeRenderedTimelineMessages(
+            state.renderedMessages(),
+            overlayMessages: overlayMessages
+        )
+    }
+
+    private func shouldFinalizeSupersededCanonicalStreamingMessage(_ message: ChatMessage) -> Bool {
+        if message.role == .assistant {
+            return true
+        }
+
+        switch message.kind {
+        case .thinking, .plan, .subagentAction, .chat:
+            return true
+        case .fileChange, .commandExecution, .userInputPrompt:
+            return false
+        }
     }
 
     private func extractItemID(

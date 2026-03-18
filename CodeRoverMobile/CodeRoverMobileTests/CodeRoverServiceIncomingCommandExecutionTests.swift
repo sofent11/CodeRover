@@ -526,6 +526,53 @@ final class CodeRoverServiceIncomingCommandExecutionTests: XCTestCase {
         XCTAssertEqual(commandRows[0].turnId, turnID)
     }
 
+    func testCanonicalTimelineStreamingKeepsOnlyLatestProgressItemActiveWithinTurn() {
+        let service = makeService()
+        let threadID = "thread-\(UUID().uuidString)"
+        let turnID = "turn-\(UUID().uuidString)"
+
+        service.handleNotification(
+            method: "turn/started",
+            params: .object([
+                "threadId": .string(threadID),
+                "turnId": .string(turnID),
+            ])
+        )
+
+        service.handleNotification(
+            method: "timeline/itemTextUpdated",
+            params: .object([
+                "threadId": .string(threadID),
+                "turnId": .string(turnID),
+                "timelineItemId": .string("thinking-1"),
+                "role": .string("system"),
+                "kind": .string("thinking"),
+                "status": .string("inProgress"),
+                "text": .string("Looking through the bridge state"),
+            ])
+        )
+
+        service.handleNotification(
+            method: "timeline/itemTextUpdated",
+            params: .object([
+                "threadId": .string(threadID),
+                "turnId": .string(turnID),
+                "timelineItemId": .string("assistant-1"),
+                "role": .string("assistant"),
+                "kind": .string("chat"),
+                "status": .string("inProgress"),
+                "text": .string("I found the stale running marker path."),
+            ])
+        )
+
+        let messages = service.messages(for: threadID)
+        let thinking = try XCTUnwrap(messages.first(where: { $0.id == "thinking-1" }))
+        let assistant = try XCTUnwrap(messages.first(where: { $0.id == "assistant-1" }))
+
+        XCTAssertFalse(thinking.isStreaming)
+        XCTAssertTrue(assistant.isStreaming)
+    }
+
     private func makeService() -> CodeRoverService {
         let suiteName = "CodeRoverServiceIncomingCommandExecutionTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName) ?? .standard

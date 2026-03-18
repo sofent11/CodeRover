@@ -89,7 +89,8 @@ If you only want to try CodeRover, you can install it with Bun and run it withou
 ## Quick Start
 
 ```sh
-coderover up
+coderover daemon
+coderover status
 ```
 
 Open the CodeRover app, follow the onboarding flow, then scan the QR code from inside the app and start coding.
@@ -99,7 +100,9 @@ Open the CodeRover app, follow the onboarding flow, then scan the QR code from i
 ```sh
 cd coderover-bridge
 bun install
-bun run start
+bun run build
+coderover daemon
+coderover status
 ```
 
 The bridge source now lives in `src/**/*.ts` and is compiled to CommonJS output in `dist/`.
@@ -113,14 +116,26 @@ bun run test
 
 ### `coderover up`
 
-Starts the bridge:
+Starts the bridge in the foreground:
 
 - Spawns `codex app-server` (or connects to an existing endpoint)
 - Starts a stable local WebSocket bridge endpoint on your Mac
-- Displays a QR code for phone pairing
+- Displays one fresh QR code for phone pairing
 - Forwards JSON-RPC messages bidirectionally
 - Handles git commands from the phone
 - Persists the active thread for later resumption
+
+### `coderover daemon`
+
+Starts the bridge in the background and writes logs under `~/.coderover/logs/`.
+
+### `coderover status`
+
+Prints the current bridge status, transport candidates, and a freshly rotated pairing QR for the running daemon.
+
+### `coderover stop`
+
+Stops the running bridge daemon.
 
 ### `coderover resume`
 

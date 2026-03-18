@@ -13,11 +13,18 @@ export interface PairingPayloadShape {
   [key: string]: unknown;
 }
 
-export function printQR(pairingPayload: PairingPayloadShape): void {
+export function renderQR(pairingPayload: PairingPayloadShape): string {
   const payload = JSON.stringify(pairingPayload);
+  let rendered = "";
+  qrcodeTerminal.generate(payload, { small: true }, (output) => {
+    rendered = output;
+  });
+  return rendered;
+}
 
+export function printQR(pairingPayload: PairingPayloadShape): void {
   console.log("\nScan this QR with the iPhone:\n");
-  qrcodeTerminal.generate(payload, { small: true });
+  console.log(renderQR(pairingPayload));
   console.log(`\nBridge ID: ${pairingPayload.bridgeId}`);
   console.log(`Device ID: ${pairingPayload.macDeviceId}`);
   for (const candidate of pairingPayload.transportCandidates || []) {

@@ -38,8 +38,8 @@ If you scan the pairing QR with a generic camera or QR reader before installing 
                                         └─────────────┘                           └─────────────┘
 ```
 
-1. Run `coderover up` on your Mac — a QR code appears in the terminal
-2. Scan it with the CodeRover iOS app to pair
+1. Run `coderover daemon` on your Mac
+2. Run `coderover status` to print the current pairing QR and transport info
 3. Your phone sends instructions to CodeRover through the bridge and receives responses in real-time
 4. The bridge handles git operations, desktop refresh, and session persistence locally
 
@@ -89,7 +89,8 @@ If you only want to try CodeRover, you can install it with Bun and run it withou
 ## Quick Start
 
 ```sh
-coderover up
+coderover daemon
+coderover status
 ```
 
 Open the CodeRover app, follow the onboarding flow, then scan the QR code from inside the app and start coding.
@@ -99,7 +100,9 @@ Open the CodeRover app, follow the onboarding flow, then scan the QR code from i
 ```sh
 cd coderover-bridge
 bun install
-bun run start
+bun run build
+coderover daemon
+coderover status
 ```
 
 The bridge source is written in TypeScript under `coderover-bridge/src` and compiled to CommonJS output in `coderover-bridge/dist`.
@@ -108,14 +111,26 @@ The bridge source is written in TypeScript under `coderover-bridge/src` and comp
 
 ### `coderover up`
 
-Starts the bridge:
+Starts the bridge in the foreground:
 
 - Spawns `codex app-server` (or connects to an existing endpoint)
 - Starts a stable local WebSocket bridge endpoint on your Mac
-- Displays a QR code for phone pairing
+- Displays one fresh QR code for phone pairing
 - Forwards JSON-RPC messages bidirectionally
 - Handles git commands from the phone
 - Persists the active thread for later resumption
+
+### `coderover daemon`
+
+Starts the bridge in the background and writes logs under `~/.coderover/logs/`.
+
+### `coderover status`
+
+Prints the current bridge status, transport candidates, and a freshly rotated pairing QR for the running daemon.
+
+### `coderover stop`
+
+Stops the running bridge daemon.
 
 ### `coderover resume`
 
@@ -159,22 +174,22 @@ All optional. Sensible defaults are provided.
 
 ```sh
 # Enable desktop refresh explicitly
-CODEROVER_REFRESH_ENABLED=true coderover up
+CODEROVER_REFRESH_ENABLED=true coderover daemon
 
 # Connect to an existing CodeRover instance
-CODEROVER_ENDPOINT=ws://localhost:8080 coderover up
+CODEROVER_ENDPOINT=ws://localhost:8080 coderover daemon
 
 # Expose a stable local bridge on a custom port
-CODEROVER_LOCAL_PORT=9876 coderover up
+CODEROVER_LOCAL_PORT=9876 coderover daemon
 
 # Add a tailnet fallback candidate
-CODEROVER_TAILNET_URL=wss://my-mac.tailnet.example coderover up
+CODEROVER_TAILNET_URL=wss://my-mac.tailnet.example coderover daemon
 
 # Add one explicit relay candidate (for example an frp-exposed public endpoint)
-CODEROVER_RELAY_URL=wss://relay.example.com coderover up
+CODEROVER_RELAY_URL=wss://relay.example.com coderover daemon
 
 # Add multiple relay candidates
-CODEROVER_RELAY_URLS=wss://relay-a.example.com,wss://relay-b.example.com/coderover coderover up
+CODEROVER_RELAY_URLS=wss://relay-a.example.com,wss://relay-b.example.com/coderover coderover daemon
 
 ```
 

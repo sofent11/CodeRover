@@ -35,6 +35,10 @@ interface LocalBridgeClientCloseEvent {
   transportId: string;
 }
 
+interface LocalBridgeClientOpenEvent {
+  transportId: string;
+}
+
 interface StartLocalBridgeServerOptions {
   bridgeId?: string;
   host?: string;
@@ -42,6 +46,7 @@ interface StartLocalBridgeServerOptions {
   logPrefix?: string;
   canAcceptConnection?: () => boolean;
   onMessage?: (message: string, transport: LocalBridgeTransport) => void;
+  onClientOpen?: (event: LocalBridgeClientOpenEvent) => void;
   onClientClose?: (event: LocalBridgeClientCloseEvent) => void;
   onError?: (error: Error) => void;
 }
@@ -71,6 +76,7 @@ export function startLocalBridgeServer({
   logPrefix = "[coderover]",
   canAcceptConnection = () => true,
   onMessage,
+  onClientOpen,
   onClientClose,
   onError,
 }: StartLocalBridgeServerOptions = {}): LocalBridgeServer {
@@ -172,6 +178,7 @@ export function startLocalBridgeServer({
     bridgeSocket._bridgeAlive = true;
     clients.set(transportId, bridgeSocket);
     console.log(`${logPrefix} local client connected (${routePath}, ${transportId})`);
+    onClientOpen?.({ transportId });
 
     bridgeSocket.on("pong", () => {
       bridgeSocket._bridgeAlive = true;

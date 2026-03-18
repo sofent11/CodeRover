@@ -2,10 +2,10 @@
 // Purpose: Persists the bridge device identity and trusted phone registry for E2EE pairing.
 
 import * as fs from "fs";
-import * as os from "os";
 import * as path from "path";
 import { randomUUID, generateKeyPairSync } from "crypto";
 import * as childProcess from "child_process";
+import { resolveCoderoverHome } from "./bridge-daemon-state";
 
 interface JsonWebKeyLike {
   x?: string;
@@ -30,14 +30,6 @@ type ExecFileSyncLike = typeof childProcess.execFileSync;
 const KEYCHAIN_SERVICE = "com.coderover.bridge.device-state";
 const KEYCHAIN_ACCOUNT = "default";
 let execFileSyncImpl: ExecFileSyncLike = childProcess.execFileSync.bind(childProcess);
-
-function resolveCoderoverHome(): string {
-  const configuredHome = process.env.CODEROVER_HOME?.trim();
-  if (configuredHome) {
-    return configuredHome;
-  }
-  return path.join(os.homedir(), ".coderover");
-}
 
 function resolveStoreDir(): string {
   return resolveCoderoverHome();

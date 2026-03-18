@@ -20,8 +20,8 @@ import {
   startLocalBridgeServer,
 } from "./local-bridge-server";
 import { createBridgeSecureTransport } from "./secure-transport";
-
-const PAIRING_QR_REPRINT_INTERVAL_MS = 4 * 60 * 1000;
+import { writeBridgeRuntimeState, type BridgeRuntimeState } from "./bridge-daemon-state";
+import type { PairingPayloadShape } from "./qr";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -38,8 +38,20 @@ interface BridgeConfigShape {
   coderoverEndpoint: string;
 }
 
-export function startBridge(): void {
-    const config = readBridgeConfig() as BridgeConfigShape;
+export interface StartBridgeOptions {
+  mode?: "foreground" | "daemon";
+  printQr?: boolean;
+  logFile?: string | null;
+  errorLogFile?: string | null;
+}
+
+export function startBridge({
+  mode = "foreground",
+  printQr = true,
+  logFile = null,
+  errorLogFile = null,
+}: StartBridgeOptions = {}): void {
+  const config = readBridgeConfig() as BridgeConfigShape;
   const deviceState = loadOrCreateBridgeDeviceState();
   const bridgeId = deviceState.bridgeId || deviceState.macDeviceId;
   const desktopRefresher = new CodeRoverDesktopRefresher({
@@ -51,11 +63,14 @@ export function startBridge(): void {
   });
 
   let isShuttingDown = false;
+  const startedAt = new Date().toISOString();
   let codexTransport: ReturnType<typeof createCodexTransport> | null = null;
   let codexRestartTimer: NodeJS.Timeout | null = null;
   let codexRestartAttempt = 0;
-  let pairingQRRefreshTimer: NodeJS.Timeout | null = null;
   let secureTransport: ReturnType<typeof createBridgeSecureTransport> | null = null;
+  let currentPairingPayload: PairingPayloadShape | null = null;
+  let lastError: string | null = null;
+  const connectedTransportIds = new Set<string>();
   const runtimeManager = createRuntimeManager({
     sendApplicationMessage(rawMessage) {
       sendApplicationResponse(rawMessage);
@@ -67,14 +82,22 @@ export function startBridge(): void {
     host: config.localHost,
     port: config.localPort,
     logPrefix: "[coderover]",
+    onClientOpen({ transportId }) {
+      connectedTransportIds.add(transportId);
+      updateRuntimeState();
+    },
     onClientClose({ transportId }) {
+      connectedTransportIds.delete(transportId);
       secureTransport?.handleTransportClosed(transportId);
+      updateRuntimeState();
     },
     onError(error) {
       console.error(
         `[coderover] Failed to start local bridge server on ${config.localHost}:${config.localPort}.`
       );
       console.error(error.message);
+      lastError = error.message;
+      updateRuntimeState();
       process.exit(1);
     },
     onMessage(message, transport) {
@@ -103,13 +126,8 @@ export function startBridge(): void {
     deviceState,
     transportCandidates,
   });
-
-  printFreshPairingQR();
-  pairingQRRefreshTimer = setInterval(() => {
-    if (!isShuttingDown) {
-      printFreshPairingQR();
-    }
-  }, PAIRING_QR_REPRINT_INTERVAL_MS);
+  updateRuntimeState();
+  refreshPairingPayload({ logToConsole: printQr });
   launchCodexTransport();
 
   process.on("SIGINT", () => shutdownBridge(() => {
@@ -120,15 +138,20 @@ export function startBridge(): void {
     isShuttingDown = true;
     localServer.stop();
   }));
+  process.on("SIGUSR1", () => {
+    if (!isShuttingDown) {
+      refreshPairingPayload({ logToConsole: false });
+    }
+  });
 
-    function handleApplicationMessage(rawMessage: string): void {
-      logBridgeFlow("phone->bridge", rawMessage);
-      if (handleDesktopRequest(rawMessage, sendApplicationResponse, { env: process.env })) {
-        return;
-      }
-      if (handleThreadContextRequest(rawMessage, sendApplicationResponse)) {
-        return;
-      }
+  function handleApplicationMessage(rawMessage: string): void {
+    logBridgeFlow("phone->bridge", rawMessage);
+    if (handleDesktopRequest(rawMessage, sendApplicationResponse, { env: process.env })) {
+      return;
+    }
+    if (handleThreadContextRequest(rawMessage, sendApplicationResponse)) {
+      return;
+    }
     if (handleWorkspaceRequest(rawMessage, sendApplicationResponse)) {
       return;
     }
@@ -145,6 +168,7 @@ export function startBridge(): void {
     logBridgeFlow("bridge->phone", rawMessage);
     debugLog(`[coderover] queue outbound application bytes=${Buffer.byteLength(rawMessage, "utf8")}`);
     secureTransport?.queueOutboundApplicationMessage(rawMessage);
+    updateRuntimeState();
   }
 
   function rememberThreadFromMessage(source: string, rawMessage: string): void {
@@ -190,9 +214,11 @@ export function startBridge(): void {
 
       logBridgeFlow("codex->bridge", message);
       codexRestartAttempt = 0;
+      lastError = null;
       desktopRefresher.handleOutbound(message);
       rememberThreadFromMessage("codex", message);
       runtimeManager.handleCodexTransportMessage(message);
+      updateRuntimeState();
     });
 
     transport.onClose(() => {
@@ -216,10 +242,12 @@ export function startBridge(): void {
     }
 
     console.error(`[coderover] ${error.message || "Unknown Codex transport failure"}`);
+    lastError = error.message || "Unknown Codex transport failure";
     desktopRefresher.handleTransportReset();
     localServer.disconnectAllClients();
     runtimeManager.handleCodexTransportClosed(error.message);
-    printFreshPairingQR();
+    refreshPairingPayload({ logToConsole: printQr });
+    updateRuntimeState();
 
     if (codexTransport) {
       const failedTransport = codexTransport;
@@ -244,10 +272,38 @@ export function startBridge(): void {
     }, delayMs);
   }
 
-  function printFreshPairingQR(): void {
-    if (secureTransport) {
-      printQR(secureTransport.createPairingPayload());
+  function refreshPairingPayload({ logToConsole }: { logToConsole: boolean }): void {
+    if (!secureTransport) {
+      return;
     }
+    currentPairingPayload = secureTransport.createPairingPayload();
+    if (logToConsole) {
+      printQR(currentPairingPayload);
+    }
+    updateRuntimeState();
+  }
+
+  function updateRuntimeState(overrides: Partial<BridgeRuntimeState> = {}): void {
+    writeBridgeRuntimeState({
+      version: 1,
+      status: overrides.status || (isShuttingDown ? "stopped" : "running"),
+      pid: overrides.pid === undefined ? (isShuttingDown ? null : process.pid) : overrides.pid,
+      mode,
+      startedAt,
+      updatedAt: new Date().toISOString(),
+      bridgeId,
+      macDeviceId: deviceState.macDeviceId,
+      localUrl: `ws://127.0.0.1:${config.localPort}/bridge/${bridgeId}`,
+      routePath: localServer.routePath,
+      transportCandidates,
+      pairingPayload: currentPairingPayload,
+      connectedClients: connectedTransportIds.size,
+      secureChannelReady: secureTransport?.isSecureChannelReady() || false,
+      logFile,
+      errorLogFile,
+      lastError,
+      ...overrides,
+    });
   }
 
   function shutdownBridge(beforeExit: () => void = () => {}): void {
@@ -256,10 +312,12 @@ export function startBridge(): void {
       clearTimeout(codexRestartTimer);
       codexRestartTimer = null;
     }
-    if (pairingQRRefreshTimer) {
-      clearInterval(pairingQRRefreshTimer);
-      pairingQRRefreshTimer = null;
-    }
+    updateRuntimeState({
+      status: "stopped",
+      pid: null,
+      connectedClients: 0,
+      secureChannelReady: false,
+    });
     codexTransport?.shutdown();
     runtimeManager.shutdown();
     setTimeout(() => process.exit(0), 100);

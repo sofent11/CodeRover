@@ -54,7 +54,9 @@ cd coderover/coderover-bridge
 bun install
 
 # Start the bridge
-bun run start
+bun run build
+coderover daemon
+coderover status
 ```
 
 This runs `coderover up`, which:
@@ -79,8 +81,9 @@ The app uses SwiftUI and the current project target is iOS 18.6. No CocoaPods or
 
 ### Testing a full local session
 
-1. Start the bridge: `cd coderover-bridge && bun run start`
-2. Open the iOS app and scan the QR code
+1. Start the bridge daemon: `cd coderover-bridge && bun run build && coderover daemon`
+2. Print the QR code: `coderover status`
+3. Open the iOS app and scan the QR code
 3. Create a new thread from the app
 4. Send a message — you should see CodeRover respond in real-time
 5. Try git operations from the phone (commit, push, branch switching)
