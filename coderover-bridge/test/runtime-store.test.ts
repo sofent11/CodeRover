@@ -306,6 +306,95 @@ test("runtime store imports Codex local sessions from the local Codex index", ()
   }
 });
 
+test("runtime store hydrates Codex history from local rollout events on demand", () => {
+  const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "coderover-runtime-store-codex-history-"));
+  const codexHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), "coderover-codex-home-history-"));
+
+  try {
+    fs.mkdirSync(path.join(codexHomeDir, "sessions", "2026", "03", "18"), { recursive: true });
+    fs.writeFileSync(path.join(codexHomeDir, "session_index.jsonl"), [
+      JSON.stringify({
+        id: "019cfb46-7e95-7272-91b4-a4b9686f7ec8",
+        thread_name: "Codex rollout history",
+        updated_at: "2026-03-18T10:12:00.000Z",
+      }),
+    ].join("\n"));
+    fs.writeFileSync(
+      path.join(codexHomeDir, "sessions", "2026", "03", "18", "rollout-2026-03-18T18-10-27-019cfb46-7e95-7272-91b4-a4b9686f7ec8.jsonl"),
+      [
+        JSON.stringify({
+          timestamp: "2026-03-18T10:10:00.000Z",
+          type: "session_meta",
+          payload: {
+            id: "019cfb46-7e95-7272-91b4-a4b9686f7ec8",
+            cwd: "/Users/me/work/remodex",
+          },
+        }),
+        JSON.stringify({
+          timestamp: "2026-03-18T10:10:01.000Z",
+          type: "event_msg",
+          payload: {
+            type: "task_started",
+            turn_id: "turn-1",
+          },
+        }),
+        JSON.stringify({
+          timestamp: "2026-03-18T10:10:02.000Z",
+          type: "event_msg",
+          payload: {
+            type: "user_message",
+            message: "Load local Codex history",
+          },
+        }),
+        JSON.stringify({
+          timestamp: "2026-03-18T10:10:03.000Z",
+          type: "event_msg",
+          payload: {
+            type: "agent_message",
+            message: "Using rollout events for replay.",
+            phase: "commentary",
+          },
+        }),
+        JSON.stringify({
+          timestamp: "2026-03-18T10:10:04.000Z",
+          type: "event_msg",
+          payload: {
+            type: "task_complete",
+            turn_id: "turn-1",
+          },
+        }),
+      ].join("\n")
+    );
+
+    const store = createRuntimeStore({ baseDir, codexHomeDir });
+    try {
+      const history = store.getSessionHistory("019cfb46-7e95-7272-91b4-a4b9686f7ec8");
+      assert.equal(history?.turns.length, 1);
+      assert.equal(history?.turns[0]?.status, "completed");
+      assert.equal(history?.turns[0]?.items.length, 2);
+      assert.equal(history?.turns[0]?.items[0]?.type, "user_message");
+      assert.equal(history?.turns[0]?.items[0]?.text, "Load local Codex history");
+      assert.equal(history?.turns[0]?.items[1]?.type, "agent_message");
+      assert.equal(history?.turns[0]?.items[1]?.text, "Using rollout events for replay.");
+
+      const transcript = store.getSessionTranscriptMessages("019cfb46-7e95-7272-91b4-a4b9686f7ec8");
+      assert.ok(transcript.some((message) =>
+        message.method === "session/update"
+        && message.params?.update?.sessionUpdate === "user_message_chunk"
+      ));
+      assert.ok(transcript.some((message) =>
+        message.method === "session/update"
+        && message.params?.update?.sessionUpdate === "agent_message_chunk"
+      ));
+    } finally {
+      store.shutdown();
+    }
+  } finally {
+    fs.rmSync(baseDir, { recursive: true, force: true });
+    fs.rmSync(codexHomeDir, { recursive: true, force: true });
+  }
+});
+
 test("runtime store persists provider session list cursors across reloads", () => {
   const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "coderover-runtime-store-cursors-"));
   const codexHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), "coderover-runtime-store-cursors-codex-"));

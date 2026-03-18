@@ -6,7 +6,7 @@ export {};
 // Exports: createRuntimeManager
 // Depends on: crypto, ../runtime-store, ../acp/*, ../runtime-engine/*
 
-import { randomUUID } from "crypto";
+import { createHash, randomUUID } from "crypto";
 
 import type {
   JsonRpcId,
@@ -58,6 +58,11 @@ import { debugError } from "../debug-log";
 
 type UnknownRecord = Record<string, unknown>;
 const THREAD_LIST_CURSOR_VERSION = 1;
+const ACP_REPLAY_MESSAGE_UPDATES = new Set([
+  "user_message_chunk",
+  "agent_message_chunk",
+  "agent_thought_chunk",
+]);
 
 interface RuntimeManager {
   handleClientMessage(rawMessage: string): Promise<boolean>;
@@ -162,6 +167,7 @@ export function createRuntimeManager({
   const pendingPromptErrors = new Map<string, string>();
   const seenAcpToolCallsBySession = new Map<string, Set<string>>();
   const activeRunsBySession = new Map<string, ActiveRunEntry>();
+  const readyAcpSessions = new Set<string>();
   async function handleClientMessage(rawMessage: string): Promise<boolean> {
     let parsed: UnknownRecord | null = null;
     try {
@@ -236,9 +242,8 @@ export function createRuntimeManager({
           });
 
         case "session/load":
-          return await handleRequestWithResponse(requestId, async () => {
-            return handleAcpSessionLoad(params);
-          });
+          await handleAcpSessionLoadRequest(requestId, params);
+          return true;
 
         case "session/resume":
           return await handleRequestWithResponse(requestId, async () => {
@@ -1155,6 +1160,7 @@ export function createRuntimeManager({
       cwd: normalizeOptionalString(params.cwd),
       modelId: readAcpRequestedModel(params),
     });
+    readyAcpSessions.add(sessionMeta.id);
     syncSessionRuntimeFromMeta(sessionMeta, {
       engineSessionId: sessionMeta.providerSessionId || sessionMeta.id,
       mode: "default",
@@ -1172,17 +1178,81 @@ export function createRuntimeManager({
     };
   }
 
-  async function handleAcpSessionLoad(params: UnknownRecord): Promise<UnknownRecord> {
+  async function handleAcpSessionLoadRequest(
+    requestId: JsonRpcId | undefined,
+    params: UnknownRecord
+  ): Promise<void> {
+    const { sessionId, sessionMeta, replayState } = await prepareAcpSessionLoad(params);
+    if (!replayState.hasReplay) {
+      await acpSessionManager.getClient(sessionMeta.provider);
+      buildAcpSessionLoadParams(sessionMeta);
+    }
+
+    const result = await buildAcpSessionState(store.getSessionMeta(sessionId) || sessionMeta);
+    if (requestId != null) {
+      sendServerMessage(buildRpcSuccess(requestId, result));
+    }
+
+    queueMicrotask(() => {
+      void replayAcpSessionLoad(sessionMeta, replayState).catch((error) => {
+        debugError(
+          `${logPrefix} ACP session/load replay failed for ${sessionId}: ${formatErrorMessage(error)}`
+        );
+      });
+    });
+  }
+
+  async function prepareAcpSessionLoad(params: UnknownRecord): Promise<{
+    sessionId: string;
+    sessionMeta: RuntimeSessionMeta;
+    replayState: ReturnType<typeof readStoredSessionReplayState>;
+  }> {
     const sessionId = requireSessionId(params);
     const sessionMeta = await requireSessionMeta(sessionId);
     assertAcpAgentMatches(sessionMeta, params);
-    const replayState = readStoredSessionReplayState(sessionId);
+    return {
+      sessionId,
+      sessionMeta,
+      replayState: readStoredSessionReplayState(sessionId),
+    };
+  }
+
+  async function replayAcpSessionLoad(
+    sessionMeta: RuntimeSessionMeta,
+    replayState: ReturnType<typeof readStoredSessionReplayState>
+  ): Promise<void> {
+    const sessionId = sessionMeta.id;
+    if (replayState.messages.length > 0) {
+      replayState.messages.forEach((message) => {
+        sendServerMessage(JSON.stringify({
+          jsonrpc: "2.0",
+          method: message.method,
+          params: message.params,
+        }));
+      });
+      return;
+    }
+
+    let sawProviderReplay = false;
+    let replayUpdateSequence = 0;
     try {
       const client = await acpSessionManager.getClient(sessionMeta.provider);
-      await client.loadSession({
-        sessionId: sessionMeta.providerSessionId || sessionId,
-        ...(sessionMeta.cwd ? { cwd: sessionMeta.cwd } : {}),
+      const detachUpdateListener = client.onSessionUpdate((notification) => {
+        if (!matchesAcpProviderSession(notification, sessionMeta.providerSessionId || sessionId)) {
+          return;
+        }
+        replayUpdateSequence += 1;
+        sawProviderReplay = relayInboundAcpSessionUpdate(
+          sessionMeta,
+          withSynthesizedAcpReplayIdentifiers(sessionMeta, notification, replayUpdateSequence)
+        );
       });
+      try {
+        await client.loadSession(buildAcpSessionLoadParams(sessionMeta));
+        readyAcpSessions.add(sessionId);
+      } finally {
+        detachUpdateListener?.();
+      }
     } catch (error) {
       if (!replayState.hasReplay) {
         throw error;
@@ -1191,21 +1261,12 @@ export function createRuntimeManager({
         `${logPrefix} ACP session/load failed for ${sessionId}; replaying local transcript instead: ${formatErrorMessage(error)}`
       );
     }
-    if (replayState.messages.length === 0) {
+    if (replayState.messages.length === 0 && !sawProviderReplay) {
       emitProjectedAcpMessage(
         projectSessionInfoFromSessionObject(buildManagedSessionObject(store.getSessionMeta(sessionId) || sessionMeta)),
         { recordTranscript: false }
       );
-    } else {
-      replayState.messages.forEach((message) => {
-        sendServerMessage(JSON.stringify({
-          jsonrpc: "2.0",
-          method: message.method,
-          params: message.params,
-        }));
-      });
     }
-    return buildAcpSessionState(sessionMeta);
   }
 
   async function handleAcpSessionResume(params: UnknownRecord): Promise<UnknownRecord> {
@@ -1215,11 +1276,27 @@ export function createRuntimeManager({
     const replayState = readStoredSessionReplayState(sessionId);
     try {
       const client = await acpSessionManager.getClient(sessionMeta.provider);
-      await client.resumeSession({
-        sessionId: sessionMeta.providerSessionId || sessionId,
-        ...(sessionMeta.cwd ? { cwd: sessionMeta.cwd } : {}),
-      });
+      await client.resumeSession(buildAcpSessionResumeParams(sessionMeta));
+      readyAcpSessions.add(sessionId);
     } catch (error) {
+      if (isAcpMethodNotFoundError(error)) {
+        debugError(
+          `${logPrefix} ACP session/resume unsupported for ${sessionId}; emulating resume with session/load: ${formatErrorMessage(error)}`
+        );
+        try {
+          const client = await acpSessionManager.getClient(sessionMeta.provider);
+          await emulateAcpSessionResumeWithLoad(sessionMeta, client);
+        } catch (loadError) {
+          if (!replayState.hasReplay) {
+            throw loadError;
+          }
+          debugError(
+            `${logPrefix} ACP session/resume load fallback failed for ${sessionId}; falling back to local session state: ${formatErrorMessage(loadError)}`
+          );
+        }
+        readyAcpSessions.add(sessionId);
+        return buildAcpSessionState(store.getSessionMeta(sessionId) || sessionMeta);
+      }
       if (!replayState.hasReplay) {
         throw error;
       }
@@ -1227,21 +1304,22 @@ export function createRuntimeManager({
         `${logPrefix} ACP session/resume failed for ${sessionId}; falling back to local session state: ${formatErrorMessage(error)}`
       );
     }
-    return buildAcpSessionState(sessionMeta);
+    return buildAcpSessionState(store.getSessionMeta(sessionId) || sessionMeta);
   }
 
   async function startAcpPromptRun({
     sessionMeta,
+    client,
     runtimeParams,
     prompt,
   }: {
     sessionMeta: RuntimeSessionMeta;
+    client: Awaited<ReturnType<typeof acpSessionManager.getClient>>;
     runtimeParams: UnknownRecord;
     prompt: unknown[];
   }): Promise<{ turnId: string; completionPromise: Promise<void> }> {
     const sessionId = sessionMeta.id;
     const providerSessionId = sessionMeta.providerSessionId || sessionId;
-    const client = await acpSessionManager.getClient(sessionMeta.provider);
 
     if (activeRunsBySession.has(sessionId)) {
       throw createRuntimeError(ERROR_INVALID_PARAMS, "A turn is already running for this session");
@@ -1321,10 +1399,6 @@ export function createRuntimeManager({
     const userMessageId = normalizeOptionalString(params.messageId) || randomUUID();
     const runtimeParams = buildRuntimePromptParams(sessionMeta, params, userMessageId);
 
-    buildPromptUserChunks(sessionId, prompt, userMessageId).forEach((notification) => {
-      emitProjectedAcpMessage(notification);
-    });
-
     const completionPromise = new Promise<void>((resolve) => {
       pendingPromptRequests.set(sessionId, {
         requestId,
@@ -1337,8 +1411,13 @@ export function createRuntimeManager({
     pendingPromptErrors.delete(sessionId);
 
     try {
+      const client = await ensureAcpSessionReadyForInteractiveRequest(sessionMeta);
+      buildPromptUserChunks(sessionId, prompt, userMessageId).forEach((notification) => {
+        emitProjectedAcpMessage(notification);
+      });
       const run = await startAcpPromptRun({
         sessionMeta,
+        client,
         runtimeParams,
         prompt,
       });
@@ -1371,11 +1450,11 @@ export function createRuntimeManager({
       throw createRuntimeError(ERROR_INVALID_PARAMS, "modeId is required");
     }
     const sessionMeta = await requireSessionMeta(sessionId);
-    await acpSessionManager.getClient(sessionMeta.provider)
-      .then((client) => client.setMode({
-        sessionId: sessionMeta.providerSessionId || sessionId,
-        modeId,
-      }));
+    const client = await ensureAcpSessionReadyForInteractiveRequest(sessionMeta);
+    await client.setMode({
+      sessionId: sessionMeta.providerSessionId || sessionId,
+      modeId,
+    });
     updateSessionRuntimeOwnerState(sessionId, sessionRuntimeIndex.get(sessionId)?.ownerState || "idle");
     sessionRuntimeIndex.upsert({
       ...(sessionRuntimeIndex.get(sessionId) || {
@@ -1412,12 +1491,12 @@ export function createRuntimeManager({
     }
     const sessionMeta = await requireSessionMeta(sessionId);
     const nextValue = normalizeAcpConfigValue(params);
-    await acpSessionManager.getClient(sessionMeta.provider)
-      .then((client) => client.setConfigOption({
-        sessionId: sessionMeta.providerSessionId || sessionId,
-        configId,
-        value: nextValue,
-      }));
+    const client = await ensureAcpSessionReadyForInteractiveRequest(sessionMeta);
+    await client.setConfigOption({
+      sessionId: sessionMeta.providerSessionId || sessionId,
+      configId,
+      value: nextValue,
+    });
     const updatedMeta = store.updateSessionMeta(sessionId, (entry) => ({
       ...entry,
       metadata: {
@@ -1452,11 +1531,11 @@ export function createRuntimeManager({
       throw createRuntimeError(ERROR_INVALID_PARAMS, "modelId is required");
     }
     const sessionMeta = await requireSessionMeta(sessionId);
-    await acpSessionManager.getClient(sessionMeta.provider)
-      .then((client) => client.setModel({
-        sessionId: sessionMeta.providerSessionId || sessionId,
-        modelId,
-      }));
+    const client = await ensureAcpSessionReadyForInteractiveRequest(sessionMeta);
+    await client.setModel({
+      sessionId: sessionMeta.providerSessionId || sessionId,
+      modelId,
+    });
     store.updateSessionMeta(sessionId, (entry) => ({
       ...entry,
       model: modelId,
@@ -1595,6 +1674,202 @@ export function createRuntimeManager({
 
   function formatErrorMessage(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
+  }
+
+  function isAcpMethodNotFoundError(error: unknown): boolean {
+    return formatErrorMessage(error).toLowerCase().includes("method not found");
+  }
+
+  function buildAcpSessionLoadParams(sessionMeta: RuntimeSessionMeta): UnknownRecord {
+    const cwd = normalizeOptionalString(sessionMeta.cwd);
+    if (!cwd) {
+      throw createRuntimeError(ERROR_INVALID_PARAMS, `Session ${sessionMeta.id} is missing cwd`);
+    }
+    return {
+      sessionId: sessionMeta.providerSessionId || sessionMeta.id,
+      cwd,
+      mcpServers: [],
+    };
+  }
+
+  function buildAcpSessionResumeParams(sessionMeta: RuntimeSessionMeta): UnknownRecord {
+    const cwd = normalizeOptionalString(sessionMeta.cwd);
+    if (!cwd) {
+      throw createRuntimeError(ERROR_INVALID_PARAMS, `Session ${sessionMeta.id} is missing cwd`);
+    }
+    return {
+      sessionId: sessionMeta.providerSessionId || sessionMeta.id,
+      cwd,
+      mcpServers: [],
+    };
+  }
+
+  async function ensureAcpSessionReadyForInteractiveRequest(
+    sessionMeta: RuntimeSessionMeta
+  ): Promise<Awaited<ReturnType<typeof acpSessionManager.getClient>>> {
+    const sessionId = sessionMeta.id;
+    const client = await acpSessionManager.getClient(sessionMeta.provider);
+    if (readyAcpSessions.has(sessionId)) {
+      return client;
+    }
+
+    try {
+      await client.resumeSession(buildAcpSessionResumeParams(sessionMeta));
+    } catch (error) {
+      if (!isAcpMethodNotFoundError(error)) {
+        debugError(
+          `${logPrefix} ACP interactive resume failed for ${sessionId}; retrying with session/load: ${formatErrorMessage(error)}`
+        );
+      }
+      await emulateAcpSessionResumeWithLoad(sessionMeta, client);
+    }
+
+    readyAcpSessions.add(sessionId);
+    return client;
+  }
+
+  async function emulateAcpSessionResumeWithLoad(
+    sessionMeta: RuntimeSessionMeta,
+    client: Awaited<ReturnType<typeof acpSessionManager.getClient>>
+  ): Promise<void> {
+    const providerSessionId = sessionMeta.providerSessionId || sessionMeta.id;
+    let sawSessionInfoUpdate = false;
+    const detachUpdateListener = client.onSessionUpdate((notification) => {
+      if (!matchesAcpProviderSession(notification, providerSessionId)) {
+        return;
+      }
+      sawSessionInfoUpdate = relayInboundAcpResumeSessionUpdate(sessionMeta, notification) || sawSessionInfoUpdate;
+    });
+    try {
+      await client.loadSession(buildAcpSessionLoadParams(sessionMeta));
+    } finally {
+      detachUpdateListener();
+    }
+
+    if (!sawSessionInfoUpdate) {
+      emitProjectedAcpMessage(
+        projectSessionInfoFromSessionObject(buildManagedSessionObject(store.getSessionMeta(sessionMeta.id) || sessionMeta)),
+        { recordTranscript: false }
+      );
+    }
+  }
+
+  function relayInboundAcpSessionUpdate(
+    sessionMeta: RuntimeSessionMeta,
+    notification: AcpClientSessionUpdateNotification
+  ): boolean {
+    const update = asObject(notification.update);
+    if (!normalizeOptionalString(update.sessionUpdate)) {
+      return false;
+    }
+    emitProjectedAcpMessage({
+      kind: "notification",
+      method: "session/update",
+      params: {
+        sessionId: sessionMeta.id,
+        update: {
+          ...update,
+          _meta: {
+            ...(asObject(update._meta) || {}),
+            coderover: {
+              ...(asObject(asObject(update._meta).coderover) || {}),
+              sessionId: sessionMeta.id,
+              providerSessionId: sessionMeta.providerSessionId || sessionMeta.id,
+              agentId: sessionMeta.provider,
+            },
+          },
+        },
+      },
+    });
+    if (normalizeOptionalString(update.sessionUpdate) === "session_info_update") {
+      persistAcpSessionInfoUpdate(sessionMeta.id, update);
+    }
+    return true;
+  }
+
+  function withSynthesizedAcpReplayIdentifiers(
+    sessionMeta: RuntimeSessionMeta,
+    notification: AcpClientSessionUpdateNotification,
+    sequence: number
+  ): AcpClientSessionUpdateNotification {
+    const update = asObject(notification.update);
+    const sessionUpdate = normalizeOptionalString(update.sessionUpdate);
+    if (!sessionUpdate || !ACP_REPLAY_MESSAGE_UPDATES.has(sessionUpdate)) {
+      return notification;
+    }
+
+    const meta = asObject(update._meta);
+    const coderoverMeta = asObject(meta.coderover);
+    const existingMessageId = normalizeOptionalString(update.messageId)
+      || normalizeOptionalString(coderoverMeta.itemId);
+    if (existingMessageId) {
+      return notification;
+    }
+
+    const synthesizedId = buildSynthesizedAcpReplayMessageId(sessionMeta, update, sequence);
+    return {
+      ...notification,
+      update: {
+        ...update,
+        messageId: synthesizedId,
+        _meta: {
+          ...meta,
+          coderover: {
+            ...coderoverMeta,
+            itemId: synthesizedId,
+          },
+        },
+      },
+    };
+  }
+
+  function buildSynthesizedAcpReplayMessageId(
+    sessionMeta: RuntimeSessionMeta,
+    update: UnknownRecord,
+    sequence: number
+  ): string {
+    const hash = createHash("sha256")
+      .update(JSON.stringify({
+        sessionId: sessionMeta.id,
+        providerSessionId: sessionMeta.providerSessionId || sessionMeta.id,
+        sessionUpdate: normalizeOptionalString(update.sessionUpdate),
+        content: update.content ?? null,
+        sequence,
+      }))
+      .digest("hex")
+      .slice(0, 20);
+    return `replay-${hash}`;
+  }
+
+  function relayInboundAcpResumeSessionUpdate(
+    sessionMeta: RuntimeSessionMeta,
+    notification: AcpClientSessionUpdateNotification
+  ): boolean {
+    const update = asObject(notification.update);
+    if (normalizeOptionalString(update.sessionUpdate) !== "session_info_update") {
+      return false;
+    }
+    emitProjectedAcpMessage({
+      kind: "notification",
+      method: "session/update",
+      params: {
+        sessionId: sessionMeta.id,
+        update: {
+          ...update,
+          _meta: {
+            ...(asObject(update._meta) || {}),
+            coderover: {
+              ...(asObject(asObject(update._meta).coderover) || {}),
+              sessionId: sessionMeta.id,
+              providerSessionId: sessionMeta.providerSessionId || sessionMeta.id,
+              agentId: sessionMeta.provider,
+            },
+          },
+        },
+      },
+    }, { recordTranscript: false });
+    persistAcpSessionInfoUpdate(sessionMeta.id, update);
+    return true;
   }
 
   function buildRuntimePromptParams(

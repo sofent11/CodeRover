@@ -170,7 +170,6 @@ extension CodeRoverService {
         }
 
         do {
-            try await ensureThreadResumed(threadId: threadId)
             try await loadThreadHistoryIfNeeded(threadId: threadId)
         } catch {
             if shouldTreatAsThreadNotFound(error) {
@@ -180,18 +179,6 @@ extension CodeRoverService {
         }
         guard !Task.isCancelled else { return }
 
-        // Rehydrate in-flight turn metadata after reconnect/background transitions.
-        // Without this refresh, stop-state can disappear until a new live event arrives.
-        await refreshInFlightTurnState(threadId: threadId)
-        guard !Task.isCancelled else { return }
-
-        if threadHasActiveOrRunningTurn(threadId) {
-            // When reopening a running thread, force a fresh resume snapshot so the
-            // timeline catches up with output produced while the thread was off-screen.
-            _ = try? await ensureThreadResumed(threadId: threadId, force: true)
-            guard !Task.isCancelled else { return }
-            updateCurrentOutput(for: threadId)
-        }
         requestImmediateSync(threadId: threadId)
     }
 

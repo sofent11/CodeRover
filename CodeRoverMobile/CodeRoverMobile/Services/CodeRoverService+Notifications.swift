@@ -350,7 +350,7 @@ private extension CodeRoverService {
         }
 
         do {
-            try await listThreads()
+            try await listThreads(limit: recentThreadListLimit)
         } catch {
             debugRuntimeLog("thread refresh for notification routing failed: \(error.localizedDescription)")
         }

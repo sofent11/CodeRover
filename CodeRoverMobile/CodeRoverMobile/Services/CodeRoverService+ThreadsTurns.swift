@@ -111,28 +111,6 @@ extension CodeRoverService {
         let initialThreadId = try await resolveThreadID(threadId)
 
         do {
-            try await ensureThreadResumed(threadId: initialThreadId)
-        } catch {
-            if shouldTreatAsThreadNotFound(error) {
-                handleMissingThread(initialThreadId)
-
-                let continuationThread = try await createContinuationThread(from: initialThreadId)
-                try await ensureThreadResumed(threadId: continuationThread.id)
-                try await sendTurnStart(
-                    trimmedInput,
-                    attachments: attachments,
-                    skillMentions: skillMentions,
-                    to: continuationThread.id,
-                    shouldAppendUserMessage: shouldAppendUserMessage,
-                    collaborationMode: collaborationMode
-                )
-                activeThreadId = continuationThread.id
-                lastErrorMessage = nil
-                return
-            }
-        }
-
-        do {
             try await sendTurnStart(
                 trimmedInput,
                 attachments: attachments,
@@ -541,30 +519,14 @@ extension CodeRoverService {
             return nil
         }
 
-        if !force, resumedThreadIDs.contains(threadId) {
-            return threads.first(where: { $0.id == threadId })
-        }
-
-        let response = try await sendRequest(
-            method: "session/resume",
-            params: .object([
-                "sessionId": .string(threadId),
-            ])
-        )
-
-        guard let resultObject = response.result?.objectValue else {
-            resumedThreadIDs.insert(threadId)
-            return threads.first(where: { $0.id == threadId })
-        }
-
-        let resumedThread = applyAcpSessionState(sessionId: threadId, stateObject: resultObject)
         resumedThreadIDs.insert(threadId)
-        return resumedThread
+        _ = force
+        return threads.first(where: { $0.id == threadId })
     }
 
     func isThreadMissingOnServer(_ threadId: String) async -> Bool {
         do {
-            _ = try await sendRequest(method: "session/resume", params: .object([
+            _ = try await sendRequest(method: "session/load", params: .object([
                 "sessionId": .string(threadId),
             ]))
             return false
@@ -583,13 +545,7 @@ extension CodeRoverService {
             return false
         }
 
-        do {
-            _ = try await ensureThreadResumed(threadId: normalizedThreadID, force: true)
-            return true
-        } catch {
-            debugSyncLog("in-flight turn refresh failed thread=\(normalizedThreadID): \(error.localizedDescription)")
-            return false
-        }
+        return threadHasActiveOrRunningTurn(normalizedThreadID)
     }
 
     func sendTurnStart(

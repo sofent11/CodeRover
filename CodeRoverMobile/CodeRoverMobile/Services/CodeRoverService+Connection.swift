@@ -240,7 +240,7 @@ extension CodeRoverService {
         }
 
         do {
-            try await listThreads()
+            try await listThreads(limit: recentThreadListLimit)
         } catch {
             debugSyncLog("post-connect session/list failed: \(error.localizedDescription)")
             presentConnectionErrorIfNeeded(

@@ -215,7 +215,7 @@ struct SidebarView: View {
     private func refreshThreads() async {
         guard coderover.isConnected else { return }
         do {
-            try await coderover.listThreads()
+            try await coderover.listThreads(limit: coderover.recentThreadListLimit)
         } catch {
             // Error stored in CodeRoverService.
         }

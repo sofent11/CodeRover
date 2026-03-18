@@ -497,13 +497,6 @@ extension CodeRoverService {
 
         let isRunningAfterRefresh = threadHasActiveOrRunningTurn(threadId)
 
-        // A reconnect/background transition can leave the current thread onscreen while the
-        // realtime stream was interrupted. Force one live resume snapshot on every running-thread
-        // poll so the open timeline catches up even when the user never leaves the conversation.
-        if wasRunning || isRunningAfterRefresh || shouldUseAggressiveForegroundPolling {
-            _ = try? await ensureThreadResumed(threadId: threadId, force: true)
-        }
-
         if !hydratedThreadIDs.contains(threadId) {
             await syncThreadHistory(threadId: threadId, force: true)
             return
@@ -513,10 +506,8 @@ extension CodeRoverService {
             await syncThreadHistory(threadId: threadId, force: true)
             return
         }
-
-        if shouldUseAggressiveForegroundPolling {
-            _ = try? await ensureThreadResumed(threadId: threadId, force: true)
-        }
+        _ = isRunningAfterRefresh
+        _ = shouldUseAggressiveForegroundPolling
     }
 
     func beginForegroundAggressivePolling(threadId: String, ttl: TimeInterval = 90) {

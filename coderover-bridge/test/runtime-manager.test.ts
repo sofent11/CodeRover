@@ -79,6 +79,8 @@ function createMockAcpSessionManager({
   onPrompt,
   createProviderSessionId,
   onEnsureSessionCacheReady,
+  onLoadSession,
+  onResumeSession,
   getClientError = null,
   loadSessionError = null,
   resumeSessionError = null,
@@ -93,6 +95,15 @@ function createMockAcpSessionManager({
   }) => Promise<{ stopReason?: string | null; usage?: unknown }>;
   createProviderSessionId?: (agentId: string) => string;
   onEnsureSessionCacheReady?: (params: { archived?: boolean; force?: boolean }) => Promise<void>;
+  onLoadSession?: (params: {
+    sessionId: string;
+    loadParams: Record<string, unknown>;
+    emitUpdate(update: UnknownRecord): void;
+  }) => Promise<void>;
+  onResumeSession?: (params: {
+    sessionId: string;
+    resumeParams: Record<string, unknown>;
+  }) => Promise<void>;
   getClientError?: Error | null;
   loadSessionError?: Error | null;
   resumeSessionError?: Error | null;
@@ -139,10 +150,19 @@ function createMockAcpSessionManager({
         items: [{ id: "sonnet", model: "sonnet", title: "Sonnet" }],
       };
     },
-    async loadSession() {
+    async loadSession(params: Record<string, unknown>) {
       if (loadSessionError) {
         throw loadSessionError;
       }
+      await onLoadSession?.({
+        sessionId: String(params.sessionId || ""),
+        loadParams: params,
+        emitUpdate(update) {
+          sessionListeners.forEach((listener) => {
+            listener({ sessionId: String(params.sessionId || ""), update });
+          });
+        },
+      });
       return {};
     },
     async newSession() {
@@ -179,10 +199,14 @@ function createMockAcpSessionManager({
     },
     async respondError() {},
     async respondSuccess() {},
-    async resumeSession() {
+    async resumeSession(params: Record<string, unknown>) {
       if (resumeSessionError) {
         throw resumeSessionError;
       }
+      await onResumeSession?.({
+        sessionId: String(params.sessionId || ""),
+        resumeParams: params,
+      });
       return {};
     },
     async setConfigOption() {
@@ -418,13 +442,208 @@ test("session/prompt streams ACP updates and session/load replays ACP history", 
     assert.ok(prompted.some((message) => message.method === "session/update" && message.params?.update?.sessionUpdate === "user_message_chunk"));
     assert.ok(prompted.some((message) => message.method === "session/update" && message.params?.update?.sessionUpdate === "agent_message_chunk"));
 
+    const loadStart = fixture.messages.length;
     const loaded = await request(fixture, "acp-load-1", "session/load", { sessionId });
     const loadResponse = responseById(loaded, "acp-load-1");
     assert.equal(loadResponse.result._meta.coderover.agentId, "claude");
-    assert.ok(loaded.some((message) =>
+    await drainMicrotasks();
+    const loadMessages = fixture.messages.slice(loadStart);
+    assert.ok(loadMessages.some((message) =>
       message.method === "session/update"
       && message.params?.sessionId === sessionId
       && message.params?.update?.sessionUpdate === "agent_message_chunk"
+    ));
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("session/prompt restores an existing session inside the bridge before sending", async () => {
+  let resumeAttempts = 0;
+  let loadAttempts = 0;
+
+  const fixture = createManagerFixture(({ store, sessionRuntimeIndex }) =>
+    createMockAcpSessionManager({
+      store,
+      sessionRuntimeIndex,
+      async onResumeSession() {
+        resumeAttempts += 1;
+        throw new Error("Method not found");
+      },
+      async onLoadSession({ emitUpdate }) {
+        loadAttempts += 1;
+        emitUpdate({
+          sessionUpdate: "session_info_update",
+          _meta: {
+            coderover: {
+              runState: "ready",
+            },
+          },
+        });
+      },
+      onPrompt: async ({ emitUpdate }) => {
+        emitUpdate({
+          sessionUpdate: "agent_message_chunk",
+          messageId: "assistant-restored",
+          content: { type: "text", text: "restored prompt response" },
+        });
+        return {
+          stopReason: "end_turn",
+        };
+      },
+    })
+  );
+
+  try {
+    const now = new Date().toISOString();
+    fixture.store.createSession({
+      id: "codex:prompt-restore",
+      provider: "codex",
+      providerSessionId: "provider-codex-prompt-restore",
+      cwd: "/tmp/codex-prompt-restore",
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const prompted = await request(fixture, "acp-prompt-restore", "session/prompt", {
+      sessionId: "codex:prompt-restore",
+      messageId: "user-message-restore",
+      prompt: [{ type: "text", text: "continue this chat" }],
+    });
+
+    assert.equal(resumeAttempts, 1);
+    assert.equal(loadAttempts, 1);
+    assert.ok(prompted.some((message) =>
+      message.method === "session/update"
+      && message.params?.sessionId === "codex:prompt-restore"
+      && message.params?.update?.sessionUpdate === "user_message_chunk"
+    ));
+    assert.ok(prompted.some((message) =>
+      message.method === "session/update"
+      && message.params?.sessionId === "codex:prompt-restore"
+      && message.params?.update?.sessionUpdate === "agent_message_chunk"
+      && message.params?.update?.content?.text === "restored prompt response"
+    ));
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("session/load forwards provider replay updates and includes ACP-required cwd/mcpServers", async () => {
+  let capturedLoadParams: Record<string, unknown> | null = null;
+  let capturedResumeParams: Record<string, unknown> | null = null;
+  let loadCallCount = 0;
+
+  const fixture = createManagerFixture(({ store, sessionRuntimeIndex }) =>
+    createMockAcpSessionManager({
+      store,
+      sessionRuntimeIndex,
+      async onLoadSession({ loadParams, emitUpdate }) {
+        loadCallCount += 1;
+        capturedLoadParams = loadParams;
+        if (loadCallCount === 1) {
+          await sleep(10);
+          emitUpdate({
+            sessionUpdate: "user_message_chunk",
+            content: { type: "text", text: "hello from provider replay" },
+          });
+          emitUpdate({
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: "reply from provider replay" },
+          });
+          return;
+        }
+
+        emitUpdate({
+          sessionUpdate: "session_info_update",
+          title: "Codex Replay Load",
+          _meta: {
+            coderover: {
+              runState: "running",
+              turnId: "turn-resume-fallback",
+            },
+          },
+        });
+        emitUpdate({
+          sessionUpdate: "agent_message_chunk",
+          messageId: "assistant-replay-2",
+          content: { type: "text", text: "resume should not replay transcript" },
+        });
+      },
+      async onResumeSession({ resumeParams }) {
+        capturedResumeParams = resumeParams;
+        throw new Error("Method not found");
+      },
+    })
+  );
+
+  try {
+    const now = new Date().toISOString();
+    fixture.store.createSession({
+      id: "codex:replay-load",
+      provider: "codex",
+      providerSessionId: "provider-codex-replay-load",
+      cwd: "/tmp/codex-replay-load",
+      title: "Codex Replay Load",
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const loadStart = fixture.messages.length;
+    const loaded = await request(fixture, "acp-load-provider-replay", "session/load", {
+      sessionId: "codex:replay-load",
+    });
+    assert.equal(loaded.filter((message) => message.method === "session/update").length, 0);
+    await sleep(20);
+    const loadMessages = fixture.messages.slice(loadStart);
+    assert.deepEqual(capturedLoadParams, {
+      sessionId: "provider-codex-replay-load",
+      cwd: "/tmp/codex-replay-load",
+      mcpServers: [],
+    });
+    const loadResponseIndex = loadMessages.findIndex((message) => message.id === "acp-load-provider-replay");
+    const firstReplayIndex = loadMessages.findIndex((message) =>
+      message.method === "session/update"
+      && message.params?.sessionId === "codex:replay-load"
+    );
+    assert.ok(loadResponseIndex >= 0);
+    assert.ok(firstReplayIndex > loadResponseIndex);
+    assert.ok(loadMessages.some((message) =>
+      message.method === "session/update"
+      && message.params?.sessionId === "codex:replay-load"
+      && typeof message.params?.update?.messageId === "string"
+      && String(message.params?.update?.messageId).startsWith("replay-")
+      && message.params?.update?.sessionUpdate === "user_message_chunk"
+    ));
+    assert.ok(loadMessages.some((message) =>
+      message.method === "session/update"
+      && message.params?.sessionId === "codex:replay-load"
+      && message.params?.update?.sessionUpdate === "agent_message_chunk"
+      && typeof message.params?.update?.messageId === "string"
+      && String(message.params?.update?.messageId).startsWith("replay-")
+      && message.params?.update?.content?.text === "reply from provider replay"
+    ));
+
+    const resumed = await request(fixture, "acp-resume-provider-replay", "session/resume", {
+      sessionId: "codex:replay-load",
+    });
+    assert.deepEqual(capturedResumeParams, {
+      sessionId: "provider-codex-replay-load",
+      cwd: "/tmp/codex-replay-load",
+      mcpServers: [],
+    });
+    assert.equal(loadCallCount, 2);
+    assert.equal(responseById(resumed, "acp-resume-provider-replay").error, undefined);
+    assert.ok(resumed.some((message) =>
+      message.method === "session/update"
+      && message.params?.sessionId === "codex:replay-load"
+      && message.params?.update?.sessionUpdate === "session_info_update"
+    ));
+    assert.ok(!resumed.some((message) =>
+      message.method === "session/update"
+      && message.params?.sessionId === "codex:replay-load"
+      && message.params?.update?.sessionUpdate === "agent_message_chunk"
+      && message.params?.update?.content?.text === "resume should not replay transcript"
     ));
   } finally {
     fixture.cleanup();
@@ -477,17 +696,20 @@ test("session/load replays local ACP history when provider load and model lookup
       ],
     });
 
+    const loadStart = fixture.messages.length;
     const loaded = await request(fixture, "acp-load-fallback", "session/load", { sessionId });
     const response = responseById(loaded, "acp-load-fallback");
     assert.equal(response.result._meta.coderover.agentId, "claude");
     assert.equal(response.error, undefined);
     assert.equal(response.result.models, undefined);
-    assert.ok(loaded.some((message) =>
+    await drainMicrotasks();
+    const loadMessages = fixture.messages.slice(loadStart);
+    assert.ok(loadMessages.some((message) =>
       message.method === "session/update"
       && message.params?.sessionId === sessionId
       && message.params?.update?.sessionUpdate === "user_message_chunk"
     ));
-    assert.ok(loaded.some((message) =>
+    assert.ok(loadMessages.some((message) =>
       message.method === "session/update"
       && message.params?.sessionId === sessionId
       && message.params?.update?.sessionUpdate === "agent_message_chunk"
@@ -534,15 +756,110 @@ test("session/load replays local ACP history when the provider client cannot be 
       ],
     });
 
+    const loadStart = fixture.messages.length;
     const loaded = await request(fixture, "acp-load-client-fallback", "session/load", { sessionId });
     const response = responseById(loaded, "acp-load-client-fallback");
     assert.equal(response.error, undefined);
     assert.equal(response.result._meta.coderover.agentId, "gemini");
     assert.equal(response.result.models, undefined);
-    assert.ok(loaded.some((message) =>
+    await drainMicrotasks();
+    const loadMessages = fixture.messages.slice(loadStart);
+    assert.ok(loadMessages.some((message) =>
       message.method === "session/update"
       && message.params?.sessionId === sessionId
       && message.params?.update?.sessionUpdate === "agent_message_chunk"
+    ));
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("session/load prefers locally imported Codex replay and skips provider load", async () => {
+  let loadCallCount = 0;
+  const fixture = createManagerFixture(({ store, sessionRuntimeIndex }) =>
+    createMockAcpSessionManager({
+      store,
+      sessionRuntimeIndex,
+      onLoadSession: async () => {
+        loadCallCount += 1;
+      },
+    })
+  );
+
+  try {
+    fs.mkdirSync(path.join(fixture.codexHomeDir, "sessions", "2026", "03", "18"), { recursive: true });
+    fs.writeFileSync(
+      path.join(fixture.codexHomeDir, "sessions", "2026", "03", "18", "rollout-2026-03-18T18-10-27-019cfb46-7e95-7272-91b4-a4b9686f7ec8.jsonl"),
+      [
+        JSON.stringify({
+          timestamp: "2026-03-18T10:10:00.000Z",
+          type: "session_meta",
+          payload: {
+            id: "019cfb46-7e95-7272-91b4-a4b9686f7ec8",
+            cwd: "/Users/me/work/remodex",
+          },
+        }),
+        JSON.stringify({
+          timestamp: "2026-03-18T10:10:01.000Z",
+          type: "event_msg",
+          payload: {
+            type: "task_started",
+            turn_id: "turn-1",
+          },
+        }),
+        JSON.stringify({
+          timestamp: "2026-03-18T10:10:02.000Z",
+          type: "event_msg",
+          payload: {
+            type: "user_message",
+            message: "Load local Codex history",
+          },
+        }),
+        JSON.stringify({
+          timestamp: "2026-03-18T10:10:03.000Z",
+          type: "event_msg",
+          payload: {
+            type: "agent_message",
+            message: "Using rollout events for replay.",
+          },
+        }),
+        JSON.stringify({
+          timestamp: "2026-03-18T10:10:04.000Z",
+          type: "event_msg",
+          payload: {
+            type: "task_complete",
+            turn_id: "turn-1",
+          },
+        }),
+      ].join("\n")
+    );
+
+    fixture.store.createSession({
+      id: "019cfb46-7e95-7272-91b4-a4b9686f7ec8",
+      provider: "codex",
+      providerSessionId: "019cfb46-7e95-7272-91b4-a4b9686f7ec8",
+      cwd: "/Users/me/work/remodex",
+      title: "Codex local replay",
+    });
+
+    const loadStart = fixture.messages.length;
+    const loaded = await request(fixture, "acp-load-codex-local", "session/load", {
+      sessionId: "019cfb46-7e95-7272-91b4-a4b9686f7ec8",
+    });
+    assert.equal(responseById(loaded, "acp-load-codex-local").error, undefined);
+    await drainMicrotasks();
+    const loadMessages = fixture.messages.slice(loadStart);
+    assert.equal(loadCallCount, 0);
+    assert.ok(loadMessages.some((message) =>
+      message.method === "session/update"
+      && message.params?.sessionId === "019cfb46-7e95-7272-91b4-a4b9686f7ec8"
+      && message.params?.update?.sessionUpdate === "user_message_chunk"
+    ));
+    assert.ok(loadMessages.some((message) =>
+      message.method === "session/update"
+      && message.params?.sessionId === "019cfb46-7e95-7272-91b4-a4b9686f7ec8"
+      && message.params?.update?.sessionUpdate === "agent_message_chunk"
+      && message.params?.update?.content?.text === "Using rollout events for replay."
     ));
   } finally {
     fixture.cleanup();

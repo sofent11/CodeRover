@@ -4,7 +4,7 @@
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { randomUUID } from "crypto";
+import { createHash, randomUUID } from "crypto";
 
 import type { JsonRpcNotificationShape, RuntimeTurnShape } from "./bridge-types";
 import { normalizeAcpAgentId } from "./acp/agent-registry";
@@ -202,6 +202,11 @@ export function createRuntimeStore(
         migrateLegacyHistory(normalizedSessionId, stored.history);
         return stored.history;
       }
+    }
+
+    const importedHistory = importLocalProviderHistory(normalizedSessionId);
+    if (importedHistory) {
+      return importedHistory;
     }
 
     const transcriptMessages = getSessionTranscriptMessages(normalizedSessionId);
@@ -581,6 +586,52 @@ export function createRuntimeStore(
     return path.join(sessionsDir, `${sessionId}.stream.ndjson`);
   }
 
+  function importLocalProviderHistory(sessionId: string): RuntimeSessionHistory | null {
+    const sessionMeta = indexState.sessions[sessionId];
+    const provider = sessionMeta?.provider || inferProviderFromSessionId(sessionId);
+    if (provider !== "codex") {
+      return null;
+    }
+
+    const rolloutPath = findCodexRolloutPath(
+      firstNonEmptyString([sessionMeta?.providerSessionId, sessionId])
+    );
+    if (!rolloutPath) {
+      return null;
+    }
+
+    const importedHistory = readCodexRolloutHistory(rolloutPath, sessionId);
+    if (!importedHistory || importedHistory.turns.length === 0) {
+      return null;
+    }
+
+    const rolloutMeta = readCodexRolloutMeta(rolloutPath);
+    const existingMeta = indexState.sessions[sessionId];
+    if (existingMeta) {
+      const nextMeta = normalizeSessionMeta({
+        ...existingMeta,
+        cwd: rolloutMeta?.cwd || existingMeta.cwd,
+        createdAt: rolloutMeta?.createdAt || existingMeta.createdAt,
+      });
+      if (JSON.stringify(existingMeta) !== JSON.stringify(nextMeta)) {
+        indexState.sessions[sessionId] = nextMeta;
+        persistIndex(indexPath, indexState);
+      }
+    }
+
+    writeSessionCheckpoint(sessionId, importedHistory);
+    rewriteTranscriptFromHistory(sessionId, importedHistory);
+    return importedHistory;
+  }
+
+  function findCodexRolloutPath(sessionToken: string | null): string | null {
+    const normalizedSessionToken = normalizeNonEmptyString(sessionToken);
+    if (!normalizedSessionToken) {
+      return null;
+    }
+    return indexCodexRolloutPaths(codexHomeDir).get(normalizedSessionToken) || null;
+  }
+
   function importCodexSessionIndex(): boolean {
     const codexSessionIndexPath = path.join(codexHomeDir, "session_index.jsonl");
     if (!fs.existsSync(codexSessionIndexPath)) {
@@ -754,6 +805,184 @@ function readCodexRolloutMeta(rolloutPath: string): { cwd: string | null; create
     return null;
   }
   return null;
+}
+
+function readCodexRolloutHistory(
+  rolloutPath: string,
+  sessionId: string
+): RuntimeSessionHistory | null {
+  try {
+    const history = defaultSessionHistory(sessionId);
+    const turnById = new Map<string, RuntimeStoreTurn>();
+    let activeTurnId: string | null = null;
+    let syntheticTurnSequence = 0;
+    let itemSequence = 0;
+
+    function ensureTurn(turnId: string | null, createdAt: string): RuntimeStoreTurn {
+      const normalizedTurnId = normalizeOptionalString(turnId)
+        || activeTurnId
+        || `${sessionId}:rollout-turn:${++syntheticTurnSequence}`;
+      let turn = turnById.get(normalizedTurnId);
+      if (!turn) {
+        turn = {
+          id: normalizedTurnId,
+          createdAt,
+          status: "running",
+          items: [],
+        };
+        history.turns.push(turn);
+        turnById.set(normalizedTurnId, turn);
+      }
+      if (Date.parse(createdAt) < Date.parse(turn.createdAt)) {
+        turn.createdAt = createdAt;
+      }
+      return turn;
+    }
+
+    function appendMessageItem(
+      turn: RuntimeStoreTurn,
+      itemType: "user_message" | "agent_message",
+      role: "user" | "assistant",
+      text: string,
+      createdAt: string
+    ): void {
+      turn.items.push({
+        id: buildCodexRolloutItemId({
+          sessionId,
+          turnId: turn.id,
+          itemType,
+          createdAt,
+          sequence: itemSequence++,
+          text,
+        }),
+        type: itemType,
+        role,
+        content: role === "user" ? [{ type: "text", text }] : [],
+        text,
+        message: null,
+        createdAt,
+        status: null,
+        command: null,
+        metadata: null,
+        plan: null,
+        summary: null,
+        fileChanges: [],
+      });
+    }
+
+    for (const line of fs.readFileSync(rolloutPath, "utf8").split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed) {
+        continue;
+      }
+
+      const parsed = safeParseJSON(trimmed);
+      const record = asObject(parsed);
+      if (!record || normalizeNonEmptyString(record.type) !== "event_msg") {
+        continue;
+      }
+
+      const payload = asObject(record.payload);
+      const eventType = normalizeNonEmptyString(payload?.type);
+      const createdAt = toIsoDateString(record.timestamp || payload?.timestamp || Date.now());
+      if (!eventType) {
+        continue;
+      }
+
+      switch (eventType) {
+        case "task_started": {
+          const turn = ensureTurn(normalizeOptionalString(payload?.turn_id), createdAt);
+          turn.status = "running";
+          activeTurnId = turn.id;
+          break;
+        }
+
+        case "task_complete": {
+          const turn = ensureTurn(normalizeOptionalString(payload?.turn_id), createdAt);
+          turn.status = "completed";
+          if (activeTurnId === turn.id) {
+            activeTurnId = null;
+          }
+          break;
+        }
+
+        case "turn_aborted": {
+          const turn = ensureTurn(normalizeOptionalString(payload?.turn_id), createdAt);
+          const reason = normalizeOptionalString(payload?.reason) || "";
+          turn.status = reason.includes("interrupt") ? "stopped" : "failed";
+          if (activeTurnId === turn.id) {
+            activeTurnId = null;
+          }
+          break;
+        }
+
+        case "user_message": {
+          const text = normalizeNonEmptyString(payload?.message);
+          if (!text) {
+            break;
+          }
+          const turn = ensureTurn(activeTurnId, createdAt);
+          appendMessageItem(turn, "user_message", "user", text, createdAt);
+          break;
+        }
+
+        case "agent_message": {
+          const text = normalizeNonEmptyString(payload?.message);
+          if (!text) {
+            break;
+          }
+          const turn = ensureTurn(activeTurnId, createdAt);
+          appendMessageItem(turn, "agent_message", "assistant", text, createdAt);
+          break;
+        }
+
+        default:
+          break;
+      }
+    }
+
+    if (history.turns.length === 0) {
+      return null;
+    }
+
+    return {
+      sessionId,
+      turns: history.turns.map((turn) => ({
+        ...turn,
+        status: turn.status || "completed",
+      })),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function buildCodexRolloutItemId({
+  sessionId,
+  turnId,
+  itemType,
+  createdAt,
+  sequence,
+  text,
+}: {
+  sessionId: string;
+  turnId: string;
+  itemType: string;
+  createdAt: string;
+  sequence: number;
+  text: string;
+}): string {
+  return `rollout-${createHash("sha256")
+    .update(JSON.stringify({
+      sessionId,
+      turnId,
+      itemType,
+      createdAt,
+      sequence,
+      text,
+    }))
+    .digest("hex")
+    .slice(0, 20)}`;
 }
 
 function loadIndex(indexPath: string): RuntimeStoreIndex {

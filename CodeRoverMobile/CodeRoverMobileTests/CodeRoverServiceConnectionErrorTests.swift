@@ -52,12 +52,14 @@ final class CodeRoverServiceConnectionErrorTests: XCTestCase {
 
     func testPostConnectSyncSurfacesSessionListFailure() async {
         let service = CodeRoverService()
+        var receivedSessionListLimit: Int?
 
-        service.requestTransportOverride = { method, _ in
+        service.requestTransportOverride = { method, params in
             switch method {
             case "_coderover/agent/list":
                 return RPCMessage(id: .integer(1), result: .object(["agents": .array([])]))
             case "session/list":
+                receivedSessionListLimit = params?.objectValue?["limit"]?.intValue
                 throw CodeRoverServiceError.invalidInput("session/list timed out")
             case "_coderover/model/list":
                 return RPCMessage(id: .integer(2), result: .object(["items": .array([])]))
@@ -68,9 +70,31 @@ final class CodeRoverServiceConnectionErrorTests: XCTestCase {
 
         await service.performPostConnectSyncPass()
 
+        XCTAssertEqual(receivedSessionListLimit, service.recentThreadListLimit)
         XCTAssertEqual(
             service.lastErrorMessage,
             "Unable to load chats from the paired Mac. Reconnect and try again."
         )
+    }
+
+    func testSessionUpdateClearsRecoverableThreadListError() {
+        let service = CodeRoverService()
+        service.lastErrorMessage = "Unable to load chats from the paired Mac. Reconnect and try again."
+        service.handleNotification(
+            method: "session/update",
+            params: .object([
+                "sessionId": .string("session-1"),
+                "update": .object([
+                    "sessionUpdate": .string("session_info_update"),
+                    "_meta": .object([
+                        "coderover": .object([
+                            "runState": .string("ready"),
+                        ]),
+                    ]),
+                ]),
+            ])
+        )
+
+        XCTAssertNil(service.lastErrorMessage)
     }
 }

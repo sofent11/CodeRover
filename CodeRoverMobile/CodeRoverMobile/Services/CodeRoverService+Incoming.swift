@@ -60,9 +60,7 @@ extension CodeRoverService {
         if let rpcError = message.error {
             continuation.resume(throwing: CodeRoverServiceError.rpcError(rpcError))
         } else {
-            if lastErrorMessage == "The Mac bridge did not respond in time. Reconnect and try again." {
-                lastErrorMessage = nil
-            }
+            clearRecoverableLoadErrorIfNeeded(afterSuccessfulRequestMethod: requestContext?.method)
             continuation.resume(returning: message)
         }
     }
@@ -104,11 +102,30 @@ extension CodeRoverService {
 
         switch method {
         case "session/update":
+            clearRecoverableLoadErrorIfNeeded(afterSuccessfulRequestMethod: "session/load")
             handleACPSessionUpdate(paramsObject)
 
         default:
             return
         }
+    }
+
+    private func clearRecoverableLoadErrorIfNeeded(afterSuccessfulRequestMethod method: String?) {
+        let timeoutMessage = "The Mac bridge did not respond in time. Reconnect and try again."
+        let sessionListFailureMessage = "Unable to load chats from the paired Mac. Reconnect and try again."
+        let recoverableMethods = Set(["session/list", "session/load"])
+
+        if lastErrorMessage == timeoutMessage {
+            lastErrorMessage = nil
+            return
+        }
+
+        guard recoverableMethods.contains(method ?? ""),
+              lastErrorMessage == sessionListFailureMessage else {
+            return
+        }
+
+        lastErrorMessage = nil
     }
 
     private func handleThreadStarted(_ paramsObject: IncomingParamsObject?) {
