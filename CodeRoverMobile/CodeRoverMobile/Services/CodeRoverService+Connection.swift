@@ -26,6 +26,7 @@ extension CodeRoverService {
         defer { isConnecting = false }
 
         await disconnect(preserveReconnectIntent: true)
+        let connectionAttemptNonce = beginConnectionAttempt()
 
         let normalizedServerURL = serverURL.trimmingCharacters(in: .whitespacesAndNewlines)
         let url = try validateConnectionURL(normalizedServerURL)
@@ -41,6 +42,9 @@ extension CodeRoverService {
         do {
             connection = try await establishWebSocketConnection(url: url, token: trimmedToken, role: role)
         } catch {
+            guard isCurrentConnectionAttempt(connectionAttemptNonce) else {
+                throw CodeRoverServiceError.disconnected
+            }
             let friendlyMessage = userFacingConnectError(
                 error: error,
                 attemptedURL: normalizedServerURL,
@@ -54,18 +58,30 @@ extension CodeRoverService {
             }
             throw CodeRoverServiceError.invalidInput(friendlyMessage)
         }
+        guard isCurrentConnectionAttempt(connectionAttemptNonce) else {
+            connection.cancel()
+            throw CodeRoverServiceError.disconnected
+        }
         webSocketConnection = connection
         startReceiveLoop(with: connection)
         clearHydrationCaches()
 
         do {
             try await performSecureHandshake()
+            guard isCurrentConnectionAttempt(connectionAttemptNonce) else {
+                connection.cancel()
+                throw CodeRoverServiceError.disconnected
+            }
 
             isConnected = true
             shouldAutoReconnectOnForeground = false
             connectionRecoveryState = .idle
             lastErrorMessage = nil
             try await initializeSession()
+            guard isCurrentConnectionAttempt(connectionAttemptNonce) else {
+                connection.cancel()
+                throw CodeRoverServiceError.disconnected
+            }
 
             startSyncLoop()
             if performInitialSync {
@@ -80,6 +96,7 @@ extension CodeRoverService {
 
     // Closes the socket and fails any in-flight requests.
     func disconnect(preserveReconnectIntent: Bool = false) async {
+        cancelConnectionAttempts()
         if let connection = webSocketConnection {
             connection.stateUpdateHandler = nil
             webSocketConnection = nil
@@ -124,6 +141,19 @@ extension CodeRoverService {
         resetSecureTransportState()
 
         failAllPendingRequests(with: CodeRoverServiceError.disconnected)
+    }
+
+    func beginConnectionAttempt() -> UInt64 {
+        connectionAttemptNonce &+= 1
+        return connectionAttemptNonce
+    }
+
+    func cancelConnectionAttempts() {
+        connectionAttemptNonce &+= 1
+    }
+
+    func isCurrentConnectionAttempt(_ nonce: UInt64) -> Bool {
+        connectionAttemptNonce == nonce
     }
 
     // Clears the remembered bridge pairing when the remote Mac session is gone for good.

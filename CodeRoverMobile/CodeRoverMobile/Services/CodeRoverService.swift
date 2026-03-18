@@ -225,6 +225,7 @@ final class CodeRoverService {
             rebuildThreadLookupCaches()
         }
     }
+    var connectionAttemptNonce: UInt64 = 0
     var isConnected = false
     var isConnecting = false
     var isInitialized = false

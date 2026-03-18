@@ -115,6 +115,10 @@ final class ContentViewModel {
             coderover.lastErrorMessage = nil
         }
 
+        if coderover.isConnecting && !coderover.isConnected {
+            await coderover.disconnect(preserveReconnectIntent: false)
+        }
+
         while isRunningForegroundReconnectLoop || coderover.isConnecting {
             try? await Task.sleep(nanoseconds: 100_000_000)
         }
@@ -167,6 +171,7 @@ final class ContentViewModel {
         await stopAutoReconnectForSettings(coderover: coderover)
 
         if wasConnected && wasActivePairing {
+            await interruptActiveTurnsBeforeRemovingCurrentPairing(coderover: coderover)
             await coderover.disconnect()
         }
 
@@ -186,6 +191,37 @@ final class ContentViewModel {
         } catch {
             if coderover.lastErrorMessage?.isEmpty ?? true {
                 coderover.lastErrorMessage = coderover.userFacingConnectFailureMessage(error)
+            }
+        }
+    }
+
+    // Best-effort cleanup so removing the active Mac does not leave its turns running remotely.
+    private func interruptActiveTurnsBeforeRemovingCurrentPairing(coderover: CodeRoverService) async {
+        let candidateThreadIDs = Set(coderover.runningThreadIDs).union(coderover.activeTurnIdByThread.keys)
+        guard !candidateThreadIDs.isEmpty else {
+            return
+        }
+
+        let prioritizedThreadIDs = candidateThreadIDs.sorted { lhs, rhs in
+            if lhs == coderover.activeThreadId { return true }
+            if rhs == coderover.activeThreadId { return false }
+            return lhs < rhs
+        }
+
+        for threadId in prioritizedThreadIDs {
+            guard !threadId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                continue
+            }
+
+            do {
+                try await coderover.interruptTurn(
+                    turnId: coderover.activeTurnID(for: threadId),
+                    threadId: threadId
+                )
+            } catch {
+                coderover.debugRuntimeLog(
+                    "remove pairing interrupt failed thread=\(threadId): \(error.localizedDescription)"
+                )
             }
         }
     }
