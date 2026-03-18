@@ -48,6 +48,17 @@ struct CodeRoverRunningThreadWatch: Equatable, Sendable {
     let expiresAt: Date
 }
 
+struct CodeRoverSubagentIdentityEntry: Equatable, Sendable {
+    var threadId: String?
+    var agentId: String?
+    var nickname: String?
+    var role: String?
+
+    var hasMetadata: Bool {
+        threadId != nil || agentId != nil || nickname != nil || role != nil
+    }
+}
+
 struct CodeRoverSecureControlWaiter {
     let id: UUID
     let continuation: CheckedContinuation<String, Error>
@@ -209,7 +220,11 @@ struct CodeRoverRateLimitBucket: Identifiable, Equatable, Sendable {
 final class CodeRoverService {
     // --- Public state ---------------------------------------------------------
 
-    var threads: [ConversationThread] = []
+    var threads: [ConversationThread] = [] {
+        didSet {
+            rebuildThreadLookupCaches()
+        }
+    }
     var isConnected = false
     var isConnecting = false
     var isInitialized = false
@@ -301,6 +316,8 @@ final class CodeRoverService {
     var supportsStructuredSkillInput = true
     // Runtime compatibility flag for `turn/start.collaborationMode` plan turns.
     var supportsTurnCollaborationMode = false
+    // In-memory identity directory for subagents, keyed by thread id and agent id.
+    var subagentIdentityVersion: Int = 0
     var rateLimitBuckets: [CodeRoverRateLimitBucket] = []
     var isLoadingRateLimits = false
     var rateLimitsErrorMessage: String?
@@ -415,6 +432,12 @@ final class CodeRoverService {
     // Canonical repo roots keyed by observed working directories from bridge git/status responses.
     var repoRootByWorkingDirectory: [String: String] = [:]
     var knownRepoRoots: Set<String> = []
+    // Keeps hot-path thread lookups O(1) instead of rescanning the full sidebar list.
+    @ObservationIgnored var threadByID: [String: ConversationThread] = [:]
+    @ObservationIgnored var threadIndexByID: [String: Int] = [:]
+    @ObservationIgnored var firstLiveThreadIDCache: String?
+    @ObservationIgnored var subagentIdentityByThreadID: [String: CodeRoverSubagentIdentityEntry] = [:]
+    @ObservationIgnored var subagentIdentityByAgentID: [String: CodeRoverSubagentIdentityEntry] = [:]
 
     let encoder: JSONEncoder
     let decoder: JSONDecoder
@@ -490,6 +513,7 @@ final class CodeRoverService {
         if !reloadSavedBridgePairingsFromSecureStoreIfNeeded(force: true) {
             applyResolvedActiveSavedBridgePairing()
         }
+        rebuildThreadLookupCaches()
     }
 
     // Remembers whether we can offer reconnect without forcing a fresh QR scan.

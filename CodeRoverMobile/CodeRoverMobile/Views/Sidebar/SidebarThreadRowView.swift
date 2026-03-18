@@ -11,6 +11,9 @@ struct SidebarThreadRowView: View {
     let runBadgeState: ConversationThreadRunBadgeState?
     let timingLabel: String?
     let diffTotals: TurnSessionDiffTotals?
+    let childSubagentCount: Int
+    let isSubagentExpanded: Bool
+    let onToggleSubagents: (() -> Void)?
     let onTap: () -> Void
     var onRename: ((String) -> Void)? = nil
     var onArchiveToggle: (() -> Void)? = nil
@@ -20,66 +23,20 @@ struct SidebarThreadRowView: View {
     @State private var renameText = ""
 
     var body: some View {
-        Button(action: {
-            HapticFeedback.shared.triggerImpactFeedback(style: .light)
-            onTap()
-        }) {
-            HStack(spacing: 8) {
-                HStack(spacing: 6) {
-                    if let runBadgeState {
-                        SidebarThreadRunBadgeView(state: runBadgeState)
-                    }
-
-                    Text(thread.displayTitle)
-                        .font(AppFont.body())
-                        .lineLimit(1)
-                        .foregroundStyle(.primary)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.leading, 10)
-
-                // Keeps the row tail scannable: status, relative time, then compact diff total.
-                HStack(spacing: 4) {
-                    Text(thread.providerBadgeTitle)
-                        .font(AppFont.caption2(weight: .semibold))
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 2)
-                        .background(Color(.secondarySystemFill), in: Capsule())
-
-                    if thread.syncState == .archivedLocal {
-                        Text("Archived")
-                            .font(AppFont.caption2())
-                            .foregroundStyle(.orange)
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 2)
-                            .background(Color.orange.opacity(0.12), in: Capsule())
-                    }
-
-                    if let diffTotals {
-                        SidebarThreadDiffTotalsLabel(totals: diffTotals)
-                    }
-
-                    if let timingLabel {
-                        Text(timingLabel)
-                            .font(AppFont.footnote())
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-                }
-            }
-            .padding(.horizontal, 16)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, isSelected ? 12 : 12)
-            .background {
-                if isSelected {
-                    Color(.tertiarySystemFill).opacity(0.8)
-                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                }
+        Group {
+            if thread.isSubagent {
+                subagentRow
+            } else {
+                parentRow
             }
         }
-        .buttonStyle(.plain)
-        .padding(.horizontal, 16)
+        .background {
+            if isSelected {
+                Color(.tertiarySystemFill).opacity(0.8)
+                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            }
+        }
+        .padding(.horizontal, 12)
         .contextMenu {
             if onRename != nil {
                 Button {
@@ -122,6 +79,194 @@ struct SidebarThreadRowView: View {
             }
             Button("Cancel", role: .cancel) {}
         }
+    }
+
+    private var parentRow: some View {
+        Button(action: {
+            HapticFeedback.shared.triggerImpactFeedback(style: .light)
+            onTap()
+        }) {
+            HStack(alignment: .center, spacing: 8) {
+                if let runBadgeState {
+                    SidebarThreadRunBadgeView(state: runBadgeState)
+                        .padding(.leading, 10)
+                        .padding(.top, 4)
+                } else {
+                    Color.clear
+                        .frame(width: 10, height: 10)
+                        .padding(.leading, 10)
+                        .padding(.top, 4)
+                }
+
+                SidebarThreadAgentTypeIcon(thread: thread)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(thread.displayTitle)
+                        .font(AppFont.body())
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .foregroundStyle(.primary)
+
+                    if thread.syncState == .archivedLocal {
+                        Text("Stored locally")
+                            .font(AppFont.footnote())
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                parentTrailingMeta
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.leading, 16)
+        .padding(.trailing, 16)
+        .padding(.vertical, 12)
+    }
+
+    private var parentTrailingMeta: some View {
+        HStack(spacing: 6) {
+            if thread.syncState == .archivedLocal {
+                Text("Archived")
+                    .font(AppFont.caption2())
+                    .foregroundStyle(.orange)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 2)
+                    .background(Color.orange.opacity(0.12), in: Capsule())
+            }
+
+            if let diffTotals {
+                SidebarThreadDiffTotalsLabel(totals: diffTotals)
+            }
+
+            expansionToggleButton
+
+            if let timingLabel {
+                Text(timingLabel)
+                    .font(AppFont.footnote())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        }
+        .padding(.trailing, 16)
+    }
+
+    private var subagentRow: some View {
+        Button(action: {
+            HapticFeedback.shared.triggerImpactFeedback(style: .light)
+            onTap()
+        }) {
+            HStack(alignment: .center, spacing: 8) {
+                Color.clear
+                    .frame(width: 10, height: 10)
+                    .padding(.leading, 10)
+
+                SidebarThreadAgentTypeIcon(thread: thread)
+
+                SidebarSubagentNameLabel(thread: thread)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                subagentTrailingMeta
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.leading, 16)
+        .padding(.trailing, 16)
+        .padding(.vertical, 4)
+    }
+
+    private var subagentTrailingMeta: some View {
+        HStack(spacing: 4) {
+            expansionToggleButton
+
+            if let timingLabel {
+                Text(timingLabel)
+                    .font(AppFont.caption())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        }
+        .padding(.trailing, 16)
+    }
+
+    @ViewBuilder
+    private var expansionToggleButton: some View {
+        if childSubagentCount > 0, let onToggleSubagents {
+            Button(action: {
+                HapticFeedback.shared.triggerImpactFeedback(style: .light)
+                onToggleSubagents()
+            }) {
+                Image(systemName: isSubagentExpanded ? "chevron.down" : "chevron.right")
+                    .font(AppFont.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 18, height: 18)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(isSubagentExpanded ? "Collapse subagents" : "Expand subagents")
+        }
+    }
+}
+
+private struct SidebarThreadAgentTypeIcon: View {
+    let thread: ConversationThread
+
+    private var title: String {
+        if thread.isSubagent {
+            if let role = thread.agentRole?.trimmingCharacters(in: .whitespacesAndNewlines), !role.isEmpty {
+                return role
+            }
+            if let derivedRole = thread.derivedSubagentIdentity?.role?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !derivedRole.isEmpty {
+                return derivedRole
+            }
+        }
+
+        return thread.providerBadgeTitle
+    }
+
+    private var initial: String {
+        let scalars = title.unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) }
+        guard let firstScalar = scalars.first else {
+            return "A"
+        }
+        return String(Character(firstScalar)).uppercased()
+    }
+
+    private var tintColor: Color {
+        SubagentLabelParser.nicknameColor(for: title)
+    }
+
+    var body: some View {
+        Text(initial)
+            .font(AppFont.caption2(weight: .semibold))
+            .foregroundStyle(tintColor)
+            .frame(width: 22, height: 22)
+            .background(tintColor.opacity(0.14), in: Circle())
+            .accessibilityLabel(title)
+    }
+}
+
+private struct SidebarSubagentNameLabel: View {
+    let thread: ConversationThread
+    @Environment(CodeRoverService.self) private var coderover
+
+    var body: some View {
+        let _ = coderover.subagentIdentityVersion
+        let source = thread.preferredSubagentLabel
+            ?? coderover.resolvedSubagentDisplayLabel(threadId: thread.id, agentId: thread.agentId)
+            ?? "Subagent"
+        let parsed = SubagentLabelParser.parse(source)
+        let nickname = parsed.nickname.isEmpty || parsed.nickname == "Conversation" ? "Subagent" : parsed.nickname
+        SubagentLabelParser.styledText(nickname: nickname, roleSuffix: parsed.roleSuffix)
+            .font(AppFont.caption(weight: .medium))
+            .lineLimit(1)
+            .truncationMode(.tail)
     }
 }
 

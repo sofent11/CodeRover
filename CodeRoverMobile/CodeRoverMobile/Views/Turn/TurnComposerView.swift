@@ -38,6 +38,7 @@ struct TurnComposerView: View {
     let skillAutocompleteQuery: String
     let slashCommandPanelState: TurnComposerSlashCommandPanelState
     let composerReviewSelection: TurnComposerReviewSelection?
+    let isSubagentsSelectionArmed: Bool
     let hasComposerContentConflictingWithReview: Bool
 
     let orderedModelOptions: [ModelOption]
@@ -87,6 +88,7 @@ struct TurnComposerView: View {
     let onRemoveMentionedFile: (String) -> Void
     let onRemoveMentionedSkill: (String) -> Void
     let onRemoveComposerReviewSelection: () -> Void
+    let onRemoveComposerSubagentsSelection: () -> Void
     let onPasteImageData: ([Data]) -> Void
     let onResumeQueue: () -> Void
     let onSteerQueuedDraft: (String) -> Void
@@ -208,6 +210,24 @@ struct TurnComposerView: View {
                     .padding(.top, 8)
                 }
 
+                if isSubagentsSelectionArmed {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            ComposerActionChip(
+                                title: "Subagents",
+                                symbolName: "person.3",
+                                tintColor: .teal,
+                                removeAccessibilityLabel: "Remove subagents"
+                            ) {
+                                onRemoveComposerSubagentsSelection()
+                            }
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 8)
+                }
+
                 ZStack(alignment: .topLeading) {
                     if input.isEmpty {
                         Text("Ask for follow-up changes, or type / for Codex commands")
@@ -235,6 +255,7 @@ struct TurnComposerView: View {
                         && composerMentionedFiles.isEmpty
                         && composerMentionedSkills.isEmpty
                         && composerReviewSelection == nil
+                        && !isSubagentsSelectionArmed
                         ? 14 : 8
                 )
                 .padding(.bottom, 12)
@@ -479,6 +500,40 @@ private struct TurnComposerReviewSelectionChip: View {
     }
 }
 
+private struct ComposerActionChip: View {
+    let title: String
+    let symbolName: String
+    let tintColor: Color
+    let removeAccessibilityLabel: String
+    let onRemove: () -> Void
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: symbolName)
+                .font(AppFont.system(size: 10, weight: .semibold))
+                .foregroundStyle(tintColor)
+
+            Text(title)
+                .font(AppFont.footnote(weight: .medium))
+                .foregroundStyle(tintColor)
+                .lineLimit(1)
+
+            Button(action: onRemove) {
+                Image(systemName: "xmark")
+                    .font(AppFont.system(size: 8, weight: .bold))
+                    .foregroundStyle(tintColor)
+                    .frame(width: 14, height: 14)
+                    .background(tintColor.opacity(0.14), in: Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(removeAccessibilityLabel)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(tintColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+    }
+}
+
 private struct SlashCommandAutocompletePanel: View {
     let state: TurnComposerSlashCommandPanelState
     let hasComposerContentConflictingWithReview: Bool
@@ -668,6 +723,8 @@ private struct SlashCommandAutocompletePanel: View {
             return !hasComposerContentConflictingWithReview
         case .status:
             return true
+        case .subagents:
+            return true
         }
     }
 
@@ -725,6 +782,7 @@ private struct QueuedDraftsPanelPreviewWrapper: View {
                 skillAutocompleteQuery: "",
                 slashCommandPanelState: .hidden,
                 composerReviewSelection: nil,
+                isSubagentsSelectionArmed: false,
                 hasComposerContentConflictingWithReview: false,
                 orderedModelOptions: [],
                 selectedModelID: nil,
@@ -769,6 +827,7 @@ private struct QueuedDraftsPanelPreviewWrapper: View {
                 onRemoveMentionedFile: { _ in },
                 onRemoveMentionedSkill: { _ in },
                 onRemoveComposerReviewSelection: {},
+                onRemoveComposerSubagentsSelection: {},
                 onPasteImageData: { _ in },
                 onResumeQueue: {},
                 onSteerQueuedDraft: { _ in },

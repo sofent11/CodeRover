@@ -164,6 +164,24 @@ extension CodeRoverService {
                     timelineStatus: timelineStatus
                 )
 
+            case "collabagenttoolcall", "collabtoolcall", "subagentaction":
+                guard let subagentAction = decodeSubagentActionItem(from: itemObject) else {
+                    return nil
+                }
+                return makeHistoryMessage(
+                    role: .system,
+                    kind: .subagentAction,
+                    text: subagentAction.summaryText,
+                    threadId: threadId,
+                    turnId: turnID,
+                    itemId: itemID,
+                    createdAt: timestamp,
+                    subagentAction: subagentAction,
+                    providerItemId: providerItemID,
+                    timelineOrdinal: timelineOrdinal,
+                    timelineStatus: timelineStatus
+                )
+
             default:
                 return nil
             }
@@ -227,6 +245,7 @@ extension CodeRoverService {
             + "itemTypes=\(typeSummary.isEmpty ? "none" : typeSummary)"
         )
 
+        registerSubagentThreads(from: result, parentThreadId: threadId)
         return result
     }
 
@@ -240,11 +259,12 @@ extension CodeRoverService {
         createdAt: Date,
         attachments: [ImageAttachment] = [],
         planState: CodeRoverPlanState? = nil,
+        subagentAction: CodeRoverSubagentAction? = nil,
         providerItemId: String? = nil,
         timelineOrdinal: Int? = nil,
         timelineStatus: String? = nil
     ) -> ChatMessage? {
-        guard !text.isEmpty || !attachments.isEmpty else {
+        guard !text.isEmpty || !attachments.isEmpty || subagentAction != nil else {
             return nil
         }
 
@@ -261,6 +281,7 @@ extension CodeRoverService {
             deliveryState: .confirmed,
             attachments: attachments,
             planState: planState,
+            subagentAction: subagentAction,
             providerItemId: providerItemId,
             timelineOrdinal: timelineOrdinal,
             timelineStatus: timelineStatus,
@@ -901,6 +922,366 @@ extension CodeRoverService {
             return nil
         }
         return flattened
+    }
+
+    func decodeSubagentActionItem(from itemObject: [String: JSONValue]) -> CodeRoverSubagentAction? {
+        ingestSubagentIdentityMetadata(from: itemObject)
+
+        let receiverThreadIds = decodeSubagentReceiverThreadIDs(from: itemObject)
+        let receiverAgents = decodeSubagentReceiverAgents(
+            from: itemObject,
+            fallbackThreadIds: receiverThreadIds
+        )
+        let agentStates = decodeSubagentAgentStates(from: itemObject)
+
+        let rawTool = firstStringValue(in: itemObject, keys: ["tool", "name"])
+        let tool = rawTool ?? inferToolFromEventType(itemObject) ?? "spawnAgent"
+        let status = firstStringValue(in: itemObject, keys: ["status"]) ?? "in_progress"
+        let prompt = firstStringValue(in: itemObject, keys: ["prompt", "task", "message"])
+        let model = normalizedIdentifier(
+            firstStringValue(
+                in: itemObject,
+                keys: ["model", "modelName", "model_name", "requestedModel", "requested_model"]
+            )
+        )
+
+        guard !receiverThreadIds.isEmpty
+            || !receiverAgents.isEmpty
+            || !agentStates.isEmpty
+            || prompt != nil
+            || model != nil else {
+            return nil
+        }
+
+        return CodeRoverSubagentAction(
+            tool: tool,
+            status: status,
+            prompt: prompt,
+            model: model,
+            receiverThreadIds: receiverThreadIds,
+            receiverAgents: receiverAgents,
+            agentStates: agentStates
+        )
+    }
+
+    private func ingestSubagentIdentityMetadata(from itemObject: [String: JSONValue]) {
+        func upsertIdentity(threadId: String?, agentId: String?, nickname: String?, role: String?) {
+            upsertSubagentIdentity(
+                threadId: threadId,
+                agentId: agentId,
+                nickname: nickname,
+                role: role
+            )
+        }
+
+        let extracted = extractSubagentIdentity(from: itemObject)
+        upsertIdentity(
+            threadId: extracted.threadId,
+            agentId: extracted.agentId,
+            nickname: extracted.nickname,
+            role: extracted.role
+        )
+
+        upsertIdentity(
+            threadId: firstStringValue(in: itemObject, keys: ["newThreadId", "new_thread_id"]),
+            agentId: firstStringValue(in: itemObject, keys: ["newAgentId", "new_agent_id"]),
+            nickname: firstStringValue(in: itemObject, keys: ["newAgentNickname", "new_agent_nickname"]),
+            role: firstStringValue(in: itemObject, keys: ["newAgentRole", "new_agent_role"])
+        )
+
+        upsertIdentity(
+            threadId: firstStringValue(in: itemObject, keys: ["receiverThreadId", "receiver_thread_id"]),
+            agentId: firstStringValue(in: itemObject, keys: ["receiverAgentId", "receiver_agent_id"]),
+            nickname: firstStringValue(in: itemObject, keys: ["receiverAgentNickname", "receiver_agent_nickname"]),
+            role: firstStringValue(in: itemObject, keys: ["receiverAgentRole", "receiver_agent_role"])
+        )
+
+        let receiverThreadIds = decodeSubagentReceiverThreadIDs(from: itemObject)
+        let receiverAgents = decodeSubagentReceiverAgents(from: itemObject, fallbackThreadIds: receiverThreadIds)
+        for agent in receiverAgents {
+            upsertIdentity(
+                threadId: agent.threadId,
+                agentId: agent.agentId,
+                nickname: agent.nickname,
+                role: agent.role
+            )
+        }
+    }
+
+    private func extractSubagentIdentity(from object: [String: JSONValue]) -> CodeRoverSubagentIdentityEntry {
+        let sourceObject = object["source"]?.objectValue
+        let subAgentObject = sourceObject?["subAgent"]?.objectValue ?? sourceObject?["sub_agent"]?.objectValue
+        let threadSpawnObject = subAgentObject?["thread_spawn"]?.objectValue ?? subAgentObject?["threadSpawn"]?.objectValue
+
+        return CodeRoverSubagentIdentityEntry(
+            threadId: normalizedIdentifier(
+                firstStringValue(
+                    in: object,
+                    keys: ["threadId", "thread_id", "conversationId", "conversation_id", "receiverThreadId", "receiver_thread_id"]
+                )
+            ) ?? normalizedIdentifier(firstStringValue(in: threadSpawnObject, keys: ["threadId", "thread_id"])),
+            agentId: normalizedIdentifier(firstStringValue(in: object, keys: ["agentId", "agent_id", "id"]))
+                ?? normalizedIdentifier(firstStringValue(in: threadSpawnObject, keys: ["agentId", "agent_id", "id"]))
+                ?? normalizedIdentifier(firstStringValue(in: subAgentObject, keys: ["agentId", "agent_id", "id"])),
+            nickname: normalizedIdentifier(
+                firstStringValue(in: object, keys: ["agentNickname", "agent_nickname", "nickname"])
+            ) ?? normalizedIdentifier(firstStringValue(in: threadSpawnObject, keys: ["agentNickname", "agent_nickname", "nickname", "name"]))
+                ?? normalizedIdentifier(firstStringValue(in: subAgentObject, keys: ["agentNickname", "agent_nickname", "nickname", "name"])),
+            role: normalizedIdentifier(
+                firstStringValue(in: object, keys: ["agentRole", "agent_role", "agentType", "agent_type"])
+            ) ?? normalizedIdentifier(firstStringValue(in: threadSpawnObject, keys: ["agentRole", "agent_role", "agentType", "agent_type"]))
+                ?? normalizedIdentifier(firstStringValue(in: subAgentObject, keys: ["agentRole", "agent_role", "agentType", "agent_type"]))
+        )
+    }
+
+    private func inferToolFromEventType(_ itemObject: [String: JSONValue]) -> String? {
+        guard let rawType = firstStringValue(in: itemObject, keys: ["type"]) else { return nil }
+        let normalized = rawType.lowercased()
+            .replacingOccurrences(of: "_", with: "")
+            .replacingOccurrences(of: "-", with: "")
+
+        if normalized.contains("spawn") { return "spawnAgent" }
+        if normalized.contains("waiting") || normalized.contains("wait") { return "wait" }
+        if normalized.contains("close") { return "closeAgent" }
+        if normalized.contains("resume") { return "resumeAgent" }
+        if normalized.contains("sendinput") || normalized.contains("interaction") { return "sendInput" }
+        return nil
+    }
+
+    private func decodeSubagentReceiverThreadIDs(from itemObject: [String: JSONValue]) -> [String] {
+        let candidate = firstValue(
+            forAnyKey: ["receiverThreadIds", "receiver_thread_ids", "threadIds", "thread_ids"],
+            in: .object(itemObject)
+        )
+        if let values = candidate?.arrayValue {
+            var threadIds: [String] = []
+            for value in values {
+                if let threadId = normalizedIdentifier(value.stringValue),
+                   !threadIds.contains(threadId) {
+                    threadIds.append(threadId)
+                }
+            }
+            if !threadIds.isEmpty { return threadIds }
+        }
+
+        if let singularId = normalizedIdentifier(
+            firstStringValue(
+                in: itemObject,
+                keys: [
+                    "receiverThreadId", "receiver_thread_id",
+                    "threadId", "thread_id",
+                    "newThreadId", "new_thread_id",
+                ]
+            )
+        ) {
+            return [singularId]
+        }
+
+        return []
+    }
+
+    private func decodeSubagentReceiverAgents(
+        from itemObject: [String: JSONValue],
+        fallbackThreadIds: [String]
+    ) -> [CodeRoverSubagentRef] {
+        let candidate = firstValue(
+            forAnyKey: ["receiverAgents", "receiver_agents", "agents"],
+            in: .object(itemObject)
+        )
+        if candidate?.arrayValue == nil || candidate?.arrayValue?.isEmpty == true {
+            return buildSyntheticAgentRefs(from: itemObject, fallbackThreadIds: fallbackThreadIds)
+        }
+        let values = candidate?.arrayValue ?? []
+
+        return values.enumerated().compactMap { index, value in
+            guard let object = value.objectValue else { return nil }
+
+            let fallbackThreadId = index < fallbackThreadIds.count ? fallbackThreadIds[index] : nil
+            let threadId = normalizedIdentifier(
+                firstStringValue(
+                    in: object,
+                    keys: [
+                        "threadId", "thread_id",
+                        "receiverThreadId", "receiver_thread_id",
+                        "newThreadId", "new_thread_id",
+                    ]
+                ) ?? fallbackThreadId
+            )
+            guard let threadId else { return nil }
+
+            return CodeRoverSubagentRef(
+                threadId: threadId,
+                agentId: normalizedIdentifier(
+                    firstStringValue(
+                        in: object,
+                        keys: [
+                            "agentId", "agent_id",
+                            "receiverAgentId", "receiver_agent_id",
+                            "newAgentId", "new_agent_id",
+                            "id",
+                        ]
+                    )
+                ),
+                nickname: normalizedIdentifier(
+                    firstStringValue(
+                        in: object,
+                        keys: [
+                            "agentNickname", "agent_nickname",
+                            "receiverAgentNickname", "receiver_agent_nickname",
+                            "newAgentNickname", "new_agent_nickname",
+                            "nickname", "name",
+                        ]
+                    )
+                ),
+                role: normalizedIdentifier(
+                    firstStringValue(
+                        in: object,
+                        keys: [
+                            "agentRole", "agent_role",
+                            "receiverAgentRole", "receiver_agent_role",
+                            "newAgentRole", "new_agent_role",
+                            "agentType", "agent_type",
+                        ]
+                    )
+                ),
+                model: normalizedIdentifier(
+                    firstStringValue(
+                        in: object,
+                        keys: [
+                            "modelProvider", "model_provider",
+                            "modelProviderId", "model_provider_id",
+                            "modelName", "model_name",
+                            "model",
+                        ]
+                    )
+                ),
+                prompt: normalizedIdentifier(
+                    firstStringValue(
+                        in: object,
+                        keys: ["prompt", "instructions", "instruction", "task", "message"]
+                    )
+                )
+            )
+        }
+    }
+
+    private func decodeSubagentAgentStates(from itemObject: [String: JSONValue]) -> [String: CodeRoverSubagentState] {
+        let candidate = firstValue(
+            forAnyKey: ["statuses", "agentsStates", "agents_states", "agentStates", "agent_states"],
+            in: .object(itemObject)
+        )
+
+        if let object = candidate?.objectValue {
+            var decoded: [String: CodeRoverSubagentState] = [:]
+            for (rawThreadId, value) in object {
+                let stateObject = value.objectValue
+                let threadId = normalizedIdentifier(rawThreadId)
+                    ?? normalizedIdentifier(firstStringValue(in: stateObject, keys: ["threadId", "thread_id"]))
+                guard let threadId else { continue }
+
+                decoded[threadId] = CodeRoverSubagentState(
+                    threadId: threadId,
+                    status: firstStringValue(in: stateObject, keys: ["status"]) ?? "unknown",
+                    message: firstStringValue(in: stateObject, keys: ["message", "text", "delta", "summary"])
+                )
+            }
+            return decoded
+        }
+
+        if let values = candidate?.arrayValue {
+            var decoded: [String: CodeRoverSubagentState] = [:]
+            for value in values {
+                guard let object = value.objectValue,
+                      let threadId = normalizedIdentifier(firstStringValue(in: object, keys: ["threadId", "thread_id"])) else {
+                    continue
+                }
+
+                decoded[threadId] = CodeRoverSubagentState(
+                    threadId: threadId,
+                    status: firstStringValue(in: object, keys: ["status"]) ?? "unknown",
+                    message: firstStringValue(in: object, keys: ["message", "text", "delta", "summary"])
+                )
+            }
+            return decoded
+        }
+
+        return [:]
+    }
+
+    private func buildSyntheticAgentRefs(
+        from itemObject: [String: JSONValue],
+        fallbackThreadIds: [String]
+    ) -> [CodeRoverSubagentRef] {
+        guard let threadId = fallbackThreadIds.first
+            ?? normalizedIdentifier(
+                firstStringValue(
+                    in: itemObject,
+                    keys: [
+                        "receiverThreadId", "receiver_thread_id",
+                        "threadId", "thread_id",
+                        "newThreadId", "new_thread_id",
+                    ]
+                )
+            ) else {
+            return []
+        }
+
+        let nickname = normalizedIdentifier(
+            firstStringValue(
+                in: itemObject,
+                keys: [
+                    "newAgentNickname", "new_agent_nickname",
+                    "agentNickname", "agent_nickname",
+                    "receiverAgentNickname", "receiver_agent_nickname",
+                ]
+            )
+        )
+        let role = normalizedIdentifier(
+            firstStringValue(
+                in: itemObject,
+                keys: [
+                    "receiverAgentRole", "receiver_agent_role",
+                    "newAgentRole", "new_agent_role",
+                    "agentRole", "agent_role",
+                    "agentType", "agent_type",
+                ]
+            )
+        )
+        let agentId = normalizedIdentifier(
+            firstStringValue(
+                in: itemObject,
+                keys: [
+                    "newAgentId", "new_agent_id",
+                    "agentId", "agent_id",
+                ]
+            )
+        )
+        let model = normalizedIdentifier(
+            firstStringValue(
+                in: itemObject,
+                keys: [
+                    "modelProvider", "model_provider",
+                    "modelProviderId", "model_provider_id",
+                    "modelName", "model_name",
+                    "model",
+                ]
+            )
+        )
+        let prompt = normalizedIdentifier(
+            firstStringValue(
+                in: itemObject,
+                keys: ["prompt", "instructions", "instruction", "task", "message"]
+            )
+        )
+
+        return [CodeRoverSubagentRef(
+            threadId: threadId,
+            agentId: agentId,
+            nickname: nickname,
+            role: role,
+            model: model,
+            prompt: prompt
+        )]
     }
 
     func decodeCommandExecutionItemText(from itemObject: [String: JSONValue]) -> String {

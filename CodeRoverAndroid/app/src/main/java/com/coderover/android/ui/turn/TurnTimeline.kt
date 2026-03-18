@@ -50,6 +50,7 @@ internal fun TurnTimeline(
     modifier: Modifier = Modifier,
     messages: List<ChatMessage>,
     renderItems: List<TimelineRenderItem>,
+    suppressEmptyState: Boolean = false,
     hasEarlierMessages: Boolean,
     onLoadEarlierMessages: () -> Unit,
     hasOlderHistory: Boolean,
@@ -59,6 +60,7 @@ internal fun TurnTimeline(
     activeTurnId: String?,
     assistantRevertPresentationByMessageId: Map<String, AssistantRevertPresentation>,
     onTapAssistantRevert: (ChatMessage) -> Unit,
+    onTapSubagentThread: (String) -> Unit,
     turnViewModel: TurnViewModel,
     onSubmitStructuredInput: (kotlinx.serialization.json.JsonElement, Map<String, String>) -> Unit,
 ) {
@@ -140,7 +142,7 @@ internal fun TurnTimeline(
             verticalArrangement = Arrangement.spacedBy(20.dp),
             contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 148.dp),
         ) {
-            if (messages.isEmpty()) {
+            if (messages.isEmpty() && !suppressEmptyState) {
                 item {
                     TurnTimelineEmptyState(isRunning = isRunning)
                 }
@@ -175,6 +177,7 @@ internal fun TurnTimeline(
                 TurnMessageBubble(
                     message = message,
                     onSubmitStructuredInput = onSubmitStructuredInput,
+                    onTapSubagentThread = onTapSubagentThread,
                     copyBlockText = copyBlockTextByMessageId[message.id],
                     assistantRevertPresentation = assistantRevertPresentationByMessageId[message.id],
                     onTapAssistantRevert = onTapAssistantRevert,

@@ -41,10 +41,15 @@ internal fun SlashCommandAutocompletePanel(
         is TurnComposerSlashCommandPanelState.Hidden -> Unit
         is TurnComposerSlashCommandPanelState.Commands -> {
             val query = state.query.trim().lowercase()
-            val commands = listOf(TurnComposerSlashCommand.CODE_REVIEW, TurnComposerSlashCommand.STATUS)
+            val commands = listOf(
+                TurnComposerSlashCommand.CODE_REVIEW,
+                TurnComposerSlashCommand.SUBAGENTS,
+                TurnComposerSlashCommand.STATUS,
+            )
                 .filter { command ->
                     val haystack = when (command) {
                         TurnComposerSlashCommand.CODE_REVIEW -> "review /review code review"
+                        TurnComposerSlashCommand.SUBAGENTS -> "subagents /subagents agent delegation parallel"
                         TurnComposerSlashCommand.STATUS -> "status /status"
                     }
                     query.isEmpty() || haystack.contains(query)
@@ -65,6 +70,7 @@ internal fun SlashCommandAutocompletePanel(
                     val isEnabled = isCommandEnabled(command, hasComposerContentConflictingWithReview)
                     val title = when (command) {
                         TurnComposerSlashCommand.CODE_REVIEW -> "/review"
+                        TurnComposerSlashCommand.SUBAGENTS -> "/subagents"
                         TurnComposerSlashCommand.STATUS -> "/status"
                     }
                     val subtitle = commandSubtitleFor(command, isEnabled, hasComposerContentConflictingWithReview)
@@ -196,6 +202,7 @@ private fun isCommandEnabled(
 ): Boolean {
     return when (command) {
         TurnComposerSlashCommand.CODE_REVIEW -> !hasComposerContentConflictingWithReview
+        TurnComposerSlashCommand.SUBAGENTS -> true
         TurnComposerSlashCommand.STATUS -> true
     }
 }
@@ -210,6 +217,7 @@ private fun commandSubtitleFor(
     }
     return when (command) {
         TurnComposerSlashCommand.CODE_REVIEW -> "Run the reviewer on local changes"
+        TurnComposerSlashCommand.SUBAGENTS -> "Allow the assistant to delegate to subagents"
         TurnComposerSlashCommand.STATUS -> "Show context usage and rate limits"
     }
 }

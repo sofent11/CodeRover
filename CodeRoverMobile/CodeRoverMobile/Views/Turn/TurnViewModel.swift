@@ -16,13 +16,14 @@ struct TurnComposerSendAvailability {
     let hasBlockingAttachmentState: Bool
     let hasReviewSelection: Bool
     let hasPendingReviewSelection: Bool
+    let hasSubagentsSelection: Bool
 
     // Evaluates whether sending is allowed for the current composer state.
     var isSendDisabled: Bool {
         isSending
             || !isConnected
             || hasPendingReviewSelection
-            || (trimmedInput.isEmpty && !hasReadyImages && !hasReviewSelection)
+            || (trimmedInput.isEmpty && !hasReadyImages && !hasReviewSelection && !hasSubagentsSelection)
             || hasBlockingAttachmentState
     }
 }
@@ -61,6 +62,7 @@ enum QueuePauseState: Equatable {
 enum TurnComposerSlashCommand: String, Identifiable, Equatable {
     case codeReview
     case status
+    case subagents
 
     var id: String { rawValue }
 
@@ -70,6 +72,8 @@ enum TurnComposerSlashCommand: String, Identifiable, Equatable {
             return "Code Review"
         case .status:
             return "Status"
+        case .subagents:
+            return "Subagents"
         }
     }
 
@@ -79,6 +83,8 @@ enum TurnComposerSlashCommand: String, Identifiable, Equatable {
             return "Run the reviewer on your local changes"
         case .status:
             return "Show context usage and rate limits"
+        case .subagents:
+            return "Delegate the task to subagents first"
         }
     }
 
@@ -88,6 +94,8 @@ enum TurnComposerSlashCommand: String, Identifiable, Equatable {
             return "ladybug"
         case .status:
             return "speedometer"
+        case .subagents:
+            return "person.3"
         }
     }
 
@@ -97,6 +105,17 @@ enum TurnComposerSlashCommand: String, Identifiable, Equatable {
             return "/review"
         case .status:
             return "/status"
+        case .subagents:
+            return "/subagents"
+        }
+    }
+
+    var cannedPrompt: String? {
+        switch self {
+        case .subagents:
+            return "Use subagents to help with this task when it makes sense."
+        case .codeReview, .status:
+            return nil
         }
     }
 
@@ -106,7 +125,7 @@ enum TurnComposerSlashCommand: String, Identifiable, Equatable {
 
     static func filtered(matching query: String) -> [TurnComposerSlashCommand] {
         let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let allCases: [TurnComposerSlashCommand] = [.codeReview, .status]
+        let allCases: [TurnComposerSlashCommand] = [.codeReview, .status, .subagents]
         guard !trimmedQuery.isEmpty else {
             return allCases
         }
@@ -158,13 +177,15 @@ enum TurnComposerCommandLogic {
         trimmedInput: String,
         mentionedFileCount: Int,
         mentionedSkillCount: Int,
-        attachmentCount: Int
+        attachmentCount: Int,
+        hasSubagentsSelection: Bool = false
     ) -> Bool {
         let draftText = removingTrailingSlashCommandToken(in: trimmedInput) ?? trimmedInput
         return !draftText.isEmpty
             || mentionedFileCount > 0
             || mentionedSkillCount > 0
             || attachmentCount > 0
+            || hasSubagentsSelection
     }
 
     static func trailingSlashCommandToken(in text: String) -> TurnTrailingSlashCommandToken? {
@@ -214,6 +235,7 @@ final class TurnViewModel {
         let rawSkillMentions: [TurnComposerMentionedSkill]
         let rawAttachments: [TurnComposerImageAttachment]
         let rawReviewSelection: TurnComposerReviewSelection?
+        let rawSubagentsSelectionArmed: Bool
     }
 
     // Splits contiguous filename segments into search-friendly word chunks.
@@ -235,6 +257,7 @@ final class TurnViewModel {
     var composerMentionedFiles: [TurnComposerMentionedFile] = []
     var composerMentionedSkills: [TurnComposerMentionedSkill] = []
     var composerReviewSelection: TurnComposerReviewSelection?
+    var isSubagentsSelectionArmed = false
     var fileAutocompleteItems: [FuzzyFileMatch] = []
     var isFileAutocompleteVisible = false
     var isFileAutocompleteLoading = false
@@ -345,7 +368,8 @@ final class TurnViewModel {
             trimmedInput: trimmedComposerInput,
             mentionedFileCount: composerMentionedFiles.count,
             mentionedSkillCount: composerMentionedSkills.count,
-            attachmentCount: composerAttachments.count
+            attachmentCount: composerAttachments.count,
+            hasSubagentsSelection: isSubagentsSelectionArmed
         )
     }
 
@@ -399,7 +423,8 @@ final class TurnViewModel {
             hasReadyImages: hasReadyImages,
             hasBlockingAttachmentState: hasBlockingAttachmentState,
             hasReviewSelection: hasComposerReviewSelection,
-            hasPendingReviewSelection: hasPendingComposerReviewSelection
+            hasPendingReviewSelection: hasPendingComposerReviewSelection,
+            hasSubagentsSelection: isSubagentsSelectionArmed
         ).isSendDisabled
     }
 
@@ -407,6 +432,7 @@ final class TurnViewModel {
         resetFileAutocompleteState()
         resetSkillAutocompleteState()
         resetSlashCommandState(clearPendingSelection: true, clearConfirmedSelection: true)
+        isSubagentsSelectionArmed = false
         input = ""
         composerAttachments.removeAll()
         composerMentionedFiles.removeAll()
@@ -695,13 +721,15 @@ final class TurnViewModel {
     }
 
     func onSelectSlashCommand(_ command: TurnComposerSlashCommand) {
-        removeTrailingSlashCommandTokenFromInputIfNeeded()
-
         switch command {
         case .codeReview:
+            removeTrailingSlashCommandTokenFromInputIfNeeded()
             armCodeReviewSelection(command: command, target: nil)
         case .status:
+            removeTrailingSlashCommandTokenFromInputIfNeeded()
             resetSlashCommandState(clearPendingSelection: true)
+        case .subagents:
+            armSubagentsSelection()
         }
     }
 
@@ -713,6 +741,11 @@ final class TurnViewModel {
     func clearComposerReviewSelection() {
         composerReviewSelection = nil
         resetSlashCommandState()
+    }
+
+    func clearSubagentsSelection() {
+        isSubagentsSelectionArmed = false
+        resetSlashCommandState(clearPendingSelection: true)
     }
 
     func removeMentionedFile(id: String) {
@@ -850,7 +883,7 @@ final class TurnViewModel {
         }
         let reviewSelection = composerReviewSelection
 
-        guard (!payload.isEmpty || !attachments.isEmpty || reviewSelection != nil),
+        guard (!payload.isEmpty || !attachments.isEmpty || reviewSelection != nil || isSubagentsSelectionArmed),
               !isSending,
               coderover.isConnected,
               !hasBlockingAttachmentState else {
@@ -878,7 +911,8 @@ final class TurnViewModel {
             rawFileMentions: composerMentionedFiles,
             rawSkillMentions: composerMentionedSkills,
             rawAttachments: composerAttachments,
-            rawReviewSelection: reviewSelection
+            rawReviewSelection: reviewSelection,
+            rawSubagentsSelectionArmed: isSubagentsSelectionArmed
         )
         let threadBusy = isThreadBusy(coderover: coderover, threadID: threadID)
         let queuePaused = isQueuePaused(coderover: coderover, threadID: threadID)
@@ -1556,6 +1590,7 @@ final class TurnViewModel {
         composerMentionedSkills = pendingSend.rawSkillMentions
         composerAttachments = pendingSend.rawAttachments
         composerReviewSelection = pendingSend.rawReviewSelection
+        isSubagentsSelectionArmed = pendingSend.rawSubagentsSelectionArmed
     }
 
     // Resolves the active turn id for manual steer without relying on async autoclosure operators.
@@ -1666,6 +1701,13 @@ final class TurnViewModel {
         slashCommandPanelState = (target == nil) ? .codeReviewTargets : .hidden
     }
 
+    private func armSubagentsSelection() {
+        removeTrailingSlashCommandTokenFromInputIfNeeded()
+        clearComposerReviewSelectionIfNeededForNonReviewContent()
+        isSubagentsSelectionArmed = true
+        resetSlashCommandState(clearPendingSelection: true)
+    }
+
     private func clearComposerReviewSelectionIfNeededForInput(_ text: String) {
         guard composerReviewSelection?.target != nil else {
             return
@@ -1686,24 +1728,37 @@ final class TurnViewModel {
 
     // Replaces inline `@filename` with `@fullpath` for each mentioned file.
     private func buildPayloadWithMentions() -> String {
-        var text = trimmedComposerInput
-        guard !composerMentionedFiles.isEmpty else {
-            return text
+        var text = input
+
+        if !composerMentionedFiles.isEmpty {
+            let ambiguousKeys = Self.ambiguousFileNameAliasKeys(in: composerMentionedFiles)
+
+            for mention in composerMentionedFiles {
+                let collisionKey = Self.fileNameAliasCollisionKey(for: mention.fileName)
+                let allowFileNameAliases = collisionKey.map { !ambiguousKeys.contains($0) } ?? true
+                text = Self.replacingFileMentionAliases(
+                    in: text,
+                    with: mention,
+                    allowFileNameAliases: allowFileNameAliases
+                )
+            }
         }
 
-        let ambiguousKeys = Self.ambiguousFileNameAliasKeys(in: composerMentionedFiles)
+        return Self.applyingSubagentsSelection(to: text, isSelected: isSubagentsSelectionArmed)
+    }
 
-        for mention in composerMentionedFiles {
-            let collisionKey = Self.fileNameAliasCollisionKey(for: mention.fileName)
-            let allowFileNameAliases = collisionKey.map { !ambiguousKeys.contains($0) } ?? true
-            text = Self.replacingFileMentionAliases(
-                in: text,
-                with: mention,
-                allowFileNameAliases: allowFileNameAliases
-            )
+    static func applyingSubagentsSelection(to text: String, isSelected: Bool) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard isSelected,
+              let cannedPrompt = TurnComposerSlashCommand.subagents.cannedPrompt else {
+            return trimmed
         }
 
-        return text
+        guard !trimmed.isEmpty else {
+            return cannedPrompt
+        }
+
+        return "\(cannedPrompt)\n\n\(trimmed)"
     }
 
     private func reviewBaseBranchName(for selection: TurnComposerReviewSelection) -> String? {

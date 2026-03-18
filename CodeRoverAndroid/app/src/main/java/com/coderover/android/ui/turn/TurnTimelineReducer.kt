@@ -54,7 +54,8 @@ internal fun projectTimelineMessages(messages: List<ChatMessage>): List<ChatMess
     val reordered = enforceIntraTurnOrder(visibleMessages)
     val collapsedThinking = collapseConsecutiveThinkingMessages(reordered)
     val dedupedFileChanges = removeDuplicateFileChangeMessages(collapsedThinking)
-    return removeDuplicateAssistantMessages(dedupedFileChanges)
+    val dedupedSubagentActions = removeDuplicateSubagentActionMessages(dedupedFileChanges)
+    return removeDuplicateAssistantMessages(dedupedSubagentActions)
 }
 
 internal fun assistantResponseAnchorMessageId(
@@ -215,13 +216,46 @@ private fun intraTurnPriority(message: ChatMessage): Int {
         MessageRole.SYSTEM -> when (message.kind) {
             MessageKind.THINKING -> 1
             MessageKind.COMMAND_EXECUTION -> 2
-            MessageKind.CHAT, MessageKind.PLAN -> 3
+            MessageKind.SUBAGENT_ACTION -> 3
+            MessageKind.CHAT, MessageKind.PLAN -> 4
             MessageKind.FILE_CHANGE -> 5
             MessageKind.USER_INPUT_PROMPT -> 6
         }
 
         MessageRole.ASSISTANT -> 4
     }
+}
+
+private fun removeDuplicateSubagentActionMessages(messages: List<ChatMessage>): List<ChatMessage> {
+    val latestIndexByKey = mutableMapOf<String, Int>()
+    messages.forEachIndexed { index, message ->
+        val key = duplicateSubagentActionKey(message) ?: return@forEachIndexed
+        latestIndexByKey[key] = index
+    }
+    return messages.filterIndexed { index, message ->
+        val key = duplicateSubagentActionKey(message) ?: return@filterIndexed true
+        latestIndexByKey[key] == index
+    }
+}
+
+private fun duplicateSubagentActionKey(message: ChatMessage): String? {
+    if (message.role != MessageRole.SYSTEM || message.kind != MessageKind.SUBAGENT_ACTION) {
+        return null
+    }
+    val turnId = normalizedIdentifier(message.turnId) ?: return null
+    val action = message.subagentAction
+    val threadIds = action?.agentRows?.map { normalizedIdentifier(it.threadId) ?: it.threadId }
+        ?.filter(String::isNotBlank)
+        ?.sorted()
+        ?.joinToString(",")
+        .orEmpty()
+    val tool = action?.normalizedTool ?: "tool"
+    val status = action?.status?.trim()?.lowercase().orEmpty()
+    val text = message.text.trim()
+    if (text.isEmpty() && threadIds.isEmpty()) {
+        return null
+    }
+    return "$turnId|$tool|$status|$threadIds|$text"
 }
 
 private fun removeHiddenSystemMarkers(messages: List<ChatMessage>): List<ChatMessage> {

@@ -1,6 +1,7 @@
 package com.coderover.android.ui.turn
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -13,8 +14,13 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Checklist
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -142,6 +148,139 @@ internal fun PlanMessageContent(message: ChatMessage) {
                 textColor = MaterialTheme.colorScheme.onSurface,
                 textStyle = MaterialTheme.typography.bodyMedium,
             )
+        }
+    }
+}
+
+@Composable
+internal fun PlanExecutionAccessory(
+    message: ChatMessage,
+    modifier: Modifier = Modifier,
+    onTap: () -> Unit,
+) {
+    val steps = message.planState?.steps.orEmpty()
+    val completedCount = steps.count { it.status == PlanStepStatus.COMPLETED }
+    val highlightedStep = steps.firstOrNull { it.status == PlanStepStatus.IN_PROGRESS }
+        ?: steps.firstOrNull { it.status == PlanStepStatus.PENDING }
+        ?: steps.lastOrNull()
+    val summaryText = highlightedStep?.step
+        ?: message.planState?.explanation?.trim()?.takeIf(String::isNotEmpty)
+        ?: message.text.trim().ifEmpty { "Open plan details" }
+    val statusLabel = when {
+        steps.any { it.status == PlanStepStatus.IN_PROGRESS } -> "In progress"
+        steps.isNotEmpty() && completedCount == steps.size -> "Completed"
+        else -> "Pending"
+    }
+    val statusColor = when (statusLabel) {
+        "In progress" -> PlanAccent
+        "Completed" -> CommandAccent
+        else -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f)
+    }
+
+    Surface(
+        shape = RoundedCornerShape(24.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.78f),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.08f)),
+        modifier = modifier
+            .fillMaxWidth()
+            .clickable(onClick = onTap),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(32.dp)
+                    .background(PlanAccent.copy(alpha = 0.14f), CircleShape),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.Checklist,
+                    contentDescription = null,
+                    tint = PlanAccent,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = "Plan",
+                        style = MaterialTheme.typography.labelMedium.copy(fontFamily = monoFamily),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Surface(
+                        shape = RoundedCornerShape(999.dp),
+                        color = statusColor.copy(alpha = 0.12f),
+                    ) {
+                        Text(
+                            text = statusLabel,
+                            style = MaterialTheme.typography.labelSmall.copy(fontFamily = monoFamily),
+                            color = statusColor,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                        )
+                    }
+                    if (message.isStreaming) {
+                        CircularProgressIndicator(modifier = Modifier.size(12.dp), strokeWidth = 1.5.dp)
+                    }
+                }
+                Text(
+                    text = summaryText,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                )
+            }
+
+            Text(
+                text = if (steps.isEmpty()) "Plan" else "$completedCount/${steps.size}",
+                style = MaterialTheme.typography.titleMedium.copy(fontFamily = monoFamily),
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+internal fun PlanExecutionSheet(
+    message: ChatMessage,
+    onDismiss: () -> Unit,
+) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        containerColor = Color.Transparent,
+        dragHandle = null,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 18.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(30.dp),
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
+                tonalElevation = 8.dp,
+                shadowElevation = 10.dp,
+            ) {
+                Column(
+                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 18.dp),
+                    verticalArrangement = Arrangement.spacedBy(18.dp),
+                ) {
+                    Text("Active plan", style = MaterialTheme.typography.titleMedium)
+                    PlanMessageContent(message)
+                }
+            }
         }
     }
 }

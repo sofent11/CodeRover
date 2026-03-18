@@ -20,6 +20,11 @@ data class SidebarThreadGroup(
 val SidebarThreadGroup.hasMoreThreads: Boolean
     get() = kind == SidebarThreadGroupKind.PROJECT && threads.size < totalThreadCount
 
+data class SidebarSubagentHierarchy(
+    val rootThreads: List<ThreadSummary>,
+    val childrenByParentId: Map<String, List<ThreadSummary>>,
+)
+
 fun buildSidebarThreadGroups(
     threads: List<ThreadSummary>,
     query: String,
@@ -76,4 +81,25 @@ fun buildSidebarThreadGroups(
             )
         }
     }
+}
+
+fun buildSidebarSubagentHierarchy(groupThreads: List<ThreadSummary>): SidebarSubagentHierarchy {
+    val sortedThreads = groupThreads.sortedByDescending { it.updatedAt ?: it.createdAt ?: 0L }
+    val childrenByParentId = sortedThreads
+        .filter(ThreadSummary::isSubagent)
+        .groupBy { it.parentThreadId.orEmpty() }
+        .mapValues { (_, children) ->
+            children.sortedByDescending { it.updatedAt ?: it.createdAt ?: 0L }
+        }
+
+    val threadIds = sortedThreads.map(ThreadSummary::id).toSet()
+    val rootThreads = sortedThreads.filter { thread ->
+        val parentId = thread.parentThreadId
+        parentId.isNullOrBlank() || parentId !in threadIds
+    }
+
+    return SidebarSubagentHierarchy(
+        rootThreads = rootThreads,
+        childrenByParentId = childrenByParentId,
+    )
 }

@@ -213,6 +213,32 @@ class ThreadSummaryRefreshTest {
     }
 
     @Test
+    fun threadSummaryFromJsonReadsSubagentMetadata() {
+        val summary = ThreadSummary.fromJson(
+            JsonObject(
+                mapOf(
+                    "id" to JsonPrimitive("child-thread"),
+                    "provider" to JsonPrimitive("codex"),
+                    "metadata" to JsonObject(
+                        mapOf(
+                            "parentThreadId" to JsonPrimitive("parent-thread"),
+                            "agentNickname" to JsonPrimitive("Scout"),
+                            "agentRole" to JsonPrimitive("explorer"),
+                            "modelProvider" to JsonPrimitive("gpt-5.4"),
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+        assertEquals("parent-thread", summary?.parentThreadId)
+        assertEquals("Scout", summary?.agentNickname)
+        assertEquals("explorer", summary?.agentRole)
+        assertEquals("gpt-5.4", summary?.modelProvider)
+        assertTrue(summary?.isSubagent == true)
+    }
+
+    @Test
     fun hasOptimisticLocalUserTailMessageMatchesLatestLocalUserForTurn() {
         val messages = listOf(
             ChatMessage(

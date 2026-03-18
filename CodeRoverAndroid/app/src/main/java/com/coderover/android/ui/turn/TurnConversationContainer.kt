@@ -4,11 +4,12 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.material3.Button
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Text
+import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.coderover.android.app.AppViewModel
@@ -24,6 +25,7 @@ import com.coderover.android.data.model.TurnSkillMention
 @Composable
 internal fun TurnConversationContainer(
     state: AppState,
+    threadId: String,
     input: String,
     messages: List<ChatMessage>,
     renderItems: List<TimelineRenderItem>,
@@ -50,8 +52,22 @@ internal fun TurnConversationContainer(
     onDeny: () -> Unit,
     onSubmitStructuredInput: (kotlinx.serialization.json.JsonElement, Map<String, String>) -> Unit,
     onTapAssistantRevert: (ChatMessage) -> Unit,
+    onTapSubagentThread: (String) -> Unit,
     viewModel: AppViewModel,
 ) {
+    var isShowingPinnedPlanSheet by remember(threadId) { mutableStateOf(false) }
+    val pinnedTaskPlanMessage = remember(messages) {
+        messages.lastOrNull { it.kind == com.coderover.android.data.model.MessageKind.PLAN }
+    }
+    val timelineMessages = remember(messages) {
+        messages.filterNot { it.kind == com.coderover.android.data.model.MessageKind.PLAN }
+    }
+    val timelineRenderItems = remember(renderItems, timelineMessages) {
+        renderItems.filter { item ->
+            (item as? TimelineRenderItem.Message)?.message?.kind != com.coderover.android.data.model.MessageKind.PLAN
+        }
+    }
+
     Column(modifier = Modifier.fillMaxSize()) {
         Box(
             modifier = Modifier
@@ -60,8 +76,9 @@ internal fun TurnConversationContainer(
         ) {
             TurnTimeline(
                 modifier = Modifier.fillMaxSize(),
-                messages = messages,
-                renderItems = renderItems,
+                messages = timelineMessages,
+                renderItems = timelineRenderItems,
+                suppressEmptyState = pinnedTaskPlanMessage != null && timelineMessages.isEmpty(),
                 hasEarlierMessages = hasEarlierMessages,
                 onLoadEarlierMessages = onLoadEarlierMessages,
                 hasOlderHistory = hasOlderHistory,
@@ -71,6 +88,7 @@ internal fun TurnConversationContainer(
                 activeTurnId = activeTurnId,
                 assistantRevertPresentationByMessageId = assistantRevertPresentationByMessageId,
                 onTapAssistantRevert = onTapAssistantRevert,
+                onTapSubagentThread = onTapSubagentThread,
                 turnViewModel = turnViewModel,
                 onSubmitStructuredInput = onSubmitStructuredInput,
             )
@@ -81,6 +99,14 @@ internal fun TurnConversationContainer(
                 approval = approval,
                 onApprove = onApprove,
                 onDeny = onDeny,
+            )
+        }
+
+        pinnedTaskPlanMessage?.let { planMessage ->
+            PlanExecutionAccessory(
+                message = planMessage,
+                onTap = { isShowingPinnedPlanSheet = true },
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
             )
         }
 
@@ -99,6 +125,13 @@ internal fun TurnConversationContainer(
             onSelectAccessMode = onSelectAccessMode,
             turnViewModel = turnViewModel,
             viewModel = viewModel,
+        )
+    }
+
+    if (isShowingPinnedPlanSheet && pinnedTaskPlanMessage != null) {
+        PlanExecutionSheet(
+            message = pinnedTaskPlanMessage,
+            onDismiss = { isShowingPinnedPlanSheet = false },
         )
     }
 }

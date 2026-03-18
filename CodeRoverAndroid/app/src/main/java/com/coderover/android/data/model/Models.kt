@@ -317,15 +317,50 @@ data class ThreadSummary(
     val provider: String = "codex",
     val providerSessionId: String? = null,
     val capabilities: RuntimeCapabilities? = RuntimeCapabilities.CODEX_DEFAULT,
+    val parentThreadId: String? = null,
+    val agentId: String? = null,
+    val agentNickname: String? = null,
+    val agentRole: String? = null,
+    val model: String? = null,
+    val modelProvider: String? = null,
     val syncState: ThreadSyncState = ThreadSyncState.LIVE,
 ) {
     val displayTitle: String
         get() {
-            val resolved = listOf(name, title, preview)
+            val resolved = listOf(name, agentDisplayLabel, title, preview)
                 .mapNotNull { it?.trim()?.takeIf(String::isNotEmpty) }
-                .firstOrNull()
+                .firstOrNull {
+                    it.equals("Conversation", ignoreCase = true).not() || preview == it
+                }
             return resolved ?: "Conversation"
         }
+
+    val isSubagent: Boolean
+        get() = !parentThreadId.isNullOrBlank()
+
+    val preferredSubagentLabel: String?
+        get() {
+            if (!isSubagent) return null
+            return listOf(agentDisplayLabel, name, title)
+                .mapNotNull { it?.trim()?.takeIf(String::isNotEmpty) }
+                .firstOrNull { !it.equals("Conversation", ignoreCase = true) }
+        }
+
+    val agentDisplayLabel: String?
+        get() {
+            val nickname = agentNickname?.trim()?.takeIf(String::isNotEmpty)
+            val role = agentRole?.trim()?.takeIf(String::isNotEmpty)
+            return when {
+                nickname != null && role != null -> "$nickname [$role]"
+                nickname != null -> nickname
+                role != null -> role.replaceFirstChar { it.uppercase() }
+                else -> null
+            }
+        }
+
+    val modelDisplayLabel: String?
+        get() = modelProvider?.trim()?.takeIf(String::isNotEmpty)
+            ?: model?.trim()?.takeIf(String::isNotEmpty)
 
     val normalizedProjectPath: String?
         get() = cwd?.trim()?.trimEnd('/')?.takeIf(String::isNotEmpty)
@@ -359,6 +394,48 @@ data class ThreadSummary(
                 provider = json.string("provider") ?: "codex",
                 providerSessionId = json.string("providerSessionId"),
                 capabilities = RuntimeCapabilities.fromJson(json["capabilities"]?.jsonObjectOrNull()),
+                parentThreadId = firstNonBlank(
+                    json.string("parentThreadId"),
+                    json.string("parent_thread_id"),
+                    json["metadata"]?.jsonObjectOrNull()?.string("parentThreadId"),
+                    json["metadata"]?.jsonObjectOrNull()?.string("parent_thread_id"),
+                ),
+                agentId = firstNonBlank(
+                    json.string("agentId"),
+                    json.string("agent_id"),
+                    json["metadata"]?.jsonObjectOrNull()?.string("agentId"),
+                    json["metadata"]?.jsonObjectOrNull()?.string("agent_id"),
+                ),
+                agentNickname = firstNonBlank(
+                    json.string("agentNickname"),
+                    json.string("agent_nickname"),
+                    json["metadata"]?.jsonObjectOrNull()?.string("agentNickname"),
+                    json["metadata"]?.jsonObjectOrNull()?.string("agent_nickname"),
+                    json["metadata"]?.jsonObjectOrNull()?.string("nickname"),
+                    json["metadata"]?.jsonObjectOrNull()?.string("name"),
+                ),
+                agentRole = firstNonBlank(
+                    json.string("agentRole"),
+                    json.string("agent_role"),
+                    json["metadata"]?.jsonObjectOrNull()?.string("agentRole"),
+                    json["metadata"]?.jsonObjectOrNull()?.string("agent_role"),
+                    json["metadata"]?.jsonObjectOrNull()?.string("agentType"),
+                    json["metadata"]?.jsonObjectOrNull()?.string("agent_type"),
+                ),
+                model = firstNonBlank(
+                    json.string("model"),
+                    json["metadata"]?.jsonObjectOrNull()?.string("model"),
+                    json["metadata"]?.jsonObjectOrNull()?.string("modelName"),
+                    json["metadata"]?.jsonObjectOrNull()?.string("model_name"),
+                ),
+                modelProvider = firstNonBlank(
+                    json.string("modelProvider"),
+                    json.string("model_provider"),
+                    json["metadata"]?.jsonObjectOrNull()?.string("modelProvider"),
+                    json["metadata"]?.jsonObjectOrNull()?.string("model_provider"),
+                    json["metadata"]?.jsonObjectOrNull()?.string("modelProviderId"),
+                    json["metadata"]?.jsonObjectOrNull()?.string("model_provider_id"),
+                ),
                 syncState = if (json.string("syncState") == "archivedLocal") {
                     ThreadSyncState.ARCHIVED_LOCAL
                 } else {
@@ -382,8 +459,103 @@ enum class MessageKind {
     THINKING,
     FILE_CHANGE,
     COMMAND_EXECUTION,
+    SUBAGENT_ACTION,
     PLAN,
     USER_INPUT_PROMPT,
+}
+
+@Serializable
+data class SubagentRef(
+    val threadId: String,
+    val agentId: String? = null,
+    val nickname: String? = null,
+    val role: String? = null,
+    val model: String? = null,
+    val prompt: String? = null,
+)
+
+@Serializable
+data class SubagentState(
+    val threadId: String,
+    val status: String,
+    val message: String? = null,
+)
+
+@Serializable
+data class SubagentThreadPresentation(
+    val threadId: String,
+    val agentId: String? = null,
+    val nickname: String? = null,
+    val role: String? = null,
+    val model: String? = null,
+    val modelIsRequestedHint: Boolean = false,
+    val prompt: String? = null,
+    val fallbackStatus: String? = null,
+    val fallbackMessage: String? = null,
+) {
+    val displayLabel: String
+        get() {
+            val trimmedNickname = nickname?.trim()?.takeIf(String::isNotEmpty)
+            val trimmedRole = role?.trim()?.takeIf(String::isNotEmpty)
+            return when {
+                trimmedNickname != null && trimmedRole != null -> "$trimmedNickname [$trimmedRole]"
+                trimmedNickname != null -> trimmedNickname
+                trimmedRole != null -> trimmedRole.replaceFirstChar { it.uppercase() }
+                else -> "Agent"
+            }
+        }
+}
+
+@Serializable
+data class SubagentAction(
+    val tool: String,
+    val status: String,
+    val prompt: String? = null,
+    val model: String? = null,
+    val receiverThreadIds: List<String> = emptyList(),
+    val receiverAgents: List<SubagentRef> = emptyList(),
+    val agentStates: Map<String, SubagentState> = emptyMap(),
+) {
+    val normalizedTool: String
+        get() = tool.trim().lowercase().replace("_", "").replace("-", "")
+
+    val agentRows: List<SubagentThreadPresentation>
+        get() {
+            val orderedThreadIds = buildList {
+                receiverThreadIds.forEach { if (it !in this) add(it) }
+                receiverAgents.map(SubagentRef::threadId).forEach { if (it !in this) add(it) }
+                agentStates.keys.sorted().forEach { if (it !in this) add(it) }
+            }
+            return orderedThreadIds.map { threadId ->
+                val matchingAgent = receiverAgents.firstOrNull { it.threadId == threadId }
+                val matchingState = agentStates[threadId]
+                SubagentThreadPresentation(
+                    threadId = threadId,
+                    agentId = matchingAgent?.agentId,
+                    nickname = matchingAgent?.nickname,
+                    role = matchingAgent?.role,
+                    model = matchingAgent?.model ?: model,
+                    modelIsRequestedHint = matchingAgent?.model == null && model != null,
+                    prompt = matchingAgent?.prompt,
+                    fallbackStatus = matchingState?.status,
+                    fallbackMessage = matchingState?.message,
+                )
+            }
+        }
+
+    val summaryText: String
+        get() {
+            val count = maxOf(1, receiverThreadIds.size, receiverAgents.size, agentRows.size)
+            val noun = if (count == 1) "agent" else "agents"
+            return when (normalizedTool) {
+                "spawnagent" -> "Spawning $count $noun"
+                "wait", "waitagent" -> "Waiting on $count $noun"
+                "sendinput" -> "Sending input to $count $noun"
+                "resumeagent" -> "Resuming $count $noun"
+                "closeagent" -> "Closing $count $noun"
+                else -> "Coordinating $count $noun"
+            }
+        }
 }
 
 @Serializable
@@ -507,6 +679,7 @@ data class ChatMessage(
     val attachments: List<ImageAttachment> = emptyList(),
     val fileChanges: List<FileChangeEntry> = emptyList(),
     val commandState: CommandState? = null,
+    val subagentAction: SubagentAction? = null,
     val planState: PlanState? = null,
     val structuredUserInputRequest: StructuredUserInputRequest? = null,
     val providerItemId: String? = null,
@@ -1011,3 +1184,7 @@ data class QueuedTurnDraft(
     val skillMentions: List<TurnSkillMention> = emptyList(),
     val usePlanMode: Boolean,
 )
+
+private fun firstNonBlank(vararg values: String?): String? {
+    return values.firstOrNull { !it.isNullOrBlank() }?.trim()
+}

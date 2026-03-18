@@ -20,6 +20,29 @@ struct ThinkingDisclosureContent: Equatable {
 }
 
 enum ThinkingDisclosureParser {
+    private static let compactActivityPrefixes = [
+        "running ",
+        "completed ",
+        "failed ",
+        "stopped ",
+        "read ",
+        "search ",
+        "searched ",
+        "exploring ",
+        "list ",
+        "listing ",
+        "open ",
+        "opened ",
+        "find ",
+        "finding ",
+        "edit ",
+        "edited ",
+        "write ",
+        "wrote ",
+        "apply ",
+        "applied ",
+    ]
+
     // Extracts compact summary anchors from standalone bold reasoning lines.
     static func parse(from rawText: String) -> ThinkingDisclosureContent {
         let normalizedText = normalizedThinkingContent(from: rawText)
@@ -106,6 +129,34 @@ enum ThinkingDisclosureParser {
         }
 
         return trimmed
+    }
+
+    // Collapses pure activity traces to a single preview line while preserving wrapped rows.
+    static func compactActivityPreview(fromNormalizedText normalizedText: String) -> String? {
+        let lines = normalizedText
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        guard !lines.isEmpty else {
+            return nil
+        }
+
+        let activityLines = lines.filter { line in
+            let normalizedLine = line.lowercased()
+            return compactActivityPrefixes.contains(where: { normalizedLine.hasPrefix($0) })
+        }
+
+        let isActivityOnly = activityLines.count == lines.count
+
+        guard isActivityOnly else {
+            if activityLines.count == 1, let firstActivityLine = activityLines.first {
+                return firstActivityLine
+            }
+            return nil
+        }
+
+        return activityLines.last
     }
 
     private static func summaryTitle(from line: String) -> String? {

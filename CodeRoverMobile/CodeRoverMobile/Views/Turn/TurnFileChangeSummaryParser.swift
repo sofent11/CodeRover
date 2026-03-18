@@ -231,6 +231,26 @@ enum TurnFileChangeSummaryParser {
         return TurnFileChangeSummary(entries: entries)
     }
 
+    // Produces a stable identifier for repeated file-change snapshots within the same turn.
+    static func dedupeKey(from text: String) -> String? {
+        if let summary = parse(from: text) {
+            let components = summary.entries
+                .sorted { $0.path < $1.path }
+                .map { entry in
+                    let action = entry.action?.rawValue ?? "unknown"
+                    return "\(entry.path)|\(action)|+\(entry.additions)|-\(entry.deletions)"
+                }
+            if !components.isEmpty {
+                return components.joined(separator: "||")
+            }
+        }
+
+        let normalizedText = text
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "\r\n", with: "\n")
+        return normalizedText.isEmpty ? nil : normalizedText
+    }
+
     private static func parsePathLine(_ line: String) -> String? {
         guard line.lowercased().hasPrefix("path:") else { return nil }
         let value = line.dropFirst("Path:".count).trimmingCharacters(in: .whitespacesAndNewlines)

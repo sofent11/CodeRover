@@ -126,6 +126,12 @@ struct TurnView: View {
             onTapAssistantRevert: { message in
                 startAssistantRevertPreview(message: message, gitWorkingDirectory: gitWorkingDirectory)
             },
+            onTapSubagent: { subagent in
+                Task { @MainActor in
+                    coderover.activeThreadId = subagent.threadId
+                    await coderover.prepareThreadForDisplay(threadId: subagent.threadId)
+                }
+            },
             onTapOutsideComposer: {
                 guard isInputFocused else { return }
                 isInputFocused = false

@@ -22,6 +22,7 @@ data class TurnComposerPresentationState(
     val hasComposerContent: Boolean,
     val canSend: Boolean,
     val hasPendingReviewSelection: Boolean,
+    val hasSubagentsSelection: Boolean,
 )
 
 data class TurnQueuePresentationState(
@@ -48,6 +49,7 @@ data class TurnComposerAttachmentIntakePlan(
 enum class TurnComposerSlashCommand {
     CODE_REVIEW,
     STATUS,
+    SUBAGENTS,
 }
 
 enum class TurnComposerReviewTarget {
@@ -104,6 +106,7 @@ class TurnViewModel {
     var composerMentionedSkills by mutableStateOf<List<TurnComposerMentionedSkill>>(emptyList())
     var composerAttachments by mutableStateOf<List<TurnComposerImageAttachment>>(emptyList())
     var composerReviewSelection by mutableStateOf<TurnComposerReviewSelection?>(null)
+    var isSubagentsSelectionArmed by mutableStateOf(false)
     var slashCommandPanelState by mutableStateOf<TurnComposerSlashCommandPanelState>(TurnComposerSlashCommandPanelState.Hidden)
     var visibleTailCount by mutableStateOf(40)
 
@@ -120,7 +123,8 @@ class TurnViewModel {
     val hasComposerContentConflictingWithReview: Boolean
         get() = composerMentionedFiles.isNotEmpty() ||
             composerMentionedSkills.isNotEmpty() ||
-            composerAttachments.isNotEmpty()
+            composerAttachments.isNotEmpty() ||
+            isSubagentsSelectionArmed
 
     val hasBlockingAttachmentState: Boolean
         get() = composerAttachments.any {
@@ -175,13 +179,15 @@ class TurnViewModel {
             composerMentionedFiles.isNotEmpty() ||
             composerMentionedSkills.isNotEmpty() ||
             composerAttachments.isNotEmpty() ||
-            hasConfirmedReviewSelection
+            hasConfirmedReviewSelection ||
+            isSubagentsSelectionArmed
         return TurnComposerPresentationState(
             queuedDraftCount = queuedDraftCount,
             isQueuePaused = queuePauseMessage != null && queuedDraftCount > 0,
             hasComposerContent = hasComposerContent,
             canSend = isConnected && !hasBlockingAttachmentState && hasComposerContent && !hasPendingReviewSelection,
             hasPendingReviewSelection = hasPendingReviewSelection,
+            hasSubagentsSelection = isSubagentsSelectionArmed,
         )
     }
 
@@ -240,6 +246,7 @@ class TurnViewModel {
         isScrolledToBottom = true
         composerNoticeMessage = null
         runningGitAction = null
+        isSubagentsSelectionArmed = false
         clearComposerSelections()
         resetSlashCommandState(clearPendingSelection = true, clearConfirmedSelection = true)
     }
@@ -338,7 +345,7 @@ class TurnViewModel {
         composerMentionedFiles.forEach { mention ->
             output = output.replace("@${mention.fileName}", "@${mention.path}")
         }
-        return output
+        return applySubagentsSelection(output)
     }
 
     fun clearComposerSelections() {
@@ -346,6 +353,7 @@ class TurnViewModel {
         composerMentionedSkills = emptyList()
         composerAttachments = emptyList()
         composerNoticeMessage = null
+        isSubagentsSelectionArmed = false
         resetSlashCommandState(clearPendingSelection = true, clearConfirmedSelection = true)
     }
 
@@ -540,6 +548,12 @@ class TurnViewModel {
             TurnComposerSlashCommand.STATUS -> {
                 resetSlashCommandState(clearPendingSelection = true)
             }
+
+            TurnComposerSlashCommand.SUBAGENTS -> {
+                clearComposerReviewSelectionIfNeededForNonReviewContent()
+                isSubagentsSelectionArmed = true
+                resetSlashCommandState(clearPendingSelection = true)
+            }
         }
         return updatedInput.trim()
     }
@@ -567,8 +581,22 @@ class TurnViewModel {
         resetSlashCommandState()
     }
 
+    fun clearSubagentsSelection() {
+        isSubagentsSelectionArmed = false
+        resetSlashCommandState(clearPendingSelection = true)
+    }
+
     fun reviewBaseBranchName(state: AppState): String? {
         return state.selectedGitBaseBranch?.trim()?.takeIf(String::isNotEmpty)
+    }
+
+    fun applySubagentsSelection(input: String): String {
+        val trimmed = input.trim()
+        if (!isSubagentsSelectionArmed) {
+            return trimmed
+        }
+        val cannedPrompt = "Use subagents to help with this task when it makes sense."
+        return if (trimmed.isEmpty()) cannedPrompt else "$cannedPrompt\n\n$trimmed"
     }
 
     private fun resetSlashCommandState(

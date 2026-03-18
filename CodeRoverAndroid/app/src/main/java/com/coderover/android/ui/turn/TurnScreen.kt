@@ -117,6 +117,7 @@ fun TurnScreen(
     }
     TurnConversationContainer(
         state = state,
+        threadId = thread.id,
         input = input,
         messages = visibleMessages,
         renderItems = renderItems,
@@ -152,6 +153,9 @@ fun TurnScreen(
         onSubmitStructuredInput = onSubmitStructuredInput,
         onTapAssistantRevert = { message ->
             viewModel.revertAssistantMessage(message.id)
+        },
+        onTapSubagentThread = { subagentThreadId ->
+            viewModel.selectThread(subagentThreadId)
         },
         viewModel = viewModel,
     )

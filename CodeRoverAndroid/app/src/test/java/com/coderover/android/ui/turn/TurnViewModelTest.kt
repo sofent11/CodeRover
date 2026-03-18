@@ -263,6 +263,43 @@ class TurnViewModelTest {
     }
 
     @Test
+    fun selectingSubagentsArmsDelegationAndAllowsCommandOnlySend() {
+        val viewModel = TurnViewModel()
+
+        val updatedInput = viewModel.onSelectSlashCommand("/subagents", TurnComposerSlashCommand.SUBAGENTS)
+        val presentation = viewModel.composerPresentation(
+            input = updatedInput,
+            isConnected = true,
+            queuedDraftCount = 0,
+            queuePauseMessage = null,
+        )
+
+        assertEquals("", updatedInput)
+        assertTrue(viewModel.isSubagentsSelectionArmed)
+        assertTrue(presentation.hasComposerContent)
+        assertTrue(presentation.hasSubagentsSelection)
+        assertTrue(presentation.canSend)
+        assertEquals(
+            "Use subagents to help with this task when it makes sense.",
+            viewModel.composeSendText(updatedInput),
+        )
+    }
+
+    @Test
+    fun subagentsSelectionClearsConfirmedReviewSelection() {
+        val viewModel = TurnViewModel()
+        viewModel.composerReviewSelection = TurnComposerReviewSelection(
+            command = TurnComposerSlashCommand.CODE_REVIEW,
+            target = TurnComposerReviewTarget.UNCOMMITTED_CHANGES,
+        )
+
+        viewModel.onSelectSlashCommand("/subagents", TurnComposerSlashCommand.SUBAGENTS)
+
+        assertTrue(viewModel.isSubagentsSelectionArmed)
+        assertEquals(null, viewModel.composerReviewSelection)
+    }
+
+    @Test
     fun removeComposerAttachmentClearsFailureNoticeWhenNoFailedRemain() {
         val viewModel = TurnViewModel()
         viewModel.composerAttachments = listOf(

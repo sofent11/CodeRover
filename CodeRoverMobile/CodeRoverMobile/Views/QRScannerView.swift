@@ -195,15 +195,86 @@ private struct QRCameraPreview: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: QRCameraUIView, context: Context) {}
+
+    static func dismantleUIView(_ uiView: QRCameraUIView, coordinator: ()) {
+        uiView.stopCamera()
+    }
+}
+
+private final class QRCameraLifecycleCoordinator {
+    static let shared = QRCameraLifecycleCoordinator()
+    private typealias DeferredStart = () -> Void
+
+    private let queue = DispatchQueue(label: "com.coderover.qr-camera.lifecycle")
+    private let lock = NSLock()
+    private var isStopInFlight = false
+    private var deferredStarts: [DeferredStart] = []
+
+    func start(session: AVCaptureSession, canStart: @escaping () -> Bool) {
+        let startWork: DeferredStart = { [queue] in
+            queue.async {
+                guard canStart(), !session.isRunning else {
+                    return
+                }
+                session.startRunning()
+            }
+        }
+
+        guard !deferStartIfNeeded(startWork) else {
+            return
+        }
+
+        startWork()
+    }
+
+    func stop(session: AVCaptureSession) {
+        lock.lock()
+        isStopInFlight = true
+        lock.unlock()
+
+        queue.async { [weak self] in
+            guard session.isRunning else {
+                self?.finishStopAndReplayDeferredStarts()
+                return
+            }
+
+            session.stopRunning()
+            self?.finishStopAndReplayDeferredStarts()
+        }
+    }
+
+    private func finishStopAndReplayDeferredStarts() {
+        lock.lock()
+        let startsToReplay = deferredStarts
+        deferredStarts.removeAll()
+        isStopInFlight = false
+        lock.unlock()
+
+        startsToReplay.forEach { start in
+            start()
+        }
+    }
+
+    private func deferStartIfNeeded(_ startWork: @escaping DeferredStart) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard isStopInFlight else {
+            return false
+        }
+
+        deferredStarts.append(startWork)
+        return true
+    }
 }
 
 private class QRCameraUIView: UIView, AVCaptureMetadataOutputObjectsDelegate {
     var onScan: ((String) -> Void)?
 
     private let captureSession = AVCaptureSession()
-    private let sessionQueue = DispatchQueue(label: "com.coderover.qr-camera")
     private var previewLayer: AVCaptureVideoPreviewLayer?
     private var hasScanned = false
+    private var isStoppingCamera = false
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -242,8 +313,11 @@ private class QRCameraUIView: UIView, AVCaptureMetadataOutputObjectsDelegate {
         self.layer.addSublayer(layer)
         previewLayer = layer
 
-        sessionQueue.async { [weak self] in
-            self?.captureSession.startRunning()
+        QRCameraLifecycleCoordinator.shared.start(session: captureSession) { [weak self] in
+            guard let self else {
+                return false
+            }
+            return !self.isStoppingCamera
         }
     }
 
@@ -267,10 +341,23 @@ private class QRCameraUIView: UIView, AVCaptureMetadataOutputObjectsDelegate {
         hasScanned = false
     }
 
-    deinit {
-        let session = captureSession
-        sessionQueue.async {
-            session.stopRunning()
+    func stopCamera() {
+        guard !isStoppingCamera else {
+            return
         }
+
+        isStoppingCamera = true
+        onScan = nil
+
+        let layerToRemove = previewLayer
+        previewLayer = nil
+        layerToRemove?.session = nil
+        layerToRemove?.removeFromSuperlayer()
+
+        QRCameraLifecycleCoordinator.shared.stop(session: captureSession)
+    }
+
+    deinit {
+        stopCamera()
     }
 }

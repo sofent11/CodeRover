@@ -372,7 +372,13 @@ extension CodeRoverService {
         let role = canonicalTimelineRole(from: paramsObject["role"]?.stringValue)
         let kind = canonicalTimelineKind(from: paramsObject["kind"]?.stringValue)
         let textMode = canonicalTimelineTextMode(from: paramsObject["textMode"]?.stringValue)
-        let incomingText = paramsObject["text"]?.stringValue ?? ""
+        let subagentAction = kind == .subagentAction ? decodeSubagentActionItem(from: paramsObject) : nil
+        let incomingText = {
+            if let subagentAction {
+                return subagentAction.summaryText
+            }
+            return paramsObject["text"]?.stringValue ?? ""
+        }()
         let providerItemId = normalizedIdentifier(
             paramsObject["providerItemId"]?.stringValue
                 ?? paramsObject["provider_item_id"]?.stringValue
@@ -402,7 +408,8 @@ extension CodeRoverService {
             isStreaming: isStreaming,
             timelineOrdinal: timelineOrdinal,
             timelineStatus: timelineStatus,
-            planState: planState
+            planState: planState,
+            subagentAction: subagentAction
         )
     }
 
@@ -675,6 +682,8 @@ extension CodeRoverService {
             return .commandExecution
         case "plan":
             return .plan
+        case "subagentAction":
+            return .subagentAction
         case "userInputPrompt":
             return .userInputPrompt
         default:
@@ -739,7 +748,8 @@ extension CodeRoverService {
         isStreaming: Bool,
         timelineOrdinal: Int?,
         timelineStatus: String?,
-        planState: CodeRoverPlanState?
+        planState: CodeRoverPlanState?,
+        subagentAction: CodeRoverSubagentAction?
     ) {
         let normalizedText = incomingText
         let existingCanonicalMessage = threadTimelineStateByThread[threadId]?.message(for: timelineItemId)
@@ -767,6 +777,7 @@ extension CodeRoverService {
             deliveryState: .confirmed,
             attachments: [],
             planState: planState,
+            subagentAction: subagentAction,
             providerItemId: providerItemId,
             timelineOrdinal: timelineOrdinal,
             timelineStatus: timelineStatus,
@@ -781,10 +792,15 @@ extension CodeRoverService {
         message.timelineOrdinal = timelineOrdinal ?? message.timelineOrdinal
         message.timelineStatus = timelineStatus ?? message.timelineStatus
         message.planState = planState ?? message.planState
+        message.subagentAction = subagentAction ?? message.subagentAction
         message.isStreaming = isStreaming
         message.deliveryState = .confirmed
         if let timelineOrdinal {
             message.orderIndex = timelineOrdinal
+        }
+
+        if let subagentAction {
+            registerSubagentThreads(action: subagentAction, parentThreadId: threadId)
         }
 
         _ = upsertThreadTimelineMessage(message)

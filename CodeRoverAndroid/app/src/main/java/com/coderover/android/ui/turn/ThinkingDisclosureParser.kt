@@ -1,5 +1,28 @@
 package com.coderover.android.ui.turn
 
+private val compactActivityPrefixes = listOf(
+    "running ",
+    "completed ",
+    "failed ",
+    "stopped ",
+    "read ",
+    "search ",
+    "searched ",
+    "exploring ",
+    "list ",
+    "listing ",
+    "open ",
+    "opened ",
+    "find ",
+    "finding ",
+    "edit ",
+    "edited ",
+    "write ",
+    "wrote ",
+    "apply ",
+    "applied ",
+)
+
 internal data class ThinkingSectionUi(
     val id: String,
     val title: String,
@@ -64,6 +87,26 @@ internal fun parseThinkingDisclosure(rawText: String): ThinkingContentUi {
         sections = coalesceThinkingSections(normalizedSections),
         fallbackText = normalized,
     )
+}
+
+internal fun compactActivityPreview(normalizedText: String): String? {
+    val lines = normalizedText
+        .split('\n')
+        .map(String::trim)
+        .filter(String::isNotEmpty)
+    if (lines.isEmpty()) {
+        return null
+    }
+
+    val activityLines = lines.filter { line ->
+        val normalizedLine = line.lowercase()
+        compactActivityPrefixes.any { normalizedLine.startsWith(it) }
+    }
+    val isActivityOnly = activityLines.size == lines.size
+    if (!isActivityOnly) {
+        return if (activityLines.size == 1) activityLines.first() else null
+    }
+    return activityLines.lastOrNull()
 }
 
 private fun normalizeThinkingContent(rawText: String): String {

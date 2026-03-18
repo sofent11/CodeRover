@@ -31,4 +31,27 @@ class ThinkingDisclosureParserTest {
         assertTrue(parsed.sections.isEmpty())
         assertEquals("Just thinking out loud", parsed.fallbackText)
     }
+
+    @Test
+    fun compactActivityPreviewPreservesWrappedActivityRows() {
+        val normalized = """
+            Running rg -n "subagent"
+            Opened CodeRoverRepository.kt
+        """.trimIndent()
+
+        assertEquals(
+            "Opened CodeRoverRepository.kt",
+            compactActivityPreview(normalized),
+        )
+    }
+
+    @Test
+    fun compactActivityPreviewReturnsNullForMixedNarrativeContent() {
+        val normalized = """
+            Running tests
+            Need to inspect the reducer first
+        """.trimIndent()
+
+        assertEquals("Running tests", compactActivityPreview(normalized))
+    }
 }

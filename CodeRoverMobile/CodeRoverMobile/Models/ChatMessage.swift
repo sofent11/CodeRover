@@ -23,6 +23,7 @@ enum ChatMessageKind: String, Codable, Hashable, Sendable {
     case thinking
     case fileChange
     case commandExecution
+    case subagentAction
     case plan
     case userInputPrompt
 }
@@ -40,6 +41,7 @@ struct ChatMessage: Identifiable, Codable, Hashable, Sendable {
     var deliveryState: ChatMessageDeliveryState
     var attachments: [ImageAttachment]
     var planState: CodeRoverPlanState?
+    var subagentAction: CodeRoverSubagentAction?
     var structuredUserInputRequest: CodeRoverStructuredUserInputRequest?
     var providerItemId: String?
     var timelineOrdinal: Int?
@@ -64,6 +66,7 @@ struct ChatMessage: Identifiable, Codable, Hashable, Sendable {
         deliveryState: ChatMessageDeliveryState = .confirmed,
         attachments: [ImageAttachment] = [],
         planState: CodeRoverPlanState? = nil,
+        subagentAction: CodeRoverSubagentAction? = nil,
         structuredUserInputRequest: CodeRoverStructuredUserInputRequest? = nil,
         providerItemId: String? = nil,
         timelineOrdinal: Int? = nil,
@@ -82,6 +85,7 @@ struct ChatMessage: Identifiable, Codable, Hashable, Sendable {
         self.deliveryState = deliveryState
         self.attachments = attachments
         self.planState = planState
+        self.subagentAction = subagentAction
         self.structuredUserInputRequest = structuredUserInputRequest
         self.providerItemId = providerItemId
         self.timelineOrdinal = timelineOrdinal
@@ -102,6 +106,7 @@ struct ChatMessage: Identifiable, Codable, Hashable, Sendable {
         case deliveryState
         case attachments
         case planState
+        case subagentAction
         case structuredUserInputRequest
         case providerItemId
         case timelineOrdinal
@@ -123,6 +128,7 @@ struct ChatMessage: Identifiable, Codable, Hashable, Sendable {
         deliveryState = try container.decodeIfPresent(ChatMessageDeliveryState.self, forKey: .deliveryState) ?? .confirmed
         attachments = try container.decodeIfPresent([ImageAttachment].self, forKey: .attachments) ?? []
         planState = try container.decodeIfPresent(CodeRoverPlanState.self, forKey: .planState)
+        subagentAction = try container.decodeIfPresent(CodeRoverSubagentAction.self, forKey: .subagentAction)
         structuredUserInputRequest = try container.decodeIfPresent(
             CodeRoverStructuredUserInputRequest.self,
             forKey: .structuredUserInputRequest

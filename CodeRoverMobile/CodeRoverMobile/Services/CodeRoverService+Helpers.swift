@@ -18,6 +18,29 @@ extension CodeRoverService {
         let shouldPersistNormalizedPairings: Bool
     }
 
+    func rebuildThreadLookupCaches() {
+        threadByID = Dictionary(uniqueKeysWithValues: threads.map { ($0.id, $0) })
+        threadIndexByID = Dictionary(
+            uniqueKeysWithValues: threads.enumerated().map { index, thread in
+                (thread.id, index)
+            }
+        )
+        firstLiveThreadIDCache = threads.first(where: { $0.syncState == .live })?.id
+        refreshSubagentIdentityDirectoryFromThreads()
+    }
+
+    func thread(for threadId: String) -> ConversationThread? {
+        threadByID[threadId]
+    }
+
+    func threadIndex(for threadId: String) -> Int? {
+        threadIndexByID[threadId]
+    }
+
+    func firstLiveThreadID() -> String? {
+        firstLiveThreadIDCache
+    }
+
     func resolveThreadID(_ preferredThreadID: String?) async throws -> String {
         if let preferredThreadID, !preferredThreadID.isEmpty {
             return preferredThreadID
@@ -32,13 +55,395 @@ extension CodeRoverService {
     }
 
     func upsertThread(_ thread: ConversationThread) {
-        if let existingIndex = threads.firstIndex(where: { $0.id == thread.id }) {
-            threads[existingIndex] = thread
+        let resolvedThread = mergedThread(thread, with: self.thread(for: thread.id))
+        let derivedIdentity = resolvedThread.derivedSubagentIdentity
+        upsertSubagentIdentity(
+            threadId: resolvedThread.id,
+            agentId: resolvedThread.agentId,
+            nickname: resolvedThread.agentNickname ?? derivedIdentity?.nickname,
+            role: resolvedThread.agentRole ?? derivedIdentity?.role
+        )
+
+        if let existingIndex = threadIndex(for: thread.id) {
+            threads[existingIndex] = resolvedThread
         } else {
-            threads.append(thread)
+            threads.append(resolvedThread)
         }
 
         threads = sortThreads(threads)
+    }
+
+    func mergedThread(_ incoming: ConversationThread, with existing: ConversationThread?) -> ConversationThread {
+        guard let existing else {
+            return incoming
+        }
+
+        var merged = incoming
+        if merged.title == nil { merged.title = existing.title }
+        if merged.name == nil { merged.name = existing.name }
+        if merged.preview == nil { merged.preview = existing.preview }
+        if merged.createdAt == nil { merged.createdAt = existing.createdAt }
+        if merged.updatedAt == nil { merged.updatedAt = existing.updatedAt }
+        if merged.cwd == nil { merged.cwd = existing.cwd }
+        if merged.providerSessionId == nil { merged.providerSessionId = existing.providerSessionId }
+        if merged.capabilities == nil { merged.capabilities = existing.capabilities }
+        merged.metadata = mergedThreadMetadata(
+            serverMetadata: merged.metadata,
+            localMetadata: existing.metadata
+        )
+        if merged.parentThreadId == nil { merged.parentThreadId = existing.parentThreadId }
+        if merged.agentId == nil { merged.agentId = existing.agentId }
+        if merged.agentNickname == nil { merged.agentNickname = existing.agentNickname }
+        if merged.agentRole == nil { merged.agentRole = existing.agentRole }
+        if merged.model == nil { merged.model = existing.model }
+        if merged.modelProvider == nil { merged.modelProvider = existing.modelProvider }
+        return merged
+    }
+
+    func registerSubagentThreads(action: CodeRoverSubagentAction, parentThreadId: String) {
+        guard !parentThreadId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return
+        }
+
+        let parentThread = thread(for: parentThreadId)
+        upsertSubagentIdentity(action: action)
+
+        for agent in action.agentRows {
+            let childThreadId = agent.threadId.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !childThreadId.isEmpty, childThreadId != parentThreadId else {
+                continue
+            }
+
+            let existing = thread(for: childThreadId)
+            let placeholderTimestamp = existing?.updatedAt
+                ?? existing?.createdAt
+                ?? parentThread?.updatedAt
+                ?? parentThread?.createdAt
+                ?? Date()
+            let placeholder = ConversationThread(
+                id: childThreadId,
+                title: nil,
+                name: nil,
+                preview: existing?.preview,
+                createdAt: existing?.createdAt ?? placeholderTimestamp,
+                updatedAt: existing?.updatedAt ?? placeholderTimestamp,
+                cwd: existing?.cwd ?? parentThread?.cwd,
+                provider: existing?.provider ?? parentThread?.provider ?? "codex",
+                providerSessionId: existing?.providerSessionId,
+                capabilities: existing?.capabilities ?? parentThread?.capabilities,
+                metadata: existing?.metadata,
+                parentThreadId: parentThreadId,
+                agentId: agent.agentId,
+                agentNickname: agent.nickname,
+                agentRole: agent.role,
+                model: existing?.model ?? (agent.modelIsRequestedHint ? nil : agent.model),
+                modelProvider: existing?.modelProvider ?? (agent.modelIsRequestedHint ? nil : agent.model),
+                syncState: existing?.syncState ?? parentThread?.syncState ?? .live
+            )
+            upsertThread(placeholder)
+        }
+    }
+
+    func registerSubagentThreads(from messages: [ChatMessage], parentThreadId: String) {
+        for action in messages.compactMap(\.subagentAction) {
+            registerSubagentThreads(action: action, parentThreadId: parentThreadId)
+        }
+    }
+
+    func refreshSubagentIdentityDirectoryFromThreads() {
+        var didChange = false
+        for thread in threads {
+            let derivedIdentity = thread.derivedSubagentIdentity
+            if upsertSubagentIdentity(
+                threadId: thread.id,
+                agentId: thread.agentId,
+                nickname: thread.agentNickname ?? derivedIdentity?.nickname,
+                role: thread.agentRole ?? derivedIdentity?.role,
+                incrementVersion: false
+            ) {
+                didChange = true
+            }
+        }
+        if didChange {
+            subagentIdentityVersion &+= 1
+        }
+    }
+
+    func upsertSubagentIdentity(action: CodeRoverSubagentAction, incrementVersion: Bool = true) {
+        for agent in action.receiverAgents {
+            upsertSubagentIdentity(
+                threadId: agent.threadId,
+                agentId: agent.agentId,
+                nickname: agent.nickname,
+                role: agent.role,
+                incrementVersion: incrementVersion
+            )
+        }
+    }
+
+    func resolvedSubagentIdentity(threadId: String?, agentId: String?) -> CodeRoverSubagentIdentityEntry? {
+        let normalizedThreadId = normalizedIdentifier(threadId)
+        let normalizedAgentId = normalizedIdentifier(agentId)
+
+        let threadEntry = normalizedThreadId.flatMap { subagentIdentityByThreadID[$0] }
+        let agentEntry = normalizedAgentId.flatMap { subagentIdentityByAgentID[$0] }
+
+        let merged = CodeRoverSubagentIdentityEntry(
+            threadId: threadEntry?.threadId ?? agentEntry?.threadId ?? normalizedThreadId,
+            agentId: threadEntry?.agentId ?? agentEntry?.agentId ?? normalizedAgentId,
+            nickname: threadEntry?.nickname ?? agentEntry?.nickname,
+            role: threadEntry?.role ?? agentEntry?.role
+        )
+
+        return merged.hasMetadata ? merged : nil
+    }
+
+    func resolvedSubagentDisplayLabel(threadId: String?, agentId: String?) -> String? {
+        if let normalizedThreadId = normalizedIdentifier(threadId),
+           let thread = thread(for: normalizedThreadId),
+           let preferredLabel = thread.preferredSubagentLabel {
+            return preferredLabel
+        }
+
+        let resolved = resolvedSubagentIdentity(threadId: threadId, agentId: agentId)
+        let nickname = normalizedIdentifier(resolved?.nickname)
+        let role = normalizedIdentifier(resolved?.role)
+
+        if let nickname, let role {
+            return "\(nickname) [\(role)]"
+        }
+        if let nickname {
+            return nickname
+        }
+        if let role {
+            return role.capitalized
+        }
+
+        return nil
+    }
+
+    func loadSubagentThreadMetadataIfNeeded(threadId: String) async {
+        await loadSubagentThreadMetadataIfNeeded(threadIds: [threadId])
+    }
+
+    func loadSubagentThreadMetadataIfNeeded(threadIds: [String]) async {
+        let normalizedThreadIds = uniqueNormalizedThreadIDs(threadIds)
+        guard !normalizedThreadIds.isEmpty else {
+            return
+        }
+
+        var didAttemptLoad = false
+        for normalizedThreadId in normalizedThreadIds {
+            if await loadSingleSubagentThreadMetadataIfNeeded(threadId: normalizedThreadId) {
+                didAttemptLoad = true
+            }
+        }
+
+        if didAttemptLoad {
+            refreshSubagentIdentityDirectoryFromThreads()
+        }
+    }
+
+    private func loadSingleSubagentThreadMetadataIfNeeded(threadId: String) async -> Bool {
+        let existingThread = thread(for: threadId)
+        let hasResolvedIdentity = existingThread?.preferredSubagentLabel != nil
+            || normalizedIdentifier(existingThread?.agentNickname) != nil
+            || normalizedIdentifier(existingThread?.agentRole) != nil
+        guard !hasResolvedIdentity else {
+            return false
+        }
+
+        let shouldForceRefresh = hydratedThreadIDs.contains(threadId)
+        try? await loadThreadHistoryIfNeeded(threadId: threadId, forceRefresh: shouldForceRefresh)
+        return true
+    }
+
+    private func uniqueNormalizedThreadIDs(_ threadIds: [String]) -> [String] {
+        var seen: Set<String> = []
+        var result: [String] = []
+
+        for threadId in threadIds {
+            guard let normalizedThreadId = normalizedIdentifier(threadId),
+                  !seen.contains(normalizedThreadId) else {
+                continue
+            }
+            seen.insert(normalizedThreadId)
+            result.append(normalizedThreadId)
+        }
+
+        return result
+    }
+
+    @discardableResult
+    func upsertSubagentIdentity(
+        threadId: String?,
+        agentId: String?,
+        nickname: String?,
+        role: String?,
+        incrementVersion: Bool = true
+    ) -> Bool {
+        let normalizedThreadId = normalizedIdentifier(threadId)
+        let normalizedAgentId = normalizedIdentifier(agentId)
+        let normalizedNickname = normalizedIdentifier(nickname)
+        let normalizedRole = normalizedIdentifier(role)
+
+        guard normalizedThreadId != nil || normalizedAgentId != nil || normalizedNickname != nil || normalizedRole != nil else {
+            return false
+        }
+
+        let threadEntry = normalizedThreadId.flatMap { subagentIdentityByThreadID[$0] }
+        let agentEntry = normalizedAgentId.flatMap { subagentIdentityByAgentID[$0] }
+        let merged = CodeRoverSubagentIdentityEntry(
+            threadId: normalizedThreadId ?? threadEntry?.threadId ?? agentEntry?.threadId,
+            agentId: normalizedAgentId ?? threadEntry?.agentId ?? agentEntry?.agentId,
+            nickname: normalizedNickname ?? threadEntry?.nickname ?? agentEntry?.nickname,
+            role: normalizedRole ?? threadEntry?.role ?? agentEntry?.role
+        )
+
+        guard merged.hasMetadata else { return false }
+
+        var didChange = false
+        if let normalizedThreadId, subagentIdentityByThreadID[normalizedThreadId] != merged {
+            subagentIdentityByThreadID[normalizedThreadId] = merged
+            didChange = true
+        }
+        if let normalizedAgentId, subagentIdentityByAgentID[normalizedAgentId] != merged {
+            subagentIdentityByAgentID[normalizedAgentId] = merged
+            didChange = true
+        }
+        if let linkedThreadId = merged.threadId,
+           let linkedAgentId = merged.agentId {
+            if subagentIdentityByThreadID[linkedThreadId] != merged {
+                subagentIdentityByThreadID[linkedThreadId] = merged
+                didChange = true
+            }
+            if subagentIdentityByAgentID[linkedAgentId] != merged {
+                subagentIdentityByAgentID[linkedAgentId] = merged
+                didChange = true
+            }
+        }
+
+        if incrementVersion, didChange {
+            subagentIdentityVersion &+= 1
+        }
+        return didChange
+    }
+
+    func resolvedSubagentPresentation(
+        _ presentation: CodeRoverSubagentThreadPresentation,
+        parentThreadId: String
+    ) -> CodeRoverSubagentThreadPresentation {
+        let normalizedParentThreadId = normalizedIdentifier(parentThreadId) ?? parentThreadId
+        let normalizedThreadId = normalizedIdentifier(presentation.threadId)
+        let normalizedAgentId = normalizedIdentifier(presentation.agentId)
+
+        var resolvedThreadId = normalizedThreadId
+        var resolvedAgentId = normalizedAgentId
+        var resolvedNickname = normalizedIdentifier(presentation.nickname)
+        var resolvedRole = normalizedIdentifier(presentation.role)
+        var resolvedModel = normalizedIdentifier(presentation.model)
+        var resolvedModelIsRequestedHint = presentation.modelIsRequestedHint
+        var resolvedPrompt = normalizedIdentifier(presentation.prompt)
+
+        if let directoryIdentity = resolvedSubagentIdentity(threadId: normalizedThreadId, agentId: normalizedAgentId) {
+            resolvedThreadId = directoryIdentity.threadId ?? resolvedThreadId
+            resolvedAgentId = directoryIdentity.agentId ?? resolvedAgentId
+            resolvedNickname = directoryIdentity.nickname ?? resolvedNickname
+            resolvedRole = directoryIdentity.role ?? resolvedRole
+        }
+
+        func mergeThreadMetadata(_ thread: ConversationThread?) {
+            guard let thread else { return }
+            if resolvedThreadId == nil { resolvedThreadId = normalizedIdentifier(thread.id) }
+            if let threadAgentId = normalizedIdentifier(thread.agentId) {
+                resolvedAgentId = threadAgentId
+            }
+            if let threadNickname = normalizedIdentifier(thread.agentNickname) {
+                resolvedNickname = threadNickname
+            }
+            if let threadRole = normalizedIdentifier(thread.agentRole) {
+                resolvedRole = threadRole
+            }
+            if let derivedIdentity = thread.derivedSubagentIdentity {
+                if let derivedNickname = normalizedIdentifier(derivedIdentity.nickname) {
+                    resolvedNickname = derivedNickname
+                }
+                if let derivedRole = normalizedIdentifier(derivedIdentity.role) {
+                    resolvedRole = derivedRole
+                }
+            }
+            if let threadModel = normalizedIdentifier(thread.modelDisplayLabel) {
+                resolvedModel = threadModel
+                resolvedModelIsRequestedHint = false
+            }
+        }
+
+        if let normalizedThreadId {
+            mergeThreadMetadata(thread(for: normalizedThreadId))
+        }
+
+        let lookupIdentifiers = Set([normalizedThreadId, normalizedAgentId].compactMap { $0 })
+        if !lookupIdentifiers.isEmpty {
+            let parentMessages = messagesByThread[normalizedParentThreadId] ?? []
+
+            outer: for message in parentMessages.reversed() {
+                guard let action = message.subagentAction else { continue }
+                for candidate in action.agentRows.reversed() {
+                    let candidateThreadId = normalizedIdentifier(candidate.threadId)
+                    let candidateAgentId = normalizedIdentifier(candidate.agentId)
+                    let matchedIdentifiers = Set([candidateThreadId, candidateAgentId].compactMap { $0 })
+                    guard !lookupIdentifiers.isDisjoint(with: matchedIdentifiers) else {
+                        continue
+                    }
+
+                    if resolvedThreadId == nil, let candidateThreadId {
+                        resolvedThreadId = candidateThreadId
+                    }
+                    if resolvedAgentId == nil, let candidateAgentId {
+                        resolvedAgentId = candidateAgentId
+                    }
+                    if resolvedNickname == nil {
+                        resolvedNickname = normalizedIdentifier(candidate.nickname)
+                    }
+                    if resolvedRole == nil {
+                        resolvedRole = normalizedIdentifier(candidate.role)
+                    }
+                    if resolvedModel == nil {
+                        resolvedModel = normalizedIdentifier(candidate.model)
+                        resolvedModelIsRequestedHint = candidate.modelIsRequestedHint
+                    }
+                    if resolvedPrompt == nil {
+                        resolvedPrompt = normalizedIdentifier(candidate.prompt)
+                    }
+
+                    upsertSubagentIdentity(
+                        threadId: candidateThreadId,
+                        agentId: candidateAgentId,
+                        nickname: candidate.nickname,
+                        role: candidate.role,
+                        incrementVersion: false
+                    )
+
+                    if let candidateThreadId {
+                        mergeThreadMetadata(thread(for: candidateThreadId))
+                    }
+                    break outer
+                }
+            }
+        }
+
+        let finalThreadId = resolvedThreadId ?? normalizedThreadId ?? presentation.threadId
+        return CodeRoverSubagentThreadPresentation(
+            threadId: finalThreadId,
+            agentId: resolvedAgentId,
+            nickname: resolvedNickname,
+            role: resolvedRole,
+            model: resolvedModel,
+            modelIsRequestedHint: resolvedModelIsRequestedHint,
+            prompt: resolvedPrompt,
+            fallbackStatus: presentation.fallbackStatus,
+            fallbackMessage: presentation.fallbackMessage
+        )
     }
 
     func sortThreads(_ value: [ConversationThread]) -> [ConversationThread] {

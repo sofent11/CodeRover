@@ -2594,6 +2594,8 @@ extension CodeRoverService {
             return "Applying file changes..."
         case .commandExecution:
             return "Running command"
+        case .subagentAction:
+            return "Coordinating agents..."
         case .plan:
             return "Planning..."
         case .userInputPrompt:

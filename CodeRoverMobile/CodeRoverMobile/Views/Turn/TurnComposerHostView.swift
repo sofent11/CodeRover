@@ -66,6 +66,7 @@ struct TurnComposerHostView: View {
             skillAutocompleteQuery: viewModel.skillAutocompleteQuery,
             slashCommandPanelState: isCodexThread ? viewModel.slashCommandPanelState : .hidden,
             composerReviewSelection: isCodexThread ? viewModel.composerReviewSelection : nil,
+            isSubagentsSelectionArmed: isCodexThread ? viewModel.isSubagentsSelectionArmed : false,
             hasComposerContentConflictingWithReview: viewModel.hasComposerContentConflictingWithReview,
             orderedModelOptions: orderedModelOptions,
             selectedModelID: coderover.selectedModelOption()?.id,
@@ -139,6 +140,7 @@ struct TurnComposerHostView: View {
             onRemoveMentionedFile: viewModel.removeMentionedFile,
             onRemoveMentionedSkill: viewModel.removeMentionedSkill,
             onRemoveComposerReviewSelection: viewModel.clearComposerReviewSelection,
+            onRemoveComposerSubagentsSelection: viewModel.clearSubagentsSelection,
             onPasteImageData: { imageDataItems in
                 viewModel.enqueuePastedImageData(imageDataItems, coderover: coderover)
             },

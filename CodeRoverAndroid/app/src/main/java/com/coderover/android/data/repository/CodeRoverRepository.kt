@@ -46,6 +46,9 @@ import com.coderover.android.data.model.TrustedMacRecord
 import com.coderover.android.data.model.ThreadRunBadgeState
 import com.coderover.android.data.model.TrustedMacRegistry
 import com.coderover.android.data.model.RuntimeProvider
+import com.coderover.android.data.model.SubagentAction
+import com.coderover.android.data.model.SubagentRef
+import com.coderover.android.data.model.SubagentState
 import com.coderover.android.data.model.array
 import com.coderover.android.data.model.asIntOrNull
 import com.coderover.android.data.model.bool
@@ -1631,13 +1634,19 @@ class CodeRoverRepository(context: Context) {
         preserveExistingArchivedThreads: Boolean,
     ) {
         updateState {
+            val existingSyntheticSubagentThreads = threads.filter { existingThread ->
+                existingThread.syncState == ThreadSyncState.LIVE &&
+                    existingThread.isSubagent &&
+                    activeThreads.none { it.id == existingThread.id } &&
+                    archivedThreads?.none { it.id == existingThread.id } != false
+            }
             val existingArchivedThreads = if (preserveExistingArchivedThreads) {
                 threads.filter { it.syncState == ThreadSyncState.ARCHIVED_LOCAL }
             } else {
                 emptyList()
             }
             val combined = mergeThreadLists(
-                activeThreads = activeThreads,
+                activeThreads = activeThreads + existingSyntheticSubagentThreads,
                 archivedThreads = archivedThreads ?: existingArchivedThreads,
             )
             val resolvedSelectedThreadId = selectedThreadId
@@ -1655,9 +1664,11 @@ class CodeRoverRepository(context: Context) {
         activeThreads: List<ThreadSummary>,
         archivedThreads: List<ThreadSummary>,
     ): List<ThreadSummary> {
-        return (activeThreads + archivedThreads)
-            .distinctBy(ThreadSummary::id)
-            .sortedByDescending { it.updatedAt ?: it.createdAt ?: 0L }
+        var mergedThreads = emptyList<ThreadSummary>()
+        (activeThreads + archivedThreads).forEach { thread ->
+            mergedThreads = upsertThread(mergedThreads, thread)
+        }
+        return mergedThreads.sortedByDescending { it.updatedAt ?: it.createdAt ?: 0L }
     }
 
     private suspend fun loadThreadHistory(threadId: String) {
@@ -2445,6 +2456,7 @@ class CodeRoverRepository(context: Context) {
                 "reasoning" -> MessageKind.THINKING
                 "filechange", "toolcall", "diff" -> MessageKind.FILE_CHANGE
                 "commandexecution" -> MessageKind.COMMAND_EXECUTION
+                "collabagenttoolcall", "collabtoolcall", "subagentaction" -> MessageKind.SUBAGENT_ACTION
                 "plan" -> MessageKind.PLAN
                 else -> MessageKind.CHAT
             }
@@ -2463,9 +2475,15 @@ class CodeRoverRepository(context: Context) {
             } else {
                 null
             }
+            val subagentAction = if (kind == MessageKind.SUBAGENT_ACTION) {
+                decodeSubagentActionItem(item)
+            } else {
+                null
+            }
             val text = when (kind) {
                 MessageKind.FILE_CHANGE -> decodeFileChangeText(item, fileChanges)
                 MessageKind.COMMAND_EXECUTION -> decodeCommandExecutionText(item, commandState)
+                MessageKind.SUBAGENT_ACTION -> subagentAction?.summaryText ?: decodeItemText(item)
                 MessageKind.PLAN -> decodePlanText(item, planState)
                 else -> decodeItemText(item)
             }
@@ -2484,6 +2502,7 @@ class CodeRoverRepository(context: Context) {
                 orderIndex = timelineOrdinal ?: nextOrderIndex(),
                 fileChanges = fileChanges,
                 commandState = commandState,
+                subagentAction = subagentAction,
                 planState = planState,
                 providerItemId = providerItemId,
                 timelineOrdinal = timelineOrdinal,
@@ -2504,9 +2523,11 @@ class CodeRoverRepository(context: Context) {
                     }
                 }
             }
-            return messages
+            val renderedMessages = messages
                 .asReversed()
                 .sortedWith(Comparator(::compareRenderedTimelineMessages))
+            registerSubagentThreadsFromMessages(threadId, renderedMessages)
+            return renderedMessages
         }
 
         turns.forEach { turnElement ->
@@ -2517,7 +2538,9 @@ class CodeRoverRepository(context: Context) {
                 decodeMessage(turn, item)?.let(messages::add)
             }
         }
-        return messages.sortedWith(Comparator(::compareRenderedTimelineMessages))
+        val renderedMessages = messages.sortedWith(Comparator(::compareRenderedTimelineMessages))
+        registerSubagentThreadsFromMessages(threadId, renderedMessages)
+        return renderedMessages
     }
 
     private fun decodeItemText(item: JsonObject): String {
@@ -2816,6 +2839,301 @@ class CodeRoverRepository(context: Context) {
         }
     }
 
+    private fun decodeSubagentActionItem(item: JsonObject): SubagentAction? {
+        val receiverThreadIds = decodeSubagentReceiverThreadIds(item)
+        val receiverAgents = decodeSubagentReceiverAgents(item, receiverThreadIds)
+        val agentStates = decodeSubagentAgentStates(item)
+        val tool = firstNonBlank(
+            item.string("tool"),
+            item.string("name"),
+        ) ?: inferSubagentToolFromEventType(item) ?: "spawnAgent"
+        val status = firstNonBlank(
+            item.string("status"),
+            item["result"]?.jsonObjectOrNull()?.string("status"),
+            item["output"]?.jsonObjectOrNull()?.string("status"),
+            item["event"]?.jsonObjectOrNull()?.string("status"),
+        ) ?: "in_progress"
+        val prompt = firstNonBlank(
+            item.string("prompt"),
+            item.string("task"),
+            item.string("message"),
+            item.string("instructions"),
+            item.string("instruction"),
+            item.flattenedString("prompt"),
+            item.flattenedString("task"),
+            item.flattenedString("message"),
+        )
+        val model = firstNonBlank(
+            item.string("model"),
+            item.string("modelName"),
+            item.string("model_name"),
+            item.string("requestedModel"),
+            item.string("requested_model"),
+            item["metadata"]?.jsonObjectOrNull()?.string("model"),
+            item["metadata"]?.jsonObjectOrNull()?.string("modelName"),
+            item["metadata"]?.jsonObjectOrNull()?.string("model_name"),
+            item["metadata"]?.jsonObjectOrNull()?.string("modelProvider"),
+            item["metadata"]?.jsonObjectOrNull()?.string("model_provider"),
+        )
+
+        if (receiverThreadIds.isEmpty() &&
+            receiverAgents.isEmpty() &&
+            agentStates.isEmpty() &&
+            prompt.isNullOrBlank() &&
+            model.isNullOrBlank()
+        ) {
+            return null
+        }
+
+        return SubagentAction(
+            tool = tool,
+            status = status,
+            prompt = prompt,
+            model = model,
+            receiverThreadIds = receiverThreadIds,
+            receiverAgents = receiverAgents,
+            agentStates = agentStates,
+        )
+    }
+
+    private fun inferSubagentToolFromEventType(item: JsonObject): String? {
+        val normalized = item.string("type")
+            ?.lowercase()
+            ?.replace("_", "")
+            ?.replace("-", "")
+            ?: return null
+        return when {
+            "spawn" in normalized -> "spawnAgent"
+            "waiting" in normalized || "wait" in normalized -> "waitAgent"
+            "close" in normalized -> "closeAgent"
+            "resume" in normalized -> "resumeAgent"
+            "sendinput" in normalized || "interaction" in normalized -> "sendInput"
+            else -> null
+        }
+    }
+
+    private fun decodeSubagentReceiverThreadIds(item: JsonObject): List<String> {
+        val threadIds = linkedSetOf<String>()
+        listOf(
+            item["receiverThreadIds"],
+            item["receiver_thread_ids"],
+            item["threadIds"],
+            item["thread_ids"],
+        ).forEach { candidate ->
+            candidate?.jsonArrayOrNull()?.forEach { value ->
+                normalizedIdentifier(value.stringOrNull())?.let(threadIds::add)
+            }
+        }
+        if (threadIds.isNotEmpty()) {
+            return threadIds.toList()
+        }
+        firstNonBlank(
+            item.string("receiverThreadId"),
+            item.string("receiver_thread_id"),
+            item.string("threadId"),
+            item.string("thread_id"),
+            item.string("newThreadId"),
+            item.string("new_thread_id"),
+        )?.let(threadIds::add)
+        return threadIds.toList()
+    }
+
+    private fun decodeSubagentReceiverAgents(
+        item: JsonObject,
+        fallbackThreadIds: List<String>,
+    ): List<SubagentRef> {
+        val values = listOf(
+            item["receiverAgents"],
+            item["receiver_agents"],
+            item["agents"],
+        ).firstNotNullOfOrNull { it?.jsonArrayOrNull() }
+        if (values == null || values.isEmpty()) {
+            return buildSyntheticSubagentRefs(item, fallbackThreadIds)
+        }
+
+        return values.mapIndexedNotNull { index, value ->
+            val objectValue = value.jsonObjectOrNull() ?: return@mapIndexedNotNull null
+            val threadId = firstNonBlank(
+                objectValue.string("threadId"),
+                objectValue.string("thread_id"),
+                objectValue.string("receiverThreadId"),
+                objectValue.string("receiver_thread_id"),
+                objectValue.string("newThreadId"),
+                objectValue.string("new_thread_id"),
+                fallbackThreadIds.getOrNull(index),
+            ) ?: return@mapIndexedNotNull null
+            SubagentRef(
+                threadId = threadId,
+                agentId = firstNonBlank(
+                    objectValue.string("agentId"),
+                    objectValue.string("agent_id"),
+                    objectValue.string("receiverAgentId"),
+                    objectValue.string("receiver_agent_id"),
+                    objectValue.string("newAgentId"),
+                    objectValue.string("new_agent_id"),
+                    objectValue.string("id"),
+                ),
+                nickname = firstNonBlank(
+                    objectValue.string("agentNickname"),
+                    objectValue.string("agent_nickname"),
+                    objectValue.string("receiverAgentNickname"),
+                    objectValue.string("receiver_agent_nickname"),
+                    objectValue.string("newAgentNickname"),
+                    objectValue.string("new_agent_nickname"),
+                    objectValue.string("nickname"),
+                    objectValue.string("name"),
+                ),
+                role = firstNonBlank(
+                    objectValue.string("agentRole"),
+                    objectValue.string("agent_role"),
+                    objectValue.string("receiverAgentRole"),
+                    objectValue.string("receiver_agent_role"),
+                    objectValue.string("newAgentRole"),
+                    objectValue.string("new_agent_role"),
+                    objectValue.string("agentType"),
+                    objectValue.string("agent_type"),
+                ),
+                model = firstNonBlank(
+                    objectValue.string("modelProvider"),
+                    objectValue.string("model_provider"),
+                    objectValue.string("modelProviderId"),
+                    objectValue.string("model_provider_id"),
+                    objectValue.string("modelName"),
+                    objectValue.string("model_name"),
+                    objectValue.string("model"),
+                ),
+                prompt = firstNonBlank(
+                    objectValue.string("prompt"),
+                    objectValue.string("instructions"),
+                    objectValue.string("instruction"),
+                    objectValue.string("task"),
+                    objectValue.string("message"),
+                ),
+            )
+        }
+    }
+
+    private fun decodeSubagentAgentStates(item: JsonObject): Map<String, SubagentState> {
+        val candidate = listOf(
+            item["statuses"],
+            item["agentsStates"],
+            item["agents_states"],
+            item["agentStates"],
+            item["agent_states"],
+        ).firstOrNull { it != null }
+
+        candidate?.jsonObjectOrNull()?.let { objectValue ->
+            val decoded = linkedMapOf<String, SubagentState>()
+            objectValue.forEach { (rawThreadId, rawState) ->
+                val stateObject = rawState.jsonObjectOrNull()
+                val threadId = normalizedIdentifier(rawThreadId)
+                    ?: firstNonBlank(
+                        stateObject?.string("threadId"),
+                        stateObject?.string("thread_id"),
+                    )
+                    ?: return@forEach
+                decoded[threadId] = SubagentState(
+                    threadId = threadId,
+                    status = firstNonBlank(
+                        stateObject?.string("status"),
+                        rawState.stringOrNull(),
+                    ) ?: "unknown",
+                    message = firstNonBlank(
+                        stateObject?.string("message"),
+                        stateObject?.string("text"),
+                        stateObject?.string("delta"),
+                        stateObject?.string("summary"),
+                    ),
+                )
+            }
+            return decoded
+        }
+
+        candidate?.jsonArrayOrNull()?.let { values ->
+            val decoded = linkedMapOf<String, SubagentState>()
+            values.forEach { value ->
+                val objectValue = value.jsonObjectOrNull() ?: return@forEach
+                val threadId = firstNonBlank(
+                    objectValue.string("threadId"),
+                    objectValue.string("thread_id"),
+                ) ?: return@forEach
+                decoded[threadId] = SubagentState(
+                    threadId = threadId,
+                    status = objectValue.string("status") ?: "unknown",
+                    message = firstNonBlank(
+                        objectValue.string("message"),
+                        objectValue.string("text"),
+                        objectValue.string("delta"),
+                        objectValue.string("summary"),
+                    ),
+                )
+            }
+            return decoded
+        }
+
+        return emptyMap()
+    }
+
+    private fun buildSyntheticSubagentRefs(
+        item: JsonObject,
+        fallbackThreadIds: List<String>,
+    ): List<SubagentRef> {
+        val threadId = fallbackThreadIds.firstOrNull() ?: firstNonBlank(
+            item.string("receiverThreadId"),
+            item.string("receiver_thread_id"),
+            item.string("threadId"),
+            item.string("thread_id"),
+            item.string("newThreadId"),
+            item.string("new_thread_id"),
+        ) ?: return emptyList()
+
+        return listOf(
+            SubagentRef(
+                threadId = threadId,
+                agentId = firstNonBlank(
+                    item.string("newAgentId"),
+                    item.string("new_agent_id"),
+                    item.string("agentId"),
+                    item.string("agent_id"),
+                ),
+                nickname = firstNonBlank(
+                    item.string("newAgentNickname"),
+                    item.string("new_agent_nickname"),
+                    item.string("agentNickname"),
+                    item.string("agent_nickname"),
+                    item.string("receiverAgentNickname"),
+                    item.string("receiver_agent_nickname"),
+                ),
+                role = firstNonBlank(
+                    item.string("receiverAgentRole"),
+                    item.string("receiver_agent_role"),
+                    item.string("newAgentRole"),
+                    item.string("new_agent_role"),
+                    item.string("agentRole"),
+                    item.string("agent_role"),
+                    item.string("agentType"),
+                    item.string("agent_type"),
+                ),
+                model = firstNonBlank(
+                    item.string("modelProvider"),
+                    item.string("model_provider"),
+                    item.string("modelProviderId"),
+                    item.string("model_provider_id"),
+                    item.string("modelName"),
+                    item.string("model_name"),
+                    item.string("model"),
+                ),
+                prompt = firstNonBlank(
+                    item.string("prompt"),
+                    item.string("instructions"),
+                    item.string("instruction"),
+                    item.string("task"),
+                    item.string("message"),
+                ),
+            ),
+        )
+    }
+
     private fun decodeFileChangeText(item: JsonObject, fileChanges: List<FileChangeEntry>): String {
         if (fileChanges.isNotEmpty()) {
             return buildString {
@@ -3037,6 +3355,7 @@ class CodeRoverRepository(context: Context) {
             "thinking", "reasoning" -> MessageKind.THINKING
             "filechange", "toolcall", "diff" -> MessageKind.FILE_CHANGE
             "commandexecution" -> MessageKind.COMMAND_EXECUTION
+            "collabagenttoolcall", "collabtoolcall", "subagentaction" -> MessageKind.SUBAGENT_ACTION
             "plan" -> MessageKind.PLAN
             "userinputprompt" -> MessageKind.USER_INPUT_PROMPT
             else -> MessageKind.CHAT
@@ -3063,11 +3382,13 @@ class CodeRoverRepository(context: Context) {
         kind: MessageKind,
         planState: PlanState?,
         commandState: CommandState?,
+        subagentAction: SubagentAction?,
         fileChanges: List<FileChangeEntry>,
     ): String {
         return when (kind) {
             MessageKind.FILE_CHANGE -> decodeFileChangeText(payload, fileChanges)
             MessageKind.COMMAND_EXECUTION -> decodeCommandExecutionText(payload, commandState)
+            MessageKind.SUBAGENT_ACTION -> subagentAction?.summaryText ?: payload.deltaText()
             MessageKind.PLAN -> decodePlanText(payload, planState)
             else -> payload.deltaText()
         }
@@ -3087,6 +3408,7 @@ class CodeRoverRepository(context: Context) {
         timelineStatus: String?,
         fileChanges: List<FileChangeEntry>,
         commandState: CommandState?,
+        subagentAction: SubagentAction?,
         planState: PlanState?,
     ) {
         val existingCanonicalMessage = threadTimelineStateByThread[threadId]?.message(timelineItemId)
@@ -3109,6 +3431,7 @@ class CodeRoverRepository(context: Context) {
             orderIndex = timelineOrdinal ?: nextOrderIndex(),
             fileChanges = fileChanges,
             commandState = commandState,
+            subagentAction = subagentAction,
             planState = planState,
             providerItemId = providerItemId,
             timelineOrdinal = timelineOrdinal,
@@ -3127,6 +3450,7 @@ class CodeRoverRepository(context: Context) {
                 fileChanges
             },
             commandState = mergeCommandState(existingCanonicalMessage?.commandState, commandState),
+            subagentAction = subagentAction ?: existingCanonicalMessage?.subagentAction,
             planState = planState ?: existingCanonicalMessage?.planState,
             providerItemId = providerItemId ?: existingCanonicalMessage?.providerItemId,
             timelineOrdinal = timelineOrdinal ?: existingCanonicalMessage?.timelineOrdinal,
@@ -3134,9 +3458,12 @@ class CodeRoverRepository(context: Context) {
         )
         val renderedMessages = upsertThreadTimelineMessage(message)
         updateState {
+            val updatedThreads = message.subagentAction?.let { action ->
+                registerSubagentThreads(threads, action, threadId)
+            } ?: threads
             copy(
                 messagesByThread = messagesByThread + (threadId to renderedMessages),
-                threads = threads.refreshThreadSummaryFromMessages(threadId, renderedMessages),
+                threads = updatedThreads.refreshThreadSummaryFromMessages(threadId, renderedMessages),
             )
         }
     }
@@ -3392,12 +3719,18 @@ class CodeRoverRepository(context: Context) {
         } else {
             null
         }
+        val subagentAction = if (kind == MessageKind.SUBAGENT_ACTION) {
+            decodeSubagentActionItem(payload)
+        } else {
+            null
+        }
         val fileChanges = if (kind == MessageKind.FILE_CHANGE) decodeFileChangeEntries(payload) else emptyList()
         val resolvedText = canonicalTimelineText(
             payload = payload,
             kind = kind,
             planState = planState,
             commandState = commandState,
+            subagentAction = subagentAction,
             fileChanges = fileChanges,
         )
 
@@ -3415,6 +3748,7 @@ class CodeRoverRepository(context: Context) {
             timelineStatus = timelineStatus,
             fileChanges = fileChanges,
             commandState = commandState,
+            subagentAction = subagentAction,
             planState = planState,
         )
     }
@@ -4301,7 +4635,103 @@ class CodeRoverRepository(context: Context) {
     }
 
     private fun upsertThread(existing: List<ThreadSummary>, thread: ThreadSummary): List<ThreadSummary> {
-        return (existing.filterNot { it.id == thread.id } + thread).sortedByDescending { it.updatedAt ?: it.createdAt ?: 0L }
+        val current = existing.firstOrNull { it.id == thread.id }
+        val merged = mergeThreadSummary(current, thread)
+        return (existing.filterNot { it.id == thread.id } + merged).sortedByDescending { it.updatedAt ?: it.createdAt ?: 0L }
+    }
+
+    private fun mergeThreadSummary(
+        existing: ThreadSummary?,
+        incoming: ThreadSummary,
+    ): ThreadSummary {
+        if (existing == null) {
+            return incoming
+        }
+        return incoming.copy(
+            title = incoming.title ?: existing.title,
+            name = incoming.name ?: existing.name,
+            preview = incoming.preview ?: existing.preview,
+            createdAt = incoming.createdAt ?: existing.createdAt,
+            updatedAt = maxOf(
+                incoming.updatedAt ?: Long.MIN_VALUE,
+                existing.updatedAt ?: Long.MIN_VALUE,
+            ).takeUnless { it == Long.MIN_VALUE } ?: incoming.createdAt ?: existing.createdAt,
+            cwd = incoming.cwd ?: existing.cwd,
+            provider = incoming.provider.ifBlank { existing.provider },
+            providerSessionId = incoming.providerSessionId ?: existing.providerSessionId,
+            capabilities = incoming.capabilities ?: existing.capabilities,
+            parentThreadId = incoming.parentThreadId ?: existing.parentThreadId,
+            agentId = incoming.agentId ?: existing.agentId,
+            agentNickname = incoming.agentNickname ?: existing.agentNickname,
+            agentRole = incoming.agentRole ?: existing.agentRole,
+            model = incoming.model ?: existing.model,
+            modelProvider = incoming.modelProvider ?: existing.modelProvider,
+            syncState = incoming.syncState,
+        )
+    }
+
+    private fun registerSubagentThreadsFromMessages(
+        parentThreadId: String,
+        messages: List<ChatMessage>,
+    ) {
+        val actions = messages.mapNotNull(ChatMessage::subagentAction)
+        if (actions.isEmpty()) {
+            return
+        }
+        updateState {
+            var updatedThreads = threads
+            actions.forEach { action ->
+                updatedThreads = registerSubagentThreads(updatedThreads, action, parentThreadId)
+            }
+            if (updatedThreads === threads || updatedThreads == threads) {
+                this
+            } else {
+                copy(threads = updatedThreads)
+            }
+        }
+    }
+
+    private fun registerSubagentThreads(
+        existingThreads: List<ThreadSummary>,
+        action: SubagentAction,
+        parentThreadId: String,
+    ): List<ThreadSummary> {
+        val normalizedParentThreadId = normalizedIdentifier(parentThreadId) ?: return existingThreads
+        val parentThread = existingThreads.firstOrNull { it.id == normalizedParentThreadId }
+        var updatedThreads = existingThreads
+        action.agentRows.forEach { agent ->
+            val childThreadId = normalizedIdentifier(agent.threadId) ?: return@forEach
+            if (childThreadId == normalizedParentThreadId) {
+                return@forEach
+            }
+            val existingChild = updatedThreads.firstOrNull { it.id == childThreadId }
+            val placeholderTimestamp = existingChild?.updatedAt
+                ?: existingChild?.createdAt
+                ?: parentThread?.updatedAt
+                ?: parentThread?.createdAt
+                ?: System.currentTimeMillis()
+            val placeholder = ThreadSummary(
+                id = childThreadId,
+                title = null,
+                name = null,
+                preview = existingChild?.preview,
+                createdAt = existingChild?.createdAt ?: placeholderTimestamp,
+                updatedAt = existingChild?.updatedAt ?: placeholderTimestamp,
+                cwd = existingChild?.cwd ?: parentThread?.cwd,
+                provider = existingChild?.provider ?: parentThread?.provider ?: "codex",
+                providerSessionId = existingChild?.providerSessionId ?: parentThread?.providerSessionId,
+                capabilities = existingChild?.capabilities ?: parentThread?.capabilities,
+                parentThreadId = normalizedParentThreadId,
+                agentId = agent.agentId,
+                agentNickname = agent.nickname,
+                agentRole = agent.role,
+                model = existingChild?.model ?: if (agent.modelIsRequestedHint) null else agent.model,
+                modelProvider = existingChild?.modelProvider ?: if (agent.modelIsRequestedHint) null else agent.model,
+                syncState = existingChild?.syncState ?: parentThread?.syncState ?: ThreadSyncState.LIVE,
+            )
+            updatedThreads = upsertThread(updatedThreads, placeholder)
+        }
+        return updatedThreads
     }
 
     private fun nextOrderIndex(): Int = orderCounter.incrementAndGet()

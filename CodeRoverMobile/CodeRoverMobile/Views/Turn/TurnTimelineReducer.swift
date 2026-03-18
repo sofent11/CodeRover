@@ -16,8 +16,12 @@ enum TurnTimelineReducer {
     // Applies all render-only timeline transforms in one pass.
     static func project(messages: [ChatMessage]) -> TurnTimelineProjection {
         let visibleMessages = removeHiddenSystemMarkers(in: messages)
-        let collapsedThinking = collapseConsecutiveThinkingMessages(in: visibleMessages)
-        return TurnTimelineProjection(messages: collapsedThinking)
+        let reordered = enforceIntraTurnOrder(in: visibleMessages)
+        let collapsedThinking = collapseConsecutiveThinkingMessages(in: reordered)
+        let dedupedFileChanges = removeDuplicateFileChangeMessages(in: collapsedThinking)
+        let dedupedSubagentActions = removeDuplicateSubagentActionMessages(in: dedupedFileChanges)
+        let dedupedAssistant = removeDuplicateAssistantMessages(in: dedupedSubagentActions)
+        return TurnTimelineProjection(messages: dedupedAssistant)
     }
 
     // Resolves where the viewport should anchor when assistant output starts streaming.
@@ -127,10 +131,12 @@ enum TurnTimelineReducer {
                 return 1
             case .commandExecution:
                 return 2
+            case .subagentAction:
+                return 3
             case .chat:
-                return 3
+                return 4
             case .plan:
-                return 3
+                return 4
             case .userInputPrompt:
                 return 6
             case .fileChange:
@@ -189,7 +195,21 @@ enum TurnTimelineReducer {
 
     // Preserves separate reasoning blocks when they come from different item ids.
     private static func shouldMergeThinkingRows(previous: ChatMessage, incoming: ChatMessage) -> Bool {
-        return previous.id == incoming.id
+        let previousItemId = normalizedIdentifier(previous.itemId)
+        let incomingItemId = normalizedIdentifier(incoming.itemId)
+        if let previousItemId, let incomingItemId {
+            return previousItemId == incomingItemId
+        }
+        if previousItemId != nil || incomingItemId != nil {
+            return false
+        }
+
+        let previousTurnId = normalizedIdentifier(previous.turnId)
+        let incomingTurnId = normalizedIdentifier(incoming.turnId)
+        guard previousTurnId == incomingTurnId else {
+            return false
+        }
+        return previousTurnId != nil
     }
 
     private static func normalizedIdentifier(_ value: String?) -> String? {
@@ -320,11 +340,92 @@ enum TurnTimelineReducer {
         return result
     }
 
+    static func removeDuplicateSubagentActionMessages(in messages: [ChatMessage]) -> [ChatMessage] {
+        var result: [ChatMessage] = []
+        result.reserveCapacity(messages.count)
+
+        for message in messages {
+            guard let action = message.subagentAction,
+                  message.role == .system,
+                  message.kind == .subagentAction else {
+                result.append(message)
+                continue
+            }
+
+            guard let previous = result.last,
+                  let previousAction = previous.subagentAction,
+                  shouldMergeSubagentActionMessages(
+                      previous: previous,
+                      previousAction: previousAction,
+                      incoming: message,
+                      incomingAction: action
+                  ) else {
+                result.append(message)
+                continue
+            }
+
+            result[result.count - 1] = preferredSubagentActionMessage(previous: previous, incoming: message)
+        }
+
+        return result
+    }
+
+    private static func shouldMergeSubagentActionMessages(
+        previous: ChatMessage,
+        previousAction: CodeRoverSubagentAction,
+        incoming: ChatMessage,
+        incomingAction: CodeRoverSubagentAction
+    ) -> Bool {
+        guard previous.role == .system,
+              previous.kind == .subagentAction,
+              previous.threadId == incoming.threadId,
+              normalizedIdentifier(previous.turnId) == normalizedIdentifier(incoming.turnId),
+              previousAction.normalizedTool == incomingAction.normalizedTool,
+              previous.text == incoming.text else {
+            return false
+        }
+
+        guard let previousItemId = normalizedIdentifier(previous.itemId),
+              let incomingItemId = normalizedIdentifier(incoming.itemId),
+              previousItemId == incomingItemId else {
+            return false
+        }
+
+        let previousRows = previousAction.agentRows
+        let incomingRows = incomingAction.agentRows
+        if previousRows.isEmpty && !incomingRows.isEmpty {
+            return true
+        }
+        return previousRows == incomingRows
+    }
+
+    private static func preferredSubagentActionMessage(previous: ChatMessage, incoming: ChatMessage) -> ChatMessage {
+        let previousRows = previous.subagentAction?.agentRows ?? []
+        let incomingRows = incoming.subagentAction?.agentRows ?? []
+
+        if previousRows.isEmpty && !incomingRows.isEmpty {
+            return incoming
+        }
+
+        if incoming.isStreaming != previous.isStreaming {
+            return incoming.isStreaming ? previous : incoming
+        }
+
+        return incoming.orderIndex >= previous.orderIndex ? incoming : previous
+    }
+
     // Keys file-change cards by turn + rendered payload so repeated turn/diff snapshots collapse to one row.
     private static func duplicateFileChangeKey(for message: ChatMessage) -> String? {
+        guard let turnId = normalizedIdentifier(message.turnId) else {
+            return nil
+        }
+
+        if let summaryKey = TurnFileChangeSummaryParser.dedupeKey(from: message.text) {
+            return "\(turnId)|\(summaryKey)"
+        }
+
         let normalizedText = message.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !normalizedText.isEmpty,
-              let turnId = normalizedIdentifier(message.turnId) else {
+        guard !normalizedText.isEmpty else {
             return nil
         }
         return "\(turnId)|\(normalizedText)"

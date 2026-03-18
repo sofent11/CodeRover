@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material3.Icon
@@ -59,6 +60,7 @@ import com.coderover.android.ui.theme.monoFamily
 internal fun TurnMessageBubble(
     message: ChatMessage,
     onSubmitStructuredInput: (kotlinx.serialization.json.JsonElement, Map<String, String>) -> Unit,
+    onTapSubagentThread: (String) -> Unit = {},
     grouped: Boolean = false,
     replyPresentation: ReplyPresentation? = null,
     copyBlockText: String? = null,
@@ -93,6 +95,7 @@ internal fun TurnMessageBubble(
                 SystemMessageBlock(
                     message = message,
                     onSubmitStructuredInput = onSubmitStructuredInput,
+                    onTapSubagentThread = onTapSubagentThread,
                 )
             }
         }
@@ -340,11 +343,13 @@ private fun ConversationBubble(
 private fun SystemMessageBlock(
     message: ChatMessage,
     onSubmitStructuredInput: (kotlinx.serialization.json.JsonElement, Map<String, String>) -> Unit,
+    onTapSubagentThread: (String) -> Unit,
 ) {
     when (message.kind) {
         MessageKind.THINKING -> ThinkingMessageContent(message)
         MessageKind.FILE_CHANGE -> FileChangeMessageContent(message)
         MessageKind.COMMAND_EXECUTION -> CommandExecutionMessageContent(message)
+        MessageKind.SUBAGENT_ACTION -> SubagentActionMessageContent(message, onTapSubagentThread)
         MessageKind.PLAN -> PlanMessageContent(message)
         MessageKind.USER_INPUT_PROMPT -> TurnSystemCard(
             title = "Need input",
@@ -382,6 +387,7 @@ private fun CopyBlockButton(text: String) {
 @Composable
 private fun ThinkingMessageContent(message: ChatMessage) {
     val thinking = remember(message.id, message.text) { parseThinkingDisclosure(message.text) }
+    val activityPreview = remember(thinking.fallbackText) { compactActivityPreview(thinking.fallbackText) }
     var expandedSectionIds by remember(message.id) { mutableStateOf<Set<String>>(emptySet()) }
 
     val alpha = if (message.isStreaming) {
@@ -413,6 +419,17 @@ private fun ThinkingMessageContent(message: ChatMessage) {
         )
 
         when {
+            activityPreview != null -> {
+                Text(
+                    text = activityPreview,
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        fontFamily = monoFamily,
+                        fontStyle = FontStyle.Italic,
+                    ),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.85f),
+                )
+            }
+
             thinking.sections.isNotEmpty() -> {
                 thinking.sections.forEach { section ->
                     val isExpanded = expandedSectionIds.contains(section.id)
@@ -475,6 +492,87 @@ private fun ThinkingMessageContent(message: ChatMessage) {
 }
 
 @Composable
+private fun SubagentActionMessageContent(
+    message: ChatMessage,
+    onTapSubagentThread: (String) -> Unit,
+) {
+    val action = message.subagentAction
+    TurnSystemCard(
+        title = "Subagents",
+        showsProgress = message.isStreaming,
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(
+                text = action?.summaryText ?: message.text.trim(),
+                style = MaterialTheme.typography.bodyMedium.copy(fontFamily = monoFamily),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+
+            action?.agentRows?.forEach { agent ->
+                val resolvedStatus = agent.fallbackStatus?.trim()?.ifEmpty { null }
+                    ?: action.status.trim().ifEmpty { "in_progress" }
+                val statusColor = subagentStatusColor(resolvedStatus)
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.68f),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.08f)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable(enabled = agent.threadId.isNotBlank()) {
+                            onTapSubagentThread(agent.threadId)
+                        },
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(8.dp)
+                                .background(statusColor, CircleShape),
+                        )
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(3.dp),
+                        ) {
+                            Text(
+                                text = agent.displayLabel,
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Medium,
+                                color = MaterialTheme.colorScheme.onSurface,
+                            )
+                            resolvedStatus?.let { status ->
+                                Text(
+                                    text = status.replace("_", " "),
+                                    style = MaterialTheme.typography.labelSmall.copy(fontFamily = monoFamily),
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                        agent.model?.trim()?.takeIf(String::isNotEmpty)?.let { model ->
+                            Text(
+                                text = model,
+                                style = MaterialTheme.typography.labelSmall.copy(fontFamily = monoFamily),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        if (agent.threadId.isNotBlank()) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Outlined.KeyboardArrowRight,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
+                                modifier = Modifier.size(18.dp),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun DefaultSystemMessageContent(message: ChatMessage) {
     RichMessageText(
         text = message.text.trim(),
@@ -488,6 +586,7 @@ internal fun systemMessageTitle(kind: MessageKind): String {
         MessageKind.THINKING -> "Thinking"
         MessageKind.FILE_CHANGE -> "File change"
         MessageKind.COMMAND_EXECUTION -> "Command"
+        MessageKind.SUBAGENT_ACTION -> "Subagents"
         MessageKind.PLAN -> "Plan"
         MessageKind.USER_INPUT_PROMPT -> "Input needed"
         MessageKind.CHAT -> "System"
@@ -499,8 +598,20 @@ internal fun systemAccentColor(kind: MessageKind): Color {
     return when (kind) {
         MessageKind.THINKING, MessageKind.PLAN -> PlanAccent
         MessageKind.COMMAND_EXECUTION -> CommandAccent
+        MessageKind.SUBAGENT_ACTION -> MaterialTheme.colorScheme.primary
         MessageKind.FILE_CHANGE -> MaterialTheme.colorScheme.secondary
         MessageKind.USER_INPUT_PROMPT -> MaterialTheme.colorScheme.tertiary
         MessageKind.CHAT -> MaterialTheme.colorScheme.outline
+    }
+}
+
+@Composable
+private fun subagentStatusColor(status: String?): Color {
+    val normalized = status?.trim()?.lowercase().orEmpty()
+    return when {
+        "fail" in normalized || "error" in normalized -> Color(0xFFCC5A5A)
+        "stop" in normalized || "cancel" in normalized -> Color(0xFFD48A3A)
+        "complete" in normalized || "done" in normalized -> Color(0xFF4F9A63)
+        else -> PlanAccent
     }
 }

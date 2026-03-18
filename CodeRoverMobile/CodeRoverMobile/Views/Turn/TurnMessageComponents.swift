@@ -727,6 +727,7 @@ struct MessageRow: View, Equatable {
     // Disables timer-driven adornments while the user reads older content.
     var showsStreamingAnimations: Bool = true
     @Environment(\.assistantRevertAction) private var assistantRevertAction
+    @Environment(\.subagentOpenAction) private var subagentOpenAction
     @State private var previewAttachment: ImageAttachment?
     @State private var showRevertConfirmation = false
     @State private var selectableTextSheet: SelectableMessageTextSheetState?
@@ -998,6 +999,17 @@ struct MessageRow: View, Equatable {
             fileChangeSystemView(text: text)
         case .commandExecution:
             commandExecutionSystemView(text: text)
+        case .subagentAction:
+            if let subagentAction = message.subagentAction {
+                SubagentActionCard(
+                    parentThreadId: message.threadId,
+                    action: subagentAction,
+                    isStreaming: message.isStreaming,
+                    onOpenSubagent: subagentOpenAction
+                )
+            } else {
+                defaultSystemView(text: text)
+            }
         case .plan:
             PlanSystemCard(message: message)
         case .userInputPrompt:
@@ -1014,29 +1026,51 @@ struct MessageRow: View, Equatable {
 
     private var thinkingSystemView: some View {
         let thinkingText = ThinkingDisclosureParser.normalizedThinkingContent(from: message.text)
+        let activityPreview = ThinkingDisclosureParser.compactActivityPreview(fromNormalizedText: thinkingText)
         return Group {
             // Keep completed reasoning visible too; older builds showed thinking blocks
             // even after stream completion whenever content was present.
             if message.isStreaming || !thinkingText.isEmpty {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Thinking...")
-                        .font(AppFont.mono(.caption))
-                        .fontWeight(.regular)
-                        .italic()
-                        .foregroundStyle(.secondary.opacity(0.9))
-                        .modifier(ShimmerModifier(isActive: message.isStreaming && showsStreamingAnimations))
+                if let activityPreview {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Thinking...")
+                            .font(AppFont.mono(.caption))
+                            .fontWeight(.regular)
+                            .italic()
+                            .foregroundStyle(.secondary.opacity(0.9))
+                            .modifier(ShimmerModifier(isActive: message.isStreaming && showsStreamingAnimations))
 
-                    if !thinkingText.isEmpty {
-                        ThinkingDisclosureView(
-                            messageID: message.id,
-                            text: thinkingText,
-                            isStreaming: message.isStreaming
-                        )
+                        Text(activityPreview)
+                            .font(AppFont.mono(.caption))
+                            .fontWeight(.regular)
+                            .italic()
+                            .foregroundStyle(.secondary.opacity(0.9))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
                     }
+                    .padding(.vertical, 2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Thinking...")
+                            .font(AppFont.mono(.caption))
+                            .fontWeight(.regular)
+                            .italic()
+                            .foregroundStyle(.secondary.opacity(0.9))
+                            .modifier(ShimmerModifier(isActive: message.isStreaming && showsStreamingAnimations))
 
+                        if !thinkingText.isEmpty {
+                            ThinkingDisclosureView(
+                                messageID: message.id,
+                                text: thinkingText,
+                                isStreaming: message.isStreaming
+                            )
+                        }
+
+                    }
+                    .padding(.vertical, 2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .padding(.vertical, 2)
-                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
     }
