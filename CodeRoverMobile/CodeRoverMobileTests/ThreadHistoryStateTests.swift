@@ -598,6 +598,136 @@ final class ThreadHistoryStateTests: XCTestCase {
         XCTAssertTrue(didInvalidate)
     }
 
+    func testMergeCanonicalHistoryReordersExistingItemsWhenOrdinalArrives() {
+        let service = makeService()
+        let threadID = "thread-canonical-reorder"
+
+        let lateMessage = ChatMessage(
+            id: "item-2",
+            threadId: threadID,
+            role: .assistant,
+            text: "second",
+            createdAt: Date(timeIntervalSince1970: 2),
+            turnId: "turn-1",
+            itemId: "item-2",
+            isStreaming: true,
+            orderIndex: 100
+        )
+        let earlyMessage = ChatMessage(
+            id: "item-1",
+            threadId: threadID,
+            role: .assistant,
+            text: "first",
+            createdAt: Date(timeIntervalSince1970: 1),
+            turnId: "turn-1",
+            itemId: "item-1",
+            isStreaming: true,
+            orderIndex: 101
+        )
+
+        _ = service.synchronizeThreadTimelineState(
+            threadId: threadID,
+            canonicalMessages: [lateMessage, earlyMessage]
+        )
+
+        let historyMessages = [
+            ChatMessage(
+                id: "item-1",
+                threadId: threadID,
+                role: .assistant,
+                text: "first",
+                createdAt: Date(timeIntervalSince1970: 1),
+                turnId: "turn-1",
+                itemId: "item-1",
+                timelineOrdinal: 10,
+                timelineStatus: "completed",
+                orderIndex: 10
+            ),
+            ChatMessage(
+                id: "item-2",
+                threadId: threadID,
+                role: .assistant,
+                text: "second",
+                createdAt: Date(timeIntervalSince1970: 2),
+                turnId: "turn-1",
+                itemId: "item-2",
+                timelineOrdinal: 20,
+                timelineStatus: "completed",
+                orderIndex: 20
+            ),
+        ]
+
+        let merged = service.mergeCanonicalHistoryIntoTimelineState(
+            threadId: threadID,
+            historyMessages: historyMessages,
+            activeThreadIDs: [],
+            runningThreadIDs: []
+        )
+
+        XCTAssertEqual(merged.map(\.id), ["item-1", "item-2"])
+        XCTAssertEqual(merged.first?.timelineOrdinal, 10)
+        XCTAssertEqual(merged.first?.orderIndex, 10)
+        XCTAssertEqual(merged.last?.timelineOrdinal, 20)
+        XCTAssertEqual(merged.last?.orderIndex, 20)
+        XCTAssertEqual(merged.last?.timelineStatus, "completed")
+    }
+
+    func testThreadTimelineStateRepositionsExistingItemWithoutFullResort() {
+        var state = ThreadTimelineState(
+            messages: [
+                ChatMessage(
+                    id: "item-2",
+                    threadId: "thread",
+                    role: .assistant,
+                    text: "second",
+                    createdAt: Date(timeIntervalSince1970: 2),
+                    turnId: "turn-1",
+                    itemId: "item-2",
+                    orderIndex: 100
+                ),
+                ChatMessage(
+                    id: "item-3",
+                    threadId: "thread",
+                    role: .assistant,
+                    text: "third",
+                    createdAt: Date(timeIntervalSince1970: 3),
+                    turnId: "turn-1",
+                    itemId: "item-3",
+                    orderIndex: 101
+                ),
+            ]
+        )
+
+        state.upsert(
+            ChatMessage(
+                id: "item-1",
+                threadId: "thread",
+                role: .assistant,
+                text: "first",
+                createdAt: Date(timeIntervalSince1970: 1),
+                turnId: "turn-1",
+                itemId: "item-1",
+                orderIndex: 102
+            )
+        )
+        state.upsert(
+            ChatMessage(
+                id: "item-1",
+                threadId: "thread",
+                role: .assistant,
+                text: "first",
+                createdAt: Date(timeIntervalSince1970: 1),
+                turnId: "turn-1",
+                itemId: "item-1",
+                timelineOrdinal: 10,
+                orderIndex: 10
+            )
+        )
+
+        XCTAssertEqual(state.renderedMessages().map(\.id), ["item-1", "item-2", "item-3"])
+        XCTAssertEqual(state.orderedIndexByID["item-1"], 0)
+    }
+
     private func makeService() -> CodeRoverService {
         let suiteName = "ThreadHistoryStateTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName) ?? .standard

@@ -305,15 +305,10 @@ extension CodeRoverService {
     ) -> [ChatMessage] {
         let canonicalIDs = Set(canonicalMessages.map(\.id))
         let filteredOverlay = overlayMessages.filter { !canonicalIDs.contains($0.id) }
-        return (canonicalMessages + filteredOverlay).sorted { lhs, rhs in
-            if lhs.orderIndex != rhs.orderIndex {
-                return lhs.orderIndex < rhs.orderIndex
-            }
-            if lhs.createdAt != rhs.createdAt {
-                return lhs.createdAt < rhs.createdAt
-            }
-            return lhs.id < rhs.id
-        }
+        return ThreadTimelineState.mergeSortedMessages(
+            canonicalMessages: canonicalMessages,
+            overlayMessages: filteredOverlay
+        )
     }
 
     func synchronizeThreadTimelineState(
@@ -660,6 +655,14 @@ extension CodeRoverService {
         }
         if value.attachments.isEmpty && !serverMessage.attachments.isEmpty {
             value.attachments = serverMessage.attachments
+        }
+        if value.providerItemId == nil {
+            value.providerItemId = serverMessage.providerItemId
+        }
+        value.timelineStatus = serverMessage.timelineStatus ?? value.timelineStatus
+        if let serverOrdinal = serverMessage.timelineOrdinal {
+            value.timelineOrdinal = serverOrdinal
+            value.orderIndex = serverOrdinal
         }
 
         if value.role == .assistant {
