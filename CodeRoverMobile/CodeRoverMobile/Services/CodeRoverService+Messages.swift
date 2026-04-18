@@ -1573,42 +1573,20 @@ extension CodeRoverService {
         // Some servers never emit explicit item/completed for reasoning/fileChange.
         // Close both turn-bound and orphan system stream rows, but keep reasoning content visible.
         if var threadMessages = messagesByThread[threadId] {
-            var didMutate = false
-            for index in threadMessages.indices where threadMessages[index].role == .system
-                && threadMessages[index].isStreaming {
-                let belongsToTurn: Bool
-                if let resolvedTurnId {
-                    belongsToTurn = threadMessages[index].turnId == resolvedTurnId
-                        || threadMessages[index].turnId == nil
-                } else {
-                    belongsToTurn = true
-                }
-                guard belongsToTurn else { continue }
-                threadMessages[index].isStreaming = false
-                didMutate = true
-            }
-
-            let priorCount = threadMessages.count
-            if let resolvedTurnId {
-                threadMessages.removeAll {
-                    $0.role == .system
-                        && $0.kind == .thinking
-                        && ($0.turnId == resolvedTurnId || $0.turnId == nil)
-                        && shouldPruneThinkingRowAfterTurnCompletion($0)
-                }
-            } else {
-                threadMessages.removeAll {
-                    $0.role == .system
-                        && $0.kind == .thinking
-                        && shouldPruneThinkingRowAfterTurnCompletion($0)
-                }
-            }
-            if threadMessages.count != priorCount {
-                didMutate = true
-            }
-
-            if didMutate {
+            if finalizeMessagesForCompletedTurn(&threadMessages, resolvedTurnId: resolvedTurnId) {
                 messagesByThread[threadId] = threadMessages
+            }
+        }
+
+        if var timelineState = threadTimelineStateByThread[threadId] {
+            var canonicalMessages = timelineState.renderedMessages()
+            if finalizeMessagesForCompletedTurn(&canonicalMessages, resolvedTurnId: resolvedTurnId) {
+                timelineState.replaceAll(with: canonicalMessages)
+                threadTimelineStateByThread[threadId] = timelineState
+                messagesByThread[threadId] = Self.mergeRenderedTimelineMessages(
+                    timelineState.renderedMessages(),
+                    overlayMessages: (messagesByThread[threadId] ?? []).filter { !Self.isCanonicalTimelineMessage($0) }
+                )
             }
         }
 
@@ -1670,6 +1648,65 @@ extension CodeRoverService {
                 updateCurrentOutput(for: activeThreadId)
             }
         }
+    }
+
+    func effectiveStreamingState(threadId: String, turnId: String?, requestedStreaming: Bool) -> Bool {
+        guard requestedStreaming else {
+            return false
+        }
+
+        if turnTerminalState(for: turnId) != nil {
+            return false
+        }
+
+        if normalizedIdentifier(turnId) == nil,
+           activeTurnIdByThread[threadId] == nil,
+           latestTurnTerminalState(for: threadId) != nil {
+            return false
+        }
+
+        return true
+    }
+
+    private func finalizeMessagesForCompletedTurn(_ messages: inout [ChatMessage], resolvedTurnId: String?) -> Bool {
+        var didMutate = false
+
+        for index in messages.indices where messages[index].isStreaming {
+            guard messageBelongsToCompletedTurn(messages[index], resolvedTurnId: resolvedTurnId) else {
+                continue
+            }
+            messages[index].isStreaming = false
+            didMutate = true
+        }
+
+        let priorCount = messages.count
+        if let resolvedTurnId {
+            messages.removeAll {
+                $0.role == .system
+                    && $0.kind == .thinking
+                    && ($0.turnId == resolvedTurnId || $0.turnId == nil)
+                    && shouldPruneThinkingRowAfterTurnCompletion($0)
+            }
+        } else {
+            messages.removeAll {
+                $0.role == .system
+                    && $0.kind == .thinking
+                    && shouldPruneThinkingRowAfterTurnCompletion($0)
+            }
+        }
+
+        return didMutate || messages.count != priorCount
+    }
+
+    private func messageBelongsToCompletedTurn(_ message: ChatMessage, resolvedTurnId: String?) -> Bool {
+        if let resolvedTurnId {
+            if message.turnId == resolvedTurnId {
+                return true
+            }
+            return message.role != .user && message.turnId == nil
+        }
+
+        return message.role != .user
     }
 }
 

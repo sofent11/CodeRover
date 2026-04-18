@@ -499,6 +499,11 @@ extension CodeRoverService {
         if let turnId {
             threadIdByTurnID[turnId] = sessionId
         }
+        let isStreaming = effectiveStreamingState(
+            threadId: sessionId,
+            turnId: turnId,
+            requestedStreaming: defaultStreaming
+        )
 
         let text = extractACPText(from: updateObject["content"])
         let attachments = extractACPAttachments(from: updateObject["content"])
@@ -514,7 +519,7 @@ extension CodeRoverService {
             text: mergedText,
             turnId: turnId,
             itemId: messageId,
-            isStreaming: defaultStreaming,
+            isStreaming: isStreaming,
             deliveryState: .confirmed,
             attachments: attachments,
             orderIndex: MessageOrderCounter.next()
@@ -524,7 +529,7 @@ extension CodeRoverService {
         message.turnId = turnId ?? message.turnId
         message.itemId = messageId
         message.deliveryState = .confirmed
-        message.isStreaming = defaultStreaming
+        message.isStreaming = isStreaming
         if !text.isEmpty {
             message.text = mergedText
         }
@@ -543,6 +548,11 @@ extension CodeRoverService {
         let itemId = normalizedIdentifier(coderoverMeta?["itemId"]?.stringValue) ?? "plan-\(sessionId)"
         let turnId = extractAcpTurnId(from: coderoverMeta) ?? activeTurnIdByThread[sessionId]
         let explanation = normalizedIdentifier(coderoverMeta?["explanation"]?.stringValue)
+        let isStreaming = effectiveStreamingState(
+            threadId: sessionId,
+            turnId: turnId,
+            requestedStreaming: true
+        )
         let entries = updateObject["entries"]?.arrayValue ?? []
         let steps = entries.compactMap { entry -> CodeRoverPlanStep? in
             guard let object = entry.objectValue else {
@@ -570,7 +580,7 @@ extension CodeRoverService {
             text: explanation ?? "Planning...",
             turnId: turnId,
             itemId: itemId,
-            isStreaming: true,
+            isStreaming: isStreaming,
             deliveryState: .confirmed,
             planState: planState,
             orderIndex: MessageOrderCounter.next()
@@ -578,7 +588,7 @@ extension CodeRoverService {
         message.text = explanation ?? message.text
         message.turnId = turnId ?? message.turnId
         message.planState = planState
-        message.isStreaming = true
+        message.isStreaming = isStreaming
         _ = upsertThreadTimelineMessage(message)
         persistMessages()
         updateCurrentOutput(for: sessionId)
@@ -596,6 +606,12 @@ extension CodeRoverService {
         let toolKind = normalizedIdentifier(updateObject["kind"]?.stringValue)
         let messageKind: ChatMessageKind = toolKind == "execute" ? .commandExecution : .fileChange
         let status = normalizedIdentifier(updateObject["status"]?.stringValue) ?? "in_progress"
+        let requestedStreaming = status == "in_progress"
+        let isStreaming = effectiveStreamingState(
+            threadId: sessionId,
+            turnId: turnId,
+            requestedStreaming: requestedStreaming
+        )
         let text = extractACPText(from: updateObject["content"])
         let existing = threadTimelineStateByThread[sessionId]?.message(for: itemId)
         let mergedText = mergeAssistantDelta(existingText: existing?.text ?? "", incomingDelta: text)
@@ -608,7 +624,7 @@ extension CodeRoverService {
             text: mergedText,
             turnId: turnId,
             itemId: itemId,
-            isStreaming: status == "in_progress",
+            isStreaming: isStreaming,
             deliveryState: .confirmed,
             orderIndex: MessageOrderCounter.next()
         )
@@ -619,7 +635,7 @@ extension CodeRoverService {
         if !text.isEmpty {
             message.text = mergedText
         }
-        message.isStreaming = status == "in_progress"
+        message.isStreaming = isStreaming
         _ = upsertThreadTimelineMessage(message)
 
         if messageKind == .commandExecution {

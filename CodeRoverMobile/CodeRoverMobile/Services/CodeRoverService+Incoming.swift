@@ -329,7 +329,6 @@ extension CodeRoverService {
         if let turnId {
             threadIdByTurnID[turnId] = threadId
         }
-        markThreadAsRunning(threadId)
 
         let role = canonicalTimelineRole(from: paramsObject["role"]?.stringValue)
         let kind = canonicalTimelineKind(from: paramsObject["kind"]?.stringValue)
@@ -341,8 +340,17 @@ extension CodeRoverService {
         )
         let timelineOrdinal = paramsObject["ordinal"]?.intValue
         let timelineStatus = normalizedIdentifier(paramsObject["status"]?.stringValue)
-        let isStreaming = canonicalTimelineIsStreaming(status: timelineStatus, eventKind: eventKind)
+        let requestedStreaming = canonicalTimelineIsStreaming(status: timelineStatus, eventKind: eventKind)
+        let isStreaming = effectiveStreamingState(
+            threadId: threadId,
+            turnId: turnId,
+            requestedStreaming: requestedStreaming
+        )
         let planState = paramsObject["planState"].flatMap { decodeModel(CodeRoverPlanState.self, from: $0) }
+
+        if isStreaming {
+            markThreadAsRunning(threadId)
+        }
 
         if kind == .commandExecution {
             upsertCanonicalCommandExecutionDetails(

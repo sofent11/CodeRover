@@ -148,6 +148,158 @@ final class CodeRoverAcpSessionUpdateTests: XCTestCase {
         XCTAssertEqual(service.contextWindowUsageByThread["session-2"], ContextWindowUsage(tokensUsed: 1200, tokenLimit: 32000))
     }
 
+    func testLateACPUpdatesDoNotReopenStreamingAfterTurnCompletion() throws {
+        let service = makeService()
+        service.availableProviders = [.codexDefault]
+        service.threads = [ConversationThread(id: "session-3", provider: "codex")]
+
+        service.handleIncomingRPCMessage(
+            RPCMessage(
+                method: "session/update",
+                params: .object([
+                    "sessionId": .string("session-3"),
+                    "update": .object([
+                        "sessionUpdate": .string("session_info_update"),
+                        "_meta": .object([
+                            "coderover": .object([
+                                "agentId": .string("codex"),
+                                "runState": .string("running"),
+                                "turnId": .string("turn-3"),
+                            ]),
+                        ]),
+                    ]),
+                ])
+            )
+        )
+
+        service.handleIncomingRPCMessage(agentMessageUpdate(sessionId: "session-3", turnId: "turn-3", messageId: "assistant-3", text: "First"))
+        service.handleIncomingRPCMessage(
+            RPCMessage(
+                method: "session/update",
+                params: .object([
+                    "sessionId": .string("session-3"),
+                    "update": .object([
+                        "sessionUpdate": .string("plan"),
+                        "entries": .array([
+                            .object([
+                                "content": .string("Ship the fix"),
+                                "status": .string("in_progress"),
+                            ]),
+                        ]),
+                        "_meta": .object([
+                            "coderover": .object([
+                                "turnId": .string("turn-3"),
+                                "itemId": .string("plan-3"),
+                                "explanation": .string("Working"),
+                            ]),
+                        ]),
+                    ]),
+                ])
+            )
+        )
+        service.handleIncomingRPCMessage(toolCallUpdate(sessionId: "session-3", turnId: "turn-3", status: "in_progress", text: "Running", exitCode: nil))
+
+        service.handleIncomingRPCMessage(
+            RPCMessage(
+                method: "session/update",
+                params: .object([
+                    "sessionId": .string("session-3"),
+                    "update": .object([
+                        "sessionUpdate": .string("session_info_update"),
+                        "_meta": .object([
+                            "coderover": .object([
+                                "runState": .string("completed"),
+                                "turnId": .string("turn-3"),
+                            ]),
+                        ]),
+                    ]),
+                ])
+            )
+        )
+
+        service.handleIncomingRPCMessage(agentMessageUpdate(sessionId: "session-3", turnId: "turn-3", messageId: "assistant-3", text: " later"))
+        service.handleIncomingRPCMessage(
+            RPCMessage(
+                method: "session/update",
+                params: .object([
+                    "sessionId": .string("session-3"),
+                    "update": .object([
+                        "sessionUpdate": .string("plan"),
+                        "entries": .array([
+                            .object([
+                                "content": .string("Ship the fix"),
+                                "status": .string("completed"),
+                            ]),
+                        ]),
+                        "_meta": .object([
+                            "coderover": .object([
+                                "turnId": .string("turn-3"),
+                                "itemId": .string("plan-3"),
+                                "explanation": .string("Done"),
+                            ]),
+                        ]),
+                    ]),
+                ])
+            )
+        )
+        service.handleIncomingRPCMessage(toolCallUpdate(sessionId: "session-3", turnId: "turn-3", status: "in_progress", text: " extra", exitCode: nil))
+
+        let messages = try XCTUnwrap(service.messagesByThread["session-3"])
+        XCTAssertFalse(service.runningThreadIDs.contains("session-3"))
+        XCTAssertNil(service.activeTurnID(for: "session-3"))
+
+        let assistant = try XCTUnwrap(messages.first(where: { $0.id == "assistant-3" }))
+        XCTAssertEqual(assistant.text, "First later")
+        XCTAssertFalse(assistant.isStreaming)
+
+        let plan = try XCTUnwrap(messages.first(where: { $0.id == "plan-3" }))
+        XCTAssertEqual(plan.text, "Done")
+        XCTAssertFalse(plan.isStreaming)
+
+        let tool = try XCTUnwrap(messages.first(where: { $0.id == "tool-1" }))
+        XCTAssertEqual(tool.text, "Running extra")
+        XCTAssertFalse(tool.isStreaming)
+    }
+
+    func testMarkTurnCompletedAlsoFinalizesCanonicalTimelineState() throws {
+        let service = makeService()
+        service.threads = [ConversationThread(id: "session-4", provider: "codex")]
+        service.activeTurnIdByThread["session-4"] = "turn-4"
+        service.runningThreadIDs.insert("session-4")
+
+        let assistant = ChatMessage(
+            id: "assistant-4",
+            threadId: "session-4",
+            role: .assistant,
+            kind: .chat,
+            text: "Streaming",
+            turnId: "turn-4",
+            itemId: "assistant-4",
+            isStreaming: true
+        )
+        let plan = ChatMessage(
+            id: "plan-4",
+            threadId: "session-4",
+            role: .system,
+            kind: .plan,
+            text: "Planning",
+            turnId: "turn-4",
+            itemId: "plan-4",
+            isStreaming: true
+        )
+
+        service.threadTimelineStateByThread["session-4"] = ThreadTimelineState(messages: [assistant, plan])
+        service.messagesByThread["session-4"] = [assistant, plan]
+
+        service.markTurnCompleted(threadId: "session-4", turnId: "turn-4")
+
+        let renderedMessages = try XCTUnwrap(service.messagesByThread["session-4"])
+        XCTAssertTrue(renderedMessages.allSatisfy { !$0.isStreaming })
+
+        let canonicalMessages = try XCTUnwrap(service.threadTimelineStateByThread["session-4"]?.renderedMessages())
+        XCTAssertTrue(canonicalMessages.allSatisfy { !$0.isStreaming })
+    }
+
     private func agentMessageUpdate(sessionId: String, turnId: String, messageId: String, text: String) -> RPCMessage {
         RPCMessage(
             method: "session/update",
