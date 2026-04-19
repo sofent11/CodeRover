@@ -60,6 +60,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.coderover.android.app.AppViewModel
 import com.coderover.android.data.model.AppState
+import com.coderover.android.data.model.ConnectionPhase
 import com.coderover.android.ui.screens.ArchivedChatsScreen
 import com.coderover.android.ui.screens.HomeEmptyScreen
 import com.coderover.android.ui.screens.OnboardingScreen
@@ -77,6 +78,7 @@ import com.coderover.android.ui.turn.TurnThreadProjectAction
 import com.coderover.android.ui.turn.TurnThreadPathSheet
 import com.coderover.android.ui.turn.TurnTopBarActions
 import com.coderover.android.ui.turn.buildRepositoryDiffFiles
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.max
 import kotlin.math.min
@@ -184,6 +186,47 @@ private fun CodeRoverAppShell(
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
+
+    LaunchedEffect(
+        state.activePairingMacDeviceId,
+        state.connectionPhase,
+        state.secureConnectionState,
+        contentViewModel.showSettings,
+        contentViewModel.showPairingEntry,
+    ) {
+        if (!contentViewModel.shouldRunForegroundReconnectLoop(state) ||
+            !contentViewModel.beginForegroundReconnectLoop()
+        ) {
+            return@LaunchedEffect
+        }
+
+        try {
+            var attempt = 0
+            while (contentViewModel.hasRemainingForegroundReconnectAttempts(attempt)) {
+                val currentState = viewModel.state.value
+                if (!contentViewModel.shouldRunForegroundReconnectLoop(currentState)) {
+                    break
+                }
+                if (currentState.isConnected) {
+                    break
+                }
+
+                when (currentState.connectionPhase) {
+                    ConnectionPhase.CONNECTED -> break
+                    ConnectionPhase.CONNECTING,
+                    ConnectionPhase.LOADING_CHATS,
+                    ConnectionPhase.SYNCING -> delay(300)
+                    ConnectionPhase.OFFLINE -> {
+                        viewModel.connectActivePairing()
+                        delay(contentViewModel.foregroundReconnectDelayMs(attempt))
+                        attempt += 1
+                    }
+                }
+            }
+        } finally {
+            contentViewModel.finishForegroundReconnectLoop()
         }
     }
 

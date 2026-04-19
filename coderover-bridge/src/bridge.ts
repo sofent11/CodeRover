@@ -71,6 +71,7 @@ export function startBridge({
   const handleBridgeStatusRequest = createBridgeStatusHandler({
     getTrustedDeviceCount: () => Object.keys(loadOrCreateBridgeDeviceState().trustedPhones || {}).length,
     getKeepAwakeActive: () => keepAwakeController.isActive,
+    getTransportCandidates: () => currentPairingPayload?.transportCandidates || transportCandidates,
     updatePreferences: (updates) => {
       const nextPreferences = updateBridgePreferences(updates);
       keepAwakeController.setEnabled(nextPreferences.keepAwakeEnabled);

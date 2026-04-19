@@ -50,11 +50,16 @@ internal fun FileChangeMessageContent(message: ChatMessage) {
     val entries = remember(message.id, message.text, message.fileChanges) {
         if (message.fileChanges.isNotEmpty()) {
             message.fileChanges.map { change ->
+                val (additions, deletions) = resolveDiffCounts(
+                    additions = change.additions,
+                    deletions = change.deletions,
+                    rawDiff = change.diff,
+                )
                 FileChangeEntryUi(
                     path = change.path,
                     actionLabel = fileChangeActionLabel(change.kind),
-                    additions = change.additions ?: 0,
-                    deletions = change.deletions ?: 0,
+                    additions = additions,
+                    deletions = deletions,
                 )
             }
         } else {
@@ -65,8 +70,7 @@ internal fun FileChangeMessageContent(message: ChatMessage) {
     val diffFiles = remember(message.id, message.text, message.fileChanges) {
         buildDiffDetailFiles(message)
     }
-    val totalAdditions = remember(entries) { entries.sumOf { it.additions } }
-    val totalDeletions = remember(entries) { entries.sumOf { it.deletions } }
+    val canOpenDiffDetails = diffFiles.isNotEmpty() && !message.isStreaming
 
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         if (entries.isNotEmpty()) {
@@ -78,77 +82,17 @@ internal fun FileChangeMessageContent(message: ChatMessage) {
                         color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
                     )
                     group.entries.take(6).forEach { entry ->
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        ) {
-                            Text(
-                                text = compactFileChangePath(entry.path),
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.primary,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.weight(1f),
-                            )
-                            if (entry.additions > 0 || entry.deletions > 0) {
-                                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                    if (entry.additions > 0) {
-                                        Text(
-                                            text = "+${entry.additions}",
-                                            style = MaterialTheme.typography.labelMedium.copy(fontFamily = monoFamily),
-                                            color = CommandAccent,
-                                        )
-                                    }
-                                    if (entry.deletions > 0) {
-                                        Text(
-                                            text = "-${entry.deletions}",
-                                            style = MaterialTheme.typography.labelMedium.copy(fontFamily = monoFamily),
-                                            color = Danger,
-                                        )
-                                    }
-                                }
-                            }
-                        }
+                        FileChangeInlineSummaryRow(
+                            entry = entry,
+                            enabled = canOpenDiffDetails,
+                            onClick = { showDiffDetails = true },
+                        )
                     }
                     if (group.entries.size > 6) {
                         Text(
                             text = "+${group.entries.size - 6} more ${group.actionLabel.lowercase()} files",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                        )
-                    }
-                }
-            }
-            if (diffFiles.isNotEmpty() && !message.isStreaming) {
-                Surface(
-                    shape = RoundedCornerShape(12.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
-                    border = androidx.compose.foundation.BorderStroke(
-                        1.dp,
-                        MaterialTheme.colorScheme.outline.copy(alpha = 0.10f),
-                    ),
-                    modifier = Modifier.clickable { showDiffDetails = true },
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
-                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            text = "Diff",
-                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = monoFamily),
-                            color = MaterialTheme.colorScheme.onSurface,
-                        )
-                        Text(
-                            text = "+$totalAdditions",
-                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = monoFamily),
-                            color = CommandAccent,
-                        )
-                        Text(
-                            text = "-$totalDeletions",
-                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = monoFamily),
-                            color = Danger,
                         )
                     }
                 }
@@ -169,6 +113,51 @@ internal fun FileChangeMessageContent(message: ChatMessage) {
             },
             onDismiss = { showDiffDetails = false },
         )
+    }
+}
+
+@Composable
+private fun FileChangeInlineSummaryRow(
+    entry: FileChangeEntryUi,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    val rowModifier = if (enabled) {
+        Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(vertical = 1.dp)
+    } else {
+        Modifier
+            .fillMaxWidth()
+            .padding(vertical = 1.dp)
+    }
+
+    Row(
+        modifier = rowModifier,
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Text(
+            text = compactFileChangePath(entry.path),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.primary,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(
+                text = "+${entry.additions}",
+                style = MaterialTheme.typography.labelMedium.copy(fontFamily = monoFamily),
+                color = CommandAccent,
+            )
+            Text(
+                text = "-${entry.deletions}",
+                style = MaterialTheme.typography.labelMedium.copy(fontFamily = monoFamily),
+                color = Danger,
+            )
+        }
     }
 }
 

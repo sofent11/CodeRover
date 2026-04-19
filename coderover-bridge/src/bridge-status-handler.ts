@@ -7,6 +7,7 @@ import {
   type BridgePreferences,
 } from "./bridge-preferences";
 import { createBridgePackageVersionStatusReader } from "./bridge-package-version-status";
+import type { TransportCandidateShape } from "./bridge-types";
 
 type SendResponse = (response: string) => void;
 type JsonObject = Record<string, unknown>;
@@ -26,6 +27,7 @@ interface BridgeStatusHandlerOptions {
   updatePreferences?: (updates: Partial<BridgePreferences>) => BridgePreferences;
   getTrustedDeviceCount?: () => number;
   getKeepAwakeActive?: () => boolean;
+  getTransportCandidates?: () => TransportCandidateShape[];
   upgradeCommand?: string;
   minimumSupportedIOSVersion?: string;
   minimumSupportedAndroidVersion?: string;
@@ -41,6 +43,7 @@ export function createBridgeStatusHandler({
   updatePreferences = updateBridgePreferences,
   getTrustedDeviceCount = () => 0,
   getKeepAwakeActive = () => false,
+  getTransportCandidates = () => [],
   upgradeCommand = DEFAULT_UPGRADE_COMMAND,
   minimumSupportedIOSVersion = DEFAULT_MINIMUM_SUPPORTED_IOS_VERSION,
   minimumSupportedAndroidVersion = DEFAULT_MINIMUM_SUPPORTED_ANDROID_VERSION,
@@ -65,6 +68,7 @@ export function createBridgeStatusHandler({
       updatePreferences,
       getTrustedDeviceCount,
       getKeepAwakeActive,
+      getTransportCandidates,
       upgradeCommand,
       minimumSupportedIOSVersion,
       minimumSupportedAndroidVersion,
@@ -115,6 +119,9 @@ async function buildBridgeStatusPayload(
     versionStatus.bridgeLatestVersion,
     versionStatus.bridgeVersion
   );
+  const transportCandidates = options.getTransportCandidates()
+    .map((candidate) => normalizeTransportCandidate(candidate))
+    .filter((candidate): candidate is TransportCandidateShape => candidate != null);
 
   return {
     bridgeVersion: versionStatus.bridgeVersion,
@@ -140,6 +147,7 @@ async function buildBridgeStatusPayload(
         recommendedVersion: options.minimumSupportedAndroidVersion,
       },
     },
+    transportCandidates,
   };
 }
 
@@ -219,6 +227,25 @@ function readNonEmptyString(value: unknown): string | null {
 
 function readBoolean(value: unknown): boolean | null {
   return typeof value === "boolean" ? value : null;
+}
+
+function normalizeTransportCandidate(candidate: unknown): TransportCandidateShape | null {
+  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+    return null;
+  }
+
+  const record = candidate as Record<string, unknown>;
+  const kind = readNonEmptyString(record.kind);
+  const url = readNonEmptyString(record.url);
+  if (!kind || !url) {
+    return null;
+  }
+
+  return {
+    kind,
+    url,
+    label: readNonEmptyString(record.label),
+  };
 }
 
 function isVersionNewer(candidateVersion: string | null, currentVersion: string | null): boolean {

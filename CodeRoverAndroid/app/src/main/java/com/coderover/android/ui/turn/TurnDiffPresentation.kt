@@ -38,11 +38,17 @@ internal fun buildDiffDetailFiles(message: ChatMessage): List<DiffFileDetailUi> 
     if (message.fileChanges.isNotEmpty()) {
         return message.fileChanges.map { change ->
             val hunks = parseDiffHunks(change.diff)
+            val (additions, deletions) = resolveDiffCounts(
+                additions = change.additions,
+                deletions = change.deletions,
+                rawDiff = change.diff,
+                parsedHunks = hunks,
+            )
             DiffFileDetailUi(
                 path = change.path,
                 actionLabel = fileChangeActionLabel(change.kind),
-                additions = change.additions ?: countDiffLines(hunks, DiffLineKind.ADDED),
-                deletions = change.deletions ?: countDiffLines(hunks, DiffLineKind.REMOVED),
+                additions = additions,
+                deletions = deletions,
                 hunks = hunks,
                 rawBody = change.diff.trim(),
             )
@@ -210,6 +216,20 @@ private fun parseDiffHunks(rawBody: String): List<DiffHunkUi> {
     }
 }
 
+internal fun resolveDiffCounts(
+    additions: Int?,
+    deletions: Int?,
+    rawDiff: String,
+    parsedHunks: List<DiffHunkUi>? = null,
+): Pair<Int, Int> {
+    if (additions != null && deletions != null) {
+        return additions to deletions
+    }
+    val hunks = parsedHunks ?: parseDiffHunks(rawDiff)
+    return (additions ?: countDiffLines(hunks, DiffLineKind.ADDED)) to
+        (deletions ?: countDiffLines(hunks, DiffLineKind.REMOVED))
+}
+
 private fun isDiffMetaLine(line: String): Boolean {
     return line.startsWith("diff --git ") ||
         line.startsWith("index ") ||
@@ -238,15 +258,20 @@ private fun countDiffLines(hunks: List<DiffHunkUi>, kind: DiffLineKind): Int {
 internal fun buildDiffDetailText(message: ChatMessage): String {
     if (message.fileChanges.isNotEmpty()) {
         return message.fileChanges.joinToString("\n\n") { change ->
+            val (additions, deletions) = resolveDiffCounts(
+                additions = change.additions,
+                deletions = change.deletions,
+                rawDiff = change.diff,
+            )
             buildString {
                 append(fileChangeActionLabel(change.kind))
                 append(" ")
                 append(change.path)
-                if (change.additions != null || change.deletions != null) {
+                if (additions > 0 || deletions > 0) {
                     append("  (+")
-                    append(change.additions ?: 0)
+                    append(additions)
                     append(" -")
-                    append(change.deletions ?: 0)
+                    append(deletions)
                     append(")")
                 }
                 if (change.diff.isNotBlank()) {

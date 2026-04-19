@@ -50,6 +50,7 @@ import com.coderover.android.data.model.ThreadSyncState
 import com.coderover.android.data.model.ThreadTimelineState
 import com.coderover.android.data.model.TrustedMacRecord
 import com.coderover.android.data.model.ThreadRunBadgeState
+import com.coderover.android.data.model.TransportCandidate
 import com.coderover.android.data.model.TrustedMacRegistry
 import com.coderover.android.data.model.RuntimeProvider
 import com.coderover.android.data.model.SubagentAction
@@ -143,6 +144,8 @@ class CodeRoverRepository(context: Context) {
     private val realtimeHistoryCatchUpMutex = Mutex()
     private val orderCounter = AtomicInteger(0)
     private val connectionEpoch = AtomicLong(0)
+    private val nextClientGeneration = AtomicLong(0)
+    private val activeClientGeneration = AtomicLong(0)
     private val isConnectInFlight = AtomicBoolean(false)
     internal val threadTimelineStateByThread = mutableMapOf<String, ThreadTimelineState>()
     private val threadHistoryRefreshInFlight = mutableSetOf<String>()
@@ -449,9 +452,11 @@ class CodeRoverRepository(context: Context) {
                 for (url in orderedUrls) {
                     try {
                         Log.d(TAG, "connectActivePairing epoch=$epoch url=$url mac=${pairing.macDeviceId}")
-                        val bridgeClient = buildClient(epoch)
+                        val clientGeneration = nextClientGeneration.incrementAndGet()
+                        val bridgeClient = buildClient(epoch, clientGeneration)
                         clientMutex.withLock {
                             client?.disconnect()
+                            activeClientGeneration.set(clientGeneration)
                             client = bridgeClient
                         }
                         bridgeClient.connect(
@@ -468,8 +473,6 @@ class CodeRoverRepository(context: Context) {
                         listProviders()
                         Log.d(TAG, "runtime/provider/list ok epoch=$epoch")
                         syncRuntimeSelectionContext(currentRuntimeProviderId(), refreshModels = false)
-                        refreshBridgeMetadataInternal()
-                        Log.d(TAG, "runtime selection restored epoch=$epoch provider=${currentRuntimeProviderId()}")
                         val reconnectThreadId = preferredThreadId
                             ?: state.value.selectedThreadId
                             ?: state.value.threads.firstOrNull()?.id
@@ -480,6 +483,8 @@ class CodeRoverRepository(context: Context) {
                                 selectedThreadId = reconnectThreadId ?: selectedThreadId ?: threads.firstOrNull()?.id,
                             )
                         }
+                        refreshBridgeMetadataInternal()
+                        Log.d(TAG, "runtime selection restored epoch=$epoch provider=${currentRuntimeProviderId()}")
                         reconnectThreadId?.let { threadId ->
                             runCatching {
                                 refreshThreadHistory(threadId, reason = "initial-connect")
@@ -501,6 +506,13 @@ class CodeRoverRepository(context: Context) {
                     }
                 }
 
+                clientMutex.withLock {
+                    if (connectionEpoch.get() == epoch) {
+                        client?.disconnect()
+                        client = null
+                        activeClientGeneration.set(0)
+                    }
+                }
                 updateState {
                     copy(
                         connectionPhase = ConnectionPhase.OFFLINE,
@@ -1861,13 +1873,22 @@ class CodeRoverRepository(context: Context) {
             activeClient().sendRequest("bridge/status/read", JsonObject(emptyMap()))
                 ?.jsonObjectOrNull()
                 ?.let(BridgeStatus::fromJson)
+        }.onFailure { failure ->
+            Log.w(TAG, "bridge/status/read failed", failure)
         }.getOrNull()
 
         val nextPrompt = runCatching {
             activeClient().sendRequest("bridge/updatePrompt/read", JsonObject(emptyMap()))
                 ?.jsonObjectOrNull()
                 ?.let(BridgeUpdatePrompt::fromJson)
+        }.onFailure { failure ->
+            Log.w(TAG, "bridge/updatePrompt/read failed", failure)
         }.getOrNull()
+
+        Log.d(
+            TAG,
+            "bridge metadata refresh status=${nextStatus != null} prompt=${nextPrompt != null} candidates=${nextStatus?.transportCandidates?.size ?: 0}",
+        )
 
         updateState {
             copy(
@@ -1876,6 +1897,13 @@ class CodeRoverRepository(context: Context) {
                 isLoadingBridgeStatus = false,
             )
         }
+
+        nextStatus?.transportCandidates
+            ?.takeIf { it.isNotEmpty() }
+            ?.let { transportCandidates ->
+                Log.d(TAG, "bridge status returned ${transportCandidates.size} transport candidate(s)")
+                refreshActivePairingTransportCandidates(transportCandidates)
+            }
     }
 
     private suspend fun updateBridgeKeepAwakeEnabled(enabled: Boolean) {
@@ -3927,16 +3955,16 @@ class CodeRoverRepository(context: Context) {
         }
     }
 
-    private fun buildClient(epoch: Long): SecureBridgeClient {
+    private fun buildClient(epoch: Long, clientGeneration: Long): SecureBridgeClient {
         return SecureBridgeClient(
             onNotification = { method, params ->
-                if (epoch != connectionEpoch.get()) {
+                if (!isCurrentClientCallback(epoch, clientGeneration)) {
                     return@SecureBridgeClient
                 }
                 handleNotification(method, params)
             },
             onApprovalRequest = { id, method, params ->
-                if (epoch != connectionEpoch.get()) {
+                if (!isCurrentClientCallback(epoch, clientGeneration)) {
                     return@SecureBridgeClient
                 }
                 if (method == "item/tool/requestUserInput") {
@@ -3976,8 +4004,11 @@ class CodeRoverRepository(context: Context) {
                 }
             },
             onDisconnected = { throwable ->
-                if (epoch != connectionEpoch.get()) {
-                    Log.d(TAG, "ignore stale disconnect epoch=$epoch current=${connectionEpoch.get()}")
+                if (!isCurrentClientCallback(epoch, clientGeneration)) {
+                    Log.d(
+                        TAG,
+                        "ignore stale disconnect epoch=$epoch current=${connectionEpoch.get()} client=$clientGeneration active=${activeClientGeneration.get()}",
+                    )
                     return@SecureBridgeClient
                 }
                 Log.e(TAG, "client disconnected epoch=$epoch phase=${state.value.connectionPhase}", throwable)
@@ -3991,7 +4022,7 @@ class CodeRoverRepository(context: Context) {
                 }
             },
             onSecureStateChanged = { secureState, fingerprint ->
-                if (epoch != connectionEpoch.get()) {
+                if (!isCurrentClientCallback(epoch, clientGeneration)) {
                     return@SecureBridgeClient
                 }
                 Log.d(TAG, "secure state epoch=$epoch state=$secureState fingerprint=$fingerprint")
@@ -4003,7 +4034,7 @@ class CodeRoverRepository(context: Context) {
                 }
             },
             onBridgeSequenceApplied = { sequence ->
-                if (epoch != connectionEpoch.get()) {
+                if (!isCurrentClientCallback(epoch, clientGeneration)) {
                     return@SecureBridgeClient
                 }
                 state.value.activePairing?.let { activePairing ->
@@ -4016,7 +4047,7 @@ class CodeRoverRepository(context: Context) {
                 }
             },
             onTrustedMacConfirmed = { trustedMac ->
-                if (epoch != connectionEpoch.get()) {
+                if (!isCurrentClientCallback(epoch, clientGeneration)) {
                     return@SecureBridgeClient
                 }
                 val updatedRegistry = state.value.trustedMacRegistry.copy(
@@ -4858,6 +4889,35 @@ class CodeRoverRepository(context: Context) {
         updateState { copy(pairings = updatedPairings) }
     }
 
+    private fun refreshActivePairingTransportCandidates(transportCandidates: List<TransportCandidate>) {
+        val normalizedCandidates = transportCandidates
+            .filter { it.url.isNotBlank() && it.kind.isNotBlank() }
+            .distinctBy { "${it.kind}|${it.url}|${it.label.orEmpty()}" }
+        if (normalizedCandidates.isEmpty()) {
+            return
+        }
+
+        val activePairing = state.value.activePairing ?: return
+        if (activePairing.transportCandidates == normalizedCandidates) {
+            return
+        }
+
+        Log.d(
+            TAG,
+            "refreshing pairing transport candidates mac=${activePairing.macDeviceId} count=${normalizedCandidates.size}",
+        )
+
+        val updatedPairings = state.value.pairings.map { pairing ->
+            if (pairing.macDeviceId == activePairing.macDeviceId) {
+                pairing.copy(transportCandidates = normalizedCandidates)
+            } else {
+                pairing
+            }
+        }
+        store.savePairings(updatedPairings)
+        updateState { copy(pairings = updatedPairings) }
+    }
+
     private fun resolveSecureConnectionState(
         activePairingMacDeviceId: String?,
         trustedRegistry: TrustedMacRegistry,
@@ -5082,6 +5142,7 @@ class CodeRoverRepository(context: Context) {
 
     private suspend fun disconnectCurrentClient(resetThreadSession: Boolean) {
         connectionEpoch.incrementAndGet()
+        activeClientGeneration.set(0)
         clientMutex.withLock {
             client?.disconnect()
             client = null
@@ -5126,6 +5187,10 @@ class CodeRoverRepository(context: Context) {
         return clientMutex.withLock {
             client ?: error("Bridge client is not connected.")
         }
+    }
+
+    private fun isCurrentClientCallback(epoch: Long, clientGeneration: Long): Boolean {
+        return epoch == connectionEpoch.get() && clientGeneration == activeClientGeneration.get()
     }
 
     private fun loadOrCreatePhoneIdentityState(): PhoneIdentityState {

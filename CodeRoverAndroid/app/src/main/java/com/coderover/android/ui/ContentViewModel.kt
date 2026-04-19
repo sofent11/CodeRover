@@ -18,9 +18,15 @@ internal enum class AppShellContent {
 }
 
 internal class ContentViewModel {
+    private companion object {
+        val foregroundReconnectBackoffMs = listOf(300L, 1_000L, 2_000L, 4_000L, 8_000L)
+        const val maxForegroundReconnectAttempts = 50
+    }
+
     private var hasAttemptedInitialAutoConnect by mutableStateOf(false)
     private var hasObservedInitialResume by mutableStateOf(false)
     private var lastSidebarOpenSyncAt by mutableLongStateOf(0L)
+    private var isForegroundReconnectRunning by mutableStateOf(false)
 
     var showSettings by mutableStateOf(false)
         private set
@@ -70,6 +76,30 @@ internal class ContentViewModel {
             !showPairingEntry &&
             !state.secureConnectionState.blocksAutomaticReconnect &&
             !shouldForcePairingEntry(state)
+    }
+
+    fun shouldRunForegroundReconnectLoop(state: AppState): Boolean {
+        return hasAttemptedInitialAutoConnect && shouldAttemptForegroundReconnect(state)
+    }
+
+    fun beginForegroundReconnectLoop(): Boolean {
+        if (isForegroundReconnectRunning) {
+            return false
+        }
+        isForegroundReconnectRunning = true
+        return true
+    }
+
+    fun finishForegroundReconnectLoop() {
+        isForegroundReconnectRunning = false
+    }
+
+    fun foregroundReconnectDelayMs(attempt: Int): Long {
+        return foregroundReconnectBackoffMs[minOf(attempt, foregroundReconnectBackoffMs.lastIndex)]
+    }
+
+    fun hasRemainingForegroundReconnectAttempts(attempt: Int): Boolean {
+        return attempt < maxForegroundReconnectAttempts
     }
 
     fun shouldReconnectOnForegroundResume(state: AppState): Boolean {

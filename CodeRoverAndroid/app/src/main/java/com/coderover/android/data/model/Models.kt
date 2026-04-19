@@ -6,6 +6,7 @@ import java.util.Comparator
 import java.util.UUID
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
@@ -885,6 +886,7 @@ data class BridgeStatus(
     val trustedDeviceCount: Int = 0,
     val trustedDeviceStatus: String? = null,
     val supportedMobileVersions: BridgeMobileSupportMatrix? = null,
+    val transportCandidates: List<TransportCandidate> = emptyList(),
 ) {
     val bridgeVersionLabel: String
         get() = bridgeVersion ?: "Unavailable"
@@ -909,6 +911,11 @@ data class BridgeStatus(
                 supportedMobileVersions = BridgeMobileSupportMatrix.fromJson(
                     json["supportedMobileVersions"]?.jsonObjectOrNull()
                 ),
+                transportCandidates = json.array("transportCandidates")?.mapNotNull { element ->
+                        runCatching {
+                            Json.decodeFromJsonElement(TransportCandidate.serializer(), element)
+                        }.getOrNull()?.takeIf { it.url.isNotBlank() && it.kind.isNotBlank() }
+                    } ?: emptyList(),
             )
         }
     }
