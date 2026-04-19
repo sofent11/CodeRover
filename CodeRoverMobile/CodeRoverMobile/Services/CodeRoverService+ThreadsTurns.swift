@@ -458,7 +458,7 @@ extension CodeRoverService {
         let decision = (forSession && isCommandApproval) ? "acceptForSession" : "accept"
 
         try await sendResponse(id: request.requestID, result: .string(decision))
-        pendingApproval = nil
+        pendingApprovals.removeFirst()
     }
 
     // Declines the latest pending approval request.
@@ -468,7 +468,7 @@ extension CodeRoverService {
         }
 
         try await sendResponse(id: request.requestID, result: .string("decline"))
-        pendingApproval = nil
+        pendingApprovals.removeFirst()
     }
 
     // Responds to item/tool/requestUserInput using the exact app-server answer envelope.
@@ -992,7 +992,12 @@ extension CodeRoverService {
     }
 
     @discardableResult
-    func ensureThreadResumed(threadId: String, force: Bool = false) async throws -> ConversationThread? {
+    func ensureThreadResumed(
+        threadId: String,
+        force: Bool = false,
+        preferredProjectPath: String? = nil,
+        modelIdentifierOverride: String? = nil
+    ) async throws -> ConversationThread? {
         guard !threadId.isEmpty else {
             return nil
         }
@@ -1005,7 +1010,11 @@ extension CodeRoverService {
         var params: RPCObject = [
             "threadId": .string(threadId),
         ]
-        if let modelIdentifier = runtimeModelIdentifierForTurn() {
+        if let preferredProjectPath = ConversationThreadStartProjectBinding.normalizedProjectPath(preferredProjectPath)
+            ?? threads.first(where: { $0.id == threadId })?.gitWorkingDirectory {
+            params["cwd"] = .string(preferredProjectPath)
+        }
+        if let modelIdentifier = modelIdentifierOverride ?? runtimeModelIdentifierForTurn() {
             params["model"] = .string(modelIdentifier)
         }
         let response = try await sendRequestWithSandboxFallback(method: "thread/resume", baseParams: params)
@@ -1017,9 +1026,13 @@ extension CodeRoverService {
 
         var resumedThread: ConversationThread?
         if let threadValue = resultObject["thread"],
-           var decodedThread = decodeModel(ConversationThread.self, from: threadValue) {
+           let decodedThreadValue = decodeModel(ConversationThread.self, from: threadValue) {
+            var decodedThread = ConversationThreadStartProjectBinding.applyPreferredProjectFallback(
+                to: decodedThreadValue,
+                preferredProjectPath: ConversationThreadStartProjectBinding.normalizedProjectPath(preferredProjectPath)
+            )
             decodedThread.syncState = .live
-            upsertThread(decodedThread)
+            upsertThread(decodedThread, treatAsServerState: true)
             resumedThread = decodedThread
 
             if let threadObject = threadValue.objectValue {

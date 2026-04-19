@@ -46,7 +46,7 @@ struct OnboardingView: View {
                                 Text("CodeRover")
                                     .font(AppFont.title2(weight: .bold))
 
-                                Text("Control CodeRover from your iPhone.")
+                                Text("Run CodeRover on your Mac, then keep it in reach from your iPhone.")
                                     .font(AppFont.caption(weight: .regular))
                                     .foregroundStyle(.secondary)
                             }
@@ -56,20 +56,22 @@ struct OnboardingView: View {
                             VStack(spacing: 14) {
                                 OnboardingStepRow(
                                     number: "1",
-                                    title: "Install the package",
-                                    command: "bun add -g coderover"
+                                    title: "Install the local bridge",
+                                    command: "bun add -g coderover",
+                                    subtitle: "Keep the runtime on your Mac and give the phone a secure local path in."
                                 )
 
                                 OnboardingStepRow(
                                     number: "2",
-                                    title: "Start the bridge",
-                                    command: "coderover up"
+                                    title: "Start CodeRover on your Mac",
+                                    command: "coderover up",
+                                    subtitle: "Launch the bridge locally so this phone can pair over QR."
                                 )
 
                                 OnboardingStepRow(
                                     number: "3",
-                                    title: "Scan the QR code",
-                                   
+                                    title: "Scan the pairing QR",
+                                    subtitle: "That links this iPhone to your Mac without moving chats or code to a hosted service."
                                 )
                             }
 
@@ -78,7 +80,7 @@ struct OnboardingView: View {
                                 HStack(spacing: 8) {
                                     Image(systemName: "qrcode")
                                         .font(.system(size: 16, weight: .semibold))
-                                    Text("Scan QR Code")
+                                    Text("Scan Mac QR")
                                         .font(AppFont.body(weight: .semibold))
                                 }
                                 .frame(maxWidth: .infinity)
@@ -93,7 +95,7 @@ struct OnboardingView: View {
                             HStack(spacing: 6) {
                                 Image(systemName: "lock.shield")
                                     .font(.system(size: 13, weight: .semibold))
-                                Text("End-to-end encrypted")
+                                Text("Local-first and end-to-end encrypted")
                                     .font(AppFont.caption(weight: .medium))
                             }
                             .foregroundStyle(.secondary)

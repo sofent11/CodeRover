@@ -365,6 +365,9 @@ data class ThreadSummary(
     val normalizedProjectPath: String?
         get() = cwd?.trim()?.trimEnd('/')?.takeIf(String::isNotEmpty)
 
+    val isManagedWorktreeProject: Boolean
+        get() = managedWorktreeToken(normalizedProjectPath) != null
+
     val projectDisplayName: String
         get() {
             val project = normalizedProjectPath ?: return "No Project"
@@ -377,6 +380,16 @@ data class ThreadSummary(
             "gemini" -> "Gemini"
             else -> "Codex"
         }
+
+    private fun managedWorktreeToken(normalizedProjectPath: String?): String? {
+        val path = normalizedProjectPath ?: return null
+        val components = path.split('/').filter(String::isNotEmpty)
+        val worktreesIndex = components.indexOf("worktrees")
+        if (worktreesIndex <= 0 || components.getOrNull(worktreesIndex - 1) != ".coderover") {
+            return null
+        }
+        return components.getOrNull(worktreesIndex + 1)?.trim()?.takeIf(String::isNotEmpty)
+    }
 
     companion object {
         fun fromJson(json: JsonObject): ThreadSummary? {
@@ -818,6 +831,120 @@ enum class ThreadRunBadgeState {
     FAILED
 }
 
+data class BridgeVersionSupport(
+    val minimumVersion: String? = null,
+    val maximumVersion: String? = null,
+    val recommendedVersion: String? = null,
+) {
+    val displayLabel: String
+        get() = when {
+            minimumVersion != null && maximumVersion != null -> "$minimumVersion - $maximumVersion"
+            minimumVersion != null -> "$minimumVersion+"
+            recommendedVersion != null -> recommendedVersion
+            else -> "Unknown"
+        }
+
+    companion object {
+        fun fromJson(json: JsonObject?): BridgeVersionSupport? {
+            if (json == null) {
+                return null
+            }
+            return BridgeVersionSupport(
+                minimumVersion = json.string("minimumVersion"),
+                maximumVersion = json.string("maximumVersion"),
+                recommendedVersion = json.string("recommendedVersion"),
+            )
+        }
+    }
+}
+
+data class BridgeMobileSupportMatrix(
+    val ios: BridgeVersionSupport? = null,
+    val android: BridgeVersionSupport? = null,
+) {
+    companion object {
+        fun fromJson(json: JsonObject?): BridgeMobileSupportMatrix? {
+            if (json == null) {
+                return null
+            }
+            return BridgeMobileSupportMatrix(
+                ios = BridgeVersionSupport.fromJson(json["ios"]?.jsonObjectOrNull()),
+                android = BridgeVersionSupport.fromJson(json["android"]?.jsonObjectOrNull()),
+            )
+        }
+    }
+}
+
+data class BridgeStatus(
+    val bridgeVersion: String? = null,
+    val bridgeLatestVersion: String? = null,
+    val updateAvailable: Boolean = false,
+    val upgradeCommand: String? = null,
+    val keepAwakeEnabled: Boolean = false,
+    val keepAwakeActive: Boolean = false,
+    val trustedDeviceCount: Int = 0,
+    val trustedDeviceStatus: String? = null,
+    val supportedMobileVersions: BridgeMobileSupportMatrix? = null,
+) {
+    val bridgeVersionLabel: String
+        get() = bridgeVersion ?: "Unavailable"
+
+    val latestVersionLabel: String
+        get() = bridgeLatestVersion ?: "Unavailable"
+
+    companion object {
+        fun fromJson(json: JsonObject): BridgeStatus {
+            val preferences = json["preferences"]?.jsonObjectOrNull()
+            return BridgeStatus(
+                bridgeVersion = json.string("bridgeVersion"),
+                bridgeLatestVersion = json.string("bridgeLatestVersion"),
+                updateAvailable = json.bool("updateAvailable") ?: false,
+                upgradeCommand = json.string("upgradeCommand"),
+                keepAwakeEnabled = json.bool("keepAwakeEnabled")
+                    ?: preferences?.bool("keepAwakeEnabled")
+                    ?: false,
+                keepAwakeActive = json.bool("keepAwakeActive") ?: false,
+                trustedDeviceCount = json.int("trustedDeviceCount") ?: 0,
+                trustedDeviceStatus = json.string("trustedDeviceStatus"),
+                supportedMobileVersions = BridgeMobileSupportMatrix.fromJson(
+                    json["supportedMobileVersions"]?.jsonObjectOrNull()
+                ),
+            )
+        }
+    }
+}
+
+data class BridgeUpdatePrompt(
+    val shouldPrompt: Boolean = false,
+    val kind: String = "none",
+    val title: String? = null,
+    val message: String? = null,
+    val bridgeVersion: String? = null,
+    val bridgeLatestVersion: String? = null,
+    val upgradeCommand: String? = null,
+) {
+    val id: String
+        get() = listOf(
+            kind,
+            bridgeVersion ?: "bridge",
+            bridgeLatestVersion ?: "latest",
+        ).joinToString(":")
+
+    companion object {
+        fun fromJson(json: JsonObject): BridgeUpdatePrompt {
+            return BridgeUpdatePrompt(
+                shouldPrompt = json.bool("shouldPrompt") ?: false,
+                kind = json.string("kind") ?: "none",
+                title = json.string("title"),
+                message = json.string("message"),
+                bridgeVersion = json.string("bridgeVersion"),
+                bridgeLatestVersion = json.string("bridgeLatestVersion"),
+                upgradeCommand = json.string("upgradeCommand"),
+            )
+        }
+    }
+}
+
 data class AppState(
     val onboardingSeen: Boolean = false,
     val fontStyle: AppFontStyle = AppFontStyle.SYSTEM,
@@ -843,7 +970,7 @@ data class AppState(
     val availableModels: List<ModelOption> = emptyList(),
     val selectedModelId: String? = null,
     val selectedReasoningEffort: String? = null,
-    val pendingApproval: ApprovalRequest? = null,
+    val pendingApprovals: List<ApprovalRequest> = emptyList(),
     val lastErrorMessage: String? = null,
     val importText: String = "",
     val pendingTransportSelectionMacDeviceId: String? = null,
@@ -855,6 +982,10 @@ data class AppState(
     val rateLimitBuckets: List<CodeRoverRateLimitBucket> = emptyList(),
     val isLoadingRateLimits: Boolean = false,
     val rateLimitsErrorMessage: String? = null,
+    val bridgeStatus: BridgeStatus? = null,
+    val bridgeUpdatePrompt: BridgeUpdatePrompt? = null,
+    val isLoadingBridgeStatus: Boolean = false,
+    val lastPresentedWhatsNewVersion: String? = null,
     val collapsedProjectGroupIds: Set<String> = emptySet(),
     val assistantRevertPresentationByMessageId: Map<String, AssistantRevertPresentation> = emptyMap(),
     val queuedTurnDraftsByThread: Map<String, List<QueuedTurnDraft>> = emptyMap(),
@@ -871,6 +1002,9 @@ data class AppState(
 
     val gitRepoSyncResult: GitRepoSyncResult?
         get() = selectedThreadId?.let(gitRepoSyncByThread::get)
+
+    val pendingApproval: ApprovalRequest?
+        get() = pendingApprovals.firstOrNull()
 
     val gitBranchTargets: GitBranchTargets?
         get() = selectedThreadId?.let(gitBranchTargetsByThread::get)
@@ -1013,6 +1147,12 @@ fun responseKey(id: JsonElement): String = when (id) {
 }
 
 @Serializable
+data class GitChangedFile(
+    val path: String,
+    val status: String = "",
+)
+
+@Serializable
 data class GitRepoSyncResult(
     val isDirty: Boolean = false,
     val hasUnpushedCommits: Boolean = false,
@@ -1026,17 +1166,45 @@ data class GitRepoSyncResult(
     val unpushedCount: Int = 0,
     val unpulledCount: Int = 0,
     val untrackedCount: Int = 0,
+    val localOnlyCommitCount: Int = 0,
     val repoRoot: String? = null,
     val state: String = "up_to_date",
     val canPush: Boolean = false,
+    val isPublishedToRemote: Boolean = false,
+    val files: List<GitChangedFile> = emptyList(),
     val repoDiffTotals: GitDiffTotals? = null,
 )
 
 @Serializable
 data class GitBranchTargets(
     val branches: List<String> = emptyList(),
+    val branchesCheckedOutElsewhere: Set<String> = emptySet(),
+    val worktreePathByBranch: Map<String, String> = emptyMap(),
+    val localCheckoutPath: String? = null,
     val currentBranch: String = "",
     val defaultBranch: String? = null,
+)
+
+enum class GitWorktreeChangeTransferMode(val wireValue: String) {
+    MOVE("move"),
+    COPY("copy"),
+    NONE("none"),
+}
+
+@Serializable
+data class GitCreateManagedWorktreeResult(
+    val worktreePath: String,
+    val alreadyExisted: Boolean = false,
+    val baseBranch: String = "",
+    val headMode: String = "",
+    val transferredChanges: Boolean = false,
+)
+
+@Serializable
+data class GitManagedHandoffTransferResult(
+    val success: Boolean = false,
+    val targetPath: String? = null,
+    val transferredChanges: Boolean = false,
 )
 
 enum class TurnGitActionKind(val title: String) {

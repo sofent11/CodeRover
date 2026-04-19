@@ -26,9 +26,11 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -55,6 +57,7 @@ import com.coderover.android.ui.shared.relativeTimeLabel
 import com.coderover.android.ui.theme.CommandAccent
 import com.coderover.android.ui.theme.Danger
 import com.coderover.android.ui.theme.monoFamily
+import kotlinx.coroutines.delay
 
 @Composable
 fun SettingsOverviewCard(
@@ -327,6 +330,141 @@ fun SettingsConnectionCard(
                     haptic.triggerImpactFeedback(com.coderover.android.ui.shared.HapticFeedback.Style.MEDIUM)
                     onDisconnect()
                 },
+            )
+        }
+    }
+}
+
+@Composable
+fun SettingsBridgeCard(
+    state: AppState,
+    onKeepAwakeChanged: (Boolean) -> Unit,
+) {
+    val clipboardManager = LocalClipboardManager.current
+    val haptic = com.coderover.android.ui.shared.HapticFeedback.rememberHapticFeedback()
+    var copiedUpgradeCommand by remember { mutableStateOf(false) }
+
+    if (copiedUpgradeCommand) {
+        LaunchedEffect(Unit) {
+            delay(1500)
+            copiedUpgradeCommand = false
+        }
+    }
+
+    SettingsCard(title = "Bridge") {
+        val status = state.bridgeStatus
+        if (status != null) {
+            Text(
+                text = "Installed: ${status.bridgeVersionLabel}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                text = "Latest: ${status.latestVersionLabel}",
+                style = MaterialTheme.typography.bodySmall,
+                color = if (status.updateAvailable) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                text = "Trusted devices: ${status.trustedDeviceCount}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            status.supportedMobileVersions?.android?.let { support ->
+                Text(
+                    text = "Supported Android: ${support.displayLabel}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Text("Keep Mac awake", style = MaterialTheme.typography.bodyLarge)
+                    Text(
+                        text = if (status.keepAwakeEnabled) {
+                            if (status.keepAwakeActive) {
+                                "The bridge is actively preventing your Mac from sleeping."
+                            } else {
+                                "Keep-awake is enabled and will apply to the bridge session."
+                            }
+                        } else {
+                            "Allow the Mac to sleep normally when the bridge does not need to keep the machine awake."
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Spacer(Modifier.width(12.dp))
+                Switch(
+                    checked = status.keepAwakeEnabled,
+                    onCheckedChange = onKeepAwakeChanged,
+                    enabled = !state.isLoadingBridgeStatus,
+                )
+            }
+
+            state.bridgeUpdatePrompt?.takeIf { it.shouldPrompt }?.let { prompt ->
+                Text(
+                    text = prompt.title ?: "Bridge update available",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                prompt.message?.takeIf { it.isNotBlank() }?.let { message ->
+                    Text(
+                        text = message,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                prompt.upgradeCommand?.takeIf { it.isNotBlank() }?.let { command ->
+                    Text(
+                        text = command,
+                        style = MaterialTheme.typography.bodyMedium.copy(fontFamily = monoFamily),
+                    )
+                    SettingsButton(
+                        title = if (copiedUpgradeCommand) "Copied upgrade command" else "Copy upgrade command",
+                        onClick = {
+                            clipboardManager.setText(androidx.compose.ui.text.AnnotatedString(command))
+                            haptic.triggerImpactFeedback(com.coderover.android.ui.shared.HapticFeedback.Style.LIGHT)
+                            copiedUpgradeCommand = true
+                        },
+                    )
+                }
+            }
+        } else if (state.isConnected) {
+            if (state.isLoadingBridgeStatus) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    androidx.compose.material3.CircularProgressIndicator(
+                        modifier = Modifier.size(16.dp),
+                        strokeWidth = 2.dp,
+                    )
+                    Text(
+                        text = "Reading bridge status from your Mac...",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            } else {
+                Text(
+                    text = "Bridge status is unavailable for this connection.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        } else {
+            Text(
+                text = "Connect to a paired Mac to read bridge version, update guidance, and keep-awake state.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
     }

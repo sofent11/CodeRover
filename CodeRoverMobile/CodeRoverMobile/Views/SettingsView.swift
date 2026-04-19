@@ -25,6 +25,7 @@ struct SettingsView: View {
                 SettingsAppearanceCard(appFontStyle: appFontStyleBinding)
                 SettingsNotificationsCard()
                 runtimeDefaultsSection
+                SettingsBridgeCard()
                 connectionSection
                 SettingsAboutCard()
             }
@@ -592,6 +593,109 @@ private struct SettingsAboutCard: View {
             Text("Chats are end-to-end encrypted between your iPhone and Mac. Local and tailnet transports only carry the encrypted wire stream and connection metadata.")
                 .font(AppFont.caption())
                 .foregroundStyle(.secondary)
+        }
+    }
+}
+
+private struct SettingsBridgeCard: View {
+    @Environment(CodeRoverService.self) private var coderover
+    @State private var isUpdatingKeepAwake = false
+    @State private var copiedUpgradeCommand = false
+
+    var body: some View {
+        SettingsCard(title: "Bridge") {
+            if let status = coderover.bridgeStatus {
+                Text("Installed: \(status.bridgeVersionLabel)")
+                    .font(AppFont.caption())
+                    .foregroundStyle(.secondary)
+
+                Text("Latest: \(status.latestVersionLabel)")
+                    .font(AppFont.caption())
+                    .foregroundStyle(status.updateAvailable ? .orange : .secondary)
+
+                Text("Trusted devices: \(status.trustedDeviceCount)")
+                    .font(AppFont.caption())
+                    .foregroundStyle(.secondary)
+
+                if let iosSupport = status.supportedMobileVersions?.ios {
+                    Text("Supported iOS: \(iosSupport.displayLabel)")
+                        .font(AppFont.caption())
+                        .foregroundStyle(.secondary)
+                }
+
+                Toggle("Keep Mac awake", isOn: Binding(
+                    get: { coderover.bridgeStatus?.keepAwakeEnabled ?? false },
+                    set: { nextValue in
+                        Task { @MainActor in
+                            guard !isUpdatingKeepAwake else { return }
+                            isUpdatingKeepAwake = true
+                            defer { isUpdatingKeepAwake = false }
+                            await coderover.setBridgeKeepAwakeEnabled(nextValue)
+                        }
+                    }
+                ))
+                .tint(.cyan)
+                .disabled(isUpdatingKeepAwake)
+
+                Text(
+                    status.keepAwakeEnabled
+                    ? (status.keepAwakeActive
+                        ? "The bridge is actively preventing your Mac from sleeping."
+                        : "Keep-awake is enabled and will apply to the bridge session.")
+                    : "Allow the Mac to sleep normally when you do not need the bridge to keep the machine awake."
+                )
+                .font(AppFont.caption())
+                .foregroundStyle(.secondary)
+
+                if let prompt = coderover.bridgeUpdatePrompt,
+                   prompt.shouldPrompt {
+                    Divider()
+
+                    Text(prompt.title ?? "Bridge update available")
+                        .font(AppFont.subheadline(weight: .semibold))
+
+                    if let message = prompt.message, !message.isEmpty {
+                        Text(message)
+                            .font(AppFont.caption())
+                            .foregroundStyle(.secondary)
+                    }
+
+                    if let upgradeCommand = prompt.upgradeCommand, !upgradeCommand.isEmpty {
+                        Text(upgradeCommand)
+                            .font(AppFont.mono(.caption))
+                            .foregroundStyle(.primary)
+                            .padding(.vertical, 2)
+
+                        SettingsButton(copiedUpgradeCommand ? "Copied upgrade command" : "Copy upgrade command") {
+                            UIPasteboard.general.string = upgradeCommand
+                            copiedUpgradeCommand = true
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                                copiedUpgradeCommand = false
+                            }
+                        }
+                    }
+                }
+            } else if coderover.isConnected {
+                if coderover.isLoadingBridgeStatus {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                        Text("Reading bridge status from your Mac...")
+                            .font(AppFont.caption())
+                            .foregroundStyle(.secondary)
+                    }
+                } else {
+                    Text("Bridge status is unavailable for this connection.")
+                        .font(AppFont.caption())
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                Text("Connect to a paired Mac to read bridge version, update guidance, and keep-awake state.")
+                    .font(AppFont.caption())
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .task {
+            await coderover.refreshBridgeMetadata()
         }
     }
 }

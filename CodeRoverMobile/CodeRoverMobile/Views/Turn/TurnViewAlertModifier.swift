@@ -46,18 +46,13 @@ private struct TurnViewAlertModifier: ViewModifier {
                 isPresented: gitSyncAlertIsPresented,
                 presenting: gitSyncAlert
             ) { alert in
-                switch alert.action {
-                case .dismissOnly:
-                    Button("OK", role: .cancel) {
+                ForEach(alert.buttons) { button in
+                    Button(button.title, role: button.swiftUIRole) {
+                        let action = button.action
                         gitSyncAlert = nil
-                    }
-                case .pullRebase:
-                    Button("Cancel", role: .cancel) {
-                        gitSyncAlert = nil
-                    }
-                    Button("Pull & Rebase") {
-                        let action = alert.action
-                        gitSyncAlert = nil
+                        guard action != .dismissOnly else {
+                            return
+                        }
                         onConfirmGitSyncAction(action)
                     }
                 }
@@ -136,6 +131,19 @@ private struct TurnViewAlertModifier: ViewModifier {
         }
 
         return lines.joined(separator: "\n\n")
+    }
+}
+
+private extension TurnGitSyncAlertButton {
+    var swiftUIRole: ButtonRole? {
+        switch role {
+        case .cancel:
+            return .cancel
+        case .destructive:
+            return .destructive
+        case nil:
+            return nil
+        }
     }
 }
 

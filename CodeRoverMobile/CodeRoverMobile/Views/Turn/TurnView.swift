@@ -6,6 +6,7 @@
 
 import SwiftUI
 import PhotosUI
+import Foundation
 
 struct TurnView: View {
     let thread: ConversationThread
@@ -25,19 +26,23 @@ struct TurnView: View {
     @State private var isShowingDesktopRestartConfirmation = false
     @State private var isRestartingDesktopApp = false
     @State private var desktopRestartErrorMessage: String?
+    @State private var isRoutingThreadProject = false
+    @State private var checkedOutElsewhereAlert: CheckedOutElsewhereAlert?
 
     // ─── ENTRY POINT ─────────────────────────────────────────────
     var body: some View {
+        let resolvedThread = currentResolvedThread
         let activeTurnID = coderover.activeTurnID(for: thread.id)
-        let gitWorkingDirectory = thread.gitWorkingDirectory
+        let gitWorkingDirectory = resolvedThread.gitWorkingDirectory
         let isThreadRunning = activeTurnID != nil || coderover.runningThreadIDs.contains(thread.id)
         let showsGitControls = coderover.isConnected && gitWorkingDirectory != nil
-        let threadCapabilities = thread.capabilities ?? coderover.currentRuntimeProvider().supports
-        let isCodexThread = coderover.runtimeProviderID(for: thread.provider) == "codex"
+        let threadCapabilities = resolvedThread.capabilities ?? coderover.currentRuntimeProvider().supports
+        let isCodexThread = coderover.runtimeProviderID(for: resolvedThread.provider) == "codex"
         let showsDesktopRestart = coderover.isConnected && isCodexThread && threadCapabilities.desktopRestart
         let latestTurnTerminalState = coderover.latestTurnTerminalState(for: thread.id)
         let stoppedTurnIDs = coderover.stoppedTurnIDs(for: thread.id)
         let rawMessages = coderover.messages(for: thread.id)
+        let threadDisplayPhase = coderover.threadDisplayPhase(threadId: thread.id)
         let timelineChangeToken = coderover.messageRevision(for: thread.id)
         let historyState = coderover.historyStateByThread[thread.id]
         let hasOlderHistory = historyState?.hasOlderOnServer ?? false
@@ -67,12 +72,12 @@ struct TurnView: View {
             isLoadingOlderHistory: historyState?.isLoadingOlder ?? false,
             shouldAnchorToAssistantResponse: shouldAnchorToAssistantResponseBinding,
             isScrolledToBottom: isScrolledToBottomBinding,
-            emptyState: AnyView(emptyState),
+            emptyState: AnyView(resolvedEmptyState(for: threadDisplayPhase)),
             composer: AnyView(
                 TurnComposerHostView(
                     viewModel: viewModel,
                     coderover: coderover,
-                    thread: thread,
+                    thread: resolvedThread,
                     activeTurnID: activeTurnID,
                     isThreadRunning: isThreadRunning,
                     isInputFocused: $isInputFocused,
@@ -95,8 +100,30 @@ struct TurnView: View {
                             gitWorkingDirectory: gitWorkingDirectory
                         ) else { return }
 
-                        viewModel.switchGitBranch(
+                        if let alert = makeCheckedOutElsewhereAlert(
+                            for: branch,
+                            currentThread: resolvedThread
+                        ) {
+                            checkedOutElsewhereAlert = alert
+                            return
+                        }
+
+                        viewModel.requestSwitchGitBranch(
                             to: branch,
+                            coderover: coderover,
+                            workingDirectory: gitWorkingDirectory,
+                            threadID: thread.id,
+                            activeTurnID: activeTurnID
+                        )
+                    },
+                    onCreateGitBranch: { branch in
+                        guard canRunGitAction(
+                            isThreadRunning: isThreadRunning,
+                            gitWorkingDirectory: gitWorkingDirectory
+                        ) else { return }
+
+                        viewModel.requestCreateGitBranch(
+                            named: branch,
                             coderover: coderover,
                             workingDirectory: gitWorkingDirectory,
                             threadID: thread.id,
@@ -127,10 +154,7 @@ struct TurnView: View {
                 startAssistantRevertPreview(message: message, gitWorkingDirectory: gitWorkingDirectory)
             },
             onTapSubagent: { subagent in
-                Task { @MainActor in
-                    coderover.activeThreadId = subagent.threadId
-                    await coderover.prepareThreadForDisplay(threadId: subagent.threadId)
-                }
+                openThread(subagent.threadId)
             },
             onTapOutsideComposer: {
                 guard isInputFocused else { return }
@@ -150,17 +174,28 @@ struct TurnView: View {
                 threadID: thread.id
             )
         } as (() -> Void)? : nil)
-        .navigationTitle(thread.displayTitle)
+        .navigationTitle(resolvedThread.displayTitle)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             TurnToolbarContent(
-                displayTitle: thread.displayTitle,
-                providerTitle: thread.providerBadgeTitle,
+                displayTitle: resolvedThread.displayTitle,
+                providerTitle: resolvedThread.providerBadgeTitle,
                 navigationContext: threadNavigationContext,
                 showsDesktopRestart: showsDesktopRestart,
                 isRestartingDesktopApp: isRestartingDesktopApp,
                 repoDiffTotals: viewModel.gitRepoSync?.repoDiffTotals,
                 isLoadingRepoDiff: isLoadingRepositoryDiff,
+                showsThreadProjectActions: showsGitControls,
+                isThreadProjectActionEnabled: canRunGitAction(
+                    isThreadRunning: isThreadRunning,
+                    gitWorkingDirectory: gitWorkingDirectory
+                ) && !isRoutingThreadProject,
+                isRunningThreadProjectAction: isRoutingThreadProject,
+                isManagedWorktreeProject: resolvedThread.isManagedWorktreeProject,
+                canForkToLocal: WorktreeFlowCoordinator.localForkProjectPath(
+                    for: resolvedThread,
+                    localCheckoutPath: viewModel.gitLocalCheckoutPath
+                ) != nil,
                 showsGitActions: showsGitControls,
                 isGitActionEnabled: canRunGitAction(
                     isThreadRunning: isThreadRunning,
@@ -180,6 +215,14 @@ struct TurnView: View {
                 },
                 onTapRepoDiff: showsGitControls ? {
                     presentRepositoryDiff(workingDirectory: gitWorkingDirectory)
+                } : nil,
+                onThreadProjectAction: showsGitControls ? { action in
+                    handleThreadProjectActionSelection(
+                        action,
+                        currentThread: resolvedThread,
+                        isThreadRunning: isThreadRunning,
+                        gitWorkingDirectory: gitWorkingDirectory
+                    )
                 } : nil,
                 onGitAction: { action in
                     handleGitActionSelection(
@@ -336,6 +379,25 @@ struct TurnView: View {
                 restartDesktopApp()
             }
         )
+        .alert(
+            checkedOutElsewhereAlert?.title ?? "Branch Open Elsewhere",
+            isPresented: Binding(
+                get: { checkedOutElsewhereAlert != nil },
+                set: { if !$0 { checkedOutElsewhereAlert = nil } }
+            ),
+            presenting: checkedOutElsewhereAlert
+        ) { alert in
+            if let threadID = alert.existingThreadID {
+                Button("Open Thread") {
+                    openThread(threadID)
+                }
+            }
+            Button("Cancel", role: .cancel) {
+                checkedOutElsewhereAlert = nil
+            }
+        } message: { alert in
+            Text(alert.message)
+        }
     }
 
     private func restartDesktopApp() {
@@ -489,6 +551,27 @@ struct TurnView: View {
         )
     }
 
+    private func handleThreadProjectActionSelection(
+        _ action: TurnThreadProjectAction,
+        currentThread: ConversationThread,
+        isThreadRunning: Bool,
+        gitWorkingDirectory: String?
+    ) {
+        guard canRunGitAction(isThreadRunning: isThreadRunning, gitWorkingDirectory: gitWorkingDirectory),
+              !isRoutingThreadProject else {
+            return
+        }
+
+        switch action {
+        case .handoff:
+            handleWorktreeHandoffTap(currentThread: currentThread)
+        case .forkToLocal:
+            startLocalFork(currentThread: currentThread)
+        case .forkToWorktree:
+            startForkIntoWorktree(currentThread: currentThread)
+        }
+    }
+
     private func canRunGitAction(isThreadRunning: Bool, gitWorkingDirectory: String?) -> Bool {
         viewModel.canRunGitAction(
             isConnected: coderover.isConnected,
@@ -605,6 +688,162 @@ struct TurnView: View {
         )
     }
 
+    private var currentResolvedThread: ConversationThread {
+        coderover.thread(for: thread.id) ?? thread
+    }
+
+    private var preferredWorktreeBaseBranch: String {
+        let currentBranch = viewModel.currentGitBranch.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !currentBranch.isEmpty {
+            return currentBranch
+        }
+
+        let selectedBaseBranch = viewModel.selectedGitBaseBranch.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !selectedBaseBranch.isEmpty {
+            return selectedBaseBranch
+        }
+
+        let defaultBranch = viewModel.gitDefaultBranch.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !defaultBranch.isEmpty {
+            return defaultBranch
+        }
+
+        return ""
+    }
+
+    private func handleWorktreeHandoffTap(currentThread: ConversationThread) {
+        Task { @MainActor in
+            guard !isRoutingThreadProject else { return }
+            isRoutingThreadProject = true
+            defer { isRoutingThreadProject = false }
+
+            do {
+                if currentThread.isManagedWorktreeProject {
+                    let move = try await WorktreeFlowCoordinator.handoffThreadToLocal(
+                        thread: currentThread,
+                        coderover: coderover
+                    )
+                    viewModel.refreshGitBranchTargets(
+                        coderover: coderover,
+                        workingDirectory: move.projectPath,
+                        threadID: thread.id
+                    )
+                    return
+                }
+
+                let outcome = try await WorktreeFlowCoordinator.handoffThreadToWorktree(
+                    threadID: thread.id,
+                    sourceProjectPath: currentThread.gitWorkingDirectory,
+                    associatedWorktreePath: coderover.associatedManagedWorktreePath(for: thread.id),
+                    baseBranchForNewWorktree: preferredWorktreeBaseBranch,
+                    coderover: coderover
+                )
+
+                if case .moved(let move) = outcome {
+                    viewModel.refreshGitBranchTargets(
+                        coderover: coderover,
+                        workingDirectory: move.projectPath,
+                        threadID: thread.id
+                    )
+                }
+            } catch {
+                viewModel.gitSyncAlert = TurnGitSyncAlert(
+                    title: currentThread.isManagedWorktreeProject ? "Local Handoff Failed" : "Worktree Handoff Failed",
+                    message: error.localizedDescription.isEmpty
+                        ? (currentThread.isManagedWorktreeProject
+                            ? "Could not hand off the thread back to Local."
+                            : "Could not hand off the thread to the managed worktree.")
+                        : error.localizedDescription,
+                    action: .dismissOnly
+                )
+            }
+        }
+    }
+
+    private func startLocalFork(currentThread: ConversationThread) {
+        Task { @MainActor in
+            guard !isRoutingThreadProject else { return }
+            guard WorktreeFlowCoordinator.localForkProjectPath(
+                for: currentThread,
+                localCheckoutPath: viewModel.gitLocalCheckoutPath
+            ) != nil else {
+                viewModel.gitSyncAlert = TurnGitSyncAlert(
+                    title: "Local Fork Unavailable",
+                    message: currentThread.isManagedWorktreeProject
+                        ? "Could not resolve the Local checkout for this managed worktree."
+                        : "Could not resolve the local project path for this thread.",
+                    action: .dismissOnly
+                )
+                return
+            }
+
+            isRoutingThreadProject = true
+            defer { isRoutingThreadProject = false }
+
+            do {
+                let forkedThread = try await WorktreeFlowCoordinator.forkThreadToLocal(
+                    sourceThread: currentThread,
+                    localCheckoutPath: viewModel.gitLocalCheckoutPath,
+                    coderover: coderover
+                )
+                openThread(forkedThread.id)
+            } catch {
+                viewModel.gitSyncAlert = TurnGitSyncAlert(
+                    title: "Local Fork Failed",
+                    message: error.localizedDescription.isEmpty
+                        ? "Could not fork the thread into Local."
+                        : error.localizedDescription,
+                    action: .dismissOnly
+                )
+            }
+        }
+    }
+
+    private func startForkIntoWorktree(currentThread: ConversationThread) {
+        Task { @MainActor in
+            guard !isRoutingThreadProject else { return }
+
+            let baseBranch = preferredWorktreeBaseBranch
+            guard !baseBranch.isEmpty else {
+                viewModel.gitSyncAlert = TurnGitSyncAlert(
+                    title: "Worktree Fork Failed",
+                    message: "Could not determine a base branch for the managed worktree.",
+                    action: .dismissOnly
+                )
+                return
+            }
+
+            isRoutingThreadProject = true
+            defer { isRoutingThreadProject = false }
+
+            do {
+                let forkedThread = try await WorktreeFlowCoordinator.forkThreadToWorktree(
+                    sourceThreadId: currentThread.id,
+                    sourceProjectPath: currentThread.gitWorkingDirectory,
+                    baseBranch: baseBranch,
+                    coderover: coderover
+                )
+                openThread(forkedThread.id)
+            } catch {
+                viewModel.gitSyncAlert = TurnGitSyncAlert(
+                    title: "Worktree Fork Failed",
+                    message: error.localizedDescription.isEmpty
+                        ? "Could not fork the thread into a managed worktree."
+                        : error.localizedDescription,
+                    action: .dismissOnly
+                )
+            }
+        }
+    }
+
+    private func openThread(_ threadID: String) {
+        checkedOutElsewhereAlert = nil
+        Task { @MainActor in
+            coderover.activeThreadId = threadID
+            await coderover.prepareThreadForDisplay(threadId: threadID)
+        }
+    }
+
     // Tracks the latest repo-affecting system row so git totals can refresh during active runs.
     private func repoRefreshSignal(from messages: [ChatMessage]) -> String? {
         guard let latestRepoMessage = messages.last(where: { message in
@@ -716,7 +955,8 @@ struct TurnView: View {
     }
 
     private var threadNavigationContext: TurnThreadNavigationContext? {
-        guard let path = thread.normalizedProjectPath ?? thread.cwd,
+        let resolvedThread = currentResolvedThread
+        guard let path = resolvedThread.normalizedProjectPath ?? resolvedThread.cwd,
               !path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return nil
         }
@@ -729,9 +969,74 @@ struct TurnView: View {
         )
     }
 
+    private func makeCheckedOutElsewhereAlert(
+        for branch: String,
+        currentThread: ConversationThread
+    ) -> CheckedOutElsewhereAlert? {
+        let trimmedBranch = branch.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedBranch.isEmpty,
+              let rawWorktreePath = viewModel.gitWorktreePathsByBranch[trimmedBranch],
+              let normalizedWorktreePath = ConversationThreadStartProjectBinding.normalizedProjectPath(rawWorktreePath) else {
+            return nil
+        }
+
+        let currentPath = comparableProjectPath(currentThread.normalizedProjectPath)
+        let targetPath = comparableProjectPath(normalizedWorktreePath)
+        guard currentPath != nil, targetPath != nil, currentPath != targetPath else {
+            return nil
+        }
+
+        let liveThread = WorktreeFlowCoordinator.liveThreadForCheckedOutElsewhereBranch(
+            projectPath: normalizedWorktreePath,
+            coderover: coderover,
+            currentThread: currentThread
+        )
+
+        return CheckedOutElsewhereAlert(
+            branch: trimmedBranch,
+            worktreePath: normalizedWorktreePath,
+            existingThreadID: liveThread?.id,
+            existingThreadTitle: liveThread?.displayTitle
+        )
+    }
+
+    private func comparableProjectPath(_ rawPath: String?) -> String? {
+        guard let normalizedPath = ConversationThreadStartProjectBinding.normalizedProjectPath(rawPath) else {
+            return nil
+        }
+
+        return URL(fileURLWithPath: normalizedPath)
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+            .path
+    }
+
     // MARK: - Empty State
 
+    private var loadingState: some View {
+        chatPlaceholderState(
+            title: "Loading chat...",
+            subtitle: "Fetching the latest messages for this conversation."
+        )
+    }
+
+    private func resolvedEmptyState(for phase: CodeRoverService.ThreadDisplayPhase) -> some View {
+        switch phase {
+        case .loading:
+            return AnyView(loadingState)
+        case .empty, .ready:
+            return AnyView(emptyState)
+        }
+    }
+
     private var emptyState: some View {
+        chatPlaceholderState(
+            title: "Hi! How can I help you?",
+            subtitle: "Chats are End-to-end encrypted"
+        )
+    }
+
+    private func chatPlaceholderState(title: String, subtitle: String) -> some View {
         VStack(spacing: 12) {
             Spacer()
             Image("AppLogo")
@@ -740,16 +1045,36 @@ struct TurnView: View {
                 .frame(width: 56, height: 56)
                 .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
                 .adaptiveGlass(in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-            Text("Hi! How can I help you?")
+            Text(title)
                 .font(AppFont.title2(weight: .semibold))
-            // Reinforces the secure transport upgrade right where a new chat starts.
-            Text("Chats are End-to-end encrypted")
+            Text(subtitle)
                 .font(AppFont.caption())
                 .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 28)
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding()
+    }
+}
+
+private struct CheckedOutElsewhereAlert: Identifiable {
+    let id = UUID()
+    let branch: String
+    let worktreePath: String
+    let existingThreadID: String?
+    let existingThreadTitle: String?
+
+    var title: String {
+        existingThreadID == nil ? "Branch Open Elsewhere" : "Open Existing Worktree Thread?"
+    }
+
+    var message: String {
+        if let existingThreadTitle, !existingThreadTitle.isEmpty {
+            return "'\(branch)' is already checked out in \(worktreePath). Open \"\(existingThreadTitle)\" instead of switching this checkout."
+        }
+        return "'\(branch)' is already checked out in \(worktreePath). Open that worktree chat instead of switching this checkout."
     }
 }
 

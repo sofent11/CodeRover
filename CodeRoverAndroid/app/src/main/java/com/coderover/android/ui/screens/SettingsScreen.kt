@@ -8,6 +8,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.coderover.android.app.AppViewModel
@@ -15,6 +16,7 @@ import com.coderover.android.data.model.AppState
 import com.coderover.android.ui.settings.SettingsAboutCard
 import com.coderover.android.ui.settings.SettingsAppearanceCard
 import com.coderover.android.ui.settings.SettingsArchivedChatsCard
+import com.coderover.android.ui.settings.SettingsBridgeCard
 import com.coderover.android.ui.settings.SettingsConnectionCard
 import com.coderover.android.ui.settings.SettingsNotificationsCard
 import com.coderover.android.ui.settings.SettingsRuntimeDefaultsCard
@@ -26,6 +28,12 @@ fun SettingsScreen(
     onDisconnect: () -> Unit = viewModel::disconnect,
     onOpenArchivedChats: () -> Unit = {},
 ) {
+    LaunchedEffect(state.isConnected) {
+        if (state.isConnected) {
+            viewModel.refreshBridgeMetadata()
+        }
+    }
+
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
@@ -67,6 +75,13 @@ fun SettingsScreen(
                 onSelectPairing = viewModel::selectPairing,
                 onRemovePairing = viewModel::removePairing,
                 onPreferredTransportSelected = viewModel::setPreferredTransport,
+            )
+        }
+
+        item {
+            SettingsBridgeCard(
+                state = state,
+                onKeepAwakeChanged = viewModel::setBridgeKeepAwakeEnabled,
             )
         }
 

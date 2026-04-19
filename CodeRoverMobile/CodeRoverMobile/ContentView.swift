@@ -21,7 +21,9 @@ struct ContentView: View {
     @State private var isShowingManualScanner = false
     @State private var isSearchActive = false
     @State private var pendingTransportSelection: PendingTransportSelection?
+    @State private var isShowingWhatsNew = false
     @AppStorage("coderover.hasSeenOnboarding") private var hasSeenOnboarding = false
+    @AppStorage("coderover.lastPresentedWhatsNewVersion") private var lastPresentedWhatsNewVersion = ""
 
     private let sidebarWidth: CGFloat = 330
     private static let sidebarSpring = Animation.spring(response: 0.35, dampingFraction: 0.85)
@@ -133,6 +135,18 @@ struct ContentView: View {
                     }
                 )
                 .presentationDetents([.medium, .large])
+            }
+            .sheet(isPresented: $isShowingWhatsNew) {
+                WhatsNewSheet(version: AppEnvironment.appVersion) {
+                    lastPresentedWhatsNewVersion = AppEnvironment.appVersion
+                    isShowingWhatsNew = false
+                }
+            }
+            .onChange(of: hasSeenOnboarding) { _, _ in
+                maybePresentWhatsNewIfNeeded()
+            }
+            .onAppear {
+                maybePresentWhatsNewIfNeeded()
             }
     }
 
@@ -492,6 +506,20 @@ struct ContentView: View {
            let first = threads.first {
             selectedThread = first
         }
+    }
+
+    private func maybePresentWhatsNewIfNeeded() {
+        guard hasSeenOnboarding else {
+            return
+        }
+
+        let currentVersion = AppEnvironment.appVersion
+        guard !currentVersion.isEmpty,
+              lastPresentedWhatsNewVersion != currentVersion else {
+            return
+        }
+
+        isShowingWhatsNew = true
     }
 }
 

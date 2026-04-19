@@ -7,10 +7,63 @@
 import Foundation
 
 extension CodeRoverService {
+    enum ThreadDisplayPhase: Equatable {
+        case loading
+        case empty
+        case ready
+    }
+
     // Returns the full persisted timeline for a single thread.
     func messages(for threadId: String) -> [ChatMessage] {
         let dict = messagesByThread
         return dict[threadId] ?? []
+    }
+
+    // Centralizes first-open display state so reconnect jitter does not bounce
+    // an existing chat between loading and the empty placeholder.
+    func threadDisplayPhase(threadId: String) -> ThreadDisplayPhase {
+        if !messages(for: threadId).isEmpty || threadHasActiveOrRunningTurn(threadId) {
+            return .ready
+        }
+
+        if shouldSkipInitialDisplayHydration(threadId: threadId)
+            || shouldShowImmediateEmptyPlaceholder(threadId: threadId) {
+            return .empty
+        }
+
+        if loadingThreadIDs.contains(threadId) {
+            return .loading
+        }
+
+        if !hydratedThreadIDs.contains(threadId) {
+            return .loading
+        }
+
+        return .empty
+    }
+
+    // Treats placeholder-only chats as intentionally blank so the UI does not flash
+    // a loading state before the thread-open preparation path can confirm the skip.
+    func shouldShowImmediateEmptyPlaceholder(threadId: String) -> Bool {
+        guard !threadHasActiveOrRunningTurn(threadId),
+              messages(for: threadId).isEmpty,
+              let thread = thread(for: threadId),
+              thread.syncState == .live else {
+            return false
+        }
+
+        let preview = thread.preview?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard preview.isEmpty else {
+            return false
+        }
+
+        let trimmedName = thread.name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let trimmedTitle = thread.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !trimmedName.isEmpty {
+            return false
+        }
+
+        return trimmedTitle.isEmpty || trimmedTitle.localizedCaseInsensitiveCompare("Conversation") == .orderedSame
     }
 
     // Returns a lightweight per-thread revision token for any message timeline mutation.
@@ -226,6 +279,19 @@ extension CodeRoverService {
 
         watchRunningThreadIfNeeded(normalizedPrevious)
         clearRunningThreadWatch(normalizedNext)
+    }
+
+    // Detects a brand-new local thread that has no timeline to hydrate yet.
+    func shouldSkipInitialDisplayHydration(threadId: String) -> Bool {
+        guard resumedThreadIDs.contains(threadId),
+              !hydratedThreadIDs.contains(threadId),
+              !threadHasActiveOrRunningTurn(threadId),
+              messages(for: threadId).isEmpty,
+              thread(for: threadId)?.syncState == .live else {
+            return false
+        }
+
+        return true
     }
 
     // Loads the latest thread/read history window once per thread and keeps older ranges lazy.

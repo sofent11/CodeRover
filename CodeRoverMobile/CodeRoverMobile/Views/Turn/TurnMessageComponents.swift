@@ -723,6 +723,8 @@ struct MessageRow: View, Equatable {
     /// When non-nil, this message is the last in an assistant block and
     /// a copy button should be shown. The string is the aggregated block text.
     var copyBlockText: String? = nil
+    var aggregatedFileChangePresentation: FileChangeBlockPresentation? = nil
+    var suppressFileChangeActions: Bool = false
     var showInlineCommit: Bool = false
     // Disables timer-driven adornments while the user reads older content.
     var showsStreamingAnimations: Bool = true
@@ -737,6 +739,8 @@ struct MessageRow: View, Equatable {
             && lhs.isRetryAvailable == rhs.isRetryAvailable
             && lhs.assistantRevertPresentation == rhs.assistantRevertPresentation
             && lhs.copyBlockText == rhs.copyBlockText
+            && lhs.aggregatedFileChangePresentation == rhs.aggregatedFileChangePresentation
+            && lhs.suppressFileChangeActions == rhs.suppressFileChangeActions
             && lhs.showInlineCommit == rhs.showInlineCommit
             && lhs.showsStreamingAnimations == rhs.showsStreamingAnimations
     }
@@ -1089,6 +1093,10 @@ struct MessageRow: View, Equatable {
             messageID: message.id,
             entries: allEntries
         )
+        let effectivePresentation = aggregatedFileChangePresentation
+            ?? (!allEntries.isEmpty
+                ? FileChangeBlockPresentation(entries: allEntries, bodyText: renderState.bodyText)
+                : nil)
 
         return VStack(alignment: .leading, spacing: 8) {
             ForEach(grouped, id: \.key) { group in
@@ -1105,10 +1113,12 @@ struct MessageRow: View, Equatable {
 
             // Buttons + sheet live in a child view so environment reads
             // don't invalidate the parent MessageRow's Equatable short-circuit.
-            if !message.isStreaming, !allEntries.isEmpty {
+            if !message.isStreaming,
+               !suppressFileChangeActions,
+               let effectivePresentation {
                 FileChangeActionButtons(
-                    entries: allEntries,
-                    bodyText: renderState.bodyText,
+                    entries: effectivePresentation.entries,
+                    bodyText: effectivePresentation.bodyText,
                     messageID: message.id,
                     showInlineCommit: showInlineCommit
                 )

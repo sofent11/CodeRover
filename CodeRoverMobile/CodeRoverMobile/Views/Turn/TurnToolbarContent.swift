@@ -19,6 +19,11 @@ struct TurnToolbarContent: ToolbarContent {
     let isRestartingDesktopApp: Bool
     let repoDiffTotals: GitDiffTotals?
     let isLoadingRepoDiff: Bool
+    let showsThreadProjectActions: Bool
+    let isThreadProjectActionEnabled: Bool
+    let isRunningThreadProjectAction: Bool
+    let isManagedWorktreeProject: Bool
+    let canForkToLocal: Bool
     let showsGitActions: Bool
     let isGitActionEnabled: Bool
     let isRunningGitAction: Bool
@@ -28,6 +33,7 @@ struct TurnToolbarContent: ToolbarContent {
     var onTapDesktopRestart: (() -> Void)?
     var onCompactContext: (() -> Void)?
     var onTapRepoDiff: (() -> Void)?
+    var onThreadProjectAction: ((TurnThreadProjectAction) -> Void)?
     let onGitAction: (TurnGitActionKind) -> Void
 
     @Binding var isShowingPathSheet: Bool
@@ -95,6 +101,16 @@ struct TurnToolbarContent: ToolbarContent {
                         totals: repoDiffTotals,
                         isLoading: isLoadingRepoDiff,
                         onTap: onTapRepoDiff
+                    )
+                }
+
+                if showsThreadProjectActions, let onThreadProjectAction {
+                    TurnThreadProjectActionsToolbarButton(
+                        isEnabled: isThreadProjectActionEnabled,
+                        isRunningAction: isRunningThreadProjectAction,
+                        isManagedWorktreeProject: isManagedWorktreeProject,
+                        canForkToLocal: canForkToLocal,
+                        onSelect: onThreadProjectAction
                     )
                 }
 

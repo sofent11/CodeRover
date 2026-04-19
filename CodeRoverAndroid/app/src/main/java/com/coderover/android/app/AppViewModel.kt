@@ -19,6 +19,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun completeOnboarding() = repository.completeOnboarding()
 
+    fun markWhatsNewSeen(version: String) = repository.markWhatsNewSeen(version)
+
     fun setFontStyle(fontStyle: AppFontStyle) = repository.setFontStyle(fontStyle)
 
     fun setAccessMode(accessMode: AccessMode) = repository.setAccessMode(accessMode)
@@ -43,6 +45,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun disconnect() = repository.disconnect()
 
+    fun refreshBridgeMetadata() = repository.refreshBridgeMetadata()
+
+    fun setBridgeKeepAwakeEnabled(enabled: Boolean) = repository.setBridgeKeepAwakeEnabled(enabled)
+
     fun removePairing(macDeviceId: String) = repository.removePairing(macDeviceId)
 
     fun selectPairing(macDeviceId: String) = repository.selectPairing(macDeviceId)
@@ -55,6 +61,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun createThread(preferredProjectPath: String? = null, providerId: String? = null) =
         repository.createThread(preferredProjectPath, providerId)
+
+    fun createManagedWorktreeThread(preferredProjectPath: String, providerId: String? = null) =
+        repository.createManagedWorktreeThread(preferredProjectPath, providerId)
 
     fun deleteThread(threadId: String) = repository.deleteThread(threadId)
 
@@ -110,6 +119,19 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     suspend fun gitBranchesWithStatus(cwd: String) = repository.gitBranchesWithStatus(cwd)
 
     suspend fun checkoutGitBranch(cwd: String, branch: String) = repository.checkoutGitBranch(cwd, branch)
+
+    suspend fun handoffThreadToManagedWorktree(threadId: String, baseBranch: String? = null) =
+        repository.handoffThreadToManagedWorktree(threadId, baseBranch)
+
+    suspend fun handoffThreadToLocal(threadId: String) = repository.handoffThreadToLocal(threadId)
+
+    suspend fun forkThreadToLocal(threadId: String) = repository.forkThreadToLocal(threadId)
+
+    suspend fun forkThreadToManagedWorktree(threadId: String, baseBranch: String? = null) =
+        repository.forkThreadToManagedWorktree(threadId, baseBranch)
+
+    fun findLiveThreadForProjectPath(projectPath: String, currentThreadId: String? = null) =
+        repository.findLiveThreadForProjectPath(projectPath, currentThreadId)
 
     fun selectGitBaseBranch(threadId: String, branch: String) = repository.selectGitBaseBranch(threadId, branch)
 

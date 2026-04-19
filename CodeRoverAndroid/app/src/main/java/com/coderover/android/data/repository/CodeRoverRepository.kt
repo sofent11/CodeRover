@@ -2,10 +2,13 @@ package com.coderover.android.data.repository
 
 import android.content.Context
 import android.util.Log
+import com.coderover.android.AppInfo
 import com.coderover.android.data.model.AccessMode
 import com.coderover.android.data.model.AppFontStyle
 import com.coderover.android.data.model.AppState
 import com.coderover.android.data.model.ApprovalRequest
+import com.coderover.android.data.model.BridgeStatus
+import com.coderover.android.data.model.BridgeUpdatePrompt
 import com.coderover.android.data.model.CLOCK_SKEW_TOLERANCE_MS
 import com.coderover.android.data.model.CommandPhase
 import com.coderover.android.data.model.CommandState
@@ -18,6 +21,9 @@ import com.coderover.android.data.model.TurnSkillMention
 import com.coderover.android.data.model.FileChangeEntry
 import com.coderover.android.data.model.FuzzyFileMatch
 import com.coderover.android.data.model.GitBranchTargets
+import com.coderover.android.data.model.GitCreateManagedWorktreeResult
+import com.coderover.android.data.model.GitManagedHandoffTransferResult
+import com.coderover.android.data.model.GitWorktreeChangeTransferMode
 import com.coderover.android.data.model.MessageKind
 import com.coderover.android.data.model.MessageRole
 import com.coderover.android.data.model.ModelOption
@@ -67,6 +73,7 @@ import com.coderover.android.data.network.TransportCandidatePrioritizer
 import com.coderover.android.data.storage.PairingStore
 import com.coderover.android.data.storage.UserPreferencesStore
 import java.util.Comparator
+import java.io.File
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
@@ -145,6 +152,8 @@ class CodeRoverRepository(context: Context) {
     private val olderHistoryBackfillTaskByThread = mutableMapOf<String, Job>()
     private val pendingHistoryChangedRefreshThreadIds = mutableSetOf<String>()
     private val historyChangedRefreshTaskByThread = mutableMapOf<String, Job>()
+    private val associatedManagedWorktreePathByThreadId = mutableMapOf<String, String>()
+    private val authoritativeProjectPathByThreadId = mutableMapOf<String, String>()
     private var activeThreadListNextCursor: JsonElement? = JsonNull
     private var activeThreadListHasMore = false
     private var client: SecureBridgeClient? = null
@@ -187,6 +196,7 @@ class CodeRoverRepository(context: Context) {
             historyStateByThread = store.loadCachedHistoryStateByThread(),
             selectedModelId = store.loadSelectedModelId(normalizeProviderId(store.loadSelectedProviderId())),
             selectedReasoningEffort = store.loadSelectedReasoningEffort(normalizeProviderId(store.loadSelectedProviderId())),
+            lastPresentedWhatsNewVersion = prefs.getLastPresentedWhatsNewVersion(),
             collapsedProjectGroupIds = prefs.getCollapsedProjectGroupIds(),
         ),
     )
@@ -194,6 +204,13 @@ class CodeRoverRepository(context: Context) {
 
     init {
         val currentState = _state.value
+        associatedManagedWorktreePathByThreadId.putAll(
+            prefs.getAssociatedManagedWorktreePaths().mapNotNull { (threadId, projectPath) ->
+                val normalizedThreadId = normalizedIdentifier(threadId) ?: return@mapNotNull null
+                val normalizedProjectPath = normalizedProjectPath(projectPath) ?: return@mapNotNull null
+                normalizedThreadId to normalizedProjectPath
+            },
+        )
         val activePairing = currentState.pairings.firstOrNull { it.macDeviceId == currentState.activePairingMacDeviceId }
         currentState.messagesByThread.forEach { (threadId, messages) ->
             val canonicalMessages = messages.filter(::isCanonicalTimelineMessage)
@@ -237,6 +254,11 @@ class CodeRoverRepository(context: Context) {
     fun completeOnboarding() {
         store.saveOnboardingSeen(true)
         updateState { copy(onboardingSeen = true) }
+    }
+
+    fun markWhatsNewSeen(version: String) {
+        prefs.setLastPresentedWhatsNewVersion(version)
+        updateState { copy(lastPresentedWhatsNewVersion = version) }
     }
 
     fun setFontStyle(fontStyle: AppFontStyle) {
@@ -446,6 +468,7 @@ class CodeRoverRepository(context: Context) {
                         listProviders()
                         Log.d(TAG, "runtime/provider/list ok epoch=$epoch")
                         syncRuntimeSelectionContext(currentRuntimeProviderId(), refreshModels = false)
+                        refreshBridgeMetadataInternal()
                         Log.d(TAG, "runtime selection restored epoch=$epoch provider=${currentRuntimeProviderId()}")
                         val reconnectThreadId = preferredThreadId
                             ?: state.value.selectedThreadId
@@ -529,6 +552,18 @@ class CodeRoverRepository(context: Context) {
         }
     }
 
+    fun refreshBridgeMetadata() {
+        scope.launch {
+            refreshBridgeMetadataInternal()
+        }
+    }
+
+    fun setBridgeKeepAwakeEnabled(enabled: Boolean) {
+        scope.launch {
+            updateBridgeKeepAwakeEnabled(enabled)
+        }
+    }
+
     fun removePairing(macDeviceId: String) {
         scope.launch {
             val currentState = state.value
@@ -591,7 +626,7 @@ class CodeRoverRepository(context: Context) {
 
     fun selectThread(threadId: String) {
         val thread = state.value.threads.firstOrNull { it.id == threadId }
-        updateState { copy(selectedThreadId = threadId, pendingApproval = null, readyThreadIds = readyThreadIds - threadId, failedThreadIds = failedThreadIds - threadId) }
+        updateState { copy(selectedThreadId = threadId, pendingApprovals = emptyList(), readyThreadIds = readyThreadIds - threadId, failedThreadIds = failedThreadIds - threadId) }
         scope.launch {
             syncRuntimeSelectionContext(thread?.provider ?: state.value.selectedProviderId, refreshModels = state.value.isConnected)
         }
@@ -611,7 +646,7 @@ class CodeRoverRepository(context: Context) {
     }
 
     fun clearSelectedThread() {
-        updateState { copy(selectedThreadId = null, pendingApproval = null) }
+        updateState { copy(selectedThreadId = null, pendingApprovals = emptyList()) }
         scope.launch {
             syncRuntimeSelectionContext(state.value.selectedProviderId, refreshModels = state.value.isConnected)
         }
@@ -627,11 +662,67 @@ class CodeRoverRepository(context: Context) {
         }
     }
 
+    fun createManagedWorktreeThread(preferredProjectPath: String, providerId: String? = null) {
+        scope.launch {
+            val normalizedProjectPath = normalizedProjectPath(preferredProjectPath)
+            if (normalizedProjectPath == null) {
+                updateError("Choose a local project before starting a worktree chat.")
+                return@launch
+            }
+
+            val resolvedProviderId = normalizeProviderId(providerId ?: state.value.selectedProviderId)
+            store.saveSelectedProviderId(resolvedProviderId)
+            updateState { copy(selectedProviderId = resolvedProviderId) }
+            syncRuntimeSelectionContext(resolvedProviderId, refreshModels = state.value.isConnected)
+
+            val branchTargets = gitBranchesWithStatus(normalizedProjectPath)
+            val baseBranch = branchTargets?.defaultBranch?.trim()?.takeIf(String::isNotEmpty)
+                ?: branchTargets?.currentBranch?.trim()?.takeIf(String::isNotEmpty)
+
+            if (baseBranch == null) {
+                updateError("Could not determine a base branch for the managed worktree.")
+                return@launch
+            }
+
+            val worktreeResult = createManagedWorktree(
+                cwd = normalizedProjectPath,
+                baseBranch = baseBranch,
+                changeTransfer = GitWorktreeChangeTransferMode.NONE,
+            )
+
+            if (worktreeResult == null) {
+                updateError("Unable to create a worktree chat right now.")
+                return@launch
+            }
+
+            val thread = runCatching {
+                startThread(worktreeResult.worktreePath, resolvedProviderId)
+            }.getOrElse { failure ->
+                if (!worktreeResult.alreadyExisted) {
+                    runCatching {
+                        removeManagedWorktree(worktreeResult.worktreePath, branch = null)
+                    }
+                }
+                throw failure
+            }
+
+            if (thread == null) {
+                if (!worktreeResult.alreadyExisted) {
+                    runCatching {
+                        removeManagedWorktree(worktreeResult.worktreePath, branch = null)
+                    }
+                }
+                updateError("Unable to create a worktree chat right now.")
+            }
+        }
+    }
+
     fun deleteThread(threadId: String) {
         val current = state.value
         val updatedThreads = current.threads.filterNot { it.id == threadId }
         val updatedMessages = current.messagesByThread - threadId
         val newSelectedId = if (current.selectedThreadId == threadId) null else current.selectedThreadId
+        rememberAssociatedManagedWorktreePath(threadId, null)
         updateState { copy(threads = updatedThreads, messagesByThread = updatedMessages, selectedThreadId = newSelectedId) }
         scope.launch {
             val params = kotlinx.serialization.json.buildJsonObject {
@@ -1073,7 +1164,7 @@ class CodeRoverRepository(context: Context) {
                     result = JsonPrimitive(if (approve) "accept" else "reject"),
                 )
             }
-            updateState { copy(pendingApproval = null) }
+            updateState { copy(pendingApprovals = pendingApprovals.drop(1)) }
         }
     }
 
@@ -1166,8 +1257,23 @@ class CodeRoverRepository(context: Context) {
             .distinct()
         val currentBranch = response.string("current")?.trim().orEmpty()
         val defaultBranch = response.string("default")?.trim()?.takeIf(String::isNotEmpty)
+        val branchesCheckedOutElsewhere = response["branchesCheckedOutElsewhere"]?.jsonArrayOrNull()
+            ?.mapNotNull { element -> element.stringOrNull()?.trim()?.takeIf(String::isNotEmpty) }
+            ?.toSet()
+            .orEmpty()
+        val worktreePathByBranch = response["worktreePathByBranch"]?.jsonObjectOrNull()
+            ?.mapNotNull { (branch, value) ->
+                val path = value.stringOrNull()?.trim()?.takeIf(String::isNotEmpty) ?: return@mapNotNull null
+                branch.trim().takeIf(String::isNotEmpty)?.let { it to path }
+            }
+            ?.toMap()
+            .orEmpty()
+        val localCheckoutPath = response.string("localCheckoutPath")?.trim()?.takeIf(String::isNotEmpty)
         val targets = GitBranchTargets(
             branches = branches,
+            branchesCheckedOutElsewhere = branchesCheckedOutElsewhere,
+            worktreePathByBranch = worktreePathByBranch,
+            localCheckoutPath = localCheckoutPath,
             currentBranch = currentBranch,
             defaultBranch = defaultBranch,
         )
@@ -1235,6 +1341,106 @@ class CodeRoverRepository(context: Context) {
         }
     }
 
+    suspend fun handoffThreadToManagedWorktree(
+        threadId: String,
+        baseBranch: String? = null,
+    ): ThreadSummary? {
+        val currentThread = state.value.threads.firstOrNull { it.id == threadId } ?: return null
+        val sourceProjectPath = normalizedProjectPath(currentThread.cwd) ?: return null
+        val associatedWorktreePath = associatedManagedWorktreePath(threadId)
+        if (associatedWorktreePath != null) {
+            return moveThreadToProjectPath(threadId, associatedWorktreePath)
+        }
+
+        val resolvedBaseBranch = baseBranch?.trim()?.takeIf(String::isNotEmpty)
+            ?: state.value.gitBranchTargetsByThread[threadId]?.currentBranch?.trim()?.takeIf(String::isNotEmpty)
+            ?: state.value.gitBranchTargetsByThread[threadId]?.defaultBranch?.trim()?.takeIf(String::isNotEmpty)
+            ?: gitBranchesWithStatus(sourceProjectPath)?.defaultBranch?.trim()?.takeIf(String::isNotEmpty)
+            ?: gitBranchesWithStatus(sourceProjectPath)?.currentBranch?.trim()?.takeIf(String::isNotEmpty)
+            ?: return null
+
+        val result = createManagedWorktree(
+            cwd = sourceProjectPath,
+            baseBranch = resolvedBaseBranch,
+            changeTransfer = GitWorktreeChangeTransferMode.MOVE,
+        ) ?: return null
+
+        rememberAssociatedManagedWorktreePath(threadId, result.worktreePath)
+        return moveThreadToProjectPath(threadId, result.worktreePath)
+    }
+
+    suspend fun handoffThreadToLocal(threadId: String): ThreadSummary? {
+        val currentThread = state.value.threads.firstOrNull { it.id == threadId } ?: return null
+        val sourceProjectPath = normalizedProjectPath(currentThread.cwd) ?: return null
+        val branchTargets = state.value.gitBranchTargetsByThread[threadId] ?: gitBranchesWithStatus(sourceProjectPath)
+        val localCheckoutPath = normalizedProjectPath(branchTargets?.localCheckoutPath) ?: return null
+
+        transferManagedHandoff(
+            cwd = sourceProjectPath,
+            targetProjectPath = localCheckoutPath,
+        ) ?: return null
+
+        return moveThreadToProjectPath(threadId, localCheckoutPath)
+    }
+
+    suspend fun forkThreadToLocal(threadId: String): ThreadSummary? {
+        val currentThread = state.value.threads.firstOrNull { it.id == threadId } ?: return null
+        val branchTargets = state.value.gitBranchTargetsByThread[threadId]
+            ?: currentThread.normalizedProjectPath?.let { projectPath ->
+                gitBranchesWithStatus(projectPath)
+            }
+        val targetProjectPath = when {
+            !currentThread.isManagedWorktreeProject -> normalizedProjectPath(currentThread.cwd)
+            else -> normalizedProjectPath(branchTargets?.localCheckoutPath)
+        } ?: return null
+
+        return forkThreadToProjectPath(threadId, targetProjectPath)
+    }
+
+    suspend fun forkThreadToManagedWorktree(
+        threadId: String,
+        baseBranch: String? = null,
+    ): ThreadSummary? {
+        val currentThread = state.value.threads.firstOrNull { it.id == threadId } ?: return null
+        val sourceProjectPath = normalizedProjectPath(currentThread.cwd) ?: return null
+        val resolvedBaseBranch = baseBranch?.trim()?.takeIf(String::isNotEmpty)
+            ?: state.value.gitBranchTargetsByThread[threadId]?.currentBranch?.trim()?.takeIf(String::isNotEmpty)
+            ?: state.value.gitBranchTargetsByThread[threadId]?.defaultBranch?.trim()?.takeIf(String::isNotEmpty)
+            ?: gitBranchesWithStatus(sourceProjectPath)?.defaultBranch?.trim()?.takeIf(String::isNotEmpty)
+            ?: gitBranchesWithStatus(sourceProjectPath)?.currentBranch?.trim()?.takeIf(String::isNotEmpty)
+            ?: return null
+
+        val result = createManagedWorktree(
+            cwd = sourceProjectPath,
+            baseBranch = resolvedBaseBranch,
+            changeTransfer = GitWorktreeChangeTransferMode.NONE,
+        ) ?: return null
+
+        return runCatching {
+            forkThreadToProjectPath(threadId, result.worktreePath)
+        }.getOrElse { failure ->
+            if (!result.alreadyExisted) {
+                runCatching {
+                    removeManagedWorktree(result.worktreePath, branch = null)
+                }
+            }
+            throw failure
+        }
+    }
+
+    fun findLiveThreadForProjectPath(
+        projectPath: String,
+        currentThreadId: String? = null,
+    ): ThreadSummary? {
+        val resolvedComparableProjectPath = comparableProjectPath(projectPath) ?: return null
+        val excludedThreadId = normalizedIdentifier(currentThreadId)
+        return state.value.threads
+            .asSequence()
+            .filter { it.syncState == ThreadSyncState.LIVE }
+            .filter { it.id != excludedThreadId }
+            .firstOrNull { comparableProjectPath(it.normalizedProjectPath) == resolvedComparableProjectPath }
+    }
+
     private fun parseGitRepoSyncResult(response: JsonObject): com.coderover.android.data.model.GitRepoSyncResult {
         val aheadCount = response.int("ahead") ?: response.int("unpushedCount") ?: 0
         val behindCount = response.int("behind") ?: response.int("unpulledCount") ?: 0
@@ -1250,9 +1456,21 @@ class CodeRoverRepository(context: Context) {
         val unpushedCount = response.int("unpushedCount") ?: aheadCount
         val unpulledCount = response.int("unpulledCount") ?: behindCount
         val untrackedCount = response.int("untrackedCount") ?: 0
+        val localOnlyCommitCount = response.int("localOnlyCommitCount") ?: 0
         val repoRoot = response.string("repoRoot")
         val stateLabel = response.string("state") ?: "up_to_date"
         val canPush = response.bool("canPush") ?: hasUnpushedCommits
+        val isPublishedToRemote = response.bool("publishedToRemote") ?: false
+        val files = response["files"]?.jsonArrayOrNull()
+            ?.mapNotNull { element ->
+                val fileObject = element.jsonObjectOrNull() ?: return@mapNotNull null
+                val path = fileObject.string("path")?.trim()?.takeIf(String::isNotEmpty) ?: return@mapNotNull null
+                com.coderover.android.data.model.GitChangedFile(
+                    path = path,
+                    status = fileObject.string("status")?.trim().orEmpty(),
+                )
+            }
+            .orEmpty()
         val repoDiffTotals = response["diff"]?.jsonObjectOrNull()?.let { diff ->
             val totals = com.coderover.android.data.model.GitDiffTotals(
                 additions = diff.int("additions") ?: 0,
@@ -1275,11 +1493,177 @@ class CodeRoverRepository(context: Context) {
             unpushedCount = unpushedCount,
             unpulledCount = unpulledCount,
             untrackedCount = untrackedCount,
+            localOnlyCommitCount = localOnlyCommitCount,
             repoRoot = repoRoot,
             state = stateLabel,
             canPush = canPush,
+            isPublishedToRemote = isPublishedToRemote,
+            files = files,
             repoDiffTotals = repoDiffTotals,
         )
+    }
+
+    private suspend fun createManagedWorktree(
+        cwd: String,
+        baseBranch: String,
+        changeTransfer: GitWorktreeChangeTransferMode,
+    ): GitCreateManagedWorktreeResult? {
+        val normalizedCwd = normalizedProjectPath(cwd) ?: return null
+        val normalizedBaseBranch = baseBranch.trim().takeIf(String::isNotEmpty) ?: return null
+        val response = activeClient().sendRequest(
+            "git/createManagedWorktree",
+            buildJsonObject(
+                "cwd" to JsonPrimitive(normalizedCwd),
+                "baseBranch" to JsonPrimitive(normalizedBaseBranch),
+                "changeTransfer" to JsonPrimitive(changeTransfer.wireValue),
+            ),
+        )?.jsonObjectOrNull() ?: return null
+
+        val payload = response["result"]?.jsonObjectOrNull() ?: response
+        val worktreePath = normalizedProjectPath(payload.string("worktreePath")) ?: return null
+        return GitCreateManagedWorktreeResult(
+            worktreePath = worktreePath,
+            alreadyExisted = payload.bool("alreadyExisted") ?: false,
+            baseBranch = payload.string("baseBranch").orEmpty(),
+            headMode = payload.string("headMode").orEmpty(),
+            transferredChanges = payload.bool("transferredChanges") ?: false,
+        )
+    }
+
+    private suspend fun transferManagedHandoff(
+        cwd: String,
+        targetProjectPath: String,
+    ): GitManagedHandoffTransferResult? {
+        val normalizedCwd = normalizedProjectPath(cwd) ?: return null
+        val normalizedTargetPath = normalizedProjectPath(targetProjectPath) ?: return null
+        val response = activeClient().sendRequest(
+            "git/transferManagedHandoff",
+            buildJsonObject(
+                "cwd" to JsonPrimitive(normalizedCwd),
+                "targetPath" to JsonPrimitive(normalizedTargetPath),
+            ),
+        )?.jsonObjectOrNull() ?: return null
+
+        val payload = response["result"]?.jsonObjectOrNull() ?: response
+        return GitManagedHandoffTransferResult(
+            success = payload.bool("success") ?: false,
+            targetPath = normalizedProjectPath(payload.string("targetPath")),
+            transferredChanges = payload.bool("transferredChanges") ?: false,
+        )
+    }
+
+    private suspend fun removeManagedWorktree(
+        cwd: String,
+        branch: String?,
+    ) {
+        val normalizedCwd = normalizedProjectPath(cwd) ?: return
+        activeClient().sendRequest(
+            "git/removeWorktree",
+            buildJsonObject(
+                "cwd" to JsonPrimitive(normalizedCwd),
+                "branch" to branch?.trim()?.takeIf(String::isNotEmpty)?.let(::JsonPrimitive),
+            ),
+        )
+    }
+
+    private suspend fun forkThreadToProjectPath(
+        sourceThreadId: String,
+        targetProjectPath: String,
+    ): ThreadSummary? {
+        val normalizedThreadId = normalizedIdentifier(sourceThreadId) ?: return null
+        val normalizedProjectPath = normalizedProjectPath(targetProjectPath) ?: return null
+        val sourceThread = state.value.threads.firstOrNull { it.id == normalizedThreadId } ?: return null
+
+        val response = activeClient().sendRequest(
+            "thread/fork",
+            buildJsonObject("threadId" to JsonPrimitive(normalizedThreadId)),
+        )?.jsonObjectOrNull() ?: return null
+
+        val payload = response["result"]?.jsonObjectOrNull() ?: response
+        val threadPayload = payload["thread"]?.jsonObjectOrNull() ?: return null
+        val decodedThread = ThreadSummary.fromJson(threadPayload)
+            ?.copy(
+                cwd = normalizedProjectPath,
+                syncState = ThreadSyncState.LIVE,
+                model = ThreadSummary.fromJson(threadPayload)?.model ?: sourceThread.model,
+                modelProvider = ThreadSummary.fromJson(threadPayload)?.modelProvider ?: sourceThread.modelProvider,
+            )
+            ?: return null
+
+        updateState {
+            copy(
+                threads = upsertThread(threads, decodedThread, treatAsServerState = true),
+                selectedThreadId = decodedThread.id,
+                lastErrorMessage = null,
+            )
+        }
+
+        beginAuthoritativeProjectPathTransition(decodedThread.id, normalizedProjectPath)
+        if (decodedThread.isManagedWorktreeProject) {
+            rememberAssociatedManagedWorktreePath(decodedThread.id, normalizedProjectPath)
+        }
+
+        val resumedThread = ensureThreadResumed(
+            threadId = decodedThread.id,
+            preferredProjectPath = normalizedProjectPath,
+            modelIdentifierOverride = sourceThread.model,
+        )
+        val targetThread = resumedThread ?: state.value.threads.firstOrNull { it.id == decodedThread.id } ?: decodedThread
+        selectThread(targetThread.id)
+        refreshThreadHistory(targetThread.id, reason = "fork-thread")
+        return targetThread
+    }
+
+    private suspend fun moveThreadToProjectPath(
+        threadId: String,
+        projectPath: String,
+    ): ThreadSummary? {
+        val normalizedThreadId = normalizedIdentifier(threadId) ?: return null
+        val normalizedProjectPath = normalizedProjectPath(projectPath) ?: return null
+        val currentThread = state.value.threads.firstOrNull { it.id == normalizedThreadId } ?: return null
+        val previousAuthoritativeProjectPath = authoritativeProjectPathByThreadId[normalizedThreadId]
+        val previousAssociatedManagedWorktreePath = associatedManagedWorktreePath(normalizedThreadId)
+        val previousThread = currentThread
+
+        beginAuthoritativeProjectPathTransition(normalizedThreadId, normalizedProjectPath)
+        if (isManagedWorktreePath(normalizedProjectPath)) {
+            rememberAssociatedManagedWorktreePath(normalizedThreadId, normalizedProjectPath)
+        }
+
+        updateState {
+            val reboundThread = currentThread.copy(
+                cwd = normalizedProjectPath,
+                updatedAt = System.currentTimeMillis(),
+            )
+            copy(
+                threads = upsertThread(threads, reboundThread),
+                selectedThreadId = normalizedThreadId,
+                readyThreadIds = readyThreadIds - normalizedThreadId,
+                failedThreadIds = failedThreadIds - normalizedThreadId,
+                lastErrorMessage = null,
+            )
+        }
+
+        return try {
+            val resumedThread = ensureThreadResumed(
+                threadId = normalizedThreadId,
+                preferredProjectPath = normalizedProjectPath,
+                modelIdentifierOverride = currentThread.model,
+            )
+            refreshThreadHistory(normalizedThreadId, reason = "project-rebind")
+            resumedThread ?: state.value.threads.firstOrNull { it.id == normalizedThreadId }
+        } catch (failure: Throwable) {
+            if (shouldAllowProjectRebindWithoutResume(failure)) {
+                state.value.threads.firstOrNull { it.id == normalizedThreadId }
+            } else {
+                restoreThreadProjectBinding(
+                    thread = previousThread,
+                    authoritativeProjectPath = previousAuthoritativeProjectPath,
+                    associatedManagedWorktreePath = previousAssociatedManagedWorktreePath,
+                )
+                throw failure
+            }
+        }
     }
 
     private fun resolveThreadIdForCwd(cwd: String): String? {
@@ -1400,7 +1784,7 @@ class CodeRoverRepository(context: Context) {
             mapOf(
                 "name" to JsonPrimitive("coderover_android"),
                 "title" to JsonPrimitive("CodeRover Android"),
-                "version" to JsonPrimitive("0.1.0"),
+                "version" to JsonPrimitive(AppInfo.VERSION_NAME),
             ),
         )
         runCatching {
@@ -1455,6 +1839,81 @@ class CodeRoverRepository(context: Context) {
             copy(
                 availableProviders = normalizedProviders,
                 selectedProviderId = selectedProviderId,
+            )
+        }
+    }
+
+    private suspend fun refreshBridgeMetadataInternal() {
+        if (!state.value.isConnected) {
+            updateState {
+                copy(
+                    bridgeStatus = null,
+                    bridgeUpdatePrompt = null,
+                    isLoadingBridgeStatus = false,
+                )
+            }
+            return
+        }
+
+        updateState { copy(isLoadingBridgeStatus = true) }
+
+        val nextStatus = runCatching {
+            activeClient().sendRequest("bridge/status/read", JsonObject(emptyMap()))
+                ?.jsonObjectOrNull()
+                ?.let(BridgeStatus::fromJson)
+        }.getOrNull()
+
+        val nextPrompt = runCatching {
+            activeClient().sendRequest("bridge/updatePrompt/read", JsonObject(emptyMap()))
+                ?.jsonObjectOrNull()
+                ?.let(BridgeUpdatePrompt::fromJson)
+        }.getOrNull()
+
+        updateState {
+            copy(
+                bridgeStatus = nextStatus,
+                bridgeUpdatePrompt = nextPrompt,
+                isLoadingBridgeStatus = false,
+            )
+        }
+    }
+
+    private suspend fun updateBridgeKeepAwakeEnabled(enabled: Boolean) {
+        val previousStatus = state.value.bridgeStatus
+        if (previousStatus != null) {
+            updateState {
+                copy(
+                    bridgeStatus = previousStatus.copy(
+                        keepAwakeEnabled = enabled,
+                        keepAwakeActive = enabled,
+                    ),
+                )
+            }
+        }
+
+        val response = runCatching {
+            activeClient().sendRequest(
+                "bridge/preferences/update",
+                JsonObject(mapOf("keepAwakeEnabled" to JsonPrimitive(enabled))),
+            )?.jsonObjectOrNull()
+        }.getOrNull()
+
+        if (response == null) {
+            updateState { copy(bridgeStatus = previousStatus) }
+            return
+        }
+
+        val preferences = response["preferences"]?.jsonObjectOrNull()
+        val keepAwakeEnabled = response.bool("keepAwakeEnabled")
+            ?: preferences?.bool("keepAwakeEnabled")
+            ?: enabled
+        val keepAwakeActive = response.bool("keepAwakeActive") ?: enabled
+        updateState {
+            copy(
+                bridgeStatus = (bridgeStatus ?: previousStatus)?.copy(
+                    keepAwakeEnabled = keepAwakeEnabled,
+                    keepAwakeActive = keepAwakeActive,
+                ) ?: previousStatus,
             )
         }
     }
@@ -3501,14 +3960,16 @@ class CodeRoverRepository(context: Context) {
                 } else {
                     updateState {
                         copy(
-                            pendingApproval = ApprovalRequest(
-                                id = responseKey(id),
-                                requestId = id,
-                                method = method,
-                                command = params?.string("command"),
-                                reason = params?.string("reason"),
-                                threadId = params?.string("threadId"),
-                                turnId = params?.string("turnId"),
+                            pendingApprovals = pendingApprovals.enqueueDistinct(
+                                ApprovalRequest(
+                                    id = responseKey(id),
+                                    requestId = id,
+                                    method = method,
+                                    command = params?.string("command"),
+                                    reason = params?.string("reason"),
+                                    threadId = params?.string("threadId"),
+                                    turnId = params?.string("turnId"),
+                                ),
                             ),
                         )
                     }
@@ -4318,10 +4779,11 @@ class CodeRoverRepository(context: Context) {
 
     private suspend fun startThread(preferredProjectPath: String?, providerId: String? = null): ThreadSummary? {
         val resolvedProviderId = normalizeProviderId(providerId ?: state.value.selectedProviderId)
+        val normalizedPreferredProjectPath = normalizedProjectPath(preferredProjectPath)
         val params = buildJsonObject(
             "provider" to JsonPrimitive(resolvedProviderId),
             "model" to store.loadSelectedModelId(resolvedProviderId)?.let(::JsonPrimitive),
-            "cwd" to preferredProjectPath?.trim()?.takeIf(String::isNotEmpty)?.let(::JsonPrimitive),
+            "cwd" to normalizedPreferredProjectPath?.let(::JsonPrimitive),
         )
         val response = requestWithSandboxFallback("thread/start", params)
         val thread = response
@@ -4329,19 +4791,58 @@ class CodeRoverRepository(context: Context) {
             ?.get("thread")
             ?.jsonObjectOrNull()
             ?.let(ThreadSummary::fromJson)
+            ?.let { decoded ->
+                if (decoded.normalizedProjectPath == null && normalizedPreferredProjectPath != null) {
+                    decoded.copy(cwd = normalizedPreferredProjectPath)
+                } else {
+                    decoded
+                }
+            }
             ?: run {
                 updateError("thread/start did not return a thread.")
                 return null
             }
         updateState {
             copy(
-                threads = upsertThread(threads, thread),
+                threads = upsertThread(threads, thread, treatAsServerState = true),
                 selectedThreadId = thread.id,
                 selectedProviderId = resolvedProviderId,
                 lastErrorMessage = null,
             )
         }
         return thread
+    }
+
+    private suspend fun ensureThreadResumed(
+        threadId: String,
+        preferredProjectPath: String? = null,
+        modelIdentifierOverride: String? = null,
+    ): ThreadSummary? {
+        val normalizedThreadId = normalizedIdentifier(threadId) ?: return null
+        val normalizedPreferredProjectPath = normalizedProjectPath(preferredProjectPath)
+            ?: state.value.threads.firstOrNull { it.id == normalizedThreadId }?.normalizedProjectPath
+        val params = buildJsonObject(
+            "threadId" to JsonPrimitive(normalizedThreadId),
+            "cwd" to normalizedPreferredProjectPath?.let(::JsonPrimitive),
+            "model" to modelIdentifierOverride?.trim()?.takeIf(String::isNotEmpty)?.let(::JsonPrimitive),
+        )
+        val response = activeClient().sendRequest("thread/resume", params)?.jsonObjectOrNull() ?: return null
+        val payload = response["result"]?.jsonObjectOrNull() ?: response
+        val threadPayload = payload["thread"]?.jsonObjectOrNull() ?: return null
+        val decodedThread = ThreadSummary.fromJson(threadPayload)
+            ?.let { decoded ->
+                if (decoded.normalizedProjectPath == null && normalizedPreferredProjectPath != null) {
+                    decoded.copy(cwd = normalizedPreferredProjectPath)
+                } else {
+                    decoded
+                }
+            }
+            ?: return null
+
+        updateState {
+            copy(threads = upsertThread(threads, decodedThread.copy(syncState = ThreadSyncState.LIVE), treatAsServerState = true))
+        }
+        return state.value.threads.firstOrNull { it.id == decodedThread.id } ?: decodedThread
     }
 
     private fun rememberSuccessfulTransport(url: String) {
@@ -4606,11 +5107,14 @@ class CodeRoverRepository(context: Context) {
                 pendingRealtimeSeededTurnIdByThread = emptyMap(),
                 readyThreadIds = if (resetThreadSession) emptySet() else readyThreadIds,
                 failedThreadIds = if (resetThreadSession) emptySet() else failedThreadIds,
-                pendingApproval = null,
+                pendingApprovals = emptyList(),
                 gitRepoSyncByThread = if (resetThreadSession) emptyMap() else gitRepoSyncByThread,
                 gitBranchTargetsByThread = if (resetThreadSession) emptyMap() else gitBranchTargetsByThread,
                 selectedGitBaseBranchByThread = if (resetThreadSession) emptyMap() else selectedGitBaseBranchByThread,
                 contextWindowUsageByThread = if (resetThreadSession) emptyMap() else contextWindowUsageByThread,
+                bridgeStatus = null,
+                bridgeUpdatePrompt = null,
+                isLoadingBridgeStatus = false,
                 assistantRevertPresentationByMessageId = if (resetThreadSession) emptyMap() else assistantRevertPresentationByMessageId,
                 queuedTurnDraftsByThread = if (resetThreadSession) emptyMap() else queuedTurnDraftsByThread,
                 queuePauseMessageByThread = if (resetThreadSession) emptyMap() else queuePauseMessageByThread,
@@ -4634,9 +5138,16 @@ class CodeRoverRepository(context: Context) {
         ).also(store::savePhoneIdentityState)
     }
 
-    private fun upsertThread(existing: List<ThreadSummary>, thread: ThreadSummary): List<ThreadSummary> {
+    private fun upsertThread(
+        existing: List<ThreadSummary>,
+        thread: ThreadSummary,
+        treatAsServerState: Boolean = false,
+    ): List<ThreadSummary> {
         val current = existing.firstOrNull { it.id == thread.id }
-        val merged = mergeThreadSummary(current, thread)
+        val merged = applyAuthoritativeProjectPath(
+            thread = mergeThreadSummary(current, thread),
+            treatAsServerState = treatAsServerState,
+        )
         return (existing.filterNot { it.id == thread.id } + merged).sortedByDescending { it.updatedAt ?: it.createdAt ?: 0L }
     }
 
@@ -4734,6 +5245,84 @@ class CodeRoverRepository(context: Context) {
         return updatedThreads
     }
 
+    private fun associatedManagedWorktreePath(threadId: String?): String? {
+        val normalizedThreadId = normalizedIdentifier(threadId) ?: return null
+        return normalizedProjectPath(associatedManagedWorktreePathByThreadId[normalizedThreadId])
+    }
+
+    private fun rememberAssociatedManagedWorktreePath(threadId: String, projectPath: String?) {
+        val normalizedThreadId = normalizedIdentifier(threadId) ?: return
+        val normalizedProjectPath = normalizedProjectPath(projectPath)
+        if (normalizedProjectPath == null) {
+            associatedManagedWorktreePathByThreadId.remove(normalizedThreadId)
+        } else {
+            associatedManagedWorktreePathByThreadId[normalizedThreadId] = normalizedProjectPath
+        }
+        prefs.setAssociatedManagedWorktreePaths(associatedManagedWorktreePathByThreadId)
+    }
+
+    private fun beginAuthoritativeProjectPathTransition(threadId: String, projectPath: String) {
+        val normalizedThreadId = normalizedIdentifier(threadId) ?: return
+        val normalizedProjectPath = normalizedProjectPath(projectPath) ?: return
+        authoritativeProjectPathByThreadId[normalizedThreadId] = normalizedProjectPath
+    }
+
+    private fun applyAuthoritativeProjectPath(
+        thread: ThreadSummary,
+        treatAsServerState: Boolean,
+    ): ThreadSummary {
+        val normalizedThreadId = normalizedIdentifier(thread.id) ?: return thread
+        val authoritativeProjectPath = authoritativeProjectPathByThreadId[normalizedThreadId] ?: return thread
+        if (thread.normalizedProjectPath == authoritativeProjectPath) {
+            if (treatAsServerState) {
+                authoritativeProjectPathByThreadId.remove(normalizedThreadId)
+            }
+            return thread
+        }
+        return thread.copy(cwd = authoritativeProjectPath)
+    }
+
+    private fun restoreThreadProjectBinding(
+        thread: ThreadSummary,
+        authoritativeProjectPath: String?,
+        associatedManagedWorktreePath: String?,
+    ) {
+        val normalizedThreadId = normalizedIdentifier(thread.id) ?: return
+        if (authoritativeProjectPath == null) {
+            authoritativeProjectPathByThreadId.remove(normalizedThreadId)
+        } else {
+            authoritativeProjectPathByThreadId[normalizedThreadId] = authoritativeProjectPath
+        }
+        rememberAssociatedManagedWorktreePath(normalizedThreadId, associatedManagedWorktreePath)
+        updateState {
+            copy(
+                threads = upsertThread(threads, thread),
+                selectedThreadId = normalizedThreadId,
+            )
+        }
+    }
+
+    private fun normalizedProjectPath(path: String?): String? {
+        val trimmed = path?.trim()?.trimEnd('/')?.takeIf(String::isNotEmpty) ?: return null
+        return trimmed
+    }
+
+    private fun comparableProjectPath(path: String?): String? {
+        val normalizedPath = normalizedProjectPath(path) ?: return null
+        return runCatching { File(normalizedPath).canonicalFile.path.trimEnd('/') }.getOrNull()
+            ?: normalizedPath
+    }
+
+    private fun isManagedWorktreePath(path: String?): Boolean {
+        val normalizedPath = normalizedProjectPath(path) ?: return false
+        return normalizedPath.contains("/.coderover/worktrees/")
+    }
+
+    private fun shouldAllowProjectRebindWithoutResume(failure: Throwable): Boolean {
+        val message = failure.message?.lowercase().orEmpty()
+        return "no rollout found" in message || "no rollout file found" in message
+    }
+
     private fun nextOrderIndex(): Int = orderCounter.incrementAndGet()
 
     private fun buildJsonObject(vararg pairs: Pair<String, JsonElement?>): JsonObject {
@@ -4755,6 +5344,13 @@ class CodeRoverRepository(context: Context) {
             "turnId" to anchor.turnId?.let(::JsonPrimitive),
         )
     }
+}
+
+private fun List<ApprovalRequest>.enqueueDistinct(request: ApprovalRequest): List<ApprovalRequest> {
+    if (any { it.id == request.id }) {
+        return this
+    }
+    return this + request
 }
 
 private fun JsonElement?.jsonObjectOrNull(): JsonObject? = this as? JsonObject

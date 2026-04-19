@@ -2,18 +2,23 @@ package com.coderover.android.ui.turn
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -31,11 +36,13 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.unit.dp
 import com.coderover.android.data.model.AssistantRevertPresentation
 import com.coderover.android.data.model.ChatMessage
 import com.coderover.android.data.model.CommandPhase
 import com.coderover.android.data.model.MessageRole
+import com.coderover.android.ui.theme.monoFamily
 import com.coderover.android.ui.theme.Border
 import kotlinx.coroutines.launch
 
@@ -114,7 +121,7 @@ internal fun TurnTimeline(
         val anchorId = assistantResponseAnchorMessageId(messages, activeTurnId)
         if (anchorId != null) {
             val anchorIndex = renderItems.indexOfLast { item ->
-                (item as? TimelineRenderItem.Message)?.message?.id == anchorId
+                renderItemContainsMessage(item, anchorId)
             }
             if (anchorIndex >= 0) {
                 autoScrollMode = TurnAutoScrollMode.ANCHOR_ASSISTANT_RESPONSE
@@ -173,15 +180,32 @@ internal fun TurnTimeline(
                 }
             }
             items(renderItems, key = { it.key }) { item ->
-                val message = (item as? TimelineRenderItem.Message)?.message ?: return@items
-                TurnMessageBubble(
-                    message = message,
-                    onSubmitStructuredInput = onSubmitStructuredInput,
-                    onTapSubagentThread = onTapSubagentThread,
-                    copyBlockText = copyBlockTextByMessageId[message.id],
-                    assistantRevertPresentation = assistantRevertPresentationByMessageId[message.id],
-                    onTapAssistantRevert = onTapAssistantRevert,
-                )
+                when (item) {
+                    is TimelineRenderItem.Message -> {
+                        val message = item.message
+                        TurnMessageBubble(
+                            message = message,
+                            onSubmitStructuredInput = onSubmitStructuredInput,
+                            onTapSubagentThread = onTapSubagentThread,
+                            copyBlockText = copyBlockTextByMessageId[message.id],
+                            assistantRevertPresentation = assistantRevertPresentationByMessageId[message.id],
+                            onTapAssistantRevert = onTapAssistantRevert,
+                        )
+                    }
+
+                    is TimelineRenderItem.CommandBurst -> {
+                        TurnCommandBurst(
+                            item = item,
+                            copyBlockTextByMessageId = copyBlockTextByMessageId,
+                            assistantRevertPresentationByMessageId = assistantRevertPresentationByMessageId,
+                            onTapAssistantRevert = onTapAssistantRevert,
+                            onTapSubagentThread = onTapSubagentThread,
+                            onSubmitStructuredInput = onSubmitStructuredInput,
+                        )
+                    }
+
+                    is TimelineRenderItem.TurnSection -> Unit
+                }
             }
         }
 
@@ -212,6 +236,91 @@ internal fun TurnTimeline(
                         modifier = Modifier.padding(1.dp),
                     )
                 }
+            }
+        }
+    }
+}
+
+private fun renderItemContainsMessage(item: TimelineRenderItem, messageId: String): Boolean {
+    return when (item) {
+        is TimelineRenderItem.Message -> item.message.id == messageId
+        is TimelineRenderItem.CommandBurst -> item.messages.any { it.id == messageId }
+        is TimelineRenderItem.TurnSection -> item.messages.any { it.id == messageId }
+    }
+}
+
+@Composable
+private fun TurnCommandBurst(
+    item: TimelineRenderItem.CommandBurst,
+    copyBlockTextByMessageId: Map<String, String>,
+    assistantRevertPresentationByMessageId: Map<String, AssistantRevertPresentation>,
+    onTapAssistantRevert: (ChatMessage) -> Unit,
+    onTapSubagentThread: (String) -> Unit,
+    onSubmitStructuredInput: (kotlinx.serialization.json.JsonElement, Map<String, String>) -> Unit,
+) {
+    var isExpanded by rememberSaveable(item.key) { mutableStateOf(false) }
+    val pinnedMessages = remember(item.messages) { item.messages.take(COMMAND_BURST_COLLAPSED_VISIBLE_COUNT) }
+    val overflowMessages = remember(item.messages) { item.messages.drop(COMMAND_BURST_COLLAPSED_VISIBLE_COUNT) }
+
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        pinnedMessages.forEach { message ->
+            TurnMessageBubble(
+                message = message,
+                onSubmitStructuredInput = onSubmitStructuredInput,
+                onTapSubagentThread = onTapSubagentThread,
+                copyBlockText = copyBlockTextByMessageId[message.id],
+                assistantRevertPresentation = assistantRevertPresentationByMessageId[message.id],
+                onTapAssistantRevert = onTapAssistantRevert,
+            )
+        }
+
+        if (overflowMessages.isNotEmpty()) {
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                border = BorderStroke(1.dp, Border.copy(alpha = 0.22f)),
+                modifier = Modifier.clickable { isExpanded = !isExpanded },
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Outlined.KeyboardArrowRight,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier
+                            .rotate(if (isExpanded) 90f else 0f),
+                    )
+                    Text(
+                        text = "+${overflowMessages.size} command steps",
+                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = monoFamily),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text(
+                        text = if (isExpanded) "Hide" else "Show",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(start = 8.dp),
+                    )
+                }
+            }
+        }
+
+        if (isExpanded) {
+            overflowMessages.forEach { message ->
+                TurnMessageBubble(
+                    message = message,
+                    onSubmitStructuredInput = onSubmitStructuredInput,
+                    onTapSubagentThread = onTapSubagentThread,
+                    copyBlockText = copyBlockTextByMessageId[message.id],
+                    assistantRevertPresentation = assistantRevertPresentationByMessageId[message.id],
+                    onTapAssistantRevert = onTapAssistantRevert,
+                )
             }
         }
     }

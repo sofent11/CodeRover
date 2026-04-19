@@ -110,7 +110,7 @@ extension CodeRoverService {
         loadingModelsProviderID = nil
         loadedModelsProviderID = nil
         isBootstrappingConnectionSync = false
-        pendingApproval = nil
+        pendingApprovals.removeAll()
         finalizeAllStreamingState()
         messagePersistenceDebounceTask?.cancel()
         messagePersistenceDebounceTask = nil
@@ -125,6 +125,9 @@ extension CodeRoverService {
         failedThreadIDs.removeAll()
         runningThreadWatchByID.removeAll()
         pendingNotificationOpenThreadID = nil
+        bridgeStatus = nil
+        bridgeUpdatePrompt = nil
+        isLoadingBridgeStatus = false
         endBackgroundRunGraceTask(reason: "disconnect")
         if !preserveReconnectIntent {
             shouldAutoReconnectOnForeground = false
@@ -172,7 +175,7 @@ extension CodeRoverService {
     }
 
     func initializeSession() async throws {
-        let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.1.0"
+        let appVersion = AppEnvironment.appVersion
         let clientInfo: JSONValue = .object([
             "name": .string("coderovermobile_ios"),
             "title": .string("CodeRoverMobile iOS"),
@@ -205,6 +208,7 @@ extension CodeRoverService {
 
         try await sendNotification(method: "initialized", params: nil)
         isInitialized = true
+        await refreshBridgeMetadata()
     }
 
     // Classifies socket failures so transient bridge hiccups reconnect while pairing stays intact.
@@ -302,7 +306,7 @@ extension CodeRoverService {
         activeTurnId = nil
         activeTurnIdByThread.removeAll()
         threadIdByTurnID.removeAll()
-        pendingApproval = nil
+        pendingApprovals.removeAll()
         currentOutput = ""
         lastErrorMessage = nil
         isLoadingModels = false

@@ -60,12 +60,15 @@ struct TurnComposerView: View {
     let showsGitBranchSelector: Bool
     let isGitBranchSelectorEnabled: Bool
     let availableGitBranchTargets: [String]
+    let gitBranchesCheckedOutElsewhere: Set<String>
+    let gitWorktreePathsByBranch: [String: String]
     let selectedGitBaseBranch: String
     let currentGitBranch: String
     let gitDefaultBranch: String
     let isLoadingGitBranchTargets: Bool
     let isSwitchingGitBranch: Bool
     let onSelectGitBranch: (String) -> Void
+    let onCreateGitBranch: (String) -> Void
     let onSelectGitBaseBranch: (String) -> Void
     let onRefreshGitBranches: () -> Void
     let onReconnect: () -> Void
@@ -311,12 +314,15 @@ struct TurnComposerView: View {
                         TurnGitBranchSelector(
                             isEnabled: isGitBranchSelectorEnabled,
                             availableGitBranchTargets: availableGitBranchTargets,
+                            gitBranchesCheckedOutElsewhere: gitBranchesCheckedOutElsewhere,
+                            gitWorktreePathsByBranch: gitWorktreePathsByBranch,
                             selectedGitBaseBranch: selectedGitBaseBranch,
                             currentGitBranch: currentGitBranch,
                             defaultBranch: gitDefaultBranch,
                             isLoadingGitBranchTargets: isLoadingGitBranchTargets,
                             isSwitchingGitBranch: isSwitchingGitBranch,
                             onSelectGitBranch: onSelectGitBranch,
+                            onCreateGitBranch: onCreateGitBranch,
                             onSelectGitBaseBranch: onSelectGitBaseBranch,
                             onRefreshGitBranches: onRefreshGitBranches
                         )
@@ -800,12 +806,15 @@ private struct QueuedDraftsPanelPreviewWrapper: View {
                 showsGitBranchSelector: false,
                 isGitBranchSelectorEnabled: false,
                 availableGitBranchTargets: [],
+                gitBranchesCheckedOutElsewhere: [],
+                gitWorktreePathsByBranch: [:],
                 selectedGitBaseBranch: "",
                 currentGitBranch: "main",
                 gitDefaultBranch: "main",
                 isLoadingGitBranchTargets: false,
                 isSwitchingGitBranch: false,
                 onSelectGitBranch: { _ in },
+                onCreateGitBranch: { _ in },
                 onSelectGitBaseBranch: { _ in },
                 onRefreshGitBranches: {},
                 onReconnect: {},

@@ -13,6 +13,13 @@ internal sealed interface TimelineRenderItem {
         override val key: String = "message:${message.id}"
     }
 
+    data class CommandBurst(val messages: List<ChatMessage>) : TimelineRenderItem {
+        override val key: String = buildString {
+            append("command-burst:")
+            append(messages.firstOrNull()?.id ?: "unknown")
+        }
+    }
+
     data class TurnSection(
         val turnId: String,
         val messages: List<ChatMessage>,
@@ -72,7 +79,56 @@ internal fun assistantResponseAnchorMessageId(
 }
 
 internal fun buildTimelineRenderItems(messages: List<ChatMessage>): List<TimelineRenderItem> {
-    return messages.map(TimelineRenderItem::Message)
+    if (messages.isEmpty()) {
+        return emptyList()
+    }
+
+    val items = mutableListOf<TimelineRenderItem>()
+    val bufferedCommandMessages = mutableListOf<ChatMessage>()
+
+    fun flushBufferedCommandMessages() {
+        if (bufferedCommandMessages.isEmpty()) {
+            return
+        }
+        if (bufferedCommandMessages.size > COMMAND_BURST_COLLAPSED_VISIBLE_COUNT) {
+            items += TimelineRenderItem.CommandBurst(bufferedCommandMessages.toList())
+        } else {
+            items += bufferedCommandMessages.map(TimelineRenderItem::Message)
+        }
+        bufferedCommandMessages.clear()
+    }
+
+    messages.forEach { message ->
+        if (!isCommandBurstCandidate(message)) {
+            flushBufferedCommandMessages()
+            items += TimelineRenderItem.Message(message)
+            return@forEach
+        }
+
+        val previous = bufferedCommandMessages.lastOrNull()
+        if (previous != null && !canShareCommandBurst(previous, message)) {
+            flushBufferedCommandMessages()
+        }
+        bufferedCommandMessages += message
+    }
+
+    flushBufferedCommandMessages()
+    return items
+}
+
+internal const val COMMAND_BURST_COLLAPSED_VISIBLE_COUNT = 5
+
+private fun isCommandBurstCandidate(message: ChatMessage): Boolean {
+    return message.role == MessageRole.SYSTEM && message.kind == MessageKind.COMMAND_EXECUTION
+}
+
+private fun canShareCommandBurst(previous: ChatMessage, incoming: ChatMessage): Boolean {
+    val previousTurnId = normalizedIdentifier(previous.turnId)
+    val incomingTurnId = normalizedIdentifier(incoming.turnId)
+    if (previousTurnId == null || incomingTurnId == null) {
+        return true
+    }
+    return previousTurnId == incomingTurnId
 }
 
 internal fun buildTurnSectionLabels(messages: List<ChatMessage>): List<TurnSectionLabelUi> {

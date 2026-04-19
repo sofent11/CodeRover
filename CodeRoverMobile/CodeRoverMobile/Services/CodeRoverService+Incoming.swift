@@ -103,13 +103,13 @@ extension CodeRoverService {
                         )
                     } catch {
                         debugRuntimeLog("auto-approve failed method=\(method): \(error.localizedDescription)")
-                        pendingApproval = request
+                        enqueuePendingApproval(request)
                     }
                 }
                 return
             }
 
-            pendingApproval = request
+            enqueuePendingApproval(request)
             return
         }
 
@@ -179,7 +179,7 @@ extension CodeRoverService {
             return
         }
 
-        upsertThread(thread)
+        upsertThread(thread, treatAsServerState: true)
         if activeThreadId == nil {
             activeThreadId = thread.id
         }
@@ -1332,5 +1332,14 @@ extension CodeRoverService {
         }
 
         return ""
+    }
+}
+
+private extension CodeRoverService {
+    func enqueuePendingApproval(_ request: CodeRoverApprovalRequest) {
+        if pendingApprovals.contains(where: { $0.id == request.id }) {
+            return
+        }
+        pendingApprovals.append(request)
     }
 }

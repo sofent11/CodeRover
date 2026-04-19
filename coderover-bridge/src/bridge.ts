@@ -5,6 +5,8 @@ import {
   CodeRoverDesktopRefresher,
   readBridgeConfig,
 } from "./coderover-desktop-refresher";
+import { BridgeKeepAwakeController } from "./bridge-keep-awake";
+import { createBridgeStatusHandler } from "./bridge-status-handler";
 import { createCodexTransport } from "./codex-transport";
 import { printQR } from "./qr";
 import { rememberActiveThread } from "./session-state";
@@ -15,6 +17,7 @@ import { handleDesktopRequest } from "./desktop-handler";
 import { loadOrCreateBridgeDeviceState } from "./secure-device-state";
 import { debugLog } from "./debug-log";
 import { createRuntimeManager } from "./runtime-manager";
+import { updateBridgePreferences } from "./bridge-preferences";
 import {
   buildTransportCandidates,
   startLocalBridgeServer,
@@ -31,6 +34,7 @@ interface BridgeConfigShape {
   refreshCommand: string;
   coderoverBundleId: string;
   coderoverAppPath: string;
+  keepAwakeEnabled: boolean;
   localHost: string;
   localPort: number;
   tailnetUrl: string;
@@ -60,6 +64,18 @@ export function startBridge({
     refreshCommand: config.refreshCommand,
     bundleId: config.coderoverBundleId,
     appPath: config.coderoverAppPath,
+  });
+  const keepAwakeController = new BridgeKeepAwakeController({
+    enabled: config.keepAwakeEnabled,
+  });
+  const handleBridgeStatusRequest = createBridgeStatusHandler({
+    getTrustedDeviceCount: () => Object.keys(loadOrCreateBridgeDeviceState().trustedPhones || {}).length,
+    getKeepAwakeActive: () => keepAwakeController.isActive,
+    updatePreferences: (updates) => {
+      const nextPreferences = updateBridgePreferences(updates);
+      keepAwakeController.setEnabled(nextPreferences.keepAwakeEnabled);
+      return nextPreferences;
+    },
   });
 
   let isShuttingDown = false;
@@ -147,6 +163,9 @@ export function startBridge({
   function handleApplicationMessage(rawMessage: string): void {
     logBridgeFlow("phone->bridge", rawMessage);
     if (handleDesktopRequest(rawMessage, sendApplicationResponse, { env: process.env })) {
+      return;
+    }
+    if (handleBridgeStatusRequest(rawMessage, sendApplicationResponse)) {
       return;
     }
     if (handleThreadContextRequest(rawMessage, sendApplicationResponse)) {
@@ -308,6 +327,7 @@ export function startBridge({
 
   function shutdownBridge(beforeExit: () => void = () => {}): void {
     beforeExit();
+    keepAwakeController.shutdown();
     if (codexRestartTimer) {
       clearTimeout(codexRestartTimer);
       codexRestartTimer = null;

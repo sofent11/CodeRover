@@ -1,6 +1,7 @@
 package com.coderover.android.ui.turn
 
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.background
@@ -37,8 +38,15 @@ import com.coderover.android.R
 import com.coderover.android.data.model.ContextWindowUsage
 import com.coderover.android.data.model.GitDiffTotals
 import com.coderover.android.data.model.GitRepoSyncResult
+import com.coderover.android.data.model.ThreadSummary
 import com.coderover.android.data.model.TurnGitActionKind
 import com.coderover.android.ui.theme.monoFamily
+
+internal enum class TurnThreadProjectAction {
+    HANDOFF,
+    FORK_TO_LOCAL,
+    FORK_TO_WORKTREE,
+}
 
 @Composable
 internal fun TurnTopBarActions(
@@ -46,12 +54,16 @@ internal fun TurnTopBarActions(
     isRestartingDesktopApp: Boolean,
     gitRepoSyncResult: GitRepoSyncResult?,
     gitSyncState: String?,
+    currentThread: ThreadSummary?,
+    canForkToLocal: Boolean,
+    isRunningThreadProjectAction: Boolean,
     isRunningGitAction: Boolean,
     showsDiscardRuntimeChangesAndSync: Boolean,
     contextWindowUsage: ContextWindowUsage?,
     enabled: Boolean,
     onTapDesktopRestart: () -> Unit,
     onShowRepoDiff: () -> Unit,
+    onSelectThreadProjectAction: (TurnThreadProjectAction) -> Unit,
     onSelectGitAction: (TurnGitActionKind) -> Unit,
     onCompactContext: () -> Unit,
 ) {
@@ -99,6 +111,16 @@ internal fun TurnTopBarActions(
             )
         }
 
+        if (currentThread?.cwd != null) {
+            TurnThreadProjectActionsMenu(
+                isManagedWorktreeProject = currentThread.isManagedWorktreeProject,
+                canForkToLocal = canForkToLocal,
+                isRunningAction = isRunningThreadProjectAction,
+                enabled = enabled && !isRunningThreadProjectAction,
+                onSelect = onSelectThreadProjectAction,
+            )
+        }
+
         if (gitRepoSyncResult != null) {
             TurnGitActionsMenu(
                 gitRepoSyncResult = gitRepoSyncResult,
@@ -107,6 +129,74 @@ internal fun TurnTopBarActions(
                 showsDiscardRuntimeChangesAndSync = showsDiscardRuntimeChangesAndSync,
                 enabled = enabled,
                 onSelect = onSelectGitAction,
+            )
+        }
+    }
+}
+
+@Composable
+private fun TurnThreadProjectActionsMenu(
+    isManagedWorktreeProject: Boolean,
+    canForkToLocal: Boolean,
+    isRunningAction: Boolean,
+    enabled: Boolean,
+    onSelect: (TurnThreadProjectAction) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    Box(modifier = Modifier.padding(end = 10.dp)) {
+        IconButton(
+            onClick = { expanded = true },
+            enabled = enabled,
+        ) {
+            if (isRunningAction) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(24.dp),
+                    strokeWidth = 2.dp,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            } else {
+                Icon(
+                    imageVector = Icons.Outlined.MoreVert,
+                    contentDescription = "Project actions",
+                    tint = if (enabled) {
+                        MaterialTheme.colorScheme.onSurface
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                    },
+                    modifier = Modifier.size(24.dp),
+                )
+            }
+        }
+
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+        ) {
+            GitMenuHeader("Project")
+            DropdownMenuItem(
+                text = { Text(if (isManagedWorktreeProject) "Hand Off to Local" else "Hand Off to Worktree") },
+                onClick = {
+                    expanded = false
+                    onSelect(TurnThreadProjectAction.HANDOFF)
+                },
+                enabled = enabled,
+            )
+            GitMenuHeader("Fork")
+            DropdownMenuItem(
+                text = { Text("Fork to Local") },
+                onClick = {
+                    expanded = false
+                    onSelect(TurnThreadProjectAction.FORK_TO_LOCAL)
+                },
+                enabled = enabled && canForkToLocal,
+            )
+            DropdownMenuItem(
+                text = { Text("Fork to Worktree") },
+                onClick = {
+                    expanded = false
+                    onSelect(TurnThreadProjectAction.FORK_TO_WORKTREE)
+                },
+                enabled = enabled,
             )
         }
     }

@@ -224,6 +224,11 @@ enum TurnComposerCommandLogic {
 @MainActor
 @Observable
 final class TurnViewModel {
+    enum GitBranchUserOperation: Equatable {
+        case create(String)
+        case switchTo(String)
+    }
+
     // Preserves the exact composer payload + raw chips so stale-busy recovery can retry cleanly.
     private struct PendingTurnSend {
         let payload: String
@@ -278,6 +283,9 @@ final class TurnViewModel {
     var selectedGitBaseBranch = ""
     var currentGitBranch = ""
     var availableGitBranchTargets: [String] = []
+    var gitBranchesCheckedOutElsewhere: Set<String> = []
+    var gitWorktreePathsByBranch: [String: String] = [:]
+    var gitLocalCheckoutPath: String?
     var gitDefaultBranch = ""
     var gitRepoSync: GitRepoSyncResult? = nil
     var gitSyncState: String? { gitRepoSync?.state }
@@ -305,6 +313,7 @@ final class TurnViewModel {
     @ObservationIgnored var fileAutocompleteDebounceTask: Task<Void, Never>?
     @ObservationIgnored var skillAutocompleteDebounceTask: Task<Void, Never>?
     @ObservationIgnored private var gitStatusRefreshTask: Task<Void, Never>?
+    @ObservationIgnored private var pendingGitBranchOperation: GitBranchUserOperation?
     @ObservationIgnored private var cachedSkillSearchIndexByRoot: [String: [TurnSkillSearchIndexEntry]] = [:]
     @ObservationIgnored var unsupportedSkillsAutocompleteRoots: Set<String> = []
 
@@ -1960,16 +1969,7 @@ final class TurnViewModel {
             let gitService = GitActionsService(coderover: coderover, workingDirectory: workingDirectory)
             do {
                 let result = try await gitService.branchesWithStatus()
-                availableGitBranchTargets = result.branches
-                if let current = result.currentBranch, !current.isEmpty {
-                    currentGitBranch = current
-                }
-                if let defaultBranch = result.defaultBranch, !defaultBranch.isEmpty {
-                    gitDefaultBranch = defaultBranch
-                    if selectedGitBaseBranch.isEmpty {
-                        selectedGitBaseBranch = defaultBranch
-                    }
-                }
+                applyGitBranchTargets(result)
                 if let status = result.status {
                     applyObservedGitRepoSync(
                         status,
@@ -1980,6 +1980,87 @@ final class TurnViewModel {
                 }
             } catch {
                 // Silently fail — branches will just be empty
+            }
+        }
+    }
+
+    func requestCreateGitBranch(
+        named rawName: String,
+        coderover: CodeRoverService,
+        workingDirectory: String?,
+        threadID: String,
+        activeTurnID: String?
+    ) {
+        let branchName = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !branchName.isEmpty else { return }
+
+        let operation = GitBranchUserOperation.create(branchName)
+        if let alert = gitBranchAlert(for: operation) {
+            pendingGitBranchOperation = operation
+            gitSyncAlert = alert
+            return
+        }
+
+        createGitBranch(
+            named: branchName,
+            coderover: coderover,
+            workingDirectory: workingDirectory,
+            threadID: threadID,
+            activeTurnID: activeTurnID
+        )
+    }
+
+    func createGitBranch(
+        named rawName: String,
+        coderover: CodeRoverService,
+        workingDirectory: String?,
+        threadID: String,
+        activeTurnID: String?
+    ) {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            guard activeTurnID == nil,
+                  !coderover.runningThreadIDs.contains(threadID),
+                  !self.isRunningGitAction,
+                  !self.isSwitchingGitBranch else { return }
+
+            let branchName = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !branchName.isEmpty else { return }
+
+            self.isSwitchingGitBranch = true
+            defer { self.isSwitchingGitBranch = false }
+
+            let gitService = GitActionsService(coderover: coderover, workingDirectory: workingDirectory)
+            do {
+                let createResult = try await gitService.createBranch(name: branchName)
+                currentGitBranch = createResult.branch
+                if let status = createResult.status {
+                    applyGitRepoSync(status)
+                }
+            } catch let error as GitActionsError {
+                gitSyncAlert = TurnGitSyncAlert(
+                    title: "Branch Creation Failed",
+                    message: error.errorDescription ?? "Could not create branch.",
+                    action: .dismissOnly
+                )
+                return
+            } catch {
+                gitSyncAlert = TurnGitSyncAlert(
+                    title: "Branch Creation Failed",
+                    message: error.localizedDescription,
+                    action: .dismissOnly
+                )
+                return
+            }
+
+            do {
+                let branchesResult = try await gitService.branchesWithStatus()
+                applyGitBranchTargets(branchesResult)
+                if let status = branchesResult.status {
+                    applyGitRepoSync(status)
+                }
+            } catch {
+                availableGitBranchTargets = Array(Set(availableGitBranchTargets + [branchName])).sorted()
             }
         }
     }
@@ -2011,6 +2092,42 @@ final class TurnViewModel {
         }
     }
 
+    func requestSwitchGitBranch(
+        to branch: String,
+        coderover: CodeRoverService,
+        workingDirectory: String?,
+        threadID: String,
+        activeTurnID: String?
+    ) {
+        let trimmedBranch = branch.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedBranch.isEmpty else { return }
+
+        if gitBranchesCheckedOutElsewhere.contains(trimmedBranch),
+           gitWorktreePathsByBranch[trimmedBranch] == nil {
+            gitSyncAlert = TurnGitSyncAlert(
+                title: "Branch Switch Failed",
+                message: "Cannot switch branches: this branch is already open in another worktree.",
+                action: .dismissOnly
+            )
+            return
+        }
+
+        let operation = GitBranchUserOperation.switchTo(trimmedBranch)
+        if let alert = gitBranchAlert(for: operation) {
+            pendingGitBranchOperation = operation
+            gitSyncAlert = alert
+            return
+        }
+
+        switchGitBranch(
+            to: trimmedBranch,
+            coderover: coderover,
+            workingDirectory: workingDirectory,
+            threadID: threadID,
+            activeTurnID: activeTurnID
+        )
+    }
+
     func switchGitBranch(
         to branch: String,
         coderover: CodeRoverService,
@@ -2024,6 +2141,16 @@ final class TurnViewModel {
                   !coderover.runningThreadIDs.contains(threadID),
                   !self.isRunningGitAction,
                   !self.isSwitchingGitBranch else { return }
+
+            if gitBranchesCheckedOutElsewhere.contains(branch),
+               gitWorktreePathsByBranch[branch] == nil {
+                gitSyncAlert = TurnGitSyncAlert(
+                    title: "Branch Switch Failed",
+                    message: "Cannot switch branches: this branch is already open in another worktree.",
+                    action: .dismissOnly
+                )
+                return
+            }
 
             self.isSwitchingGitBranch = true
             defer { self.isSwitchingGitBranch = false }
@@ -2053,10 +2180,85 @@ final class TurnViewModel {
         selectedGitBaseBranch = branch
     }
 
+    func gitBranchAlert(for operation: GitBranchUserOperation) -> TurnGitSyncAlert? {
+        let currentBranch = currentGitBranch.trimmingCharacters(in: .whitespacesAndNewlines)
+        let defaultBranch = gitDefaultBranch.trimmingCharacters(in: .whitespacesAndNewlines)
+        let isDirty = gitRepoSync?.isDirty ?? false
+        let localOnlyCommitCount = gitRepoSync?.localOnlyCommitCount ?? 0
+        let dirtyFiles = gitRepoSync?.files ?? []
+
+        switch operation {
+        case .create(let branchName):
+            if isDirty {
+                let previewFiles = Array(dirtyFiles.prefix(3)).map(\.path)
+                let fileLines = previewFiles.map { "• \($0)" }.joined(separator: "\n")
+                let remainingCount = dirtyFiles.count - previewFiles.count
+                let overflowLine = remainingCount > 0 ? "\n• +\(remainingCount) more files" : ""
+                let intro = "You're creating '\(branchName)' from \(currentBranch.isEmpty ? "the current branch" : currentBranch). Carry your local changes onto the new branch, or commit first and then create + switch."
+                let message: String
+                if fileLines.isEmpty {
+                    message = intro
+                } else {
+                    message = "\(intro)\n\nFiles with local changes:\n\(fileLines)\(overflowLine)"
+                }
+                return TurnGitSyncAlert(
+                    title: "Bring local changes to '\(branchName)'?",
+                    message: message,
+                    buttons: [
+                        TurnGitSyncAlertButton(title: "Cancel", role: .cancel, action: .dismissOnly),
+                        TurnGitSyncAlertButton(title: "Create Anyway", role: nil, action: .continueGitBranchOperation),
+                        TurnGitSyncAlertButton(
+                            title: "Commit & Continue",
+                            role: nil,
+                            action: .commitAndContinueGitBranchOperation
+                        ),
+                    ]
+                )
+            }
+
+            if !currentBranch.isEmpty,
+               currentBranch == defaultBranch,
+               !defaultBranch.isEmpty,
+               localOnlyCommitCount > 0 {
+                let commitLabel = localOnlyCommitCount == 1 ? "1 local commit" : "\(localOnlyCommitCount) local commits"
+                return TurnGitSyncAlert(
+                    title: "Local commits stay on \(defaultBranch)",
+                    message: "\(defaultBranch) already has \(commitLabel) that are not on the remote. Creating '\(branchName)' now starts the new branch from the current HEAD, but those commits stay in \(defaultBranch)'s history.",
+                    buttons: [
+                        TurnGitSyncAlertButton(title: "Cancel", role: .cancel, action: .dismissOnly),
+                        TurnGitSyncAlertButton(title: "Create Anyway", role: nil, action: .continueGitBranchOperation),
+                    ]
+                )
+            }
+
+            return nil
+
+        case .switchTo:
+            return nil
+        }
+    }
+
     func applyGitRepoSync(_ result: GitRepoSyncResult) {
         gitRepoSync = result
         if let branch = result.currentBranch, !branch.isEmpty {
             currentGitBranch = branch
+        }
+    }
+
+    func applyGitBranchTargets(_ result: GitBranchesWithStatusResult) {
+        availableGitBranchTargets = result.branches
+        gitBranchesCheckedOutElsewhere = result.branchesCheckedOutElsewhere
+        gitWorktreePathsByBranch = result.worktreePathByBranch
+        gitLocalCheckoutPath = ConversationThreadStartProjectBinding.normalizedProjectPath(result.localCheckoutPath)
+        if let current = result.currentBranch, !current.isEmpty {
+            currentGitBranch = current
+        }
+        if let defaultBranch = result.defaultBranch, !defaultBranch.isEmpty {
+            gitDefaultBranch = defaultBranch
+            if selectedGitBaseBranch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                || !result.branches.contains(selectedGitBaseBranch) {
+                selectedGitBaseBranch = result.branches.contains(defaultBranch) ? defaultBranch : (result.branches.first ?? defaultBranch)
+            }
         }
     }
 
@@ -2122,6 +2324,7 @@ final class TurnViewModel {
 
     func dismissGitSyncAlert() {
         gitSyncAlert = nil
+        pendingGitBranchOperation = nil
     }
 
     func confirmGitSyncAlertAction(
@@ -2132,7 +2335,77 @@ final class TurnViewModel {
         activeTurnID: String?
     ) {
         gitSyncAlert = nil
-        guard alertAction == .pullRebase else { return }
+        let pendingBranchOperation = pendingGitBranchOperation
+        pendingGitBranchOperation = nil
+
+        switch alertAction {
+        case .dismissOnly:
+            return
+        case .pullRebase:
+            break
+        case .continueGitBranchOperation:
+            guard let pendingBranchOperation else { return }
+            switch pendingBranchOperation {
+            case .create(let branchName):
+                createGitBranch(
+                    named: branchName,
+                    coderover: coderover,
+                    workingDirectory: workingDirectory,
+                    threadID: threadID,
+                    activeTurnID: activeTurnID
+                )
+            case .switchTo(let branchName):
+                switchGitBranch(
+                    to: branchName,
+                    coderover: coderover,
+                    workingDirectory: workingDirectory,
+                    threadID: threadID,
+                    activeTurnID: activeTurnID
+                )
+            }
+            return
+        case .commitAndContinueGitBranchOperation:
+            guard case .create(let branchName) = pendingBranchOperation else { return }
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                let gitService = GitActionsService(coderover: coderover, workingDirectory: workingDirectory)
+                do {
+                    _ = try await gitService.commit(message: nil)
+                    createGitBranch(
+                        named: branchName,
+                        coderover: coderover,
+                        workingDirectory: workingDirectory,
+                        threadID: threadID,
+                        activeTurnID: activeTurnID
+                    )
+                } catch let error as GitActionsError {
+                    if case .bridgeError(let code, _) = error, code == "nothing_to_commit" {
+                        createGitBranch(
+                            named: branchName,
+                            coderover: coderover,
+                            workingDirectory: workingDirectory,
+                            threadID: threadID,
+                            activeTurnID: activeTurnID
+                        )
+                    } else {
+                        gitSyncAlert = TurnGitSyncAlert(
+                            title: "Commit Failed",
+                            message: error.errorDescription ?? "Could not commit local changes.",
+                            action: .dismissOnly
+                        )
+                    }
+                } catch {
+                    gitSyncAlert = TurnGitSyncAlert(
+                        title: "Commit Failed",
+                        message: error.localizedDescription,
+                        action: .dismissOnly
+                    )
+                }
+            }
+            return
+        case .discardRuntimeChanges:
+            return
+        }
 
         Task { @MainActor [weak self] in
             guard let self else { return }

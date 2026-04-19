@@ -12,6 +12,206 @@ private enum TurnAutoScrollMode {
     case manual
 }
 
+private struct TurnTimelineCommandBurstGroup: Identifiable, Equatable {
+    static let collapsedVisibleCount = 5
+
+    let id: String
+    let messages: [ChatMessage]
+
+    init(messages: [ChatMessage]) {
+        self.messages = messages
+        self.id = "command-burst:\(messages.first?.id ?? "unknown")"
+    }
+
+    var pinnedMessages: [ChatMessage] {
+        Array(messages.prefix(Self.collapsedVisibleCount))
+    }
+
+    var overflowMessages: [ChatMessage] {
+        Array(messages.dropFirst(Self.collapsedVisibleCount))
+    }
+
+    var hiddenCount: Int {
+        overflowMessages.count
+    }
+}
+
+private enum TurnTimelineRenderItem: Identifiable, Equatable {
+    case message(ChatMessage)
+    case commandBurst(TurnTimelineCommandBurstGroup)
+
+    var id: String {
+        switch self {
+        case .message(let message):
+            return message.id
+        case .commandBurst(let group):
+            return group.id
+        }
+    }
+}
+
+private enum TurnTimelineRenderProjection {
+    static func project(messages: [ChatMessage]) -> [TurnTimelineRenderItem] {
+        var items: [TurnTimelineRenderItem] = []
+        var bufferedCommandMessages: [ChatMessage] = []
+
+        func flushBufferedCommandMessages() {
+            guard !bufferedCommandMessages.isEmpty else { return }
+            if bufferedCommandMessages.count > TurnTimelineCommandBurstGroup.collapsedVisibleCount {
+                items.append(.commandBurst(TurnTimelineCommandBurstGroup(messages: bufferedCommandMessages)))
+            } else {
+                items.append(contentsOf: bufferedCommandMessages.map(TurnTimelineRenderItem.message))
+            }
+            bufferedCommandMessages.removeAll(keepingCapacity: true)
+        }
+
+        for message in messages {
+            guard isCommandBurstCandidate(message) else {
+                flushBufferedCommandMessages()
+                items.append(.message(message))
+                continue
+            }
+
+            if let previous = bufferedCommandMessages.last,
+               !canShareCommandBurst(previous: previous, incoming: message) {
+                flushBufferedCommandMessages()
+            }
+
+            bufferedCommandMessages.append(message)
+        }
+
+        flushBufferedCommandMessages()
+        return items
+    }
+
+    private static func isCommandBurstCandidate(_ message: ChatMessage) -> Bool {
+        message.role == .system && message.kind == .commandExecution
+    }
+
+    private static func canShareCommandBurst(previous: ChatMessage, incoming: ChatMessage) -> Bool {
+        let previousTurnID = normalizedIdentifier(previous.turnId)
+        let incomingTurnID = normalizedIdentifier(incoming.turnId)
+
+        guard let previousTurnID, let incomingTurnID else {
+            return true
+        }
+
+        return previousTurnID == incomingTurnID
+    }
+
+    private static func normalizedIdentifier(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
+    }
+}
+
+private struct TurnTimelineMessageRow: View {
+    let message: ChatMessage
+    let isRetryAvailable: Bool
+    let assistantRevertStatesByMessageID: [String: AssistantRevertPresentation]
+    let cachedBlockInfoByMessageID: [String: String]
+    let cachedAggregatedFileChangePresentationByMessageID: [String: FileChangeBlockPresentation]
+    let suppressedFileChangeActionMessageIDs: Set<String>
+    let cachedLastFileChangeMessageID: String?
+    let isScrolledToBottom: Bool
+    let onRetryUserMessage: (String) -> Void
+    let onTapAssistantRevert: (ChatMessage) -> Void
+    let onTapSubagent: (CodeRoverSubagentThreadPresentation) -> Void
+
+    var body: some View {
+        MessageRow(
+            message: message,
+            isRetryAvailable: isRetryAvailable,
+            onRetryUserMessage: onRetryUserMessage,
+            assistantRevertPresentation: assistantRevertStatesByMessageID[message.id],
+            copyBlockText: cachedBlockInfoByMessageID[message.id],
+            aggregatedFileChangePresentation: cachedAggregatedFileChangePresentationByMessageID[message.id],
+            suppressFileChangeActions: suppressedFileChangeActionMessageIDs.contains(message.id),
+            showInlineCommit: message.id == cachedLastFileChangeMessageID,
+            showsStreamingAnimations: isScrolledToBottom
+        )
+        .equatable()
+        .environment(\.assistantRevertAction, onTapAssistantRevert)
+        .environment(\.subagentOpenAction, onTapSubagent)
+        .id(message.id)
+    }
+}
+
+private struct TurnTimelineCommandBurstView: View {
+    let group: TurnTimelineCommandBurstGroup
+    let isRetryAvailable: Bool
+    let assistantRevertStatesByMessageID: [String: AssistantRevertPresentation]
+    let cachedBlockInfoByMessageID: [String: String]
+    let cachedAggregatedFileChangePresentationByMessageID: [String: FileChangeBlockPresentation]
+    let suppressedFileChangeActionMessageIDs: Set<String>
+    let cachedLastFileChangeMessageID: String?
+    let isScrolledToBottom: Bool
+    let onRetryUserMessage: (String) -> Void
+    let onTapAssistantRevert: (ChatMessage) -> Void
+    let onTapSubagent: (CodeRoverSubagentThreadPresentation) -> Void
+
+    @State private var isExpanded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ForEach(group.pinnedMessages) { message in
+                TurnTimelineMessageRow(
+                    message: message,
+                    isRetryAvailable: isRetryAvailable,
+                    assistantRevertStatesByMessageID: assistantRevertStatesByMessageID,
+                    cachedBlockInfoByMessageID: cachedBlockInfoByMessageID,
+                    cachedAggregatedFileChangePresentationByMessageID: cachedAggregatedFileChangePresentationByMessageID,
+                    suppressedFileChangeActionMessageIDs: suppressedFileChangeActionMessageIDs,
+                    cachedLastFileChangeMessageID: cachedLastFileChangeMessageID,
+                    isScrolledToBottom: isScrolledToBottom,
+                    onRetryUserMessage: onRetryUserMessage,
+                    onTapAssistantRevert: onTapAssistantRevert,
+                    onTapSubagent: onTapSubagent
+                )
+            }
+
+            if group.hiddenCount > 0 {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.18)) {
+                        isExpanded.toggle()
+                    }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "chevron.right")
+                            .font(AppFont.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                            .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                        Text("+\(group.hiddenCount) command steps")
+                            .font(AppFont.subheadline(weight: .medium))
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+
+            if isExpanded {
+                ForEach(group.overflowMessages) { message in
+                    TurnTimelineMessageRow(
+                        message: message,
+                        isRetryAvailable: isRetryAvailable,
+                        assistantRevertStatesByMessageID: assistantRevertStatesByMessageID,
+                        cachedBlockInfoByMessageID: cachedBlockInfoByMessageID,
+                        cachedAggregatedFileChangePresentationByMessageID: cachedAggregatedFileChangePresentationByMessageID,
+                        suppressedFileChangeActionMessageIDs: suppressedFileChangeActionMessageIDs,
+                        cachedLastFileChangeMessageID: cachedLastFileChangeMessageID,
+                        isScrolledToBottom: isScrolledToBottom,
+                        onRetryUserMessage: onRetryUserMessage,
+                        onTapAssistantRevert: onTapAssistantRevert,
+                        onTapSubagent: onTapSubagent
+                    )
+                }
+            }
+        }
+    }
+}
+
 struct TurnTimelineView<EmptyState: View, Composer: View>: View {
     let threadID: String
     let messages: [ChatMessage]
@@ -46,6 +246,8 @@ struct TurnTimelineView<EmptyState: View, Composer: View>: View {
     @State private var viewportHeight: CGFloat = 0
     // Cached per-render artifacts to avoid O(n) recomputation inside the body.
     @State private var cachedBlockInfoByMessageID: [String: String] = [:]
+    @State private var cachedAggregatedFileChangePresentationByMessageID: [String: FileChangeBlockPresentation] = [:]
+    @State private var suppressedFileChangeActionMessageIDs: Set<String> = []
     @State private var cachedLastFileChangeMessageID: String? = nil
     @State private var blockInfoInputKey: Int = 0
     @State private var scrollSessionThreadID: String?
@@ -58,6 +260,10 @@ struct TurnTimelineView<EmptyState: View, Composer: View>: View {
     private var visibleMessages: ArraySlice<ChatMessage> {
         let startIndex = max(messages.count - visibleTailCount, 0)
         return messages[startIndex...]
+    }
+
+    private var visibleRenderItems: [TurnTimelineRenderItem] {
+        TurnTimelineRenderProjection.project(messages: Array(visibleMessages))
     }
 
     private var hasEarlierMessages: Bool {
@@ -127,20 +333,37 @@ struct TurnTimelineView<EmptyState: View, Composer: View>: View {
                                 .buttonStyle(.plain)
                             }
 
-                            ForEach(visibleMessages) { message in
-                                MessageRow(
-                                    message: message,
-                                    isRetryAvailable: isRetryAvailable,
-                                    onRetryUserMessage: onRetryUserMessage,
-                                    assistantRevertPresentation: assistantRevertStatesByMessageID[message.id],
-                                    copyBlockText: cachedBlockInfoByMessageID[message.id],
-                                    showInlineCommit: message.id == cachedLastFileChangeMessageID,
-                                    showsStreamingAnimations: isScrolledToBottom
-                                )
-                                .equatable()
-                                .environment(\.assistantRevertAction, onTapAssistantRevert)
-                                .environment(\.subagentOpenAction, onTapSubagent)
-                                .id(message.id)
+                            ForEach(visibleRenderItems) { item in
+                                switch item {
+                                case .message(let message):
+                                    TurnTimelineMessageRow(
+                                        message: message,
+                                        isRetryAvailable: isRetryAvailable,
+                                        assistantRevertStatesByMessageID: assistantRevertStatesByMessageID,
+                                        cachedBlockInfoByMessageID: cachedBlockInfoByMessageID,
+                                        cachedAggregatedFileChangePresentationByMessageID: cachedAggregatedFileChangePresentationByMessageID,
+                                        suppressedFileChangeActionMessageIDs: suppressedFileChangeActionMessageIDs,
+                                        cachedLastFileChangeMessageID: cachedLastFileChangeMessageID,
+                                        isScrolledToBottom: isScrolledToBottom,
+                                        onRetryUserMessage: onRetryUserMessage,
+                                        onTapAssistantRevert: onTapAssistantRevert,
+                                        onTapSubagent: onTapSubagent
+                                    )
+                                case .commandBurst(let group):
+                                    TurnTimelineCommandBurstView(
+                                        group: group,
+                                        isRetryAvailable: isRetryAvailable,
+                                        assistantRevertStatesByMessageID: assistantRevertStatesByMessageID,
+                                        cachedBlockInfoByMessageID: cachedBlockInfoByMessageID,
+                                        cachedAggregatedFileChangePresentationByMessageID: cachedAggregatedFileChangePresentationByMessageID,
+                                        suppressedFileChangeActionMessageIDs: suppressedFileChangeActionMessageIDs,
+                                        cachedLastFileChangeMessageID: cachedLastFileChangeMessageID,
+                                        isScrolledToBottom: isScrolledToBottom,
+                                        onRetryUserMessage: onRetryUserMessage,
+                                        onTapAssistantRevert: onTapAssistantRevert,
+                                        onTapSubagent: onTapSubagent
+                                    )
+                                }
                             }
                         }
                         .padding(.horizontal, 16)
@@ -261,6 +484,9 @@ struct TurnTimelineView<EmptyState: View, Composer: View>: View {
                 return (message.id, blockText)
             }
         )
+        let aggregatedFileChangeInfo = Self.aggregatedFileChangeInfo(for: visible)
+        cachedAggregatedFileChangePresentationByMessageID = aggregatedFileChangeInfo.presentationByMessageID
+        suppressedFileChangeActionMessageIDs = aggregatedFileChangeInfo.suppressedMessageIDs
         cachedLastFileChangeMessageID = !isThreadRunning
             ? visible.last(where: { $0.role == .system && $0.kind == .fileChange })?.id
             : nil
@@ -554,6 +780,49 @@ struct TurnTimelineView<EmptyState: View, Composer: View>: View {
             i = blockStart - 1
         }
         return result
+    }
+
+    private static func aggregatedFileChangeInfo(
+        for messages: [ChatMessage]
+    ) -> (
+        presentationByMessageID: [String: FileChangeBlockPresentation],
+        suppressedMessageIDs: Set<String>
+    ) {
+        guard !messages.isEmpty else {
+            return ([:], [])
+        }
+
+        var presentationByMessageID: [String: FileChangeBlockPresentation] = [:]
+        var suppressedMessageIDs: Set<String> = []
+        var index = 0
+
+        while index < messages.count {
+            if messages[index].role == .user {
+                index += 1
+                continue
+            }
+
+            let blockStart = index
+            var blockEnd = index
+            while blockEnd + 1 < messages.count, messages[blockEnd + 1].role != .user {
+                blockEnd += 1
+            }
+
+            let stableFileChangeMessages = Array(messages[blockStart...blockEnd].filter {
+                $0.role == .system && $0.kind == .fileChange && !$0.isStreaming
+            })
+            if let lastFileChangeMessage = stableFileChangeMessages.last,
+               let presentation = FileChangeBlockPresentationBuilder.build(from: stableFileChangeMessages) {
+                presentationByMessageID[lastFileChangeMessage.id] = presentation
+                for message in stableFileChangeMessages.dropLast() {
+                    suppressedMessageIDs.insert(message.id)
+                }
+            }
+
+            index = blockEnd + 1
+        }
+
+        return (presentationByMessageID, suppressedMessageIDs)
     }
 
     // Keeps Copy aligned with real run completion instead of per-message streaming heuristics.

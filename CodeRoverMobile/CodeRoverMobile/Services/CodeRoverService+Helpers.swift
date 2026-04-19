@@ -54,8 +54,12 @@ extension CodeRoverService {
         return newThread.id
     }
 
-    func upsertThread(_ thread: ConversationThread) {
-        let resolvedThread = mergedThread(thread, with: self.thread(for: thread.id))
+    func upsertThread(_ thread: ConversationThread, treatAsServerState: Bool = false) {
+        let resolvedThread = mergedThread(
+            thread,
+            with: self.thread(for: thread.id),
+            treatAsServerState: treatAsServerState
+        )
         let derivedIdentity = resolvedThread.derivedSubagentIdentity
         upsertSubagentIdentity(
             threadId: resolvedThread.id,
@@ -73,9 +77,16 @@ extension CodeRoverService {
         threads = sortThreads(threads)
     }
 
-    func mergedThread(_ incoming: ConversationThread, with existing: ConversationThread?) -> ConversationThread {
+    func mergedThread(
+        _ incoming: ConversationThread,
+        with existing: ConversationThread?,
+        treatAsServerState: Bool = false
+    ) -> ConversationThread {
         guard let existing else {
-            return incoming
+            return applyingAuthoritativeProjectPath(
+                to: incoming,
+                treatAsServerState: treatAsServerState
+            )
         }
 
         var merged = incoming
@@ -97,7 +108,10 @@ extension CodeRoverService {
         if merged.agentRole == nil { merged.agentRole = existing.agentRole }
         if merged.model == nil { merged.model = existing.model }
         if merged.modelProvider == nil { merged.modelProvider = existing.modelProvider }
-        return merged
+        return applyingAuthoritativeProjectPath(
+            to: merged,
+            treatAsServerState: treatAsServerState
+        )
     }
 
     func registerSubagentThreads(action: CodeRoverSubagentAction, parentThreadId: String) {

@@ -385,9 +385,30 @@ internal fun TurnComposerView(
             onCheckoutGitBranch = { branch ->
                 val currentCwdLocal = state.selectedThread?.cwd
                 if (currentCwdLocal != null) {
-                    coroutineScope.launch {
-                        viewModel.checkoutGitBranch(currentCwdLocal, branch)
-                        viewModel.gitBranchesWithStatus(currentCwdLocal)
+                    val branchTargets = state.gitBranchTargets
+                    val normalizedCurrentPath = normalizedProjectPath(state.selectedThread?.normalizedProjectPath)
+                    val normalizedWorktreePath = normalizedProjectPath(branchTargets?.worktreePathByBranch?.get(branch))
+                    val existingWorktreeThread = normalizedWorktreePath?.let { projectPath ->
+                        viewModel.findLiveThreadForProjectPath(projectPath, state.selectedThreadId)
+                    }
+                    val isCheckedOutElsewhereWithoutThread = branchTargets?.branchesCheckedOutElsewhere?.contains(branch) == true &&
+                        normalizedWorktreePath == null
+
+                    if (normalizedWorktreePath != null && normalizedWorktreePath != normalizedCurrentPath) {
+                        if (existingWorktreeThread != null) {
+                            turnViewModel.setComposerNotice("Opened the existing worktree chat for $branch.")
+                            viewModel.selectThread(existingWorktreeThread.id)
+                        } else {
+                            turnViewModel.setComposerNotice("This branch is already checked out in another worktree.")
+                        }
+                    } else if (isCheckedOutElsewhereWithoutThread) {
+                        turnViewModel.setComposerNotice("This branch is already open in another worktree.")
+                    } else {
+                        coroutineScope.launch {
+                            turnViewModel.setComposerNotice(null)
+                            viewModel.checkoutGitBranch(currentCwdLocal, branch)
+                            viewModel.gitBranchesWithStatus(currentCwdLocal)
+                        }
                     }
                 }
             },
@@ -398,6 +419,10 @@ internal fun TurnComposerView(
             },
         )
     }
+}
+
+private fun normalizedProjectPath(path: String?): String? {
+    return path?.trim()?.trimEnd('/')?.takeIf(String::isNotEmpty)
 }
 
 @Composable

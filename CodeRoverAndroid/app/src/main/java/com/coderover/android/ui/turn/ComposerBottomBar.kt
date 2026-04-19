@@ -602,6 +602,8 @@ private fun BranchSelectorChip(
     if (turnViewModel.gitMenuExpanded) {
         BranchSelectorSheet(
             branches = branches,
+            branchesCheckedOutElsewhere = branchTargets.branchesCheckedOutElsewhere,
+            worktreePathByBranch = branchTargets.worktreePathByBranch,
             currentBranch = currentBranch,
             selectedBaseBranch = selectedBaseBranch,
             defaultBranch = defaultBranch,
@@ -624,6 +626,8 @@ private fun BranchSelectorChip(
 @Composable
 private fun BranchSelectorSheet(
     branches: List<String>,
+    branchesCheckedOutElsewhere: Set<String>,
+    worktreePathByBranch: Map<String, String>,
     currentBranch: String,
     selectedBaseBranch: String,
     defaultBranch: String?,
@@ -673,15 +677,22 @@ private fun BranchSelectorSheet(
                     BranchSelectorSection(
                         title = "Current branch",
                         branches = prioritizedBranches,
+                        branchesCheckedOutElsewhere = branchesCheckedOutElsewhere,
+                        worktreePathByBranch = worktreePathByBranch,
                         selectedBranch = currentBranch,
                         defaultBranch = defaultBranch,
                         isEnabled = isEnabled,
-                        disableBranch = { branch -> branch == currentBranch },
+                        disableBranch = { branch ->
+                            branch == currentBranch ||
+                                (branch in branchesCheckedOutElsewhere && branch !in worktreePathByBranch)
+                        },
                         onSelect = onSelectCurrentBranch,
                     )
                     BranchSelectorSection(
                         title = "PR target",
                         branches = prioritizedBranches,
+                        branchesCheckedOutElsewhere = branchesCheckedOutElsewhere,
+                        worktreePathByBranch = worktreePathByBranch,
                         selectedBranch = selectedBaseBranch,
                         defaultBranch = defaultBranch,
                         isEnabled = isEnabled,
@@ -723,6 +734,8 @@ private fun BranchSelectorSheet(
 private fun BranchSelectorSection(
     title: String,
     branches: List<String>,
+    branchesCheckedOutElsewhere: Set<String>,
+    worktreePathByBranch: Map<String, String>,
     selectedBranch: String,
     defaultBranch: String?,
     isEnabled: Boolean,
@@ -744,6 +757,11 @@ private fun BranchSelectorSection(
                 branches.forEachIndexed { index, branch ->
                     BranchSelectorRow(
                         title = branchLabel(branch, defaultBranch),
+                        badge = when {
+                            branch !in branchesCheckedOutElsewhere -> null
+                            branch in worktreePathByBranch -> "Worktree"
+                            else -> "Open elsewhere"
+                        },
                         selected = branch == selectedBranch,
                         enabled = isEnabled && !disableBranch(branch),
                         showDivider = index < branches.lastIndex,
@@ -758,6 +776,7 @@ private fun BranchSelectorSection(
 @Composable
 private fun BranchSelectorRow(
     title: String,
+    badge: String?,
     selected: Boolean,
     enabled: Boolean,
     showDivider: Boolean,
@@ -790,7 +809,17 @@ private fun BranchSelectorRow(
                 } else {
                     MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)
                 },
+                modifier = Modifier.padding(end = 8.dp),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
+            if (badge != null) {
+                Text(
+                    text = badge,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
         if (showDivider) {
             HorizontalDivider(

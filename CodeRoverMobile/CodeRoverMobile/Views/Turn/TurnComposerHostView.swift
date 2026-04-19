@@ -25,6 +25,7 @@ struct TurnComposerHostView: View {
     let showsGitControls: Bool
     let isGitBranchSelectorEnabled: Bool
     let onSelectGitBranch: (String) -> Void
+    let onCreateGitBranch: (String) -> Void
     let onRefreshGitBranches: () -> Void
     let onShowStatus: () -> Void
     let onReconnect: () -> Void
@@ -84,12 +85,15 @@ struct TurnComposerHostView: View {
             showsGitBranchSelector: showsGitControls,
             isGitBranchSelectorEnabled: isGitBranchSelectorEnabled,
             availableGitBranchTargets: viewModel.availableGitBranchTargets,
+            gitBranchesCheckedOutElsewhere: viewModel.gitBranchesCheckedOutElsewhere,
+            gitWorktreePathsByBranch: viewModel.gitWorktreePathsByBranch,
             selectedGitBaseBranch: viewModel.selectedGitBaseBranch,
             currentGitBranch: viewModel.currentGitBranch,
             gitDefaultBranch: viewModel.gitDefaultBranch,
             isLoadingGitBranchTargets: viewModel.isLoadingGitBranchTargets,
             isSwitchingGitBranch: viewModel.isSwitchingGitBranch,
             onSelectGitBranch: onSelectGitBranch,
+            onCreateGitBranch: onCreateGitBranch,
             onSelectGitBaseBranch: viewModel.selectGitBaseBranch,
             onRefreshGitBranches: onRefreshGitBranches,
             onReconnect: onReconnect,

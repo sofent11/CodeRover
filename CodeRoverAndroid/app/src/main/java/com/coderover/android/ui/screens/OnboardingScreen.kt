@@ -95,7 +95,7 @@ fun OnboardingScreen(onContinue: () -> Unit) {
             Text("CodeRover", style = MaterialTheme.typography.headlineMedium)
             Spacer(Modifier.height(8.dp))
             Text(
-                "Control CodeRover from your Android phone.",
+                "Run CodeRover on your Mac, then keep it in reach from your Android phone.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,
@@ -107,9 +107,23 @@ fun OnboardingScreen(onContinue: () -> Unit) {
                 modifier = Modifier.fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
-                OnboardingStep(number = "1", title = "Install the package", command = "bun add -g coderover")
-                OnboardingStep(number = "2", title = "Start the bridge", command = "coderover up")
-                OnboardingStep(number = "3", title = "Scan the QR code")
+                OnboardingStep(
+                    number = "1",
+                    title = "Install the local bridge",
+                    subtitle = "Keep the runtime on your Mac and give this phone a secure local path in.",
+                    command = "bun add -g coderover"
+                )
+                OnboardingStep(
+                    number = "2",
+                    title = "Start CodeRover on your Mac",
+                    subtitle = "Launch the bridge locally so Android can pair over QR.",
+                    command = "coderover up"
+                )
+                OnboardingStep(
+                    number = "3",
+                    title = "Scan the pairing QR",
+                    subtitle = "That links Android to your Mac without moving chats or code to a hosted service."
+                )
             }
 
             Spacer(Modifier.height(40.dp))
@@ -127,7 +141,7 @@ fun OnboardingScreen(onContinue: () -> Unit) {
             ) {
                 Icon(Icons.Outlined.QrCodeScanner, contentDescription = null)
                 Spacer(Modifier.width(8.dp))
-                Text("Scan QR Code", style = MaterialTheme.typography.bodyLarge)
+                Text("Scan Mac QR", style = MaterialTheme.typography.bodyLarge)
             }
 
             Spacer(Modifier.height(16.dp))
@@ -144,7 +158,7 @@ fun OnboardingScreen(onContinue: () -> Unit) {
                 )
                 Spacer(Modifier.width(6.dp))
                 Text(
-                    "End-to-end encrypted",
+                    "Local-first and end-to-end encrypted",
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -158,6 +172,7 @@ private fun OnboardingStep(
     number: String,
     title: String,
     command: String? = null,
+    subtitle: String? = null,
 ) {
     Row(
         verticalAlignment = Alignment.Top,
@@ -178,6 +193,14 @@ private fun OnboardingStep(
             command?.let { cmd ->
                 Spacer(Modifier.height(8.dp))
                 OnboardingCommandRow(cmd)
+            }
+            subtitle?.let { detail ->
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    text = detail,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
     }

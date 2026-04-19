@@ -1,5 +1,6 @@
 package com.coderover.android.ui
 
+import com.coderover.android.AppInfo
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -68,9 +69,11 @@ import com.coderover.android.ui.screens.SidebarScreen
 import com.coderover.android.ui.shared.AppBackdrop
 import com.coderover.android.ui.shared.HapticFeedback
 import com.coderover.android.ui.shared.StatusTag
+import com.coderover.android.ui.shared.WhatsNewDialog
 import com.coderover.android.ui.theme.monoFamily
 import com.coderover.android.ui.turn.DiffDetailDialog
 import com.coderover.android.ui.turn.TurnScreen
+import com.coderover.android.ui.turn.TurnThreadProjectAction
 import com.coderover.android.ui.turn.TurnThreadPathSheet
 import com.coderover.android.ui.turn.TurnTopBarActions
 import com.coderover.android.ui.turn.buildRepositoryDiffFiles
@@ -84,36 +87,51 @@ fun CodeRoverApp(
     viewModel: AppViewModel,
 ) {
     val contentViewModel = remember { ContentViewModel() }
+    var isShowingWhatsNew by rememberSaveable { mutableStateOf(false) }
 
     if (!state.onboardingSeen) {
         OnboardingScreen(onContinue = viewModel::completeOnboarding)
         return
     }
 
-    if (state.pairings.isEmpty() || state.pendingTransportSelectionPairing != null) {
-        PairingEntryScreen(
-            errorMessage = state.lastErrorMessage,
-            pendingTransportSelectionPairing = state.pendingTransportSelectionPairing,
-            onScannedPayload = { payload, resetScanLock ->
-                viewModel.importPairingPayload(payload, resetScanLock)
-            },
-            onSelectTransport = viewModel::confirmPendingPairingTransport,
-            onErrorDismissed = viewModel::clearLastErrorMessage,
-        )
-        return
-    }
-
-    LaunchedEffect(state.activePairingMacDeviceId, state.connectionPhase, state.pairings.size) {
-        if (contentViewModel.shouldAttemptAutoConnect(state)) {
-            viewModel.connectActivePairing()
+    LaunchedEffect(state.onboardingSeen, state.lastPresentedWhatsNewVersion) {
+        if (state.onboardingSeen && state.lastPresentedWhatsNewVersion != AppInfo.VERSION_NAME) {
+            isShowingWhatsNew = true
         }
     }
 
-    CodeRoverAppShell(
-        state = state,
-        viewModel = viewModel,
-        contentViewModel = contentViewModel,
-    )
+    Box {
+        if (state.pairings.isEmpty() || state.pendingTransportSelectionPairing != null) {
+            PairingEntryScreen(
+                errorMessage = state.lastErrorMessage,
+                pendingTransportSelectionPairing = state.pendingTransportSelectionPairing,
+                onScannedPayload = { payload, resetScanLock ->
+                    viewModel.importPairingPayload(payload, resetScanLock)
+                },
+                onSelectTransport = viewModel::confirmPendingPairingTransport,
+                onErrorDismissed = viewModel::clearLastErrorMessage,
+            )
+        } else {
+            LaunchedEffect(state.activePairingMacDeviceId, state.connectionPhase, state.pairings.size) {
+                if (contentViewModel.shouldAttemptAutoConnect(state)) {
+                    viewModel.connectActivePairing()
+                }
+            }
+
+            CodeRoverAppShell(
+                state = state,
+                viewModel = viewModel,
+                contentViewModel = contentViewModel,
+            )
+        }
+
+        if (isShowingWhatsNew) {
+            WhatsNewDialog(version = AppInfo.VERSION_NAME) {
+                viewModel.markWhatsNewSeen(AppInfo.VERSION_NAME)
+                isShowingWhatsNew = false
+            }
+        }
+    }
 }
 
 @Composable
@@ -147,6 +165,7 @@ private fun CodeRoverAppShell(
     var isShowingDesktopRestartConfirmation by rememberSaveable(state.selectedThreadId) { mutableStateOf(false) }
     var isRestartingDesktopApp by remember(state.selectedThreadId) { mutableStateOf(false) }
     var desktopRestartErrorMessage by rememberSaveable(state.selectedThreadId) { mutableStateOf<String?>(null) }
+    var isRoutingThreadProject by remember(state.selectedThreadId) { mutableStateOf(false) }
 
     DisposableEffect(
         lifecycleOwner,
@@ -283,6 +302,11 @@ private fun CodeRoverAppShell(
                     viewModel.createThread(projectPath, providerId)
                     isSidebarOpen = false
                 },
+                onCreateManagedWorktreeThread = { projectPath, providerId ->
+                    contentViewModel.selectThread()
+                    viewModel.createManagedWorktreeThread(projectPath, providerId)
+                    isSidebarOpen = false
+                },
                 onLoadMoreThreadsForProject = viewModel::loadMoreThreadsForProject,
                 onSelectProvider = { providerId ->
                     viewModel.setSelectedProviderId(providerId)
@@ -383,13 +407,22 @@ private fun CodeRoverAppShell(
                                     isRestartingDesktopApp = isRestartingDesktopApp,
                                     gitRepoSyncResult = state.gitRepoSyncResult,
                                     gitSyncState = state.gitSyncState,
+                                    currentThread = selectedThread,
+                                    canForkToLocal = when {
+                                        selectedThread == null -> false
+                                        selectedThread.isManagedWorktreeProject ->
+                                            !state.gitBranchTargets?.localCheckoutPath.isNullOrBlank()
+                                        else -> !selectedThread.normalizedProjectPath.isNullOrBlank()
+                                    },
+                                    isRunningThreadProjectAction = isRoutingThreadProject,
                                     isRunningGitAction = state.isRunningGitAction,
                                     showsDiscardRuntimeChangesAndSync = state.shouldShowDiscardRuntimeChangesAndSync,
                                     contextWindowUsage = state.contextWindowUsage,
                                     enabled = state.isConnected &&
                                         selectedThread?.cwd != null &&
                                         !isSelectedThreadRunning &&
-                                        !state.isRunningGitAction,
+                                        !state.isRunningGitAction &&
+                                        !isRoutingThreadProject,
                                     onTapDesktopRestart = {
                                         haptic.triggerImpactFeedback()
                                         isShowingDesktopRestartConfirmation = true
@@ -406,6 +439,53 @@ private fun CodeRoverAppShell(
                                         coroutineScope.launch {
                                             viewModel.performGitAction(cwd, action, threadId)
                                             viewModel.gitStatus(cwd)
+                                        }
+                                    },
+                                    onSelectThreadProjectAction = { action ->
+                                        val threadId = selectedThread?.id ?: return@TurnTopBarActions
+                                        val targetThread = selectedThread ?: return@TurnTopBarActions
+                                        coroutineScope.launch {
+                                            if (isRoutingThreadProject) {
+                                                return@launch
+                                            }
+                                            isRoutingThreadProject = true
+                                            try {
+                                                val movedOrForkedThread = when (action) {
+                                                    TurnThreadProjectAction.HANDOFF -> {
+                                                        if (targetThread.isManagedWorktreeProject) {
+                                                            viewModel.handoffThreadToLocal(threadId)
+                                                        } else {
+                                                            viewModel.handoffThreadToManagedWorktree(
+                                                                threadId = threadId,
+                                                                baseBranch = state.gitBranchTargets?.currentBranch
+                                                                    ?.trim()
+                                                                    ?.takeIf(String::isNotEmpty)
+                                                                    ?: state.gitBranchTargets?.defaultBranch,
+                                                            )
+                                                        }
+                                                    }
+                                                    TurnThreadProjectAction.FORK_TO_LOCAL -> {
+                                                        viewModel.forkThreadToLocal(threadId)
+                                                    }
+                                                    TurnThreadProjectAction.FORK_TO_WORKTREE -> {
+                                                        viewModel.forkThreadToManagedWorktree(
+                                                            threadId = threadId,
+                                                            baseBranch = state.gitBranchTargets?.currentBranch
+                                                                ?.trim()
+                                                                ?.takeIf(String::isNotEmpty)
+                                                                ?: state.gitBranchTargets?.defaultBranch,
+                                                        )
+                                                    }
+                                                }
+                                                movedOrForkedThread?.cwd?.let { movedCwd ->
+                                                    viewModel.gitBranchesWithStatus(movedCwd)
+                                                    viewModel.gitStatus(movedCwd)
+                                                }
+                                            } catch (_: Throwable) {
+                                                // Repository surfaces the failure through app state.
+                                            } finally {
+                                                isRoutingThreadProject = false
+                                            }
                                         }
                                     },
                                     onCompactContext = {

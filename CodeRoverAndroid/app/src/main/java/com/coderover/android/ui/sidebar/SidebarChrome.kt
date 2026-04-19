@@ -30,6 +30,7 @@ import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
@@ -214,6 +215,7 @@ fun SidebarProjectPickerSheet(
     onSelectProvider: (String) -> Unit,
     onDismiss: () -> Unit,
     onSelectProject: (String?, String) -> Unit,
+    onSelectWorktreeProject: (String, String) -> Unit,
 ) {
     val sheetState = rememberModalBottomSheetState()
     ModalBottomSheet(
@@ -257,13 +259,16 @@ fun SidebarProjectPickerSheet(
             SidebarProjectPickerItem(
                 name = "No Project",
                 path = "Open without a local working directory",
-                onClick = { onSelectProject(null, selectedProviderId) },
+                onSelectProject = { onSelectProject(null, selectedProviderId) },
             )
             projectPaths.forEach { projectPath ->
                 SidebarProjectPickerItem(
                     name = projectPath.substringAfterLast('/').ifEmpty { projectPath },
                     path = projectPath,
-                    onClick = { onSelectProject(projectPath, selectedProviderId) },
+                    onSelectProject = { onSelectProject(projectPath, selectedProviderId) },
+                    onSelectWorktreeProject = {
+                        onSelectWorktreeProject(projectPath, selectedProviderId)
+                    },
                 )
             }
         }
@@ -274,36 +279,56 @@ fun SidebarProjectPickerSheet(
 private fun SidebarProjectPickerItem(
     name: String,
     path: String,
-    onClick: () -> Unit,
+    onSelectProject: () -> Unit,
+    onSelectWorktreeProject: (() -> Unit)? = null,
 ) {
     Surface(
-        onClick = onClick,
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(12.dp),
         color = Color.Transparent,
     ) {
-        Row(
+        Column(
             modifier = Modifier.padding(12.dp),
-            verticalAlignment = Alignment.CenterVertically,
+            verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Icon(
-                imageVector = Icons.Outlined.Folder,
-                contentDescription = null,
-                modifier = Modifier.size(24.dp),
-                tint = MaterialTheme.colorScheme.primary,
-            )
-            Spacer(Modifier.width(12.dp))
-            Column {
-                Text(
-                    text = name,
-                    style = MaterialTheme.typography.bodyLarge,
-                    fontWeight = FontWeight.SemiBold,
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.Folder,
+                    contentDescription = null,
+                    modifier = Modifier.size(24.dp),
+                    tint = MaterialTheme.colorScheme.primary,
                 )
-                Text(
-                    text = path,
-                    style = MaterialTheme.typography.labelSmall.copy(fontFamily = monoFamily),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                Spacer(Modifier.width(12.dp))
+                Column {
+                    Text(
+                        text = name,
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        text = path,
+                        style = MaterialTheme.typography.labelSmall.copy(fontFamily = monoFamily),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                FilledTonalButton(
+                    onClick = onSelectProject,
+                ) {
+                    Text("Local Chat")
+                }
+                onSelectWorktreeProject?.let { selectWorktreeProject ->
+                    OutlinedButton(
+                        onClick = selectWorktreeProject,
+                    ) {
+                        Text("Worktree Chat")
+                    }
+                }
             }
         }
     }

@@ -4,6 +4,7 @@
 import { execFile, type ExecFileException } from "child_process";
 import * as path from "path";
 
+import { readBridgePreferences } from "./bridge-preferences";
 import {
   createThreadRolloutActivityWatcher,
   type ThreadRolloutActivityEvent,
@@ -36,6 +37,7 @@ interface BridgeConfig {
   localPort: number;
   tailnetUrl: string;
   relayUrls: string[];
+  keepAwakeEnabled: boolean;
   refreshEnabled: boolean;
   refreshDebounceMs: number;
   coderoverEndpoint: string;
@@ -577,9 +579,14 @@ export class CodeRoverDesktopRefresher {
 
 export function readBridgeConfig({ env = process.env }: ReadBridgeConfigOptions = {}): BridgeConfig {
   const environment = env as Record<string, string | undefined>;
+  const preferences = readBridgePreferences();
   const coderoverEndpoint = readFirstDefinedEnv(["CODEROVER_ENDPOINT", "CODEROVER_ENDPOINT"], "", environment);
   const refreshCommand = readFirstDefinedEnv(["CODEROVER_REFRESH_COMMAND"], "", environment);
   const explicitRefreshEnabled = readOptionalBooleanEnv(["CODEROVER_REFRESH_ENABLED"], environment);
+  const explicitKeepAwakeEnabled = readOptionalBooleanEnv(
+    ["CODEROVER_KEEP_AWAKE", "CODEROVER_KEEP_MAC_AWAKE"],
+    environment
+  );
   const defaultRefreshEnabled = false;
 
   return {
@@ -587,6 +594,9 @@ export function readBridgeConfig({ env = process.env }: ReadBridgeConfigOptions 
     localPort: parseIntegerEnv(readFirstDefinedEnv(["CODEROVER_LOCAL_PORT"], "8765", environment), 8765),
     tailnetUrl: readFirstDefinedEnv(["CODEROVER_TAILNET_URL"], "", environment),
     relayUrls: readListEnv(["CODEROVER_RELAY_URLS", "CODEROVER_RELAY_URL"], environment),
+    keepAwakeEnabled: explicitKeepAwakeEnabled == null
+      ? preferences.keepAwakeEnabled
+      : explicitKeepAwakeEnabled,
     refreshEnabled: explicitRefreshEnabled == null ? defaultRefreshEnabled : explicitRefreshEnabled,
     refreshDebounceMs: parseIntegerEnv(
       readFirstDefinedEnv(["CODEROVER_REFRESH_DEBOUNCE_MS"], String(DEFAULT_DEBOUNCE_MS), environment),

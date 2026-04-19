@@ -42,6 +42,7 @@ import com.coderover.android.ui.turn.TurnSessionDiffSummaryCalculator
 fun SidebarScreen(
     state: AppState,
     onCreateThread: (String?, String) -> Unit,
+    onCreateManagedWorktreeThread: (String, String) -> Unit,
     onLoadMoreThreadsForProject: suspend (String, Int) -> Unit,
     onSelectProvider: (String) -> Unit,
     onSelectThread: (String) -> Unit,
@@ -172,6 +173,10 @@ fun SidebarScreen(
             onSelectProject = { projectPath, providerId ->
                 showProjectPicker = false
                 onCreateThread(projectPath, providerId)
+            },
+            onSelectWorktreeProject = { projectPath, providerId ->
+                showProjectPicker = false
+                onCreateManagedWorktreeThread(projectPath, providerId)
             },
         )
     }

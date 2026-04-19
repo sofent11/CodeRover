@@ -114,6 +114,11 @@ enum CodeRoverReviewTarget {
     case baseBranch
 }
 
+enum CodeRoverThreadForkTarget: Equatable, Sendable {
+    case currentProject
+    case projectPath(String)
+}
+
 struct CodeRoverRateLimitWindow: Equatable, Sendable {
     let usedPercent: Int
     let windowDurationMins: Int?
@@ -260,7 +265,10 @@ final class CodeRoverService {
     var latestTurnTerminalStateByThread: [String: CodeRoverTurnTerminalState] = [:]
     // Preserves terminal outcome per turn so completed/stopped blocks stay distinguishable.
     var terminalStateByTurnID: [String: CodeRoverTurnTerminalState] = [:]
-    var pendingApproval: CodeRoverApprovalRequest?
+    var pendingApprovals: [CodeRoverApprovalRequest] = []
+    var pendingApproval: CodeRoverApprovalRequest? {
+        pendingApprovals.first
+    }
     var lastRawMessage: String?
     var lastErrorMessage: String?
     var connectionRecoveryState: CodeRoverConnectionRecoveryState = .idle
@@ -322,6 +330,9 @@ final class CodeRoverService {
     var rateLimitBuckets: [CodeRoverRateLimitBucket] = []
     var isLoadingRateLimits = false
     var rateLimitsErrorMessage: String?
+    var bridgeStatus: CodeRoverBridgeStatus?
+    var bridgeUpdatePrompt: CodeRoverBridgeUpdatePrompt?
+    var isLoadingBridgeStatus = false
     // User-initiated disconnects can request that the shell returns to the home screen.
     var shouldReturnHomeAfterDisconnect = false
 
@@ -433,6 +444,8 @@ final class CodeRoverService {
     // Canonical repo roots keyed by observed working directories from bridge git/status responses.
     var repoRootByWorkingDirectory: [String: String] = [:]
     var knownRepoRoots: Set<String> = []
+    @ObservationIgnored var associatedManagedWorktreePathByThreadID: [String: String] = [:]
+    @ObservationIgnored var authoritativeProjectPathByThreadID: [String: String] = [:]
     // Keeps hot-path thread lookups O(1) instead of rescanning the full sidebar list.
     @ObservationIgnored var threadByID: [String: ConversationThread] = [:]
     @ObservationIgnored var threadIndexByID: [String: Int] = [:]
@@ -453,6 +466,7 @@ final class CodeRoverService {
 
     static let selectedProviderDefaultsKey = "runtime.selectedProviderId"
     static let locallyArchivedThreadIDsKey = "coderover.locallyArchivedThreadIDs"
+    static let associatedManagedWorktreePathsDefaultsKey = "coderover.associatedManagedWorktreePaths"
     static let notificationsPromptedDefaultsKey = "coderover.notifications.prompted"
 
     init(
@@ -507,6 +521,16 @@ final class CodeRoverService {
         self.selectedReasoningEffort = nil
         self.selectedAccessMode = .onRequest
         self.syncRuntimeSelectionContext()
+
+        if let savedAssociatedManagedWorktreePaths = defaults.data(forKey: Self.associatedManagedWorktreePathsDefaultsKey),
+           let decodedAssociatedManagedWorktreePaths = try? decoder.decode(
+                [String: String].self,
+                from: savedAssociatedManagedWorktreePaths
+           ) {
+            self.associatedManagedWorktreePathByThreadID = decodedAssociatedManagedWorktreePaths
+        } else {
+            self.associatedManagedWorktreePathByThreadID = [:]
+        }
 
         // Restore saved Mac pairings. The restore path is intentionally non-destructive:
         // if secure storage is temporarily unavailable during a lock-screen relaunch, do not

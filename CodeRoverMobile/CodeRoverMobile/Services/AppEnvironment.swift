@@ -11,6 +11,7 @@ enum AppEnvironment {
     private static let defaultTailnetBaseURLInfoPlistKey = "CODEROVER_DEFAULT_TAILNET_BASE_URL"
 
     static let defaultLocalPort = 8765
+    static let defaultAppVersion = "1.0"
 
     static var localPort: Int {
         if let infoPort = resolvedString(forInfoPlistKey: defaultLocalPortInfoPlistKey),
@@ -22,6 +23,10 @@ enum AppEnvironment {
 
     static var tailnetBaseURL: String? {
         resolvedString(forInfoPlistKey: defaultTailnetBaseURLInfoPlistKey)
+    }
+
+    static var appVersion: String {
+        resolvedString(forInfoPlistKey: "CFBundleShortVersionString") ?? defaultAppVersion
     }
 }
 
