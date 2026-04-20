@@ -187,7 +187,7 @@ extension CodeRoverService {
 
     func runtimeProviderID(for providerID: String?) -> String {
         let normalized = providerID?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
-        if normalized == "claude" || normalized == "gemini" || normalized == "codex" {
+        if normalized == "claude" || normalized == "gemini" || normalized == "codex" || normalized == "copilot" {
             return normalized
         }
         return "codex"

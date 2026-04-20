@@ -51,7 +51,7 @@ interface CreateManagedProviderRuntimeEngineOptions {
   ): ManagedTurnRuntimeContext;
   firstNonEmptyString(values: unknown[]): string | null;
   normalizeOptionalString(value: unknown): string | null;
-  providerId: "claude" | "gemini";
+  providerId: "claude" | "gemini" | "copilot";
   sendThreadStartedNotification(threadObject: RuntimeThreadShape): void;
   store: RuntimeStore;
   syncThreadSessionFromMeta(

@@ -67,6 +67,11 @@ This is a monorepo with a local bridge, an iOS app target, and its tests:
 
 - **Bun** v1.0+
 - **CodeRover CLI** installed and in your PATH
+- **Optional local AI CLIs** for the providers you want to use:
+  - `codex` for Codex threads
+  - `claude` for Claude Code threads
+  - `gemini` for Gemini CLI threads
+  - `copilot` for GitHub Copilot threads, or `gh copilot` as a fallback
 - **CodeRover desktop app** (optional — for viewing threads on your Mac)
 - **[CodeRover iOS app via TestFlight](https://testflight.apple.com/join/PKZhBUVM)** installed on your iPhone or iPad before scanning the pairing QR
 - **macOS** (for desktop refresh features — the core bridge works on any OS)
@@ -106,6 +111,28 @@ coderover status
 ```
 
 The bridge source is written in TypeScript under `coderover-bridge/src` and compiled to CommonJS output in `coderover-bridge/dist`.
+
+## Local Providers
+
+CodeRover can manage four local session providers side-by-side:
+
+- Codex
+- Claude Code
+- Gemini CLI
+- GitHub Copilot
+
+GitHub Copilot uses a local-only two-layer integration:
+
+- Live turns run through the Copilot CLI ACP server (`copilot --acp`).
+- Imported threads and history recovery come from local files under `~/.copilot/session-state/*`.
+
+To use Copilot threads locally:
+
+1. Install and sign in to the GitHub Copilot CLI on your Mac so `copilot` works locally, or make sure `gh copilot` is available as a fallback.
+2. Start `coderover daemon` as usual.
+3. Pick `GitHub Copilot` in the mobile provider selector when creating or continuing a thread.
+
+If `copilot` is not on your shell `PATH`, point CodeRover at it explicitly with `COPILOT_PATH`.
 
 ## Commands
 
@@ -169,6 +196,7 @@ All optional. Sensible defaults are provided.
 | `CODEROVER_REFRESH_COMMAND` | — | Custom shell command to run instead of the built-in AppleScript refresh |
 | `CODEROVER_BUNDLE_ID` | `com.sofent.CodeRover` | macOS bundle ID of the CodeRover app |
 | `CODEROVER_HOME` | `~/.coderover` | CodeRover data directory (used here for `sessions/` rollout files) |
+| `COPILOT_PATH` | — | Optional absolute path to the GitHub Copilot CLI binary; resolution order is `COPILOT_PATH` -> `copilot` -> `gh copilot --` |
 | `CODEX_DESKTOP_BUNDLE_ID` | `com.openai.codex` | Optional macOS bundle ID override for the Codex desktop app restart action |
 | `CODEX_DESKTOP_APP_PATH` | `/Applications/Codex.app` | Optional macOS app-path override for the Codex desktop app restart action |
 
@@ -190,6 +218,9 @@ CODEROVER_RELAY_URL=wss://relay.example.com coderover daemon
 
 # Add multiple relay candidates
 CODEROVER_RELAY_URLS=wss://relay-a.example.com,wss://relay-b.example.com/coderover coderover daemon
+
+# Point the bridge at a non-standard Copilot CLI install
+COPILOT_PATH=/Applications/GitHub\\ Copilot.app/Contents/MacOS/copilot coderover daemon
 
 ```
 

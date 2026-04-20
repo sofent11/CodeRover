@@ -94,6 +94,7 @@ interface ManagerFixtureOptions {
   codexAdapter?: CodexAdapter | null;
   claudeAdapter?: ManagedProviderAdapter | null;
   geminiAdapter?: ManagedProviderAdapter | null;
+  copilotAdapter?: ManagedProviderAdapter | null;
   useDefaultCodexAdapter?: boolean;
   runtimeOptions?: Partial<Parameters<typeof createRuntimeManager>[0]>;
 }
@@ -155,6 +156,7 @@ function createManagerFixtureWithOptions({
   codexAdapter: providedCodexAdapter = null,
   claudeAdapter: providedClaudeAdapter = null,
   geminiAdapter: providedGeminiAdapter = null,
+  copilotAdapter: providedCopilotAdapter = null,
   useDefaultCodexAdapter = false,
   runtimeOptions = {},
 }: ManagerFixtureOptions = {}): ManagerFixture {
@@ -163,6 +165,7 @@ function createManagerFixtureWithOptions({
   const codexAdapter = providedCodexAdapter || (useDefaultCodexAdapter ? null : createUnavailableCodexAdapter());
   const claudeAdapter = providedClaudeAdapter || createManagedAdapterStub();
   const geminiAdapter = providedGeminiAdapter || createManagedAdapterStub();
+  const copilotAdapter = providedCopilotAdapter || createManagedAdapterStub();
   const manager = createRuntimeManager({
     sendApplicationMessage(message) {
       messages.push(JSON.parse(message) as RpcMessage);
@@ -171,6 +174,7 @@ function createManagerFixtureWithOptions({
     codexAdapter,
     claudeAdapter,
     geminiAdapter,
+    copilotAdapter,
     ...runtimeOptions,
   });
 
@@ -216,7 +220,7 @@ function responseById(messages: RpcMessage[], id: JsonRpcId): RpcMessage {
   return response;
 }
 
-test("runtime/provider/list advertises Codex, Claude, and Gemini capabilities", async () => {
+test("runtime/provider/list advertises Codex, Claude, Gemini, and Copilot capabilities", async () => {
   const fixture = createManagerFixture();
 
   try {
@@ -225,10 +229,12 @@ test("runtime/provider/list advertises Codex, Claude, and Gemini capabilities", 
     assert.ok(response);
     assert.deepEqual(
       response.result.providers.map((provider: { id: string }) => provider.id),
-      ["codex", "claude", "gemini"]
+      ["codex", "claude", "gemini", "copilot"]
     );
     assert.equal(response.result.providers[1].supports.turnSteer, false);
     assert.equal(response.result.providers[2].supports.reasoningOptions, false);
+    assert.equal(response.result.providers[3].supports.planMode, true);
+    assert.equal(response.result.providers[3].supports.desktopRestart, false);
   } finally {
     fixture.cleanup();
   }

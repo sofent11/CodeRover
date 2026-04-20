@@ -109,6 +109,7 @@ test("bridge device state falls back to file when keychain payload is invalid", 
 test("bridge device state preserves legacy non-UUID bridge identity fields", () => {
   const originalHome = process.env.HOME;
   const originalCoderoverHome = process.env.CODEROVER_HOME;
+  const originalDisableKeychain = process.env.CODEROVER_DISABLE_KEYCHAIN;
   const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "coderover-secure-state-"));
   const coderoverHome = path.join(tempHome, ".coderover");
   const legacyState = {
@@ -125,6 +126,7 @@ test("bridge device state preserves legacy non-UUID bridge identity fields", () 
   try {
     process.env.HOME = tempHome;
     process.env.CODEROVER_HOME = coderoverHome;
+    process.env.CODEROVER_DISABLE_KEYCHAIN = "true";
     fs.mkdirSync(coderoverHome, { recursive: true });
     fs.writeFileSync(
       path.join(coderoverHome, "device-state.json"),
@@ -140,6 +142,11 @@ test("bridge device state preserves legacy non-UUID bridge identity fields", () 
       "phone-public-key"
     );
   } finally {
+    if (typeof originalDisableKeychain === "string") {
+      process.env.CODEROVER_DISABLE_KEYCHAIN = originalDisableKeychain;
+    } else {
+      delete process.env.CODEROVER_DISABLE_KEYCHAIN;
+    }
     process.env.CODEROVER_HOME = originalCoderoverHome;
     process.env.HOME = originalHome;
     fs.rmSync(tempHome, { recursive: true, force: true });

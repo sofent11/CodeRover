@@ -338,19 +338,14 @@ final class CodeRoverService {
 
     func persistRuntimeSelections(providerID: String? = nil) {
         let normalizedProvider: String = {
-            let explicitProvider = providerID?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            if let explicitProvider, ["codex", "claude", "gemini"].contains(explicitProvider) {
-                return explicitProvider
+            if let providerID {
+                return runtimeProviderID(for: providerID)
             }
             if let activeThreadId,
-               let threadProvider = threads.first(where: { $0.id == activeThreadId })?.provider
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                    .lowercased(),
-               ["codex", "claude", "gemini"].contains(threadProvider) {
-                return threadProvider
+               let threadProvider = threads.first(where: { $0.id == activeThreadId })?.provider {
+                return runtimeProviderID(for: threadProvider)
             }
-            let selectedProvider = selectedProviderID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            return ["codex", "claude", "gemini"].contains(selectedProvider) ? selectedProvider : "codex"
+            return runtimeProviderID(for: selectedProviderID)
         }()
 
         defaults.set(selectedProviderID, forKey: Self.selectedProviderDefaultsKey)
@@ -516,7 +511,9 @@ final class CodeRoverService {
 
         let savedProvider = defaults.string(forKey: Self.selectedProviderDefaultsKey)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        self.selectedProviderID = (savedProvider?.isEmpty == false) ? (savedProvider ?? "codex") : "codex"
+        self.selectedProviderID = runtimeProviderID(
+            for: (savedProvider?.isEmpty == false) ? savedProvider : nil
+        )
         self.selectedModelId = nil
         self.selectedReasoningEffort = nil
         self.selectedAccessMode = .onRequest

@@ -23,7 +23,7 @@ const DEFAULT_THREAD_MATERIALIZE_POLL_MS = 250;
 
 type SendResponse = (response: string) => void;
 type JsonObject = Record<string, unknown>;
-type DesktopProvider = "codex" | "claude" | "gemini";
+type DesktopProvider = "codex" | "claude" | "gemini" | "copilot";
 type DesktopExecResult = { stdout?: string | Buffer; stderr?: string | Buffer };
 type DesktopExecutor = (
   file: string,
@@ -226,7 +226,7 @@ async function restartDesktopApp(
 
 function normalizeProvider(value: unknown): DesktopProvider {
   const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
-  if (normalized === "claude" || normalized === "gemini" || normalized === "codex") {
+  if (normalized === "claude" || normalized === "gemini" || normalized === "codex" || normalized === "copilot") {
     return normalized;
   }
   return "codex";
@@ -238,6 +238,8 @@ function providerTitle(provider: DesktopProvider): string {
       return "Claude";
     case "gemini":
       return "Gemini";
+    case "copilot":
+      return "GitHub Copilot";
     default:
       return "Codex";
   }

@@ -6,7 +6,7 @@ import * as os from "os";
 import * as path from "path";
 import { randomUUID } from "crypto";
 
-type ProviderId = "codex" | "claude" | "gemini";
+type ProviderId = "codex" | "claude" | "gemini" | "copilot";
 type UnknownRecord = Record<string, unknown>;
 
 export interface RuntimeStoreItem {
@@ -580,7 +580,12 @@ function normalizeThreadId(value: unknown, provider: unknown): string {
 
 function normalizeProvider(value: unknown): ProviderId {
   const normalized = normalizeNonEmptyString(value).toLowerCase();
-  if (normalized === "claude" || normalized === "gemini" || normalized === "codex") {
+  if (
+    normalized === "claude"
+    || normalized === "gemini"
+    || normalized === "codex"
+    || normalized === "copilot"
+  ) {
     return normalized;
   }
   return "codex";

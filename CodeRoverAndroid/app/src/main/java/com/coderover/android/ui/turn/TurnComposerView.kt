@@ -66,7 +66,7 @@ internal fun TurnComposerView(
     val queuePauseMessage = threadIdForQueue?.let { state.queuePauseMessageByThread[it] }
     val reasoningOptions = selectedModel?.supportedReasoningEfforts.orEmpty()
     val runtimeCapabilities = state.activeRuntimeCapabilities
-    val supportsPlanMode = isCodexThread && runtimeCapabilities.planMode
+    val supportsPlanMode = runtimeCapabilities.planMode
     val supportsReasoningOptions = runtimeCapabilities.reasoningOptions
     val supportsTurnSteer = runtimeCapabilities.turnSteer
     val queuePresentation = turnViewModel.queuePresentation(

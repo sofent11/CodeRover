@@ -379,6 +379,7 @@ data class ThreadSummary(
         get() = when (provider.trim().lowercase()) {
             "claude" -> "Claude"
             "gemini" -> "Gemini"
+            "copilot" -> "GitHub Copilot"
             else -> "Codex"
         }
 

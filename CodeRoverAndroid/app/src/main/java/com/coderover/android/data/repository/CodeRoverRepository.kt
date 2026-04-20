@@ -5422,10 +5422,11 @@ private fun JsonElement?.jsonObjectOrNull(): JsonObject? = this as? JsonObject
 
 private fun JsonElement?.jsonArrayOrNull(): JsonArray? = this as? JsonArray
 
-private fun normalizeProviderId(providerId: String?): String {
+internal fun normalizeProviderId(providerId: String?): String {
     return when (providerId?.trim()?.lowercase()) {
         "claude" -> "claude"
         "gemini" -> "gemini"
+        "copilot" -> "copilot"
         else -> "codex"
     }
 }

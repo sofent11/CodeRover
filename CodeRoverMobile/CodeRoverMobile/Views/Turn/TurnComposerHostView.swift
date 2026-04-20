@@ -35,7 +35,7 @@ struct TurnComposerHostView: View {
     var body: some View {
         let isCodexThread = coderover.runtimeProviderID(for: thread.provider) == "codex"
         let runtimeCapabilities = thread.capabilities ?? coderover.currentRuntimeProvider().supports
-        let supportsPlanMode = isCodexThread && runtimeCapabilities.planMode && coderover.supportsTurnCollaborationMode
+        let supportsPlanMode = runtimeCapabilities.planMode && coderover.supportsTurnCollaborationMode
         let supportsReasoningOptions = runtimeCapabilities.reasoningOptions
         let supportsTurnSteer = runtimeCapabilities.turnSteer
 

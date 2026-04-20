@@ -343,6 +343,8 @@ extension ConversationThread {
             return "Claude"
         case "gemini":
             return "Gemini"
+        case "copilot":
+            return "GitHub Copilot"
         default:
             return "Codex"
         }

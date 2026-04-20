@@ -9,7 +9,7 @@ import type {
   RuntimeReasoningEffortOption,
 } from "./bridge-types";
 
-type ProviderId = "codex" | "claude" | "gemini";
+type ProviderId = "codex" | "claude" | "gemini" | "copilot";
 
 interface RuntimeProviderDefinition extends RuntimeProviderShape {}
 
@@ -79,6 +79,21 @@ const PROVIDERS: Record<ProviderId, RuntimeProviderDefinition> = {
       inlineApproval: false,
       turnSteer: false,
       reasoningOptions: false,
+      desktopRefresh: false,
+      desktopRestart: false,
+    },
+    accessModes: SHARED_ACCESS_MODES,
+  },
+  copilot: {
+    id: "copilot",
+    title: "GitHub Copilot",
+    defaultModelId: null,
+    supports: {
+      planMode: true,
+      structuredUserInput: true,
+      inlineApproval: true,
+      turnSteer: false,
+      reasoningOptions: true,
       desktopRefresh: false,
       desktopRestart: false,
     },
@@ -170,6 +185,99 @@ const STATIC_MODELS: Record<Exclude<ProviderId, "codex">, RuntimeModelShape[]> =
       description: "Experimental Gemini Pro model.",
     }),
   ],
+  copilot: [
+    buildModel({
+      id: "gpt-5.4",
+      title: "GPT-5.4",
+      efforts: ["low", "medium", "high"],
+      defaultReasoningEffort: "medium",
+      description: "GitHub Copilot GPT-5.4 model.",
+    }),
+    buildModel({
+      id: "gpt-5.3-codex",
+      title: "GPT-5.3-Codex",
+      efforts: ["low", "medium", "high"],
+      defaultReasoningEffort: "medium",
+      description: "GitHub Copilot Codex-tuned GPT-5.3 model.",
+    }),
+    buildModel({
+      id: "gpt-5.2-codex",
+      title: "GPT-5.2-Codex",
+      efforts: ["low", "medium", "high"],
+      defaultReasoningEffort: "medium",
+      description: "GitHub Copilot Codex-tuned GPT-5.2 model.",
+    }),
+    buildModel({
+      id: "gpt-5.2",
+      title: "GPT-5.2",
+      efforts: ["low", "medium", "high"],
+      defaultReasoningEffort: "medium",
+      description: "GitHub Copilot GPT-5.2 model.",
+    }),
+    buildModel({
+      id: "gpt-5.4-mini",
+      title: "GPT-5.4 mini",
+      efforts: ["low", "medium", "high"],
+      defaultReasoningEffort: "medium",
+      description: "Lower-cost Copilot GPT-5.4 mini model.",
+    }),
+    buildModel({
+      id: "gpt-5-mini",
+      title: "GPT-5 mini",
+      efforts: ["low", "medium", "high"],
+      defaultReasoningEffort: "medium",
+      description: "Fast Copilot GPT-5 mini model.",
+    }),
+    buildModel({
+      id: "gpt-4.1",
+      title: "GPT-4.1",
+      efforts: ["low", "medium", "high"],
+      defaultReasoningEffort: "medium",
+      description: "GitHub Copilot GPT-4.1 model.",
+    }),
+    buildModel({
+      id: "claude-sonnet-4.6",
+      title: "Claude Sonnet 4.6",
+      efforts: ["low", "medium", "high"],
+      defaultReasoningEffort: "medium",
+      description: "GitHub Copilot Claude Sonnet 4.6 model.",
+    }),
+    buildModel({
+      id: "claude-sonnet-4.5",
+      title: "Claude Sonnet 4.5",
+      efforts: ["low", "medium", "high"],
+      defaultReasoningEffort: "medium",
+      description: "GitHub Copilot Claude Sonnet 4.5 model.",
+    }),
+    buildModel({
+      id: "claude-haiku-4.5",
+      title: "Claude Haiku 4.5",
+      efforts: ["low", "medium", "high"],
+      defaultReasoningEffort: "medium",
+      description: "GitHub Copilot Claude Haiku 4.5 model.",
+    }),
+    buildModel({
+      id: "claude-opus-4.6",
+      title: "Claude Opus 4.6",
+      efforts: ["low", "medium", "high"],
+      defaultReasoningEffort: "medium",
+      description: "GitHub Copilot Claude Opus 4.6 model.",
+    }),
+    buildModel({
+      id: "claude-opus-4.5",
+      title: "Claude Opus 4.5",
+      efforts: ["low", "medium", "high"],
+      defaultReasoningEffort: "medium",
+      description: "GitHub Copilot Claude Opus 4.5 model.",
+    }),
+    buildModel({
+      id: "claude-sonnet-4",
+      title: "Claude Sonnet 4",
+      efforts: ["low", "medium", "high"],
+      defaultReasoningEffort: "medium",
+      description: "GitHub Copilot Claude Sonnet 4 model.",
+    }),
+  ],
 };
 
 export function listRuntimeProviders(): RuntimeProviderDefinition[] {
@@ -192,7 +300,12 @@ export function listStaticModelsForProvider(providerId: unknown): RuntimeModelSh
 
 export function normalizeProvider(value: unknown): ProviderId {
   const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
-  if (normalized === "claude" || normalized === "gemini" || normalized === "codex") {
+  if (
+    normalized === "claude"
+    || normalized === "gemini"
+    || normalized === "codex"
+    || normalized === "copilot"
+  ) {
     return normalized;
   }
   return "codex";

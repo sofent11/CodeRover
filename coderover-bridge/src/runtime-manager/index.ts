@@ -1,7 +1,7 @@
 export {};
 
 // FILE: runtime-manager.ts
-// Purpose: Bridge-owned multi-provider runtime router for Codex, Claude Code, and Gemini CLI.
+// Purpose: Bridge-owned multi-provider runtime router for Codex, Claude Code, Gemini CLI, and GitHub Copilot.
 // Layer: Runtime orchestration
 // Exports: createRuntimeManager
 // Depends on: crypto, ../runtime-store, ../provider-catalog, ../providers/*
@@ -32,6 +32,7 @@ import {
 import { createCodexAdapter, type CodexAdapter } from "../providers/codex-adapter";
 import { createClaudeAdapter } from "../providers/claude-adapter";
 import { createGeminiAdapter } from "../providers/gemini-adapter";
+import { createCopilotAdapter } from "../providers/copilot-adapter";
 import {
   projectRuntimeEventToMobileProtocol,
   type ProjectedMobileProtocolMessage,
@@ -193,6 +194,7 @@ interface CreateRuntimeManagerOptions {
   codexAdapter?: ReturnType<typeof createCodexAdapter> | null;
   claudeAdapter?: ReturnType<typeof createClaudeAdapter> | null;
   geminiAdapter?: ReturnType<typeof createGeminiAdapter> | null;
+  copilotAdapter?: ReturnType<typeof createCopilotAdapter> | null;
   codexObservedThreadPollIntervalMs?: number;
   codexObservedThreadIdleTtlMs?: number;
   codexObservedThreadErrorBackoffMs?: number;
@@ -208,6 +210,7 @@ export function createRuntimeManager({
   codexAdapter: providedCodexAdapter = null,
   claudeAdapter: providedClaudeAdapter = null,
   geminiAdapter: providedGeminiAdapter = null,
+  copilotAdapter: providedCopilotAdapter = null,
   codexObservedThreadPollIntervalMs = CODEX_OBSERVED_THREAD_POLL_INTERVAL_MS,
   codexObservedThreadIdleTtlMs = CODEX_OBSERVED_THREAD_IDLE_TTL_MS,
   codexObservedThreadErrorBackoffMs = CODEX_OBSERVED_THREAD_ERROR_BACKOFF_MS,
@@ -244,6 +247,10 @@ export function createRuntimeManager({
     store,
   });
   const geminiAdapter = providedGeminiAdapter || createGeminiAdapter({
+    logPrefix,
+    store,
+  });
+  const copilotAdapter = providedCopilotAdapter || createCopilotAdapter({
     logPrefix,
     store,
   });
@@ -311,10 +318,27 @@ export function createRuntimeManager({
     store,
     syncThreadSessionFromMeta,
   });
+  const copilotEngine = createManagedProviderRuntimeEngine({
+    activeRunsByThread,
+    adapter: copilotAdapter,
+    buildHistoryWindowResponse,
+    buildManagedThreadObject,
+    buildProviderMetadata,
+    createHistorySnapshotFromThread,
+    createRuntimeError,
+    createTurnContext: createManagedTurnContext,
+    firstNonEmptyString,
+    normalizeOptionalString,
+    providerId: "copilot",
+    sendThreadStartedNotification,
+    store,
+    syncThreadSessionFromMeta,
+  });
   const providerEngines = new Map<string, ProviderRuntimeEngine>([
     [codexEngine.providerId, codexEngine],
     [claudeEngine.providerId, claudeEngine],
     [geminiEngine.providerId, geminiEngine],
+    [copilotEngine.providerId, copilotEngine],
   ]);
 
   async function handleClientMessage(rawMessage: string): Promise<boolean> {

@@ -31,7 +31,7 @@ export function resolveProviderId(
       ? (value as Record<string, unknown>).provider ?? (value as Record<string, unknown>).id
       : value
   );
-  if (candidate === "claude" || candidate === "gemini" || candidate === "codex") {
+  if (candidate === "claude" || candidate === "gemini" || candidate === "codex" || candidate === "copilot") {
     return candidate;
   }
   return "codex";
