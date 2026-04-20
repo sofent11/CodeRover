@@ -1424,6 +1424,7 @@ export function createRuntimeManager({
       if (shouldInvalidateCodexHistoryCacheForMethod(method)) {
         debugLog(`${logPrefix} [codex-flow] stage=cache-invalidate scope=global reason=unscoped-event method=${method}`);
         codexHistoryCache.clear();
+        stopAllObservedCodexThreadWatchers("cache-invalidated");
         return {
           provider: "codex",
           reason: "cache-invalidated",
@@ -1690,6 +1691,7 @@ export function createRuntimeManager({
 
     if (shouldInvalidateCodexHistoryCacheForMethod(method)) {
       codexHistoryCache.delete(threadId);
+      stopObservedCodexThreadWatcher(threadId, "cache-invalidated");
       return {
         provider: "codex",
         reason: "cache-invalidated",
