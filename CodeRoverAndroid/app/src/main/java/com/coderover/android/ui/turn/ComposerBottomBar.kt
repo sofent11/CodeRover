@@ -27,6 +27,7 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -446,9 +447,15 @@ internal fun ComposerSecondaryToolbar(
     onRefreshGitBranches: () -> Unit,
     onCheckoutGitBranch: (String) -> Unit,
     onSelectGitBaseBranch: (String) -> Unit,
+    onManualRefresh: () -> Unit,
 ) {
     val haptic = HapticFeedback.rememberHapticFeedback()
     val uriHandler = LocalUriHandler.current
+    val selectedThread = state.selectedThread
+    val showsManualRefresh = (selectedThread?.provider ?: state.selectedProviderId).trim().lowercase() != "codex"
+    val isManualRefreshInFlight = state.selectedThreadId
+        ?.let(state.historyStateByThread::get)
+        ?.isTailRefreshing == true
 
     AnimatedVisibility(visible = !turnViewModel.isFocused) {
         Surface(
@@ -546,6 +553,42 @@ internal fun ComposerSecondaryToolbar(
                     onCheckoutGitBranch = onCheckoutGitBranch,
                     onSelectGitBaseBranch = onSelectGitBaseBranch,
                 )
+
+                if (showsManualRefresh) {
+                    Spacer(modifier = Modifier.weight(1f))
+
+                    Surface(
+                        onClick = {
+                            haptic.triggerImpactFeedback()
+                            onManualRefresh()
+                        },
+                        enabled = state.isConnected && !isManualRefreshInFlight,
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.7f),
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(28.dp)
+                                .padding(4.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            if (isManualRefreshInFlight) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(16.dp),
+                                    strokeWidth = 2.dp,
+                                    color = MaterialTheme.colorScheme.primary,
+                                )
+                            } else {
+                                Icon(
+                                    imageVector = Icons.Outlined.Refresh,
+                                    contentDescription = "Refresh conversation",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(16.dp),
+                                )
+                            }
+                        }
+                    }
+                }
             }
         }
     }

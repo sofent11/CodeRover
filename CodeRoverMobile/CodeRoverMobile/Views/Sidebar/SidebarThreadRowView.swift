@@ -231,6 +231,9 @@ private struct SidebarThreadAgentTypeIcon: View {
     }
 
     private var initial: String {
+        if !thread.isSubagent {
+            return thread.providerMonogram
+        }
         let scalars = title.unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) }
         guard let firstScalar = scalars.first else {
             return "A"

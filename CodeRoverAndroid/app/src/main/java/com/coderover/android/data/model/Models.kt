@@ -383,6 +383,14 @@ data class ThreadSummary(
             else -> "Codex"
         }
 
+    val providerMonogram: String
+        get() = when (provider.trim().lowercase()) {
+            "copilot" -> "P"
+            "gemini" -> "G"
+            "claude" -> "C"
+            else -> "C"
+        }
+
     private fun managedWorktreeToken(normalizedProjectPath: String?): String? {
         val path = normalizedProjectPath ?: return null
         val components = path.split('/').filter(String::isNotEmpty)

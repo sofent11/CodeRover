@@ -12,6 +12,7 @@ internal fun TurnToolbarContent(
     onRefreshGitBranches: () -> Unit,
     onCheckoutGitBranch: (String) -> Unit,
     onSelectGitBaseBranch: (String) -> Unit,
+    onManualRefresh: () -> Unit,
 ) {
     ComposerSecondaryToolbar(
         state = state,
@@ -20,5 +21,6 @@ internal fun TurnToolbarContent(
         onRefreshGitBranches = onRefreshGitBranches,
         onCheckoutGitBranch = onCheckoutGitBranch,
         onSelectGitBaseBranch = onSelectGitBaseBranch,
+        onManualRefresh = onManualRefresh,
     )
 }

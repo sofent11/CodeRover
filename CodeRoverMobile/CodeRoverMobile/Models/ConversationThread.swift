@@ -350,6 +350,19 @@ extension ConversationThread {
         }
     }
 
+    var providerMonogram: String {
+        switch provider.lowercased() {
+        case "copilot":
+            return "P"
+        case "gemini":
+            return "G"
+        case "claude":
+            return "C"
+        default:
+            return "C"
+        }
+    }
+
     private static func decodeThreadIdentity(
         from container: KeyedDecodingContainer<CodingKeys>,
         metadata: [String: JSONValue]?,

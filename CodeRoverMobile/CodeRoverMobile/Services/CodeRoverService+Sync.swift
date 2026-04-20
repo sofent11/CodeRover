@@ -7,6 +7,10 @@
 import Foundation
 import UIKit
 
+private let activeThreadSyncIntervalNs: UInt64 = 3_000_000_000
+private let threadListSyncIntervalNs: UInt64 = 12_000_000_000
+private let runningWatchSyncIntervalNs: UInt64 = 5_000_000_000
+
 extension CodeRoverService {
     func startSyncLoop() {
         guard canRunRealtimeSyncLoop else {
@@ -17,6 +21,34 @@ extension CodeRoverService {
         stopSyncLoop()
         debugSyncLog("sync loop start mode=event-driven")
         requestImmediateSync(threadId: activeThreadId)
+
+        threadListSyncTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: threadListSyncIntervalNs)
+                guard self.canRunRealtimeSyncLoop else { break }
+                await self.syncThreadsList()
+            }
+        }
+
+        activeThreadSyncTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: activeThreadSyncIntervalNs)
+                guard self.canRunRealtimeSyncLoop else { break }
+                guard let threadId = self.activeThreadId else { continue }
+                await self.syncActiveThreadState(threadId: threadId)
+            }
+        }
+
+        runningThreadWatchSyncTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: runningWatchSyncIntervalNs)
+                guard self.canRunRealtimeSyncLoop else { break }
+                await self.refreshInactiveRunningBadgeThreads()
+            }
+        }
     }
 
     func stopSyncLoop() {

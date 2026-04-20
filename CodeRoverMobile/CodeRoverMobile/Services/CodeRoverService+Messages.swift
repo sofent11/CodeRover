@@ -315,8 +315,14 @@ extension CodeRoverService {
         }
 
         do {
-            if let newestCursor = normalizedHistoryCursor(currentState?.newestCursor),
-               hasLocalMessages {
+            if shouldPreferTailReloadForManagedHistory(threadId: threadId) {
+                try await loadTailThreadHistory(
+                    threadId: threadId,
+                    replaceLocalHistory: hasLocalMessages && !hasNewestCursor,
+                    prefetchOlderInBackground: !hasLocalMessages
+                )
+            } else if let newestCursor = normalizedHistoryCursor(currentState?.newestCursor),
+                      hasLocalMessages {
                 try await catchUpThreadHistoryToLatest(
                     threadId: threadId,
                     initialCursor: newestCursor,

@@ -109,6 +109,7 @@ class CodeRoverRepository(context: Context) {
 
     private companion object {
         const val TAG = "CodeRoverRepo"
+        const val SELECTED_THREAD_SYNC_INTERVAL_MS = 3_000L
     }
 
     private data class ThreadListPage(
@@ -155,6 +156,7 @@ class CodeRoverRepository(context: Context) {
     private val olderHistoryBackfillTaskByThread = mutableMapOf<String, Job>()
     private val pendingHistoryChangedRefreshThreadIds = mutableSetOf<String>()
     private val historyChangedRefreshTaskByThread = mutableMapOf<String, Job>()
+    private var selectedThreadSyncJob: Job? = null
     private val associatedManagedWorktreePathByThreadId = mutableMapOf<String, String>()
     private val authoritativeProjectPathByThreadId = mutableMapOf<String, String>()
     private var activeThreadListNextCursor: JsonElement? = JsonNull
@@ -419,6 +421,7 @@ class CodeRoverRepository(context: Context) {
         }
         scope.launch {
             try {
+                stopSelectedThreadSyncLoop()
                 val epoch = connectionEpoch.incrementAndGet()
                 val currentState = state.value
                 val pairing = currentState.activePairing ?: run {
@@ -483,6 +486,7 @@ class CodeRoverRepository(context: Context) {
                                 selectedThreadId = reconnectThreadId ?: selectedThreadId ?: threads.firstOrNull()?.id,
                             )
                         }
+                        startSelectedThreadSyncLoop()
                         refreshBridgeMetadataInternal()
                         Log.d(TAG, "runtime selection restored epoch=$epoch provider=${currentRuntimeProviderId()}")
                         reconnectThreadId?.let { threadId ->
@@ -2162,7 +2166,14 @@ class CodeRoverRepository(context: Context) {
         val currentState = state.value
         val hasLocalMessages = currentState.messagesByThread[threadId].orEmpty().isNotEmpty()
         val newestCursor = normalizedHistoryCursor(currentState.historyStateByThread[threadId]?.newestCursor)
-        if (hasLocalMessages && newestCursor != null) {
+        if (shouldPreferTailReloadForManagedHistory(threadId)) {
+            loadTailThreadHistory(
+                threadId = threadId,
+                replaceLocalHistory = hasLocalMessages && newestCursor == null,
+                fallbackThreadObject = null,
+                prefetchOlderInBackground = !hasLocalMessages,
+            )
+        } else if (hasLocalMessages && newestCursor != null) {
             catchUpThreadHistoryToLatest(
                 threadId = threadId,
                 initialCursor = newestCursor,
@@ -2177,6 +2188,16 @@ class CodeRoverRepository(context: Context) {
                 prefetchOlderInBackground = !hasLocalMessages,
             )
         }
+    }
+
+    private fun shouldPreferTailReloadForManagedHistory(threadId: String): Boolean {
+        val provider = state.value.threads
+            .firstOrNull { it.id == threadId }
+            ?.provider
+            ?.trim()
+            ?.lowercase()
+            .orEmpty()
+        return provider.isNotEmpty() && provider != "codex"
     }
 
     private suspend fun loadTailThreadHistory(
@@ -4013,6 +4034,7 @@ class CodeRoverRepository(context: Context) {
                 }
                 Log.e(TAG, "client disconnected epoch=$epoch phase=${state.value.connectionPhase}", throwable)
                 val isBenignDisconnect = throwable.isBenignBackgroundDisconnect()
+                stopSelectedThreadSyncLoop()
                 updateState {
                     copy(
                         connectionPhase = ConnectionPhase.OFFLINE,
@@ -4316,16 +4338,9 @@ class CodeRoverRepository(context: Context) {
     private fun handleThreadHistoryChanged(params: JsonObject?) {
         val payload = params ?: return
         val activeThreadId = state.value.selectedThreadId
-        val threadId = payload.resolveThreadId()
-            ?: activeThreadId?.takeIf { selectedId ->
-                state.value.threads.firstOrNull { it.id == selectedId }?.provider.equals("codex", ignoreCase = true)
-            }
-            ?: return
+        val threadId = payload.resolveThreadId() ?: activeThreadId ?: return
 
         if (activeThreadId != threadId) {
-            return
-        }
-        if (!state.value.threads.firstOrNull { it.id == threadId }?.provider.equals("codex", ignoreCase = true)) {
             return
         }
 
@@ -5143,6 +5158,7 @@ class CodeRoverRepository(context: Context) {
     private suspend fun disconnectCurrentClient(resetThreadSession: Boolean) {
         connectionEpoch.incrementAndGet()
         activeClientGeneration.set(0)
+        stopSelectedThreadSyncLoop()
         clientMutex.withLock {
             client?.disconnect()
             client = null
@@ -5187,6 +5203,30 @@ class CodeRoverRepository(context: Context) {
         return clientMutex.withLock {
             client ?: error("Bridge client is not connected.")
         }
+    }
+
+    private fun startSelectedThreadSyncLoop() {
+        stopSelectedThreadSyncLoop()
+        selectedThreadSyncJob = scope.launch {
+            while (true) {
+                delay(SELECTED_THREAD_SYNC_INTERVAL_MS)
+                val currentState = state.value
+                if (!currentState.isConnected) {
+                    break
+                }
+                val threadId = currentState.selectedThreadId ?: continue
+                runCatching {
+                    refreshThreadHistory(threadId, reason = "selected-thread-poll")
+                }.onFailure { failure ->
+                    Log.w(TAG, "thread/read refresh failed reason=selected-thread-poll threadId=$threadId", failure)
+                }
+            }
+        }
+    }
+
+    private fun stopSelectedThreadSyncLoop() {
+        selectedThreadSyncJob?.cancel()
+        selectedThreadSyncJob = null
     }
 
     private fun isCurrentClientCallback(epoch: Long, clientGeneration: Long): Boolean {

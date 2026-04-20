@@ -417,6 +417,9 @@ internal fun TurnComposerView(
                     viewModel.selectGitBaseBranch(threadId, branch)
                 }
             },
+            onManualRefresh = {
+                viewModel.refreshThreadsIfConnected()
+            },
         )
     }
 }

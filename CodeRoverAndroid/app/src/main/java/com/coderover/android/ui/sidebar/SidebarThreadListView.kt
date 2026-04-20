@@ -609,7 +609,11 @@ private fun SidebarThreadAgentTypeIcon(thread: ThreadSummary) {
         }
         else -> thread.providerBadgeTitle
     }
-    val initial = title.firstOrNull { it.isLetterOrDigit() }?.uppercaseChar()?.toString() ?: "A"
+    val initial = if (thread.isSubagent) {
+        title.firstOrNull { it.isLetterOrDigit() }?.uppercaseChar()?.toString() ?: "A"
+    } else {
+        thread.providerMonogram
+    }
     val tint = subagentNicknameColor(title)
 
     Box(

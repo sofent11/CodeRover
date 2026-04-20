@@ -99,6 +99,10 @@ interface ImportedTurnState {
   itemsById: Map<string, RuntimeStoreItem>;
 }
 
+interface CopilotHistoryState {
+  fingerprint: string;
+}
+
 const COPILOT_SESSION_ROOT = path.join(os.homedir(), ".copilot", "session-state");
 
 export function createCopilotAdapter({
@@ -150,7 +154,8 @@ export function createCopilotAdapter({
 
     const currentThreadMeta = store.getThreadMeta(threadMeta.id) || threadMeta;
     const existingHistory = store.getThreadHistory(threadMeta.id);
-    if (!shouldRefreshCopilotHistory(currentThreadMeta, existingHistory, homeDir)) {
+    const historyState = readCopilotHistoryState(currentThreadMeta.providerSessionId, homeDir);
+    if (!shouldRefreshCopilotHistory(currentThreadMeta, existingHistory, historyState)) {
       return;
     }
 
@@ -174,6 +179,7 @@ export function createCopilotAdapter({
       metadata: {
         ...(entry.metadata || {}),
         copilotHistorySyncedAt: new Date().toISOString(),
+        copilotHistoryFingerprint: historyState?.fingerprint || null,
         copilotSessionUpdatedAt: workspaceMeta?.updatedAt || normalizeOptionalString(entry.metadata?.copilotSessionUpdatedAt),
       },
     }));
@@ -737,22 +743,44 @@ function convertStructuredResponseToElicitationContent(
 function shouldRefreshCopilotHistory(
   threadMeta: RuntimeThreadMeta,
   existingHistory: { turns?: unknown[] } | null,
-  homeDir: string
+  historyState: CopilotHistoryState | null
 ): boolean {
   if (!threadMeta.providerSessionId || !existingHistory?.turns?.length) {
     return true;
   }
 
-  const syncedAt = normalizeMetadataTimestamp(threadMeta.metadata, "copilotHistorySyncedAt");
-  const eventsPath = copilotEventsPath(threadMeta.providerSessionId, homeDir);
-  const stats = safeStat(eventsPath);
-  if (!stats) {
+  if (!historyState) {
     return false;
   }
-  if (!syncedAt) {
+
+  const storedFingerprint = normalizeMetadataTimestamp(threadMeta.metadata, "copilotHistoryFingerprint");
+  if (!storedFingerprint) {
     return true;
   }
-  return stats.mtimeMs > Date.parse(syncedAt);
+  return storedFingerprint !== historyState.fingerprint;
+}
+
+function readCopilotHistoryState(
+  sessionId: string,
+  homeDir = os.homedir()
+): CopilotHistoryState | null {
+  const workspaceMeta = readCopilotWorkspaceMeta(sessionId, homeDir);
+  const workspacePath = path.join(homeDir, ".copilot", "session-state", sessionId, "workspace.yaml");
+  const workspaceStats = safeStat(workspacePath);
+  const eventsStats = safeStat(copilotEventsPath(sessionId, homeDir));
+
+  if (!workspaceMeta && !workspaceStats && !eventsStats) {
+    return null;
+  }
+
+  return {
+    fingerprint: JSON.stringify({
+      workspaceUpdatedAt: workspaceMeta?.updatedAt || null,
+      workspaceMtimeMs: workspaceStats?.mtimeMs || null,
+      eventsMtimeMs: eventsStats?.mtimeMs || null,
+      eventsSize: eventsStats?.size || null,
+    }),
+  };
 }
 
 function normalizeMetadataTimestamp(

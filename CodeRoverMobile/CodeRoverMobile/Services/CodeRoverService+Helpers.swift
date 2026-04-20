@@ -33,6 +33,17 @@ extension CodeRoverService {
         threadByID[threadId]
     }
 
+    func shouldPreferTailReloadForManagedHistory(threadId: String) -> Bool {
+        guard let provider = thread(for: threadId)?.provider
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased(),
+              !provider.isEmpty else {
+            return false
+        }
+
+        return provider != "codex"
+    }
+
     func threadIndex(for threadId: String) -> Int? {
         threadIndexByID[threadId]
     }

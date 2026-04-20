@@ -35,4 +35,12 @@ final class RuntimeProviderCopilotTests: XCTestCase {
 
         XCTAssertEqual(thread.providerBadgeTitle, "GitHub Copilot")
     }
+
+    func testConversationThreadProviderMonogramUsesPForCopilot() {
+        let copilotThread = ConversationThread(id: "copilot-thread", provider: "copilot")
+        let geminiThread = ConversationThread(id: "gemini-thread", provider: "gemini")
+
+        XCTAssertEqual(copilotThread.providerMonogram, "P")
+        XCTAssertEqual(geminiThread.providerMonogram, "G")
+    }
 }

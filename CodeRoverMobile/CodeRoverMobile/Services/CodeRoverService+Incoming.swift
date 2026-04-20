@@ -549,17 +549,10 @@ extension CodeRoverService {
 
     private func handleThreadHistoryChanged(_ paramsObject: IncomingParamsObject?) {
         let threadId = extractThreadID(from: paramsObject)
-            ?? {
-                guard let activeThreadId,
-                      threads.first(where: { $0.id == activeThreadId })?.provider == "codex" else {
-                    return nil
-                }
-                return activeThreadId
-            }()
+            ?? activeThreadId
 
         guard let threadId,
-              activeThreadId == threadId,
-              threads.first(where: { $0.id == threadId })?.provider == "codex" else {
+              activeThreadId == threadId else {
             return
         }
 

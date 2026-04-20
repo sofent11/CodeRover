@@ -182,6 +182,99 @@ test("hydrateThread restores Copilot user, assistant, and tool history from even
     assert.equal(refreshedMeta?.preview, "Check the working directory");
     assert.equal(refreshedMeta?.metadata?.copilotSessionUpdatedAt, "2026-04-19T11:10:00.000Z");
     assert.equal(typeof refreshedMeta?.metadata?.copilotHistorySyncedAt, "string");
+    assert.equal(typeof refreshedMeta?.metadata?.copilotHistoryFingerprint, "string");
+  } finally {
+    store.shutdown();
+    fs.rmSync(baseDir, { recursive: true, force: true });
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("hydrateThread refreshes Copilot history when session-state files change", async () => {
+  const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "coderover-copilot-store-"));
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "coderover-copilot-home-"));
+  const store = createRuntimeStore({ baseDir });
+  const adapter = createCopilotAdapter({ store, homeDir });
+
+  try {
+    writeCopilotSession(
+      homeDir,
+      "session-3",
+      [
+        "id: session-3",
+        "cwd: /tmp/copilot-refresh",
+        "summary: Refresh Copilot session",
+        "created_at: 2026-04-19T12:00:00.000Z",
+        "updated_at: 2026-04-19T12:01:00.000Z",
+      ].join("\n"),
+      [
+        {
+          id: "evt-user",
+          type: "user.message",
+          timestamp: "2026-04-19T12:00:01.000Z",
+          data: {
+            interactionId: "turn-1",
+            content: "Show status",
+          },
+        },
+        {
+          id: "evt-assistant",
+          type: "assistant.message",
+          timestamp: "2026-04-19T12:00:02.000Z",
+          data: {
+            interactionId: "turn-1",
+            content: "Working on it",
+          },
+        },
+      ]
+    );
+
+    const threadMeta = store.createThread({
+      id: "copilot:session-3",
+      provider: "copilot",
+      providerSessionId: "session-3",
+      title: "Refresh Copilot session",
+      preview: "Refresh Copilot session",
+      cwd: "/tmp/copilot-refresh",
+      createdAt: "2026-04-19T12:00:00.000Z",
+      updatedAt: "2026-04-19T12:01:00.000Z",
+    });
+
+    await adapter.hydrateThread(threadMeta);
+
+    const sessionDir = path.join(homeDir, ".copilot", "session-state", "session-3");
+    fs.writeFileSync(
+      path.join(sessionDir, "workspace.yaml"),
+      [
+        "id: session-3",
+        "cwd: /tmp/copilot-refresh",
+        "summary: Refresh Copilot session",
+        "created_at: 2026-04-19T12:00:00.000Z",
+        "updated_at: 2026-04-19T12:02:00.000Z",
+      ].join("\n")
+    );
+    fs.appendFileSync(
+      path.join(sessionDir, "events.jsonl"),
+      `${JSON.stringify({
+        id: "evt-assistant-2",
+        type: "assistant.message",
+        timestamp: "2026-04-19T12:00:03.000Z",
+        data: {
+          interactionId: "turn-1",
+          content: "Status is green",
+        },
+      })}\n`
+    );
+
+    await adapter.hydrateThread(threadMeta);
+
+    const refreshedHistory = store.getThreadHistory("copilot:session-3");
+    const refreshedMeta = store.getThreadMeta("copilot:session-3");
+    assert.deepEqual(
+      refreshedHistory?.turns[0]?.items.map((item) => item.text),
+      ["Show status", "Working on it", "Status is green"]
+    );
+    assert.equal(refreshedMeta?.updatedAt, "2026-04-19T12:02:00.000Z");
   } finally {
     store.shutdown();
     fs.rmSync(baseDir, { recursive: true, force: true });

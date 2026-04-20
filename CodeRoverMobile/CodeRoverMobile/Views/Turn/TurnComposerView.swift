@@ -56,6 +56,8 @@ struct TurnComposerView: View {
     let isReconnectAvailable: Bool
     let isReconnectInFlight: Bool
     let connectionStatusMessage: String
+    let showsManualRefreshButton: Bool
+    let isManualRefreshInFlight: Bool
 
     let showsGitBranchSelector: Bool
     let isGitBranchSelectorEnabled: Bool
@@ -71,6 +73,7 @@ struct TurnComposerView: View {
     let onCreateGitBranch: (String) -> Void
     let onSelectGitBaseBranch: (String) -> Void
     let onRefreshGitBranches: () -> Void
+    let onManualRefresh: () -> Void
     let onReconnect: () -> Void
 
     let onSelectModel: (String) -> Void
@@ -310,6 +313,11 @@ struct TurnComposerView: View {
 
                     Spacer(minLength: 0)
 
+                    if showsManualRefreshButton {
+                        manualRefreshButton
+                            .padding(.trailing, showsGitBranchSelector ? 10 : 0)
+                    }
+
                     if showsGitBranchSelector {
                         TurnGitBranchSelector(
                             isEnabled: isGitBranchSelectorEnabled,
@@ -338,6 +346,30 @@ struct TurnComposerView: View {
         .padding(.top, 6)
         .padding(.bottom, 6)
         .animation(.easeInOut(duration: 0.18), value: isInputFocused.wrappedValue)
+    }
+
+    private var manualRefreshButton: some View {
+        Button {
+            HapticFeedback.shared.triggerImpactFeedback(style: .light)
+            onManualRefresh()
+        } label: {
+            Group {
+                if isManualRefreshInFlight {
+                    ProgressView()
+                        .controlSize(.small)
+                        .frame(width: 24, height: 24)
+                } else {
+                    Image(systemName: "arrow.clockwise")
+                        .font(AppFont.system(size: 12, weight: .semibold))
+                        .frame(width: 24, height: 24)
+                }
+            }
+            .foregroundStyle(Color(.secondaryLabel))
+            .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!isConnected || isManualRefreshInFlight)
+        .accessibilityLabel("Refresh conversation")
     }
 
     private var offlineComposerBanner: some View {
@@ -803,6 +835,8 @@ private struct QueuedDraftsPanelPreviewWrapper: View {
                 isReconnectAvailable: true,
                 isReconnectInFlight: false,
                 connectionStatusMessage: "History is available offline. Reconnect before sending new messages.",
+                showsManualRefreshButton: true,
+                isManualRefreshInFlight: false,
                 showsGitBranchSelector: false,
                 isGitBranchSelectorEnabled: false,
                 availableGitBranchTargets: [],
@@ -817,6 +851,7 @@ private struct QueuedDraftsPanelPreviewWrapper: View {
                 onCreateGitBranch: { _ in },
                 onSelectGitBaseBranch: { _ in },
                 onRefreshGitBranches: {},
+                onManualRefresh: {},
                 onReconnect: {},
                 onSelectModel: { _ in },
                 onSelectReasoning: { _ in },

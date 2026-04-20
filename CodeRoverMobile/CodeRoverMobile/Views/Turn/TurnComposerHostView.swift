@@ -38,6 +38,7 @@ struct TurnComposerHostView: View {
         let supportsPlanMode = runtimeCapabilities.planMode && coderover.supportsTurnCollaborationMode
         let supportsReasoningOptions = runtimeCapabilities.reasoningOptions
         let supportsTurnSteer = runtimeCapabilities.turnSteer
+        let isManualRefreshInFlight = coderover.historyStateByThread[thread.id]?.isTailRefreshing == true
 
         TurnComposerView(
             input: $viewModel.input,
@@ -82,6 +83,8 @@ struct TurnComposerHostView: View {
             isReconnectAvailable: isReconnectAvailable,
             isReconnectInFlight: isReconnectInFlight,
             connectionStatusMessage: connectionStatusMessage,
+            showsManualRefreshButton: !isCodexThread,
+            isManualRefreshInFlight: isManualRefreshInFlight,
             showsGitBranchSelector: showsGitControls,
             isGitBranchSelectorEnabled: isGitBranchSelectorEnabled,
             availableGitBranchTargets: viewModel.availableGitBranchTargets,
@@ -96,6 +99,9 @@ struct TurnComposerHostView: View {
             onCreateGitBranch: onCreateGitBranch,
             onSelectGitBaseBranch: viewModel.selectGitBaseBranch,
             onRefreshGitBranches: onRefreshGitBranches,
+            onManualRefresh: {
+                coderover.requestImmediateSync(threadId: thread.id)
+            },
             onReconnect: onReconnect,
             onSelectModel: coderover.setSelectedModelId,
             onSelectReasoning: coderover.setSelectedReasoningEffort,
