@@ -116,6 +116,19 @@ export function createCodexRuntimeEngine({
   upsertOverlayFromThread,
   writeCodexHistoryCache,
 }: CreateCodexRuntimeEngineOptions): ProviderRuntimeEngine {
+  function primeHistoryCacheIfAvailable(threadObject: RuntimeThreadShape | null): RuntimeThreadShape | null {
+    if (!threadObject) {
+      return null;
+    }
+
+    const sanitizedThread = sanitizeThreadHistoryForTransport(threadObject) || threadObject;
+    const snapshot = createHistorySnapshotFromThread(sanitizedThread);
+    if (snapshot.records.length > 0) {
+      primeCodexHistoryCache(snapshot.threadId, sanitizedThread);
+    }
+    return sanitizedThread;
+  }
+
   async function ensureSession(
     threadMeta: RuntimeThreadMeta,
     _params: UnknownRecord = {}
@@ -136,6 +149,11 @@ export function createCodexRuntimeEngine({
       model: threadMeta.model,
       ownerState: "idle",
       activeTurnId: null,
+      sourceKind: "thread_read_fallback",
+      syncEpoch: 1,
+      rolloutPath: null,
+      lastProjectedCursor: null,
+      takeoverWatermark: null,
       createdAt: threadMeta.createdAt,
       updatedAt: threadMeta.updatedAt,
     };
@@ -178,6 +196,9 @@ export function createCodexRuntimeEngine({
       const threads = extractThreadArray(result).map((thread) =>
         decorateConversationThread(asObject(thread) as RuntimeThreadShape)
       );
+      threads.forEach((thread) => {
+        upsertOverlayFromThread(thread);
+      });
       return threads.filter((thread) => {
         const overlay = store.getThreadMeta(thread.id);
         const overlayArchived = overlay?.archived;
@@ -219,9 +240,9 @@ export function createCodexRuntimeEngine({
 
         const decoratedThread = decorateConversationThread(threadObject);
         upsertOverlayFromThread(decoratedThread);
-        primeCodexHistoryCache(threadMeta.id, decoratedThread);
+        const sanitizedThread = primeHistoryCacheIfAvailable(decoratedThread);
         return {
-          thread: sanitizeThreadHistoryForTransport(decoratedThread),
+          thread: sanitizedThread || sanitizeThreadHistoryForTransport(decoratedThread),
         };
       }
 
@@ -271,6 +292,17 @@ export function createCodexRuntimeEngine({
     async resumeThread(threadMeta, params = {}) {
       await ensureSession(threadMeta, params);
       const result = await codexAdapter.resumeThread(stripProviderField(params));
+      const threadObject = extractThreadFromResult(result);
+      if (threadObject) {
+        const decoratedThread = decorateConversationThread(threadObject);
+        upsertOverlayFromThread(decoratedThread);
+        const sanitizedThread = primeHistoryCacheIfAvailable(decoratedThread);
+        observeCodexThread(threadMeta.id, { immediate: true, reason: "thread-resume" });
+        return {
+          ...asObject(result),
+          thread: sanitizedThread || sanitizeThreadHistoryForTransport(decoratedThread),
+        };
+      }
       observeCodexThread(threadMeta.id, { immediate: true, reason: "thread-resume" });
       return sanitizeCodexThreadResult(result);
     },

@@ -5,6 +5,10 @@ import type { RuntimeThreadShape } from "../bridge-types";
 import type { RuntimeStore, RuntimeThreadMeta } from "../runtime-store";
 
 export type RuntimeOwnerState = "idle" | "running" | "waiting_for_client" | "closed";
+export type RuntimeSessionSourceKind =
+  | "managed_runtime"
+  | "rollout_observer"
+  | "thread_read_fallback";
 
 export interface RuntimeSessionHandle {
   threadId: string;
@@ -16,6 +20,11 @@ export interface RuntimeSessionHandle {
   model: string | null;
   ownerState: RuntimeOwnerState;
   activeTurnId: string | null;
+  sourceKind: RuntimeSessionSourceKind;
+  syncEpoch: number;
+  rolloutPath: string | null;
+  lastProjectedCursor: string | null;
+  takeoverWatermark: string | null;
   createdAt: string;
   updatedAt: string;
 }

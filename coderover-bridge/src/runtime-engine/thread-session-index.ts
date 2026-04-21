@@ -5,7 +5,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 
-import type { RuntimeOwnerState, RuntimeSessionHandle } from "./types";
+import type { RuntimeOwnerState, RuntimeSessionHandle, RuntimeSessionSourceKind } from "./types";
 
 interface ThreadSessionIndexFileShape {
   version: 1;
@@ -105,6 +105,7 @@ export function createThreadSessionIndex(
   }
 
   function flush(): void {
+    fs.mkdirSync(path.dirname(indexPath), { recursive: true });
     const payload = JSON.stringify({
       version: INDEX_VERSION,
       sessions: state.sessions,
@@ -172,6 +173,11 @@ function normalizeSessionHandle(
     model: normalizeNullableString(value.model),
     ownerState: normalizeOwnerState(value.ownerState),
     activeTurnId: normalizeNullableString(value.activeTurnId),
+    sourceKind: normalizeSourceKind(value.sourceKind),
+    syncEpoch: normalizeSyncEpoch(value.syncEpoch),
+    rolloutPath: normalizeNullableString(value.rolloutPath),
+    lastProjectedCursor: normalizeNullableString(value.lastProjectedCursor),
+    takeoverWatermark: normalizeNullableString(value.takeoverWatermark),
     createdAt: normalizeTimestamp(value.createdAt) || now,
     updatedAt: normalizeTimestamp(value.updatedAt) || now,
   };
@@ -196,6 +202,30 @@ function normalizeOwnerState(value: unknown): RuntimeOwnerState {
     return value;
   }
   return "idle";
+}
+
+function normalizeSourceKind(value: unknown): RuntimeSessionSourceKind {
+  if (
+    value === "managed_runtime"
+    || value === "rollout_observer"
+    || value === "thread_read_fallback"
+  ) {
+    return value;
+  }
+  return "thread_read_fallback";
+}
+
+function normalizeSyncEpoch(value: unknown): number {
+  if (typeof value === "number" && Number.isFinite(value) && value >= 1) {
+    return Math.floor(value);
+  }
+  if (typeof value === "string") {
+    const parsed = Number(value.trim());
+    if (Number.isFinite(parsed) && parsed >= 1) {
+      return Math.floor(parsed);
+    }
+  }
+  return 1;
 }
 
 function normalizeTimestamp(value: unknown): string | null {

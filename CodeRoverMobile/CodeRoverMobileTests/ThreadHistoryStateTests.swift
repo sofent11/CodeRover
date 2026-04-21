@@ -255,6 +255,70 @@ final class ThreadHistoryStateTests: XCTestCase {
         XCTAssertEqual(service.historyStateByThread[threadID]?.newestCursor, "cursor-3")
     }
 
+    func testLowerSyncEpochTailHistoryResponseIsDropped() async {
+        let service = makeService()
+        let threadID = "thread-stale-tail-epoch"
+        service.isConnected = true
+        service.isInitialized = true
+        service.threadSyncEpochByThreadID[threadID] = 3
+        service.messagesByThread[threadID] = makeMessages(threadID: threadID, range: 1 ... 2)
+
+        service.requestTransportOverride = { _, _ in
+            RPCMessage(
+                id: .string(UUID().uuidString),
+                result: .object([
+                    "thread": self.makeThreadPayload(
+                        threadID: threadID,
+                        title: "Stale",
+                        messageRange: 3 ... 4
+                    ),
+                    "historyWindow": self.makeHistoryWindowObject(
+                        olderCursor: "cursor-3",
+                        newerCursor: "cursor-4",
+                        hasOlder: false,
+                        hasNewer: false,
+                        syncEpoch: 2,
+                        projectionSource: "thread_read_fallback"
+                    ),
+                ]),
+                includeJSONRPC: false
+            )
+        }
+
+        await XCTAssertThrowsErrorAsync {
+            try await service.loadTailThreadHistory(
+                threadId: threadID,
+                replaceLocalHistory: false,
+                refreshGeneration: service.currentPerThreadRefreshGeneration(for: threadID)
+            )
+        }
+        XCTAssertEqual(service.messagesByThread[threadID]?.map(\.itemId), ["item-1", "item-2"])
+    }
+
+    func testLowerSyncEpochTimelineNotificationIsDropped() {
+        let service = makeService()
+        let threadID = "thread-stale-timeline-epoch"
+        service.activeThreadId = threadID
+        service.threadSyncEpochByThreadID[threadID] = 4
+        service.threads = [ConversationThread(id: threadID, title: "Thread", provider: "codex")]
+
+        service.handleNotification(
+            method: "timeline/itemCompleted",
+            params: .object([
+                "threadId": .string(threadID),
+                "timelineItemId": .string("timeline-item-1"),
+                "role": .string("assistant"),
+                "kind": .string("chat"),
+                "text": .string("stale"),
+                "status": .string("completed"),
+                "syncEpoch": .integer(3),
+                "sourceKind": .string("rollout_observer"),
+            ])
+        )
+
+        XCTAssertTrue(service.messagesByThread[threadID, default: []].isEmpty)
+    }
+
     func testIncomingDeltaAfterLocalTurnStartBypassesSeededUserCursorGap() async throws {
         let service = makeService()
         let threadID = "thread-local-turn-gap"
@@ -716,6 +780,104 @@ final class ThreadHistoryStateTests: XCTestCase {
         XCTAssertEqual(service.historyStateByThread[threadID]?.newestCursor, "cursor-1")
     }
 
+    func testConcurrentThreadHistoryLoadsCoalescePerThread() async throws {
+        let service = makeService()
+        let threadID = "thread-history-coalesce"
+        service.isConnected = true
+        service.isInitialized = true
+        service.threads = [ConversationThread(id: threadID, title: "Thread", provider: "codex")]
+
+        let requestStarted = expectation(description: "history request started once")
+        var releaseRequest: CheckedContinuation<Void, Never>?
+        var requestCount = 0
+
+        service.requestTransportOverride = { method, params in
+            XCTAssertEqual(method, "thread/read")
+            XCTAssertEqual(params?.objectValue?["history"]?.objectValue?["mode"]?.stringValue, "tail")
+            requestCount += 1
+            requestStarted.fulfill()
+            await withCheckedContinuation { continuation in
+                releaseRequest = continuation
+            }
+            return RPCMessage(
+                id: .string(UUID().uuidString),
+                result: .object([
+                    "thread": self.makeThreadPayload(
+                        threadID: threadID,
+                        title: "Tail",
+                        messageRange: 1 ... 2
+                    ),
+                    "historyWindow": self.makeHistoryWindowObject(
+                        olderCursor: "cursor-1",
+                        newerCursor: "cursor-2",
+                        hasOlder: false,
+                        hasNewer: false
+                    ),
+                ]),
+                includeJSONRPC: false
+            )
+        }
+
+        let firstTask = Task { try await service.loadThreadHistoryIfNeeded(threadId: threadID, forceRefresh: true) }
+        let secondTask = Task { try await service.loadThreadHistoryIfNeeded(threadId: threadID, forceRefresh: true) }
+
+        await fulfillment(of: [requestStarted], timeout: 1.0)
+        releaseRequest?.resume()
+
+        _ = try await firstTask.value
+        _ = try await secondTask.value
+
+        XCTAssertEqual(requestCount, 1)
+        XCTAssertEqual(service.messagesByThread[threadID]?.map(\.itemId), ["item-1", "item-2"])
+    }
+
+    func testHandleMissingThreadCancelsStaleResumeWriteback() async {
+        let service = makeService()
+        let threadID = "thread-stale-resume-cancel"
+        service.isConnected = true
+        service.isInitialized = true
+        service.threads = [ConversationThread(id: threadID, title: "Thread", provider: "codex")]
+
+        let resumeStarted = expectation(description: "resume started")
+        var releaseResume: CheckedContinuation<Void, Never>?
+
+        service.requestTransportOverride = { method, _ in
+            XCTAssertEqual(method, "thread/resume")
+            resumeStarted.fulfill()
+            await withCheckedContinuation { continuation in
+                releaseResume = continuation
+            }
+            return RPCMessage(
+                id: .string(UUID().uuidString),
+                result: .object([
+                    "thread": self.makeThreadPayload(
+                        threadID: threadID,
+                        title: "Resume",
+                        messageRange: 1 ... 2
+                    ),
+                ]),
+                includeJSONRPC: false
+            )
+        }
+
+        let resumeTask = Task { try await service.ensureThreadResumed(threadId: threadID, force: true) }
+        await fulfillment(of: [resumeStarted], timeout: 1.0)
+
+        service.handleMissingThread(threadID)
+        releaseResume?.resume()
+
+        let result = await resumeTask.result
+        switch result {
+        case .success:
+            XCTFail("Expected cancelled resume to avoid writing stale state")
+        case .failure:
+            break
+        }
+
+        XCTAssertNil(service.messagesByThread[threadID])
+        XCTAssertEqual(service.threads.first(where: { $0.id == threadID })?.syncState, .archivedLocal)
+    }
+
     func testMergeCanonicalHistoryKeepsLongerLocalAssistantTextWhenServerSnapshotIsStale() {
         let service = makeService()
         let threadID = "thread-stale-snapshot"
@@ -869,6 +1031,206 @@ final class ThreadHistoryStateTests: XCTestCase {
         XCTAssertEqual(merged.last?.timelineStatus, "completed")
     }
 
+    func testTailHistoryMergeDropsStaleCanonicalMessagesInsideCoveredWindow() {
+        let service = makeService()
+        let threadID = "thread-tail-covered-prune"
+
+        let existingMessages = [
+            ChatMessage(
+                id: "item-1",
+                threadId: threadID,
+                role: .assistant,
+                text: "message-1",
+                createdAt: Date(timeIntervalSince1970: 1),
+                turnId: "turn-1",
+                itemId: "item-1",
+                timelineOrdinal: 1,
+                orderIndex: 1
+            ),
+            ChatMessage(
+                id: "item-2",
+                threadId: threadID,
+                role: .assistant,
+                text: "message-2",
+                createdAt: Date(timeIntervalSince1970: 2),
+                turnId: "turn-1",
+                itemId: "item-2",
+                timelineOrdinal: 2,
+                orderIndex: 2
+            ),
+            ChatMessage(
+                id: "item-3",
+                threadId: threadID,
+                role: .assistant,
+                text: "message-3",
+                createdAt: Date(timeIntervalSince1970: 3),
+                turnId: "turn-1",
+                itemId: "item-3",
+                timelineOrdinal: 3,
+                orderIndex: 3
+            ),
+            ChatMessage(
+                id: "ghost-5",
+                threadId: threadID,
+                role: .assistant,
+                text: "ghost",
+                createdAt: Date(timeIntervalSince1970: 5),
+                turnId: "turn-1",
+                itemId: "ghost-5",
+                timelineOrdinal: 5,
+                orderIndex: 5
+            ),
+            ChatMessage(
+                id: "item-6",
+                threadId: threadID,
+                role: .assistant,
+                text: "old-message-6",
+                createdAt: Date(timeIntervalSince1970: 6),
+                turnId: "turn-1",
+                itemId: "item-6",
+                timelineOrdinal: 6,
+                orderIndex: 6
+            ),
+        ]
+
+        _ = service.synchronizeThreadTimelineState(
+            threadId: threadID,
+            canonicalMessages: existingMessages
+        )
+
+        let merged = service.mergeCanonicalHistoryIntoTimelineState(
+            threadId: threadID,
+            historyMessages: [
+                ChatMessage(
+                    id: "item-4",
+                    threadId: threadID,
+                    role: .assistant,
+                    text: "message-4",
+                    createdAt: Date(timeIntervalSince1970: 4),
+                    turnId: "turn-1",
+                    itemId: "item-4",
+                    timelineOrdinal: 4,
+                    orderIndex: 4
+                ),
+                ChatMessage(
+                    id: "item-5",
+                    threadId: threadID,
+                    role: .assistant,
+                    text: "message-5",
+                    createdAt: Date(timeIntervalSince1970: 5),
+                    turnId: "turn-1",
+                    itemId: "item-5",
+                    timelineOrdinal: 5,
+                    orderIndex: 5
+                ),
+                ChatMessage(
+                    id: "item-6",
+                    threadId: threadID,
+                    role: .assistant,
+                    text: "message-6",
+                    createdAt: Date(timeIntervalSince1970: 6),
+                    turnId: "turn-1",
+                    itemId: "item-6",
+                    timelineOrdinal: 6,
+                    orderIndex: 6
+                ),
+            ],
+            mode: .tail,
+            activeThreadIDs: [],
+            runningThreadIDs: []
+        )
+
+        XCTAssertEqual(merged.map(\.id), ["item-1", "item-2", "item-3", "item-4", "item-5", "item-6"])
+        XCTAssertFalse(merged.contains(where: { $0.id == "ghost-5" }))
+        XCTAssertEqual(merged.last?.text, "message-6")
+    }
+
+    func testTailHistoryMergeUsesTimestampCoverageWhenOrdinalsAreMissing() {
+        let service = makeService()
+        let threadID = "thread-tail-date-prune"
+
+        let existingMessages = [
+            ChatMessage(
+                id: "item-1",
+                threadId: threadID,
+                role: .assistant,
+                text: "message-1",
+                createdAt: Date(timeIntervalSince1970: 1),
+                turnId: "turn-1",
+                itemId: "item-1",
+                orderIndex: 1
+            ),
+            ChatMessage(
+                id: "ghost-date",
+                threadId: threadID,
+                role: .assistant,
+                text: "ghost-date",
+                createdAt: Date(timeIntervalSince1970: 4.5),
+                turnId: "turn-1",
+                itemId: "ghost-date",
+                orderIndex: 45
+            ),
+            ChatMessage(
+                id: "item-6",
+                threadId: threadID,
+                role: .assistant,
+                text: "old-message-6",
+                createdAt: Date(timeIntervalSince1970: 6),
+                turnId: "turn-1",
+                itemId: "item-6",
+                orderIndex: 60
+            ),
+        ]
+
+        _ = service.synchronizeThreadTimelineState(
+            threadId: threadID,
+            canonicalMessages: existingMessages
+        )
+
+        let merged = service.mergeCanonicalHistoryIntoTimelineState(
+            threadId: threadID,
+            historyMessages: [
+                ChatMessage(
+                    id: "item-4",
+                    threadId: threadID,
+                    role: .assistant,
+                    text: "message-4",
+                    createdAt: Date(timeIntervalSince1970: 4),
+                    turnId: "turn-1",
+                    itemId: "item-4",
+                    orderIndex: 4
+                ),
+                ChatMessage(
+                    id: "item-5",
+                    threadId: threadID,
+                    role: .assistant,
+                    text: "message-5",
+                    createdAt: Date(timeIntervalSince1970: 5),
+                    turnId: "turn-1",
+                    itemId: "item-5",
+                    orderIndex: 5
+                ),
+                ChatMessage(
+                    id: "item-6",
+                    threadId: threadID,
+                    role: .assistant,
+                    text: "message-6",
+                    createdAt: Date(timeIntervalSince1970: 6),
+                    turnId: "turn-1",
+                    itemId: "item-6",
+                    orderIndex: 6
+                ),
+            ],
+            mode: .tail,
+            activeThreadIDs: [],
+            runningThreadIDs: []
+        )
+
+        XCTAssertEqual(merged.map(\.id), ["item-1", "item-4", "item-5", "item-6"])
+        XCTAssertFalse(merged.contains(where: { $0.id == "ghost-date" }))
+        XCTAssertEqual(merged.last?.text, "message-6")
+    }
+
     func testThreadTimelineStateRepositionsExistingItemWithoutFullResort() {
         var state = ThreadTimelineState(
             messages: [
@@ -951,13 +1313,17 @@ final class ThreadHistoryStateTests: XCTestCase {
         olderCursor: String?,
         newerCursor: String?,
         hasOlder: Bool,
-        hasNewer: Bool
+        hasNewer: Bool,
+        syncEpoch: Int = 1,
+        projectionSource: String? = nil
     ) -> JSONValue {
         .object([
             "olderCursor": olderCursor.map(JSONValue.string) ?? .null,
             "newerCursor": newerCursor.map(JSONValue.string) ?? .null,
             "hasOlder": .bool(hasOlder),
             "hasNewer": .bool(hasNewer),
+            "syncEpoch": .integer(syncEpoch),
+            "projectionSource": projectionSource.map(JSONValue.string) ?? .null,
         ])
     }
 

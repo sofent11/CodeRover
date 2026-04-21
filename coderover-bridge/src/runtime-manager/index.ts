@@ -7,6 +7,7 @@ export {};
 // Depends on: crypto, ../runtime-store, ../provider-catalog, ../providers/*
 
 import { randomUUID } from "crypto";
+import * as fs from "fs";
 
 import type {
   JsonRpcEnvelope,
@@ -43,12 +44,19 @@ import {
   createThreadSessionIndex,
   type ThreadSessionIndex,
 } from "../runtime-engine/thread-session-index";
-import type { ProviderRuntimeEngine, RuntimeEvent } from "../runtime-engine/types";
+import type {
+  ProviderRuntimeEngine,
+  RuntimeEvent,
+  RuntimeSessionSourceKind,
+} from "../runtime-engine/types";
 import * as historyHelpers from "./codex-history";
 import * as routingHelpers from "./client-routing";
 import * as observerHelpers from "./codex-observer";
 import * as managedRuntimeHelpers from "./managed-provider-runtime";
 import * as normalizerHelpers from "./normalizers";
+import {
+  findRolloutFileForThread,
+} from "../rollout-watch";
 import {
   CODEX_HISTORY_CACHE_MESSAGE_LIMIT,
   CODEX_HISTORY_CACHE_THREAD_LIMIT,
@@ -114,6 +122,27 @@ interface ObservedCodexThreadWatcher extends observerHelpers.ObservedCodexThread
   inFlight: boolean;
   lastSnapshot: CodexHistorySnapshot | null;
   lastPollAt: number;
+  rolloutPath: string | null;
+  lastRolloutSize: number;
+  rolloutPartialLine: string;
+  rolloutBootstrapped: boolean;
+  rolloutState: ObservedCodexRolloutState;
+}
+
+interface ObservedCodexRolloutState {
+  threadId: string;
+  activeTurnId: string | null;
+  cwd: string | null;
+  callMetadataByID: Map<string, {
+    type: "command_execution" | "tool_call";
+    toolName: string | null;
+    command: string | null;
+    cwd: string | null;
+  }>;
+  reasoningItemIdByTurn: Map<string, string>;
+  openReasoningTurnIDs: Set<string>;
+  assistantMessageCountByTurn: Map<string, number>;
+  userMessageCountByTurn: Map<string, number>;
 }
 
 interface HistoryItemMetadata {
@@ -407,10 +436,22 @@ export function createRuntimeManager({
         case "thread/read":
           return await handleRequestWithResponse(requestId, async () => {
             await ensureExternalThreadsIndexed();
-            const result = await readThread(stripProviderField(params));
             const threadId = normalizeOptionalString(params.threadId || params.thread_id);
+            const historyRequest = normalizeHistoryRequest(params?.history);
+            if (threadId) {
+              primeObservedCodexThreadRollout(threadId);
+              if (historyRequest) {
+                const rolloutResult = readCodexHistoryWindowFromRollout(threadId, historyRequest);
+                if (rolloutResult) {
+                  observeCodexThread(threadId, { immediate: true, reason: "thread-read" });
+                  return decorateThreadResultWithSessionMetadata(threadId, rolloutResult);
+                }
+              }
+            }
+            const result = await readThread(stripProviderField(params));
             if (threadId) {
               observeCodexThread(threadId, { immediate: true, reason: "thread-read" });
+              return decorateThreadResultWithSessionMetadata(threadId, result);
             }
             return result;
           });
@@ -424,7 +465,8 @@ export function createRuntimeManager({
         case "thread/resume":
           return await handleRequestWithResponse(requestId, async () => {
             const threadMeta = await requireThreadMeta(params.threadId || params.thread_id);
-            return getProviderEngine(threadMeta.provider).resumeThread(threadMeta, params);
+            const result = await getProviderEngine(threadMeta.provider).resumeThread(threadMeta, params);
+            return decorateThreadResultWithSessionMetadata(threadMeta.id, result);
           });
 
         case "thread/compact/start":
@@ -588,8 +630,12 @@ export function createRuntimeManager({
     if (!historyChange) {
       return false;
     }
+    const sourceKind = historyChange.threadId
+      ? threadSessionIndex.get(historyChange.threadId)?.sourceKind
+      : null;
     return historyChange.reason === "cache-invalidated"
-      || historyChange.sourceMethod === "thread/read";
+      || historyChange.sourceMethod === "thread/read"
+      || sourceKind === "rollout_observer";
   }
 
   function projectCodexTransportNotificationToCanonicalMessages(
@@ -666,6 +712,36 @@ export function createRuntimeManager({
     });
   }
 
+  function createObservedCodexRolloutState(threadId: string): ObservedCodexRolloutState {
+    return {
+      threadId,
+      activeTurnId: null,
+      cwd: null,
+      callMetadataByID: new Map(),
+      reasoningItemIdByTurn: new Map(),
+      openReasoningTurnIDs: new Set(),
+      assistantMessageCountByTurn: new Map(),
+      userMessageCountByTurn: new Map(),
+    };
+  }
+
+  function resetObservedCodexThreadRolloutState(
+    watcher: ObservedCodexThreadWatcher,
+    rolloutPath: string | null = watcher.rolloutPath
+  ): void {
+    watcher.rolloutPath = rolloutPath;
+    watcher.lastRolloutSize = 0;
+    watcher.rolloutPartialLine = "";
+    watcher.rolloutBootstrapped = false;
+    watcher.rolloutState = createObservedCodexRolloutState(watcher.threadId);
+  }
+
+  function resolveCodexSessionsRoot(): string {
+    const codexHome = normalizeOptionalString(process.env.CODEX_HOME)
+      || `${process.env.HOME || ""}/.codex`;
+    return `${codexHome}/sessions`;
+  }
+
   function observeCodexThread(
     threadId: unknown,
     { immediate = false, reason = "observe" }: { immediate?: boolean; reason?: string } = {}
@@ -680,18 +756,7 @@ export function createRuntimeManager({
     }
 
     evictObservedCodexThreadsIfNeeded(normalizedThreadId);
-
-    const now = Date.now();
-    const watcher: ObservedCodexThreadWatcher = codexObservedThreadWatchers.get(normalizedThreadId) || {
-      threadId: normalizedThreadId,
-      lastObservedAt: now,
-      timer: null,
-      inFlight: false,
-      lastSnapshot: null,
-      lastPollAt: 0,
-    };
-    watcher.lastObservedAt = now;
-    codexObservedThreadWatchers.set(normalizedThreadId, watcher);
+    const watcher = ensureObservedCodexThreadWatcher(normalizedThreadId);
     scheduleObservedCodexThreadPoll(watcher, immediate ? 0 : codexObservedThreadPollIntervalMs);
     debugLog(
       `${logPrefix} [codex-flow] stage=observe thread=${normalizedThreadId} reason=${reason} immediate=${immediate}`
@@ -733,6 +798,67 @@ export function createRuntimeManager({
     watcher.timer.unref?.();
   }
 
+  function ensureObservedCodexThreadWatcher(threadId: string): ObservedCodexThreadWatcher {
+    const now = Date.now();
+    const existing = codexObservedThreadWatchers.get(threadId);
+    if (existing) {
+      existing.lastObservedAt = now;
+      return existing;
+    }
+    const watcher: ObservedCodexThreadWatcher = {
+      threadId,
+      lastObservedAt: now,
+      timer: null,
+      inFlight: false,
+      lastSnapshot: null,
+      lastPollAt: 0,
+      rolloutPath: null,
+      lastRolloutSize: 0,
+      rolloutPartialLine: "",
+      rolloutBootstrapped: false,
+      rolloutState: createObservedCodexRolloutState(threadId),
+    };
+    codexObservedThreadWatchers.set(threadId, watcher);
+    return watcher;
+  }
+
+  function primeObservedCodexThreadRollout(threadId: string): void {
+    const rolloutPath = findRolloutFileForThread(resolveCodexSessionsRoot(), threadId);
+    if (!rolloutPath) {
+      return;
+    }
+    evictObservedCodexThreadsIfNeeded(threadId);
+    const watcher = ensureObservedCodexThreadWatcher(threadId);
+    if (watcher.rolloutPath !== rolloutPath) {
+      resetObservedCodexThreadRolloutState(watcher, rolloutPath);
+    }
+    try {
+      observeCodexThreadViaRollout(watcher);
+    } catch (error) {
+      debugError(`${logPrefix} rollout prime failed thread=${threadId}: ${String(asObject(error).message || error)}`);
+    }
+  }
+
+  function readCodexHistoryWindowFromRollout(
+    threadId: string,
+    historyRequest: RuntimeHistoryRequest
+  ): unknown {
+    const rolloutPath = findRolloutFileForThread(resolveCodexSessionsRoot(), threadId);
+    if (!rolloutPath) {
+      return null;
+    }
+
+    evictObservedCodexThreadsIfNeeded(threadId);
+    const watcher = ensureObservedCodexThreadWatcher(threadId);
+    resetObservedCodexThreadRolloutState(watcher, rolloutPath);
+    observeCodexThreadViaRollout(watcher);
+    const snapshot = readCodexHistorySnapshot(threadId);
+    if (!snapshot) {
+      return null;
+    }
+    return buildHistoryWindowResponse(snapshot, historyRequest, true);
+  }
+
   async function pollObservedCodexThread(threadId: unknown): Promise<void> {
     const normalizedThreadId = normalizeOptionalString(threadId);
     if (!normalizedThreadId) {
@@ -747,35 +873,9 @@ export function createRuntimeManager({
     watcher.inFlight = true;
     watcher.lastPollAt = Date.now();
     try {
-      await ensureCodexWarm();
-      const result = await codexAdapter.readThread({
-        threadId: normalizedThreadId,
-        includeTurns: true,
-      });
-      const threadObject = extractThreadFromResult(result);
-      if (!threadObject) {
-        stopObservedCodexThreadWatcher(normalizedThreadId, "thread-missing");
-        return;
-      }
-
-      const decoratedThread = decorateConversationThread(threadObject);
-      upsertOverlayFromThread(decoratedThread);
-      const previousSnapshot = watcher.lastSnapshot || readCodexHistorySnapshot(normalizedThreadId);
-      const nextSnapshot = reconcileCanonicalTimelineIds(
-        previousSnapshot,
-        createHistorySnapshotFromThread(decoratedThread)
-      );
-      const historyChange = buildHistoryChangedFromSnapshotDiff(previousSnapshot, nextSnapshot);
-
-      primeCodexHistoryCache(normalizedThreadId, decoratedThread);
-      watcher.lastSnapshot = nextSnapshot;
-
-      if (historyChange) {
-        debugLog(
-          `${logPrefix} [codex-flow] stage=observed-diff thread=${normalizedThreadId}`
-          + ` item=${historyChange.itemId || "none"} cursor=${historyChange.cursor || "none"}`
-        );
-        emitCodexHistoryChangedNotification(historyChange);
+      const didProjectRollout = observeCodexThreadViaRollout(watcher);
+      if (!didProjectRollout) {
+        await pollObservedCodexThreadViaThreadRead(watcher);
       }
     } catch (error) {
       const errorRecord = asObject(error);
@@ -798,6 +898,593 @@ export function createRuntimeManager({
       return;
     }
     scheduleObservedCodexThreadPoll(watcher, codexObservedThreadPollIntervalMs);
+  }
+
+  function observeCodexThreadViaRollout(watcher: ObservedCodexThreadWatcher): boolean {
+    const sessionRecord = threadSessionIndex.get(watcher.threadId);
+    if (sessionRecord?.sourceKind === "managed_runtime") {
+      return true;
+    }
+
+    const rolloutPath = findRolloutFileForThread(resolveCodexSessionsRoot(), watcher.threadId) || watcher.rolloutPath;
+    if (!rolloutPath) {
+      return false;
+    }
+
+    if (watcher.rolloutPath !== rolloutPath) {
+      resetObservedCodexThreadRolloutState(watcher, rolloutPath);
+    }
+
+    const stat = fs.statSync(rolloutPath);
+    if (stat.size < watcher.lastRolloutSize) {
+      resetObservedCodexThreadRolloutState(watcher, rolloutPath);
+    }
+
+    upsertThreadSessionRecord({
+      threadId: watcher.threadId,
+      provider: "codex",
+      rolloutPath,
+      cwd: watcher.rolloutState.cwd,
+      activeTurnId: watcher.rolloutState.activeTurnId,
+      ownerState: "idle",
+      sourceKind: "rollout_observer",
+    });
+
+    if (!watcher.rolloutBootstrapped) {
+      const bootstrapChunk = fs.readFileSync(rolloutPath, "utf8");
+      const bootstrapSplit = splitObservedCodexRolloutChunk(bootstrapChunk);
+      codexHistoryCache.delete(watcher.threadId);
+      ensureCodexHistoryCacheEntry(watcher.threadId, {
+        cwd: watcher.rolloutState.cwd,
+      });
+      processCodexRolloutLines(
+        watcher.threadId,
+        bootstrapSplit.lines,
+        watcher.rolloutState,
+        false
+      );
+      watcher.rolloutPartialLine = bootstrapSplit.partialLine;
+      watcher.lastRolloutSize = stat.size;
+      watcher.rolloutBootstrapped = true;
+      watcher.lastSnapshot = readCodexHistorySnapshot(watcher.threadId);
+      return true;
+    }
+
+    if (stat.size > watcher.lastRolloutSize) {
+      const growthChunk = readUtf8FileSlice(rolloutPath, watcher.lastRolloutSize, stat.size);
+      const split = splitObservedCodexRolloutChunk(`${watcher.rolloutPartialLine}${growthChunk}`);
+      watcher.rolloutPartialLine = split.partialLine;
+      watcher.lastRolloutSize = stat.size;
+      processCodexRolloutLines(
+        watcher.threadId,
+        split.lines,
+        watcher.rolloutState,
+        true
+      );
+      watcher.lastSnapshot = readCodexHistorySnapshot(watcher.threadId);
+    }
+
+    return true;
+  }
+
+  async function pollObservedCodexThreadViaThreadRead(
+    watcher: ObservedCodexThreadWatcher
+  ): Promise<void> {
+    await ensureCodexWarm();
+    const result = await codexAdapter.readThread({
+      threadId: watcher.threadId,
+      history: {
+        mode: "tail",
+        limit: CODEX_HISTORY_CACHE_MESSAGE_LIMIT,
+      },
+    });
+    const threadObject = extractThreadFromResult(result);
+    if (!threadObject) {
+      stopObservedCodexThreadWatcher(watcher.threadId, "thread-missing");
+      return;
+    }
+
+    const decoratedThread = decorateConversationThread(threadObject);
+    upsertOverlayFromThread(decoratedThread);
+    const historyWindow = extractHistoryWindowFromResult(result);
+    const observedSnapshot = {
+      ...createHistorySnapshotFromThread(decoratedThread),
+      hasOlder: Boolean(historyWindow?.hasOlder),
+      hasNewer: Boolean(historyWindow?.hasNewer),
+    };
+    const previousSnapshot = watcher.lastSnapshot || readCodexHistorySnapshot(watcher.threadId);
+    const nextSnapshot = reconcileCanonicalTimelineIds(
+      previousSnapshot,
+      observedSnapshot
+    );
+    const historyChange = buildHistoryChangedFromSnapshotDiff(previousSnapshot, nextSnapshot);
+
+    writeCodexHistoryCache(watcher.threadId, observedSnapshot);
+    watcher.lastSnapshot = nextSnapshot;
+
+    if (historyChange) {
+      debugLog(
+        `${logPrefix} [codex-flow] stage=observed-diff thread=${watcher.threadId}`
+        + ` item=${historyChange.itemId || "none"} cursor=${historyChange.cursor || "none"}`
+      );
+      emitCodexHistoryChangedNotification(historyChange);
+    }
+  }
+
+  function splitObservedCodexRolloutChunk(
+    chunk: string
+  ): { lines: string[]; partialLine: string } {
+    if (!chunk) {
+      return { lines: [], partialLine: "" };
+    }
+    const parts = chunk.split("\n");
+    const partialLine = parts.pop() || "";
+    return {
+      lines: parts,
+      partialLine,
+    };
+  }
+
+  function readUtf8FileSlice(filePath: string, start: number, endExclusive: number): string {
+    const fd = fs.openSync(filePath, "r");
+    try {
+      const length = Math.max(0, endExclusive - start);
+      if (length === 0) {
+        return "";
+      }
+      const buffer = Buffer.alloc(length);
+      fs.readSync(fd, buffer, 0, length, start);
+      return buffer.toString("utf8");
+    } finally {
+      fs.closeSync(fd);
+    }
+  }
+
+  function processCodexRolloutLines(
+    threadId: string,
+    lines: string[],
+    rolloutState: ObservedCodexRolloutState,
+    emitRealtime: boolean
+  ): void {
+    if (!Array.isArray(lines) || lines.length === 0) {
+      return;
+    }
+
+    ensureCodexHistoryCacheEntry(threadId, {
+      cwd: rolloutState.cwd,
+    });
+    for (const rawLine of lines) {
+      const trimmedLine = rawLine.trim();
+      if (!trimmedLine) {
+        continue;
+      }
+      let parsedLine: UnknownRecord | null = null;
+      try {
+        parsedLine = JSON.parse(trimmedLine) as UnknownRecord;
+      } catch {
+        continue;
+      }
+      ensureCodexHistoryCacheEntry(threadId, {
+        cwd: rolloutState.cwd,
+        updatedAt: normalizeOptionalString(parsedLine.timestamp),
+      });
+
+      const notifications = synthesizeCodexNotificationsFromRolloutEntry(parsedLine, rolloutState);
+      notifications.forEach((notification) => {
+        forwardSyntheticCodexNotification(
+          notification,
+          emitRealtime
+        );
+      });
+    }
+  }
+
+  function synthesizeCodexNotificationsFromRolloutEntry(
+    entry: UnknownRecord,
+    rolloutState: ObservedCodexRolloutState
+  ): UnknownRecord[] {
+    const entryType = normalizeOptionalString(entry.type);
+    const timestamp = normalizeOptionalString(entry.timestamp) || new Date().toISOString();
+    const payload = asObject(entry.payload);
+    if (entryType === "session_meta") {
+      rolloutState.cwd = normalizeOptionalString(payload.cwd) || rolloutState.cwd;
+      return [];
+    }
+
+    if (entryType === "turn_context") {
+      rolloutState.activeTurnId = normalizeOptionalString(payload.turn_id)
+        || normalizeOptionalString(payload.turnId)
+        || rolloutState.activeTurnId;
+      rolloutState.cwd = normalizeOptionalString(payload.cwd) || rolloutState.cwd;
+      return [];
+    }
+
+    if (entryType === "event_msg") {
+      return synthesizeCodexNotificationsFromRolloutEventMsg(
+        payload,
+        timestamp,
+        rolloutState
+      );
+    }
+
+    if (entryType === "response_item") {
+      return synthesizeCodexNotificationsFromRolloutResponseItem(
+        payload,
+        timestamp,
+        rolloutState
+      );
+    }
+
+    return [];
+  }
+
+  function synthesizeCodexNotificationsFromRolloutEventMsg(
+    payload: UnknownRecord,
+    timestamp: string,
+    rolloutState: ObservedCodexRolloutState
+  ): UnknownRecord[] {
+    const eventType = normalizeOptionalString(payload.type);
+    const turnId = normalizeOptionalString(payload.turn_id)
+      || normalizeOptionalString(payload.turnId)
+      || rolloutState.activeTurnId;
+    if (eventType === "task_started" && turnId) {
+      rolloutState.activeTurnId = turnId;
+      return [createSyntheticCodexNotification("turn/started", {
+        threadId: rolloutState.threadId,
+        turnId,
+        id: turnId,
+      })];
+    }
+
+    if (eventType === "task_complete" && turnId) {
+      rolloutState.activeTurnId = turnId;
+      const notifications: UnknownRecord[] = [];
+      const reasoningItemId = rolloutState.reasoningItemIdByTurn.get(turnId);
+      if (reasoningItemId && rolloutState.openReasoningTurnIDs.has(turnId)) {
+        notifications.push(createSyntheticCodexNotification("item/completed", {
+          threadId: rolloutState.threadId,
+          turnId,
+          itemId: reasoningItemId,
+          item: {
+            id: reasoningItemId,
+            type: "reasoning",
+            status: "completed",
+            createdAt: timestamp,
+          },
+        }));
+      }
+      rolloutState.openReasoningTurnIDs.delete(turnId);
+      rolloutState.callMetadataByID.clear();
+      notifications.push(createSyntheticCodexNotification("turn/completed", {
+        threadId: rolloutState.threadId,
+        turnId,
+        id: turnId,
+        status: "completed",
+      }));
+      return notifications;
+    }
+
+    if (eventType === "user_message" && turnId) {
+      const itemId = nextObservedCodexMessageItemId(
+        rolloutState.userMessageCountByTurn,
+        "user",
+        rolloutState.threadId,
+        turnId
+      );
+      return [createSyntheticCodexNotification("item/completed", {
+        threadId: rolloutState.threadId,
+        turnId,
+        itemId,
+        item: {
+          id: itemId,
+          type: "user_message",
+          role: "user",
+          text: firstNonEmptyString([payload.message, payload.text]) || "",
+          content: [{
+            type: "text",
+            text: firstNonEmptyString([payload.message, payload.text]) || "",
+          }],
+          status: "completed",
+          createdAt: timestamp,
+        },
+      })];
+    }
+
+    if (eventType === "agent_reasoning" && turnId) {
+      const itemId = ensureObservedCodexReasoningItemId(rolloutState, turnId);
+      rolloutState.openReasoningTurnIDs.add(turnId);
+      return [createSyntheticCodexNotification("item/reasoning/textDelta", {
+        threadId: rolloutState.threadId,
+        turnId,
+        itemId,
+        delta: firstNonEmptyString([payload.text, payload.message, payload.summary]) || "",
+      })];
+    }
+
+    if (eventType === "agent_message" && turnId) {
+      const itemId = nextObservedCodexMessageItemId(
+        rolloutState.assistantMessageCountByTurn,
+        "assistant",
+        rolloutState.threadId,
+        turnId
+      );
+      return [createSyntheticCodexNotification("item/completed", {
+        threadId: rolloutState.threadId,
+        turnId,
+        itemId,
+        item: {
+          id: itemId,
+          type: "agent_message",
+          role: "assistant",
+          text: firstNonEmptyString([payload.message, payload.text]) || "",
+          content: [{
+            type: "text",
+            text: firstNonEmptyString([payload.message, payload.text]) || "",
+          }],
+          status: "completed",
+          createdAt: timestamp,
+        },
+      })];
+    }
+
+    return [];
+  }
+
+  function synthesizeCodexNotificationsFromRolloutResponseItem(
+    payload: UnknownRecord,
+    timestamp: string,
+    rolloutState: ObservedCodexRolloutState
+  ): UnknownRecord[] {
+    const itemType = normalizeOptionalString(payload.type);
+    const turnId = rolloutState.activeTurnId;
+    if (!turnId) {
+      return [];
+    }
+
+    if (itemType === "function_call") {
+      const callId = normalizeOptionalString(payload.call_id) || normalizeOptionalString(payload.callId);
+      const toolName = normalizeOptionalString(payload.name);
+      if (!callId || !toolName) {
+        return [];
+      }
+      const toolArgs = safeParseJsonObject(payload.arguments);
+      if (toolName === "exec_command") {
+        rolloutState.callMetadataByID.set(callId, {
+          type: "command_execution",
+          toolName,
+          command: firstNonEmptyString([toolArgs.cmd, toolArgs.command]),
+          cwd: firstNonEmptyString([toolArgs.workdir, toolArgs.cwd, rolloutState.cwd]),
+        });
+        return [createSyntheticCodexNotification("item/commandExecution/outputDelta", {
+          threadId: rolloutState.threadId,
+          turnId,
+          itemId: callId,
+          command: firstNonEmptyString([toolArgs.cmd, toolArgs.command]),
+          cwd: firstNonEmptyString([toolArgs.workdir, toolArgs.cwd, rolloutState.cwd]),
+          status: "running",
+          item: {
+            id: callId,
+            type: "command_execution",
+            command: firstNonEmptyString([toolArgs.cmd, toolArgs.command]),
+            cwd: firstNonEmptyString([toolArgs.workdir, toolArgs.cwd, rolloutState.cwd]),
+            status: "running",
+            createdAt: timestamp,
+            text: "",
+          },
+        })];
+      }
+
+      rolloutState.callMetadataByID.set(callId, {
+        type: "tool_call",
+        toolName,
+        command: null,
+        cwd: firstNonEmptyString([toolArgs.workdir, toolArgs.cwd, rolloutState.cwd]),
+      });
+      return [createSyntheticCodexNotification("item/started", {
+        threadId: rolloutState.threadId,
+        turnId,
+        itemId: callId,
+        item: {
+          id: callId,
+          type: "tool_call",
+          metadata: {
+            toolName,
+          },
+          status: "running",
+          createdAt: timestamp,
+          text: "",
+        },
+      })];
+    }
+
+    if (itemType === "function_call_output") {
+      const callId = normalizeOptionalString(payload.call_id) || normalizeOptionalString(payload.callId);
+      if (!callId) {
+        return [];
+      }
+      const output = normalizeOptionalString(payload.output) || "";
+      const callMetadata = rolloutState.callMetadataByID.get(callId) || null;
+      rolloutState.callMetadataByID.delete(callId);
+      if (callMetadata?.type === "tool_call") {
+        return [
+          createSyntheticCodexNotification("item/toolCall/outputDelta", {
+            threadId: rolloutState.threadId,
+            turnId,
+            itemId: callId,
+            delta: output,
+            toolName: callMetadata.toolName,
+          }),
+          createSyntheticCodexNotification("item/toolCall/completed", {
+            threadId: rolloutState.threadId,
+            turnId,
+            itemId: callId,
+            item: {
+              id: callId,
+              type: "tool_call",
+              metadata: {
+                toolName: callMetadata.toolName,
+              },
+              status: "completed",
+              text: output,
+              createdAt: timestamp,
+            },
+          }),
+        ];
+      }
+      return [
+        createSyntheticCodexNotification("item/commandExecution/outputDelta", {
+          threadId: rolloutState.threadId,
+          turnId,
+          itemId: callId,
+          delta: output,
+          command: callMetadata?.command,
+          cwd: callMetadata?.cwd,
+          status: "completed",
+        }),
+        createSyntheticCodexNotification("item/completed", {
+          threadId: rolloutState.threadId,
+          turnId,
+          itemId: callId,
+          item: {
+            id: callId,
+            type: "command_execution",
+            command: callMetadata?.command,
+            cwd: callMetadata?.cwd,
+            status: "completed",
+            text: output,
+            createdAt: timestamp,
+          },
+        }),
+      ];
+    }
+
+    if (itemType === "custom_tool_call") {
+      const callId = normalizeOptionalString(payload.call_id) || normalizeOptionalString(payload.callId);
+      const toolName = normalizeOptionalString(payload.name);
+      if (!callId || toolName !== "apply_patch") {
+        return [];
+      }
+      return [createSyntheticCodexNotification("item/completed", {
+        threadId: rolloutState.threadId,
+        turnId,
+        itemId: callId,
+        item: {
+          id: callId,
+          type: "file_change",
+          status: normalizeOptionalString(payload.status) || "completed",
+          text: summarizeObservedCodexPatchInput(payload.input),
+          createdAt: timestamp,
+        },
+      })];
+    }
+
+    return [];
+  }
+
+  function createSyntheticCodexNotification(method: string, params: UnknownRecord): UnknownRecord {
+    return {
+      jsonrpc: "2.0",
+      method,
+      params,
+    };
+  }
+
+  function forwardSyntheticCodexNotification(
+    parsedMessage: UnknownRecord,
+    emitRealtime: boolean
+  ): void {
+    const rawMessage = JSON.stringify(parsedMessage);
+    const historyChange = handleCodexHistoryCacheEvent(rawMessage);
+    if (!emitRealtime) {
+      return;
+    }
+    const canonicalNotifications = projectCodexTransportNotificationToCanonicalMessages(parsedMessage);
+    canonicalNotifications.forEach((message) => {
+      sendApplicationMessage(message);
+      logCodexRealtimeEvent("phone-out", message);
+    });
+    const fallbackHistoryChange = historyChange || buildSyntheticHistoryChangedPayload(parsedMessage);
+    if (shouldEmitHistoryChangedForCodexChange(fallbackHistoryChange)) {
+      emitCodexHistoryChangedNotification(fallbackHistoryChange);
+    }
+  }
+
+  function buildSyntheticHistoryChangedPayload(
+    parsedMessage: UnknownRecord
+  ): CodexHistoryChangedPayload | null {
+    const method = normalizeOptionalString(parsedMessage.method);
+    const params = asObject(parsedMessage.params);
+    if (!method || !method.startsWith("item/")) {
+      return null;
+    }
+    const threadId = extractCodexNotificationThreadId(params);
+    const itemId = extractCodexNotificationItemId(params);
+    if (!threadId || !itemId) {
+      return null;
+    }
+    const snapshot = readCodexHistorySnapshot(threadId);
+    const metadata = historyMetadataForItem(snapshot, itemId);
+    return {
+      provider: "codex",
+      reason: "cache-mutated",
+      scope: "thread",
+      threadId,
+      turnId: metadata?.turnId || extractCodexNotificationTurnId(params) || null,
+      itemId: metadata?.itemId || itemId,
+      previousItemId: metadata?.previousItemId || null,
+      cursor: metadata?.currentCursor || null,
+      previousCursor: metadata?.previousCursor || null,
+      sourceMethod: method,
+      rawMethod: method,
+    };
+  }
+
+  function nextObservedCodexMessageItemId(
+    counterByTurn: Map<string, number>,
+    prefix: string,
+    threadId: string,
+    turnId: string
+  ): string {
+    const nextCount = (counterByTurn.get(turnId) || 0) + 1;
+    counterByTurn.set(turnId, nextCount);
+    return `rollout:${prefix}:${threadId}:${turnId}:${nextCount}`;
+  }
+
+  function ensureObservedCodexReasoningItemId(
+    rolloutState: ObservedCodexRolloutState,
+    turnId: string
+  ): string {
+    const existing = rolloutState.reasoningItemIdByTurn.get(turnId);
+    if (existing) {
+      return existing;
+    }
+    const nextItemId = `rollout:reasoning:${rolloutState.threadId}:${turnId}`;
+    rolloutState.reasoningItemIdByTurn.set(turnId, nextItemId);
+    return nextItemId;
+  }
+
+  function summarizeObservedCodexPatchInput(input: unknown): string {
+    const rawInput = normalizeOptionalString(input);
+    if (!rawInput) {
+      return "Applied patch";
+    }
+    const matchedPath = rawInput.match(/\*\*\* (?:Add|Update|Delete) File: ([^\n]+)/);
+    if (matchedPath?.[1]) {
+      return `Patched ${matchedPath[1].trim()}`;
+    }
+    return "Applied patch";
+  }
+
+  function safeParseJsonObject(value: unknown): UnknownRecord {
+    if (typeof value !== "string" || !value.trim()) {
+      return {};
+    }
+    try {
+      const parsed = JSON.parse(value) as unknown;
+      return asObject(parsed);
+    } catch {
+      return {};
+    }
   }
 
   function stopObservedCodexThreadWatcher(threadId: unknown, reason = "stopped"): void {
@@ -1010,8 +1697,18 @@ export function createRuntimeManager({
     threadId: string,
     historyRequest: RuntimeHistoryRequest
   ): unknown {
-    const cacheEntry = touchCodexHistoryCache(threadId);
+    let cacheEntry = touchCodexHistoryCache(threadId);
     if (!cacheEntry) {
+      primeObservedCodexThreadRollout(threadId);
+      cacheEntry = touchCodexHistoryCache(threadId);
+    }
+    if (!cacheEntry) {
+      return null;
+    }
+    if (isCodexHistoryCacheStale(threadId, cacheEntry)) {
+      codexHistoryCache.delete(threadId);
+      stopObservedCodexThreadWatcher(threadId, "cache-stale");
+      debugLog(`${logPrefix} [codex-flow] stage=cache-stale thread=${threadId} source=thread-meta`);
       return null;
     }
     const anchorIndex = historyRequest.cursor
@@ -1027,6 +1724,34 @@ export function createRuntimeManager({
       return null;
     }
     return buildHistoryWindowResponse(cacheEntry, historyRequest, true);
+  }
+
+  function isCodexHistoryCacheStale(
+    threadId: string,
+    cacheEntry: CodexHistorySnapshot | null | undefined
+  ): boolean {
+    if (!cacheEntry) {
+      return false;
+    }
+
+    const threadMeta = store.getThreadMeta(threadId);
+    if (!threadMeta || threadMeta.provider !== "codex") {
+      return false;
+    }
+
+    const cacheUpdatedAtMs = Date.parse(normalizeOptionalString(cacheEntry.threadBase.updatedAt) || "") || 0;
+    const metaUpdatedAtMs = Date.parse(normalizeOptionalString(threadMeta.updatedAt) || "") || 0;
+    if (metaUpdatedAtMs > cacheUpdatedAtMs) {
+      return true;
+    }
+
+    const cacheSessionId = normalizeOptionalString(cacheEntry.threadBase.providerSessionId);
+    const metaSessionId = normalizeOptionalString(threadMeta.providerSessionId);
+    if (cacheSessionId && metaSessionId && cacheSessionId !== metaSessionId) {
+      return true;
+    }
+
+    return false;
   }
 
   function buildHistoryWindowResponse(
@@ -1072,6 +1797,10 @@ export function createRuntimeManager({
     const thread = rebuildThreadFromHistoryRecords(snapshot.threadBase, selected);
     const oldestRecord = selected.length > 0 ? selected[0] : null;
     const newestRecord = selected.length > 0 ? selected[selected.length - 1] : null;
+    const sessionRecord = threadSessionIndex.get(snapshot.threadId);
+    const projectionSource = sessionRecord?.sourceKind || "thread_read_fallback";
+    const syncEpoch = Number.isFinite(sessionRecord?.syncEpoch) ? Number(sessionRecord?.syncEpoch) : 1;
+    updateThreadSessionProjectionCursor(snapshot.threadId, newestRecord ? historyCursorForRecord(snapshot.threadId, newestRecord) : null);
 
     return {
       thread,
@@ -1085,6 +1814,9 @@ export function createRuntimeManager({
         hasNewer,
         isPartial: selected.length !== records.length || snapshot.hasOlder || snapshot.hasNewer,
         servedFromCache,
+        servedFromProjection: true,
+        projectionSource,
+        syncEpoch,
         pageSize: selected.length,
       },
     };
@@ -1111,6 +1843,65 @@ export function createRuntimeManager({
       hasOlder: false,
       hasNewer: false,
     };
+  }
+
+  function ensureCodexHistoryCacheEntry(
+    threadId: string,
+    {
+      cwd = null,
+      updatedAt = null,
+    }: {
+      cwd?: string | null;
+      updatedAt?: string | null;
+    } = {}
+  ): CodexHistorySnapshot {
+    const existing = touchCodexHistoryCache(threadId);
+    if (existing) {
+      let didChange = false;
+      if (!existing.threadBase.cwd && cwd) {
+        existing.threadBase.cwd = cwd;
+        didChange = true;
+      }
+      if (updatedAt) {
+        const existingUpdatedAtMs = Date.parse(existing.threadBase.updatedAt || "") || 0;
+        const nextUpdatedAtMs = Date.parse(updatedAt) || 0;
+        if (nextUpdatedAtMs >= existingUpdatedAtMs) {
+          existing.threadBase.updatedAt = updatedAt;
+          didChange = true;
+        }
+      }
+      if (didChange) {
+        writeCodexHistoryCache(threadId, existing);
+      }
+      return touchCodexHistoryCache(threadId) || existing;
+    }
+
+    const threadMeta = store.getThreadMeta(threadId);
+    const sessionRecord = threadSessionIndex.get(threadId);
+    const nowIso = new Date().toISOString();
+    const snapshot: CodexHistorySnapshot = {
+      threadId,
+      threadBase: {
+        id: threadId,
+        provider: "codex",
+        providerSessionId: threadMeta?.providerSessionId || sessionRecord?.providerSessionId || threadId,
+        metadata: {
+          ...(threadMeta?.metadata || {}),
+          ...buildProviderMetadata("codex"),
+        },
+        title: threadMeta?.title || null,
+        name: threadMeta?.name || null,
+        preview: threadMeta?.preview || null,
+        cwd: cwd || threadMeta?.cwd || sessionRecord?.cwd || null,
+        createdAt: threadMeta?.createdAt || sessionRecord?.createdAt || nowIso,
+        updatedAt: updatedAt || threadMeta?.updatedAt || sessionRecord?.updatedAt || nowIso,
+      },
+      records: [],
+      hasOlder: false,
+      hasNewer: false,
+    };
+    writeCodexHistoryCache(threadId, snapshot);
+    return touchCodexHistoryCache(threadId) || snapshot;
   }
 
   function touchCodexHistoryCache(threadId: unknown): CodexHistorySnapshot | null {
@@ -1242,7 +2033,7 @@ export function createRuntimeManager({
 
     const previousByProviderItemId = new Map<string, RuntimeHistoryRecord>();
     const previousByTimelineItemId = new Map<string, RuntimeHistoryRecord>();
-    const previousProvisionalByTurnAndKind = new Map<string, RuntimeHistoryRecord[]>();
+    const previousProvisionalByIdentity = new Map<string, RuntimeHistoryRecord[]>();
 
     previousEntry.records.forEach((record) => {
       syncCanonicalFieldsOnRecord(record);
@@ -1255,9 +2046,9 @@ export function createRuntimeManager({
         previousByTimelineItemId.set(timelineItemId, record);
       }
       if (!providerItemId) {
-        const key = `${record.turnId}|${canonicalKindForHistoryRecord(record)}`;
-        previousProvisionalByTurnAndKind.set(key, [
-          ...(previousProvisionalByTurnAndKind.get(key) || []),
+        const key = provisionalHistoryIdentityKeyForRecord(record);
+        previousProvisionalByIdentity.set(key, [
+          ...(previousProvisionalByIdentity.get(key) || []),
           record,
         ]);
       }
@@ -1279,10 +2070,10 @@ export function createRuntimeManager({
     nextEntry.records.forEach((record) => {
       syncCanonicalFieldsOnRecord(record);
       const providerItemId = readHistoryRecordProviderItemId(record);
-      const turnAndKindKey = `${record.turnId}|${canonicalKindForHistoryRecord(record)}`;
+      const provisionalIdentityKey = provisionalHistoryIdentityKeyForRecord(record);
       
       const previousRecord = (providerItemId ? previousByProviderItemId.get(providerItemId) : null)
-        || previousProvisionalByTurnAndKind.get(turnAndKindKey)?.shift()
+        || previousProvisionalByIdentity.get(provisionalIdentityKey)?.shift()
         || null;
 
       const previousTimelineItemId = readHistoryRecordTimelineItemId(previousRecord);
@@ -1450,9 +2241,22 @@ export function createRuntimeManager({
         });
         entry.threadBase.updatedAt = new Date().toISOString();
         writeCodexHistoryCache(threadId, entry);
-        updateThreadSessionOwnerState(threadId, "running", {
-          activeTurnId: turnId,
-        });
+        const sessionRecord = threadSessionIndex.get(threadId);
+        if (sessionRecord?.sourceKind === "rollout_observer") {
+          upsertThreadSessionRecord({
+            threadId,
+            provider: "codex",
+            rolloutPath: sessionRecord.rolloutPath,
+            cwd: entry.threadBase.cwd,
+            ownerState: "idle",
+            activeTurnId: turnId,
+            sourceKind: "rollout_observer",
+          });
+        } else {
+          updateThreadSessionOwnerState(threadId, "running", {
+            activeTurnId: turnId,
+          });
+        }
       }
       return null;
     }
@@ -1463,9 +2267,22 @@ export function createRuntimeManager({
         updateHistoryTurnStatus(entry, turnId, normalizeOptionalString(params.status) || "completed");
         entry.threadBase.updatedAt = new Date().toISOString();
         writeCodexHistoryCache(threadId, entry);
-        updateThreadSessionOwnerState(threadId, "idle", {
-          activeTurnId: null,
-        });
+        const sessionRecord = threadSessionIndex.get(threadId);
+        if (sessionRecord?.sourceKind === "rollout_observer") {
+          upsertThreadSessionRecord({
+            threadId,
+            provider: "codex",
+            rolloutPath: sessionRecord.rolloutPath,
+            cwd: entry.threadBase.cwd,
+            ownerState: "idle",
+            activeTurnId: null,
+            sourceKind: "rollout_observer",
+          });
+        } else {
+          updateThreadSessionOwnerState(threadId, "idle", {
+            activeTurnId: null,
+          });
+        }
       }
       return null;
     }
@@ -1593,7 +2410,7 @@ export function createRuntimeManager({
 
     if (method === "item/commandExecution/outputDelta") {
       const turnId = extractCodexNotificationTurnId(params);
-      const itemId = extractCodexNotificationItemId(params) || `local:${turnId}:command`;
+      const itemId = extractCodexNotificationItemId(params);
       const command = firstNonEmptyString([
         params.command,
         params.cmd,
@@ -1643,7 +2460,7 @@ export function createRuntimeManager({
         params: {
           ...params,
           turnId,
-          itemId,
+          itemId: readHistoryRecordTimelineItemId(item),
         },
       });
     }
@@ -1809,14 +2626,22 @@ export function createRuntimeManager({
       return;
     }
 
+    const sessionRecord = change.threadId ? threadSessionIndex.get(change.threadId) : null;
+    const decoratedChange = {
+      ...change,
+      ...(sessionRecord?.sourceKind ? { sourceKind: sessionRecord.sourceKind } : {}),
+      ...(sessionRecord?.syncEpoch ? { syncEpoch: sessionRecord.syncEpoch } : {}),
+    };
+    updateThreadSessionProjectionCursor(change.threadId, change.cursor);
+
     sendApplicationMessage(JSON.stringify({
       jsonrpc: "2.0",
       method: "thread/history/changed",
-      params: change,
+      params: decoratedChange,
     }));
     logCodexRealtimeEvent("phone-out", {
       method: "thread/history/changed",
-      params: change,
+      params: decoratedChange,
     });
   }
 
@@ -2343,6 +3168,34 @@ export function createRuntimeManager({
     return didChange ? nextParams : params;
   }
 
+  function decorateNotificationWithSessionMetadata(params: UnknownRecord): UnknownRecord {
+    const threadId = extractNotificationThreadId(params);
+    if (!threadId) {
+      return params;
+    }
+
+    const sessionRecord = threadSessionIndex.get(threadId);
+    if (!sessionRecord) {
+      return params;
+    }
+
+    let didChange = false;
+    const nextParams = { ...params };
+    if (nextParams.sourceKind == null) {
+      nextParams.sourceKind = sessionRecord.sourceKind;
+      didChange = true;
+    }
+    if (nextParams.syncEpoch == null) {
+      nextParams.syncEpoch = sessionRecord.syncEpoch;
+      didChange = true;
+    }
+    if (nextParams.rolloutPath == null && sessionRecord.rolloutPath) {
+      nextParams.rolloutPath = sessionRecord.rolloutPath;
+      didChange = true;
+    }
+    return didChange ? nextParams : params;
+  }
+
   function logCodexRealtimeEvent(stage: string, messageLike: unknown): void {
     const summary = summarizeCodexRealtimeMessage(messageLike);
     if (!summary) {
@@ -2539,6 +3392,59 @@ export function createRuntimeManager({
     return "streaming";
   }
 
+  function provisionalHistoryIdentityDetail(
+    kind: string,
+    itemObject: UnknownRecord | null | undefined
+  ): string {
+    const normalizedItemObject = asObject(itemObject);
+    switch (kind) {
+      case "commandExecution":
+        return normalizeOptionalString(
+          normalizedItemObject.command
+          || normalizedItemObject.cmd
+          || normalizedItemObject.text
+        ) || "command";
+      case "fileChange":
+        return normalizeOptionalString(normalizedItemObject.text) || "file-change";
+      case "plan":
+        return normalizeOptionalString(
+          normalizedItemObject.explanation
+          || normalizedItemObject.summary
+          || normalizedItemObject.text
+        ) || "plan";
+      case "subagentAction":
+        return normalizeOptionalString(normalizedItemObject.text) || "subagent";
+      default:
+        return kind;
+    }
+  }
+
+  function provisionalHistoryIdentityKeyForRecord(
+    record: RuntimeHistoryRecord | null | undefined
+  ): string {
+    const turnId = normalizeOptionalString(record?.turnId) || "unknown-turn";
+    const kind = canonicalKindForHistoryRecord(record);
+    const detail = provisionalHistoryIdentityDetail(kind, asObject(record?.itemObject));
+    return `${turnId}|${kind}|${detail}`;
+  }
+
+  function provisionalHistoryIdentityKeyForInput({
+    turnId,
+    type,
+    defaults = {},
+  }: {
+    turnId: string;
+    type: string;
+    defaults?: Record<string, unknown>;
+  }): string {
+    const kind = canonicalKindForHistoryRecord({
+      turnId,
+      itemObject: { type, ...defaults },
+    } as RuntimeHistoryRecord);
+    const detail = provisionalHistoryIdentityDetail(kind, defaults);
+    return `${turnId}|${kind}|${detail}`;
+  }
+
   function canonicalTextForHistoryRecord(
     record: RuntimeHistoryRecord | null | undefined
   ): string {
@@ -2645,12 +3551,20 @@ export function createRuntimeManager({
     );
     if (metadata?.currentCursor) {
       payload.cursor = metadata.currentCursor;
+      updateThreadSessionProjectionCursor(threadId, metadata.currentCursor);
     }
     if (metadata?.previousCursor) {
       payload.previousCursor = metadata.previousCursor;
     }
     if (metadata?.previousItemId) {
       payload.previousItemId = metadata.previousItemId;
+    }
+    const sessionRecord = threadSessionIndex.get(threadId);
+    if (sessionRecord?.sourceKind) {
+      payload.sourceKind = sessionRecord.sourceKind;
+    }
+    if (sessionRecord?.syncEpoch) {
+      payload.syncEpoch = sessionRecord.syncEpoch;
     }
 
     if (Array.isArray(record.itemObject.changes) && record.itemObject.changes.length > 0) {
@@ -2788,7 +3702,11 @@ export function createRuntimeManager({
   ): RuntimeHistoryRecord {
     const normalizedTurnId = normalizeOptionalString(turnId) || "unknown-turn";
     const normalizedProviderItemId = normalizeOptionalString(itemId);
-    const normalizedType = normalizeCodexItemType(type);
+    const provisionalIdentityKey = provisionalHistoryIdentityKeyForInput({
+      turnId: normalizedTurnId,
+      type,
+      defaults,
+    });
     const existing = entry.records.find((record) =>
       normalizedProviderItemId ? matchesHistoryRecordNotificationItemId(record, normalizedProviderItemId) : false
     ) || (
@@ -2800,7 +3718,7 @@ export function createRuntimeManager({
           .reverse()
           .find((record) =>
             record.turnId === normalizedTurnId
-            && normalizeCodexItemType(record.itemObject?.type) === normalizedType
+            && provisionalHistoryIdentityKeyForRecord(record) === provisionalIdentityKey
             && !readHistoryRecordProviderItemId(record)
           )
     );
@@ -3342,6 +4260,66 @@ export function createRuntimeManager({
       : normalizeOptionalString(event.thread?.id);
   }
 
+  function resolveThreadSessionSourceKind({
+    provider,
+    ownerState,
+    rolloutPath,
+    existingSourceKind = null,
+  }: {
+    provider: string;
+    ownerState: "idle" | "running" | "waiting_for_client" | "closed";
+    rolloutPath?: string | null;
+    existingSourceKind?: RuntimeSessionSourceKind | null;
+  }): RuntimeSessionSourceKind {
+    if (provider !== "codex") {
+      return "managed_runtime";
+    }
+    if (ownerState === "running" || ownerState === "waiting_for_client") {
+      return "managed_runtime";
+    }
+    if (normalizeOptionalString(rolloutPath)) {
+      return "rollout_observer";
+    }
+    return existingSourceKind === "rollout_observer"
+      ? "rollout_observer"
+      : "thread_read_fallback";
+  }
+
+  function nextThreadSessionSyncEpoch({
+    existing,
+    sourceKind,
+    providerSessionId,
+  }: {
+    existing: ReturnType<ThreadSessionIndex["get"]>;
+    sourceKind: RuntimeSessionSourceKind;
+    providerSessionId: string | null;
+  }): number {
+    const currentEpoch = Number.isFinite(existing?.syncEpoch) ? Number(existing?.syncEpoch) : 1;
+    if (!existing) {
+      return 1;
+    }
+    if (existing.sourceKind !== sourceKind) {
+      return currentEpoch + 1;
+    }
+    if ((existing.providerSessionId || null) !== (providerSessionId || null)) {
+      return currentEpoch + 1;
+    }
+    return Math.max(1, currentEpoch);
+  }
+
+  function updateThreadSessionProjectionCursor(threadId: unknown, cursor: unknown): void {
+    const normalizedThreadId = normalizeOptionalString(threadId);
+    const normalizedCursor = normalizeOptionalString(cursor);
+    if (!normalizedThreadId || !normalizedCursor) {
+      return;
+    }
+    threadSessionIndex.update(normalizedThreadId, (record) => ({
+      ...record,
+      lastProjectedCursor: normalizedCursor,
+      updatedAt: new Date().toISOString(),
+    }));
+  }
+
   function upsertThreadSessionRecord({
     threadId,
     provider,
@@ -3352,6 +4330,10 @@ export function createRuntimeManager({
     model = null,
     ownerState = "idle",
     activeTurnId = null,
+    sourceKind = null,
+    rolloutPath = null,
+    lastProjectedCursor = null,
+    takeoverWatermark = null,
   }: {
     threadId: string;
     provider: string;
@@ -3362,20 +4344,52 @@ export function createRuntimeManager({
     model?: string | null;
     ownerState?: "idle" | "running" | "waiting_for_client" | "closed";
     activeTurnId?: string | null;
+    sourceKind?: RuntimeSessionSourceKind | null;
+    rolloutPath?: string | null;
+    lastProjectedCursor?: string | null;
+    takeoverWatermark?: string | null;
   }): void {
     if (!threadId) {
       return;
     }
+    const existing = threadSessionIndex.get(threadId);
+    const resolvedSourceKind = sourceKind || resolveThreadSessionSourceKind({
+      provider,
+      ownerState,
+      rolloutPath,
+      existingSourceKind: existing?.sourceKind || null,
+    });
+    const resolvedProviderSessionId = providerSessionId ?? existing?.providerSessionId ?? null;
+    const syncEpoch = nextThreadSessionSyncEpoch({
+      existing,
+      sourceKind: resolvedSourceKind,
+      providerSessionId: resolvedProviderSessionId,
+    });
+    const resolvedLastProjectedCursor = normalizeOptionalString(lastProjectedCursor)
+      || existing?.lastProjectedCursor
+      || null;
+    const resolvedTakeoverWatermark = normalizeOptionalString(takeoverWatermark)
+      || (
+        existing?.sourceKind !== "managed_runtime"
+        && resolvedSourceKind === "managed_runtime"
+        ? resolvedLastProjectedCursor || existing?.takeoverWatermark || null
+        : existing?.takeoverWatermark || null
+      );
     threadSessionIndex.upsert({
       threadId,
       provider,
       engineSessionId,
-      providerSessionId,
+      providerSessionId: resolvedProviderSessionId,
       cwd,
       mode,
       model,
       ownerState,
       activeTurnId,
+      sourceKind: resolvedSourceKind,
+      syncEpoch,
+      rolloutPath: normalizeOptionalString(rolloutPath) || existing?.rolloutPath || null,
+      lastProjectedCursor: resolvedLastProjectedCursor,
+      takeoverWatermark: resolvedTakeoverWatermark,
     });
   }
 
@@ -3401,6 +4415,10 @@ export function createRuntimeManager({
       mode: overrides.mode ?? null,
       ownerState: overrides.ownerState ?? "idle",
       activeTurnId: overrides.activeTurnId ?? null,
+      sourceKind: resolveThreadSessionSourceKind({
+        provider: threadMeta.provider,
+        ownerState: overrides.ownerState ?? "idle",
+      }),
     });
   }
 
@@ -3424,6 +4442,10 @@ export function createRuntimeManager({
       ]),
       model: normalizeOptionalString(threadObject.model),
       ownerState: "idle",
+      sourceKind: resolveThreadSessionSourceKind({
+        provider,
+        ownerState: "idle",
+      }),
     });
   }
 
@@ -3450,6 +4472,33 @@ export function createRuntimeManager({
       activeTurnId: options.activeTurnId !== undefined ? options.activeTurnId : existing.activeTurnId,
       providerSessionId: options.providerSessionId !== undefined ? options.providerSessionId : existing.providerSessionId,
       engineSessionId: options.engineSessionId !== undefined ? options.engineSessionId : existing.engineSessionId,
+      sourceKind: resolveThreadSessionSourceKind({
+        provider: existing.provider,
+        ownerState,
+        rolloutPath: existing.rolloutPath,
+        existingSourceKind: existing.sourceKind,
+      }),
+      syncEpoch: nextThreadSessionSyncEpoch({
+        existing,
+        sourceKind: resolveThreadSessionSourceKind({
+          provider: existing.provider,
+          ownerState,
+          rolloutPath: existing.rolloutPath,
+          existingSourceKind: existing.sourceKind,
+        }),
+        providerSessionId: options.providerSessionId !== undefined
+          ? (options.providerSessionId || null)
+          : existing.providerSessionId,
+      }),
+      takeoverWatermark: existing.sourceKind !== "managed_runtime"
+        && resolveThreadSessionSourceKind({
+          provider: existing.provider,
+          ownerState,
+          rolloutPath: existing.rolloutPath,
+          existingSourceKind: existing.sourceKind,
+        }) === "managed_runtime"
+        ? existing.lastProjectedCursor || existing.takeoverWatermark || null
+        : existing.takeoverWatermark,
       updatedAt: new Date().toISOString(),
     });
   }
@@ -3461,10 +4510,24 @@ export function createRuntimeManager({
     });
   }
 
+  function decorateThreadResultWithSessionMetadata(threadId: string, result: unknown): unknown {
+    const sessionRecord = threadSessionIndex.get(threadId);
+    const resultObject = asObject(result);
+    if (!sessionRecord || Object.keys(resultObject).length === 0) {
+      return result;
+    }
+    return {
+      ...resultObject,
+      sourceKind: sessionRecord.sourceKind,
+      syncEpoch: sessionRecord.syncEpoch,
+    };
+  }
+
   function sendNotification(method: string, params: UnknownRecord): void {
-    const decoratedParams = decorateNotificationWithHistoryMetadata(method, params, (threadId: string) =>
+    const historyDecoratedParams = decorateNotificationWithHistoryMetadata(method, params, (threadId: string) =>
       readManagedHistorySnapshot(threadId)
     );
+    const decoratedParams = decorateNotificationWithSessionMetadata(historyDecoratedParams);
     sendApplicationMessage(JSON.stringify({
       jsonrpc: "2.0",
       method,

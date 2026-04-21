@@ -102,6 +102,11 @@ export function createManagedProviderRuntimeEngine({
       model: threadMeta.model,
       ownerState: activeRunsByThread.has(threadMeta.id) ? "running" : "idle",
       activeTurnId: activeRunsByThread.get(threadMeta.id)?.turnId || null,
+      sourceKind: "managed_runtime",
+      syncEpoch: 1,
+      rolloutPath: null,
+      lastProjectedCursor: null,
+      takeoverWatermark: null,
       createdAt: threadMeta.createdAt,
       updatedAt: threadMeta.updatedAt,
     };

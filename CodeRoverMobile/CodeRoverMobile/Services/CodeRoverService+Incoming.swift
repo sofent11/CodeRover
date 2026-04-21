@@ -328,6 +328,16 @@ extension CodeRoverService {
 
     private func handleCanonicalTimelineTurnUpdated(_ paramsObject: IncomingParamsObject?) {
         guard let paramsObject else { return }
+        if let threadId = resolveThreadID(from: paramsObject, turnIdHint: extractTurnID(from: paramsObject)) {
+            let syncMetadata = decodeThreadSyncMetadata(from: paramsObject)
+            guard acceptThreadSyncMetadata(
+                threadId: threadId,
+                syncEpoch: syncMetadata.syncEpoch,
+                sourceKind: syncMetadata.sourceKind
+            ) else {
+                return
+            }
+        }
         let normalizedState = paramsObject["state"]?.stringValue?
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
@@ -366,6 +376,14 @@ extension CodeRoverService {
         let turnId = extractTurnID(from: paramsObject) ?? activeTurnIdByThread[threadId]
         if let turnId {
             threadIdByTurnID[turnId] = threadId
+        }
+        let syncMetadata = decodeThreadSyncMetadata(from: paramsObject)
+        guard acceptThreadSyncMetadata(
+            threadId: threadId,
+            syncEpoch: syncMetadata.syncEpoch,
+            sourceKind: syncMetadata.sourceKind
+        ) else {
+            return
         }
         markThreadAsRunning(threadId)
 
@@ -553,6 +571,14 @@ extension CodeRoverService {
 
         guard let threadId,
               activeThreadId == threadId else {
+            return
+        }
+        let syncMetadata = decodeThreadSyncMetadata(from: paramsObject)
+        guard acceptThreadSyncMetadata(
+            threadId: threadId,
+            syncEpoch: syncMetadata.syncEpoch,
+            sourceKind: syncMetadata.sourceKind
+        ) else {
             return
         }
 

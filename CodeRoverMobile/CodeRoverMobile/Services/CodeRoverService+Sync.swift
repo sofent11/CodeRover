@@ -296,6 +296,7 @@ extension CodeRoverService {
     }
 
     private func invalidateCachedHistory(for threadId: String) {
+        cancelPerThreadRefreshWork(for: threadId)
         hydratedThreadIDs.remove(threadId)
         loadingThreadIDs.remove(threadId)
         resumedThreadIDs.remove(threadId)
@@ -304,6 +305,7 @@ extension CodeRoverService {
     }
 
     func handleMissingThread(_ threadId: String) {
+        cancelPerThreadRefreshWork(for: threadId)
         runningThreadIDs.remove(threadId)
         protectedRunningFallbackThreadIDs.remove(threadId)
         clearOutcomeBadge(for: threadId)
@@ -350,6 +352,7 @@ extension CodeRoverService {
     }
 
     func archiveThread(_ threadId: String) {
+        cancelPerThreadRefreshWork(for: threadId)
         runningThreadIDs.remove(threadId)
         protectedRunningFallbackThreadIDs.remove(threadId)
         clearOutcomeBadge(for: threadId)
@@ -442,6 +445,7 @@ extension CodeRoverService {
 
     // Centralizes local-only thread cleanup so repo-group deletion can reuse it safely.
     private func removeThreadLocally(_ threadId: String, persistAsDeleted: Bool) {
+        cancelPerThreadRefreshWork(for: threadId)
         runningThreadIDs.remove(threadId)
         protectedRunningFallbackThreadIDs.remove(threadId)
         clearOutcomeBadge(for: threadId)
@@ -482,6 +486,166 @@ extension CodeRoverService {
         hydratedThreadIDs.removeAll()
         loadingThreadIDs.removeAll()
         resumeSeededHistoryThreadIDs.removeAll()
+        cancelAllPerThreadRefreshWork()
+    }
+
+    func invalidatePerThreadRefreshGeneration(for threadId: String) {
+        threadRefreshGenerationByThreadID[threadId, default: 0] &+= 1
+    }
+
+    func currentPerThreadRefreshGeneration(for threadId: String) -> UInt64 {
+        threadRefreshGenerationByThreadID[threadId] ?? 0
+    }
+
+    func isPerThreadRefreshCurrent(for threadId: String, generation: UInt64) -> Bool {
+        currentPerThreadRefreshGeneration(for: threadId) == generation
+    }
+
+    func normalizedThreadSyncEpoch(_ value: Int?) -> Int {
+        guard let value, value >= 1 else {
+            return 1
+        }
+        return value
+    }
+
+    @discardableResult
+    func acceptThreadSyncMetadata(
+        threadId: String,
+        syncEpoch: Int?,
+        sourceKind: String?,
+        generation: UInt64? = nil
+    ) -> Bool {
+        let incomingEpoch = normalizedThreadSyncEpoch(syncEpoch)
+        let currentEpoch = normalizedThreadSyncEpoch(threadSyncEpochByThreadID[threadId])
+
+        if incomingEpoch < currentEpoch {
+            debugSyncLog(
+                "drop stale sync thread=\(threadId) incomingEpoch=\(incomingEpoch) currentEpoch=\(currentEpoch)"
+            )
+            return false
+        }
+
+        if incomingEpoch == currentEpoch,
+           let generation,
+           !isPerThreadRefreshCurrent(for: threadId, generation: generation) {
+            debugSyncLog(
+                "drop stale generation thread=\(threadId) epoch=\(incomingEpoch) generation=\(generation)"
+            )
+            return false
+        }
+
+        threadSyncEpochByThreadID[threadId] = incomingEpoch
+        if let sourceKind = sourceKind?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !sourceKind.isEmpty {
+            threadSyncSourceKindByThreadID[threadId] = sourceKind
+        }
+        return true
+    }
+
+    func decodeThreadSyncMetadata(
+        from object: [String: JSONValue]?
+    ) -> (syncEpoch: Int?, sourceKind: String?) {
+        (
+            object?["syncEpoch"]?.intValue
+                ?? object?["sync_epoch"]?.intValue,
+            object?["sourceKind"]?.stringValue
+                ?? object?["source_kind"]?.stringValue
+                ?? object?["projectionSource"]?.stringValue
+                ?? object?["projection_source"]?.stringValue
+        )
+    }
+
+    func cancelPerThreadRefreshWork(for threadId: String) {
+        invalidatePerThreadRefreshGeneration(for: threadId)
+        loadingThreadIDs.remove(threadId)
+        threadHistoryLoadTaskByThreadID[threadId]?.cancel()
+        threadHistoryLoadTaskByThreadID.removeValue(forKey: threadId)
+        forcedHistoryLoadThreadIDs.remove(threadId)
+        threadResumeTaskByThreadID[threadId]?.cancel()
+        threadResumeTaskByThreadID.removeValue(forKey: threadId)
+        threadResumeRequestSignatureByThreadID.removeValue(forKey: threadId)
+        forcedResumeEscalationThreadIDs.remove(threadId)
+        turnStateRefreshTaskByThreadID[threadId]?.cancel()
+        turnStateRefreshTaskByThreadID.removeValue(forKey: threadId)
+        canonicalHistoryReconcileTaskByThreadID[threadId]?.cancel()
+        canonicalHistoryReconcileTaskByThreadID.removeValue(forKey: threadId)
+        threadSyncEpochByThreadID.removeValue(forKey: threadId)
+        threadSyncSourceKindByThreadID.removeValue(forKey: threadId)
+        threadsNeedingCanonicalHistoryReconcile.remove(threadId)
+    }
+
+    func cancelAllPerThreadRefreshWork() {
+        let invalidatedThreadIDs = Set(threadHistoryLoadTaskByThreadID.keys)
+            .union(threadResumeTaskByThreadID.keys)
+            .union(turnStateRefreshTaskByThreadID.keys)
+            .union(forcedHistoryLoadThreadIDs)
+            .union(forcedResumeEscalationThreadIDs)
+            .union(threadResumeRequestSignatureByThreadID.keys)
+            .union(canonicalHistoryReconcileTaskByThreadID.keys)
+        invalidatedThreadIDs.forEach { invalidatePerThreadRefreshGeneration(for: $0) }
+        loadingThreadIDs.removeAll()
+        threadHistoryLoadTaskByThreadID.values.forEach { $0.cancel() }
+        threadHistoryLoadTaskByThreadID.removeAll()
+        forcedHistoryLoadThreadIDs.removeAll()
+        threadResumeTaskByThreadID.values.forEach { $0.cancel() }
+        threadResumeTaskByThreadID.removeAll()
+        threadResumeRequestSignatureByThreadID.removeAll()
+        forcedResumeEscalationThreadIDs.removeAll()
+        turnStateRefreshTaskByThreadID.values.forEach { $0.cancel() }
+        turnStateRefreshTaskByThreadID.removeAll()
+        canonicalHistoryReconcileTaskByThreadID.values.forEach { $0.cancel() }
+        canonicalHistoryReconcileTaskByThreadID.removeAll()
+        threadSyncEpochByThreadID.removeAll()
+        threadSyncSourceKindByThreadID.removeAll()
+        threadsNeedingCanonicalHistoryReconcile.removeAll()
+    }
+
+    func scheduleCanonicalHistoryReconcileIfNeeded(for threadId: String) {
+        guard threadsNeedingCanonicalHistoryReconcile.contains(threadId),
+              canonicalHistoryReconcileTaskByThreadID[threadId] == nil,
+              isConnected,
+              !threadHasActiveOrRunningTurn(threadId),
+              thread(for: threadId)?.syncState == .live else {
+            return
+        }
+
+        canonicalHistoryReconcileTaskByThreadID[threadId] = Task { @MainActor [weak self] in
+            defer {
+                self?.canonicalHistoryReconcileTaskByThreadID.removeValue(forKey: threadId)
+            }
+
+            guard let self,
+                  self.threadsNeedingCanonicalHistoryReconcile.contains(threadId),
+                  self.isConnected,
+                  !self.threadHasActiveOrRunningTurn(threadId),
+                  self.thread(for: threadId)?.syncState == .live else {
+                return
+            }
+
+            do {
+                let outcome = try await self.loadThreadHistoryIfNeeded(threadId: threadId, forceRefresh: true)
+                guard !Task.isCancelled else { return }
+                if outcome.didCompleteCanonicalReconcile {
+                    self.markThreadCanonicalHistoryReconciled(threadId)
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                if self.shouldTreatAsThreadNotFound(error) {
+                    self.threadsNeedingCanonicalHistoryReconcile.remove(threadId)
+                    self.handleMissingThread(threadId)
+                }
+            }
+        }
+    }
+
+    func markThreadNeedingCanonicalHistoryReconcile(_ threadId: String) {
+        threadsNeedingCanonicalHistoryReconcile.insert(threadId)
+        scheduleCanonicalHistoryReconcileIfNeeded(for: threadId)
+    }
+
+    func markThreadCanonicalHistoryReconciled(_ threadId: String) {
+        threadsNeedingCanonicalHistoryReconcile.remove(threadId)
     }
 
     func shouldTreatAsThreadNotFound(_ error: Error) -> Bool {
@@ -517,7 +681,9 @@ extension CodeRoverService {
 
     // Treats thread as active if either turn mapping or runtime running fallback is present.
     func threadHasActiveOrRunningTurn(_ threadId: String) -> Bool {
-        activeTurnID(for: threadId) != nil || runningThreadIDs.contains(threadId)
+        activeTurnID(for: threadId) != nil
+            || runningThreadIDs.contains(threadId)
+            || protectedRunningFallbackThreadIDs.contains(threadId)
     }
 
     // Keeps short-lived background execution alive when a run is still in flight.
@@ -551,7 +717,11 @@ extension CodeRoverService {
 
         if shouldUseAggressiveForegroundPolling {
             do {
-                try await loadTailThreadHistory(threadId: threadId, replaceLocalHistory: false)
+                try await loadTailThreadHistory(
+                    threadId: threadId,
+                    replaceLocalHistory: false,
+                    refreshGeneration: currentPerThreadRefreshGeneration(for: threadId)
+                )
             } catch {
                 debugSyncLog(
                     "foreground codex tail refresh failed thread=\(threadId): \(error.localizedDescription)"

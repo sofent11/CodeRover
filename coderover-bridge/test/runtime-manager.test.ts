@@ -865,6 +865,9 @@ test("thread/read history tail and after windows reuse the Codex cache", async (
     assert.ok(tailResponse);
     assert.equal(tailResponse.result.historyWindow.mode, "tail");
     assert.equal(tailResponse.result.historyWindow.servedFromCache, true);
+    assert.equal(tailResponse.result.historyWindow.servedFromProjection, true);
+    assert.equal(tailResponse.result.historyWindow.projectionSource, "thread_read_fallback");
+    assert.equal(tailResponse.result.historyWindow.syncEpoch, 1);
     assert.equal(tailResponse.result.historyWindow.hasOlder, true);
     assert.equal(tailResponse.result.historyWindow.pageSize, 50);
     assert.ok(tailResponse.result.historyWindow.olderCursor);
@@ -1516,6 +1519,75 @@ test("forwarded Codex item delta notifications backfill thread and turn identity
   }
 });
 
+test("Codex command deltas without item ids get distinct timeline items per command", async () => {
+  const fixture = createManagerFixtureWithOptions({
+    useDefaultCodexAdapter: true,
+  });
+
+  try {
+    const threadRef = {
+      current: buildCodexThread({
+        threadId: "codex-command-provisional-thread",
+        messageCount: 0,
+        turnId: "turn-command-provisional",
+      }),
+    };
+    const transportFixture = createDefaultCodexTransportFixture(fixture.manager, { threadRef });
+    fixture.manager.attachCodexTransport(transportFixture.transport);
+
+    await request(fixture, "command-provisional-tail", "thread/read", {
+      threadId: threadRef.current.id,
+      history: {
+        mode: "tail",
+        limit: 10,
+      },
+    });
+
+    fixture.manager.handleCodexTransportMessage(JSON.stringify({
+      jsonrpc: "2.0",
+      method: "item/commandExecution/outputDelta",
+      params: {
+        threadId: threadRef.current.id,
+        turnId: "turn-command-provisional",
+        command: "sed -n '1,10p' file-a.ts",
+        status: "running",
+        delta: "sed -n '1,10p' file-a.ts",
+      },
+    }));
+
+    fixture.manager.handleCodexTransportMessage(JSON.stringify({
+      jsonrpc: "2.0",
+      method: "item/commandExecution/outputDelta",
+      params: {
+        threadId: threadRef.current.id,
+        turnId: "turn-command-provisional",
+        command: "sed -n '11,20p' file-b.ts",
+        status: "running",
+        delta: "sed -n '11,20p' file-b.ts",
+      },
+    }));
+
+    const tailMessages = await request(fixture, "command-provisional-tail-2", "thread/read", {
+      threadId: threadRef.current.id,
+      history: {
+        mode: "tail",
+        limit: 10,
+      },
+    });
+    const tailResponse = responseById(tailMessages, "command-provisional-tail-2");
+    assert.equal(tailResponse.result.thread.turns[0].items.length, 2);
+    assert.deepEqual(
+      tailResponse.result.thread.turns[0].items.map((item: { text?: string }) => item.text),
+      [
+        "sed -n '1,10p' file-a.ts",
+        "sed -n '11,20p' file-b.ts",
+      ]
+    );
+  } finally {
+    fixture.cleanup();
+  }
+});
+
 test("unscoped Codex history events invalidate cache so reopen fetches upstream", async () => {
   const fixture = createManagerFixtureWithOptions({
     useDefaultCodexAdapter: true,
@@ -1574,6 +1646,98 @@ test("unscoped Codex history events invalidate cache so reopen fetches upstream"
       afterResponse.result.thread.turns[0].items.map((item: { id: string }) => item.id),
       ["item-4"]
     );
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("Codex tail history cache is bypassed after thread list reports a newer updatedAt", async () => {
+  const threadRef = {
+    current: buildCodexThread({
+      threadId: "codex-stale-tail-cache-thread",
+      messageCount: 3,
+      turnId: "turn-stale-tail",
+    }),
+  };
+  const readParams: ThreadReadParams[] = [];
+  const codexAdapter = createCodexAdapterStub({
+    async request(method: string) {
+      if (method === "initialize") {
+        return { ok: true };
+      }
+      throw new Error(`unexpected request: ${method}`);
+    },
+    async listThreads() {
+      return {
+        threads: threadRef.current ? [{
+          id: threadRef.current.id,
+          title: threadRef.current.title,
+          preview: threadRef.current.preview,
+          createdAt: threadRef.current.createdAt,
+          updatedAt: threadRef.current.updatedAt,
+          cwd: threadRef.current.cwd,
+        }] : [],
+      };
+    },
+    async readThread(params: ThreadReadParams = {}) {
+      readParams.push(JSON.parse(JSON.stringify(params)));
+      const thread = threadRef.current;
+      assert.ok(thread);
+      if (params.includeTurns === false) {
+        const metaThread = JSON.parse(JSON.stringify(thread));
+        delete metaThread.turns;
+        return { thread: metaThread };
+      }
+      if (params.history) {
+        return buildCodexHistoryResult(thread, params.history);
+      }
+      return { thread };
+    },
+  });
+  const fixture = createManagerFixtureWithOptions({ codexAdapter });
+
+  try {
+    const initialListMessages = await request(fixture, "codex-stale-list-1", "thread/list", {});
+    const initialListResponse = responseById(initialListMessages, "codex-stale-list-1");
+    assert.ok(initialListResponse);
+
+    const initialTailMessages = await request(fixture, "codex-stale-tail-1", "thread/read", {
+      threadId: threadRef.current.id,
+      history: {
+        mode: "tail",
+        limit: 3,
+      },
+    });
+    const initialTailResponse = responseById(initialTailMessages, "codex-stale-tail-1");
+    assert.deepEqual(
+      initialTailResponse.result.thread.turns[0].items.map((item: { id: string }) => item.id),
+      ["item-1", "item-2", "item-3"]
+    );
+    const readCountAfterInitialTail = readParams.length;
+
+    threadRef.current = buildCodexThread({
+      threadId: "codex-stale-tail-cache-thread",
+      messageCount: 4,
+      turnId: "turn-stale-tail",
+    });
+
+    const refreshedListMessages = await request(fixture, "codex-stale-list-2", "thread/list", {});
+    const refreshedListResponse = responseById(refreshedListMessages, "codex-stale-list-2");
+    assert.ok(refreshedListResponse);
+
+    const refreshedTailMessages = await request(fixture, "codex-stale-tail-2", "thread/read", {
+      threadId: threadRef.current.id,
+      history: {
+        mode: "tail",
+        limit: 4,
+      },
+    });
+    const refreshedTailResponse = responseById(refreshedTailMessages, "codex-stale-tail-2");
+    assert.deepEqual(
+      refreshedTailResponse.result.thread.turns[0].items.map((item: { id: string }) => item.id),
+      ["item-1", "item-2", "item-3", "item-4"]
+    );
+    assert.ok(readParams.length > readCountAfterInitialTail);
   } finally {
     fixture.cleanup();
   }
@@ -1650,6 +1814,9 @@ test("managed thread/read history windows expose the same cursor shape as Codex"
     });
     const tailResponse = responseById(tailMessages, "managed-thread-tail");
     assert.equal(tailResponse.result.historyWindow.pageSize, 2);
+    assert.equal(tailResponse.result.historyWindow.servedFromProjection, true);
+    assert.equal(tailResponse.result.historyWindow.projectionSource, "managed_runtime");
+    assert.equal(tailResponse.result.historyWindow.syncEpoch, 1);
     assert.equal(tailResponse.result.historyWindow.hasOlder, true);
     assert.equal(tailResponse.result.historyWindow.hasNewer, false);
     assert.ok(tailResponse.result.historyWindow.olderCursor);
@@ -1803,6 +1970,176 @@ test("Codex history cache evicts the least recently used thread after twenty ent
   }
 });
 
+test("Codex thread/resume seeds history cache with the resumed snapshot", async () => {
+  const resumedThread = buildCodexThread({
+    threadId: "codex-resume-cache-thread",
+    messageCount: 6,
+    turnId: "turn-resume-cache",
+  });
+  const staleHistoryThread = buildCodexThread({
+    threadId: "codex-resume-cache-thread",
+    messageCount: 3,
+    turnId: "turn-resume-cache",
+  });
+  const readParams: ThreadReadParams[] = [];
+  const codexAdapter = createCodexAdapterStub({
+    async request(method: string) {
+      if (method === "initialize") {
+        return { ok: true };
+      }
+      throw new Error(`unexpected request: ${method}`);
+    },
+    async listThreads() {
+      return {
+        threads: [{
+          id: resumedThread.id,
+          title: resumedThread.title,
+          preview: resumedThread.preview,
+          createdAt: resumedThread.createdAt,
+          updatedAt: resumedThread.updatedAt,
+          cwd: resumedThread.cwd,
+        }],
+      };
+    },
+    async readThread(params: ThreadReadParams = {}) {
+      readParams.push(JSON.parse(JSON.stringify(params)));
+      if (params.history) {
+        return buildCodexHistoryResult(staleHistoryThread, params.history);
+      }
+      return { thread: staleHistoryThread };
+    },
+    async resumeThread() {
+      return {
+        threadId: resumedThread.id,
+        resumed: true,
+        thread: JSON.parse(JSON.stringify(resumedThread)),
+      };
+    },
+  });
+  const fixture = createManagerFixtureWithOptions({ codexAdapter });
+
+  try {
+    await request(fixture, "codex-resume-cache-list", "thread/list", {});
+
+    const resumeMessages = await request(fixture, "codex-resume-cache-resume", "thread/resume", {
+      threadId: resumedThread.id,
+    });
+    const resumeResponse = responseById(resumeMessages, "codex-resume-cache-resume");
+    assert.ok(resumeResponse);
+    assert.equal(resumeResponse.result.thread.turns[0].items.length, 6);
+
+    const tailMessages = await request(fixture, "codex-resume-cache-tail", "thread/read", {
+      threadId: resumedThread.id,
+      history: {
+        mode: "tail",
+        limit: 3,
+      },
+    });
+    const tailResponse = responseById(tailMessages, "codex-resume-cache-tail");
+    assert.ok(tailResponse);
+    assert.equal(tailResponse.result.historyWindow.servedFromCache, true);
+    assert.deepEqual(
+      tailResponse.result.thread.turns[0].items.map((item: { id: string }) => item.id),
+      ["item-4", "item-5", "item-6"]
+    );
+    assert.equal(readParams.filter((params) => Boolean(params.history)).length, 0);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("sparse Codex thread/read snapshots do not clobber seeded history cache", async () => {
+  const thread = buildCodexThread({
+    threadId: "codex-sparse-read-cache-thread",
+    messageCount: 5,
+    turnId: "turn-sparse-read-cache",
+  });
+  let sparseReads = 0;
+  const codexAdapter = createCodexAdapterStub({
+    async request(method: string) {
+      if (method === "initialize") {
+        return { ok: true };
+      }
+      throw new Error(`unexpected request: ${method}`);
+    },
+    async listThreads() {
+      return {
+        threads: [{
+          id: thread.id,
+          title: thread.title,
+          preview: thread.preview,
+          createdAt: thread.createdAt,
+          updatedAt: thread.updatedAt,
+          cwd: thread.cwd,
+        }],
+      };
+    },
+    async readThread(params: ThreadReadParams = {}) {
+      if (params.history) {
+        return buildCodexHistoryResult(thread, params.history);
+      }
+      sparseReads += 1;
+      return {
+        thread: {
+          id: thread.id,
+          title: thread.title,
+          preview: thread.preview,
+          cwd: thread.cwd,
+          createdAt: thread.createdAt,
+          updatedAt: thread.updatedAt,
+          turns: [{
+            id: "turn-sparse-read-cache",
+            createdAt: thread.createdAt,
+            status: "running",
+            items: [],
+          }],
+        },
+      };
+    },
+    async resumeThread() {
+      return {
+        threadId: thread.id,
+        resumed: true,
+        thread: JSON.parse(JSON.stringify(thread)),
+      };
+    },
+  });
+  const fixture = createManagerFixtureWithOptions({ codexAdapter });
+
+  try {
+    await request(fixture, "codex-sparse-read-cache-list", "thread/list", {});
+    await request(fixture, "codex-sparse-read-cache-resume", "thread/resume", {
+      threadId: thread.id,
+    });
+
+    const sparseReadMessages = await request(fixture, "codex-sparse-read-cache-read", "thread/read", {
+      threadId: thread.id,
+      includeTurns: true,
+    });
+    const sparseReadResponse = responseById(sparseReadMessages, "codex-sparse-read-cache-read");
+    assert.ok(sparseReadResponse);
+    assert.equal(sparseReadResponse.result.thread.turns[0].items.length, 0);
+
+    const tailMessages = await request(fixture, "codex-sparse-read-cache-tail", "thread/read", {
+      threadId: thread.id,
+      history: {
+        mode: "tail",
+        limit: 2,
+      },
+    });
+    const tailResponse = responseById(tailMessages, "codex-sparse-read-cache-tail");
+    assert.ok(tailResponse);
+    assert.equal(tailResponse.result.historyWindow.servedFromCache, true);
+    assert.deepEqual(
+      tailResponse.result.thread.turns[0].items.map((item: { id: string }) => item.id),
+      ["item-4", "item-5"]
+    );
+    assert.equal(sparseReads, 1);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
 test("observed Codex threads emit thread/history/changed after bridge-side thread/read polling detects new history", async () => {
   const threadRef = {
     current: buildCodexThread({
@@ -1883,6 +2220,208 @@ test("observed Codex threads emit thread/history/changed after bridge-side threa
     assert.ok((readCountsByThread.get(threadRef.current.id) || 0) >= 2);
   } finally {
     fixture.cleanup();
+  }
+});
+
+test("observed non-managed Codex threads project rollout history and realtime updates without upstream history polling", async () => {
+  const previousCodexHome = process.env.CODEX_HOME;
+  const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), "coderover-rollout-home-"));
+  process.env.CODEX_HOME = codexHome;
+
+  const threadId = "codex-rollout-thread-1";
+  const turnId = "rollout-turn-1";
+  const rolloutDir = path.join(codexHome, "sessions", "2026", "04", "21");
+  const rolloutPath = path.join(rolloutDir, `rollout-2026-04-21T10-00-00-${threadId}.jsonl`);
+  fs.mkdirSync(rolloutDir, { recursive: true });
+  fs.writeFileSync(rolloutPath, [
+    JSON.stringify({
+      timestamp: "2026-04-21T10:00:00.000Z",
+      type: "session_meta",
+      payload: {
+        id: threadId,
+        cwd: "/tmp/codex-rollout-project",
+        originator: "Codex Desktop",
+        source: "vscode",
+      },
+    }),
+    JSON.stringify({
+      timestamp: "2026-04-21T10:00:01.000Z",
+      type: "event_msg",
+      payload: {
+        type: "task_started",
+        turn_id: turnId,
+      },
+    }),
+    JSON.stringify({
+      timestamp: "2026-04-21T10:00:02.000Z",
+      type: "event_msg",
+      payload: {
+        type: "user_message",
+        message: "Inspect the rollout observer",
+      },
+    }),
+    JSON.stringify({
+      timestamp: "2026-04-21T10:00:03.000Z",
+      type: "event_msg",
+      payload: {
+        type: "agent_reasoning",
+        text: "Thinking through the rollout stream",
+      },
+    }),
+    JSON.stringify({
+      timestamp: "2026-04-21T10:00:04.000Z",
+      type: "response_item",
+      payload: {
+        type: "function_call",
+        name: "exec_command",
+        arguments: "{\"cmd\":\"ls -la\",\"workdir\":\"/tmp/codex-rollout-project\"}",
+        call_id: "call-rollout-1",
+      },
+    }),
+    JSON.stringify({
+      timestamp: "2026-04-21T10:00:05.000Z",
+      type: "response_item",
+      payload: {
+        type: "function_call_output",
+        call_id: "call-rollout-1",
+        output: "file-a\\nfile-b",
+      },
+    }),
+    JSON.stringify({
+      timestamp: "2026-04-21T10:00:06.000Z",
+      type: "event_msg",
+      payload: {
+        type: "agent_message",
+        message: "Rollout projection is live.",
+      },
+    }),
+    JSON.stringify({
+      timestamp: "2026-04-21T10:00:07.000Z",
+      type: "event_msg",
+      payload: {
+        type: "task_complete",
+        turn_id: turnId,
+      },
+    }),
+    "",
+  ].join("\n"));
+
+  const readParams: ThreadReadParams[] = [];
+  const codexAdapter = createCodexAdapterStub({
+    async request(method: string) {
+      if (method === "initialize") {
+        return { ok: true };
+      }
+      throw new Error(`unexpected request: ${method}`);
+    },
+    notify() {},
+    async readThread(params: ThreadReadParams = {}) {
+      readParams.push(JSON.parse(JSON.stringify(params)));
+      if (params.includeTurns === false) {
+        return {
+          thread: {
+            id: threadId,
+            title: "Rollout Thread",
+            preview: "Rollout projection is live.",
+            cwd: "/tmp/codex-rollout-project",
+            createdAt: "2026-04-21T10:00:00.000Z",
+            updatedAt: "2026-04-21T10:00:07.000Z",
+          },
+        };
+      }
+      throw new Error("unexpected upstream history read");
+    },
+  });
+
+  const fixture = createManagerFixtureWithOptions({
+    codexAdapter,
+    runtimeOptions: {
+      codexObservedThreadPollIntervalMs: 20,
+      codexObservedThreadIdleTtlMs: 2_000,
+    },
+  });
+
+  try {
+    const initialMessages = await request(fixture, "rollout-tail-read", "thread/read", {
+      threadId,
+      history: {
+        mode: "tail",
+        limit: 50,
+      },
+    });
+    const initialResponse = responseById(initialMessages, "rollout-tail-read");
+    assert.equal(initialResponse.result.historyWindow.servedFromProjection, true);
+    assert.equal(initialResponse.result.historyWindow.projectionSource, "rollout_observer");
+    assert.ok(initialResponse.result.historyWindow.syncEpoch >= 1);
+    assert.deepEqual(
+      initialResponse.result.thread.turns[0].items.map((item: { type: string }) => item.type),
+      ["user_message", "reasoning", "command_execution", "agent_message"]
+    );
+    assert.equal(readParams.filter((params) => Boolean(params.history)).length, 0);
+    assert.equal(readParams.filter((params) => params.includeTurns === false).length, 0);
+
+    const messageCountBeforeGrowth = fixture.messages.length;
+    fs.appendFileSync(rolloutPath, [
+      JSON.stringify({
+        timestamp: "2026-04-21T10:00:08.000Z",
+        type: "event_msg",
+        payload: {
+          type: "task_started",
+          turn_id: "rollout-turn-2",
+        },
+      }),
+      JSON.stringify({
+        timestamp: "2026-04-21T10:00:09.000Z",
+        type: "event_msg",
+        payload: {
+          type: "user_message",
+          message: "Resume from mobile takeover seed",
+        },
+      }),
+      JSON.stringify({
+        timestamp: "2026-04-21T10:00:10.000Z",
+        type: "event_msg",
+        payload: {
+          type: "agent_message",
+          message: "Realtime rollout delta arrived.",
+        },
+      }),
+      JSON.stringify({
+        timestamp: "2026-04-21T10:00:11.000Z",
+        type: "event_msg",
+        payload: {
+          type: "task_complete",
+          turn_id: "rollout-turn-2",
+        },
+      }),
+      "",
+    ].join("\n"));
+
+    await sleep(120);
+
+    const growthMessages = fixture.messages.slice(messageCountBeforeGrowth);
+    assert.ok(
+      growthMessages.some((message: RpcMessage) =>
+        message.method === "timeline/itemCompleted"
+        && message.params?.text === "Realtime rollout delta arrived."
+        && message.params?.sourceKind === "rollout_observer"
+      )
+    );
+    assert.ok(
+      growthMessages.some((message: RpcMessage) =>
+        message.method === "thread/history/changed"
+        && message.params?.sourceKind === "rollout_observer"
+      )
+    );
+    assert.equal(readParams.filter((params) => Boolean(params.history)).length, 0);
+  } finally {
+    fixture.cleanup();
+    fs.rmSync(codexHome, { recursive: true, force: true });
+    if (previousCodexHome == null) {
+      delete process.env.CODEX_HOME;
+    } else {
+      process.env.CODEX_HOME = previousCodexHome;
+    }
   }
 });
 

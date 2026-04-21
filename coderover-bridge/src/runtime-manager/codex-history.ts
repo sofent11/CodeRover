@@ -28,19 +28,22 @@ interface UpstreamHistoryWindowLike {
 
 interface UpstreamHistoryWindowResponse {
   thread: RuntimeThreadShape | null;
-  historyWindow: {
-    mode: RuntimeHistoryRequest["mode"];
-    olderCursor: string | null;
-    newerCursor: string | null;
-    oldestAnchor: RuntimeHistoryCursor | null;
-    newestAnchor: RuntimeHistoryCursor | null;
-    hasOlder: boolean;
-    hasNewer: boolean;
-    isPartial: true;
-    servedFromCache: false;
-    pageSize: number;
-  };
-}
+    historyWindow: {
+      mode: RuntimeHistoryRequest["mode"];
+      olderCursor: string | null;
+      newerCursor: string | null;
+      oldestAnchor: RuntimeHistoryCursor | null;
+      newestAnchor: RuntimeHistoryCursor | null;
+      hasOlder: boolean;
+      hasNewer: boolean;
+      isPartial: true;
+      servedFromCache: false;
+      servedFromProjection: false;
+      projectionSource: null;
+      syncEpoch: number;
+      pageSize: number;
+    };
+  }
 
 export function extractThreadArray(
   result: unknown,
@@ -117,6 +120,9 @@ export function buildUpstreamHistoryWindowResponse(
       hasNewer: Boolean(upstreamHistoryWindow?.hasNewer),
       isPartial: true,
       servedFromCache: false,
+      servedFromProjection: false,
+      projectionSource: null,
+      syncEpoch: 1,
       pageSize: records.length,
     },
   };

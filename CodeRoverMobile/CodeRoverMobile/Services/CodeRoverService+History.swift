@@ -348,14 +348,19 @@ extension CodeRoverService {
     func mergeCanonicalHistoryIntoTimelineState(
         threadId: String,
         historyMessages: [ChatMessage],
+        mode: ThreadHistoryWindowMode? = nil,
         activeThreadIDs: Set<String>,
         runningThreadIDs: Set<String>
     ) -> [ChatMessage] {
         let overlayMessages = (messagesByThread[threadId] ?? []).filter { !Self.isCanonicalTimelineMessage($0) }
-        var state = threadTimelineStateByThread[threadId]
-            ?? ThreadTimelineState(
-                messages: (messagesByThread[threadId] ?? []).filter { Self.isCanonicalTimelineMessage($0) }
-            )
+        let existingCanonicalMessages = threadTimelineStateByThread[threadId]?.renderedMessages()
+            ?? (messagesByThread[threadId] ?? []).filter { Self.isCanonicalTimelineMessage($0) }
+        let seededCanonicalMessages = Self.seedCanonicalMessagesForHistoryMerge(
+            existingCanonicalMessages,
+            incomingMessages: historyMessages,
+            mode: mode
+        )
+        var state = ThreadTimelineState(messages: seededCanonicalMessages)
 
         for message in historyMessages {
             if let existing = state.message(for: message.id) {
@@ -379,6 +384,52 @@ extension CodeRoverService {
         )
         messagesByThread[threadId] = renderedMessages
         return renderedMessages
+    }
+
+    nonisolated static func seedCanonicalMessagesForHistoryMerge(
+        _ existingCanonicalMessages: [ChatMessage],
+        incomingMessages: [ChatMessage],
+        mode: ThreadHistoryWindowMode?
+    ) -> [ChatMessage] {
+        guard mode == .tail else {
+            return existingCanonicalMessages
+        }
+
+        return canonicalMessagesRetainedOutsideTailCoverage(
+            existingCanonicalMessages,
+            incomingMessages: incomingMessages
+        )
+    }
+
+    nonisolated static func canonicalMessagesRetainedOutsideTailCoverage(
+        _ existingCanonicalMessages: [ChatMessage],
+        incomingMessages: [ChatMessage]
+    ) -> [ChatMessage] {
+        guard !existingCanonicalMessages.isEmpty,
+              !incomingMessages.isEmpty else {
+            return existingCanonicalMessages
+        }
+
+        let incomingIDs = Set(incomingMessages.map(\.id))
+        let oldestIncomingOrdinal = incomingMessages
+            .compactMap(\.timelineOrdinal)
+            .min()
+        let oldestIncomingDate = incomingMessages
+            .map(\.createdAt)
+            .min() ?? .distantPast
+
+        return existingCanonicalMessages.filter { message in
+            if incomingIDs.contains(message.id) {
+                return true
+            }
+
+            if let oldestIncomingOrdinal,
+               let messageOrdinal = message.timelineOrdinal {
+                return messageOrdinal < oldestIncomingOrdinal
+            }
+
+            return message.createdAt < oldestIncomingDate
+        }
     }
 
     func decodeHistoryBaseDate(from threadObject: [String: JSONValue]) -> Date {

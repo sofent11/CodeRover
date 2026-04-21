@@ -217,6 +217,11 @@ export function createAcpEngine({
       model,
       ownerState: "idle",
       activeTurnId: null,
+      sourceKind: "managed_runtime",
+      syncEpoch: Math.max(1, existing?.syncEpoch || 1),
+      rolloutPath: existing?.rolloutPath || null,
+      lastProjectedCursor: existing?.lastProjectedCursor || null,
+      takeoverWatermark: existing?.takeoverWatermark || null,
       createdAt: existing?.createdAt || now,
       updatedAt: now,
     };

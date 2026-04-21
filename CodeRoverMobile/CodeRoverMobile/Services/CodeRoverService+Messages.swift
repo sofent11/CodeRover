@@ -7,6 +7,26 @@
 import Foundation
 
 extension CodeRoverService {
+    struct DecodedHistoryWindow: Equatable {
+        let olderCursor: String?
+        let newerCursor: String?
+        let hasOlder: Bool
+        let hasNewer: Bool
+        let servedFromProjection: Bool
+        let projectionSource: String?
+        let syncEpoch: Int
+    }
+
+    enum ThreadHistoryLoadOutcome: Equatable {
+        case alreadyHydrated
+        case notMaterialized
+        case loadedCanonicalHistory
+
+        var didCompleteCanonicalReconcile: Bool {
+            self == .loadedCanonicalHistory
+        }
+    }
+
     enum ThreadDisplayPhase: Equatable {
         case loading
         case empty
@@ -306,70 +326,101 @@ extension CodeRoverService {
     }
 
     // Loads the latest thread/read history window once per thread and keeps older ranges lazy.
-    func loadThreadHistoryIfNeeded(threadId: String, forceRefresh: Bool = false) async throws {
+    @discardableResult
+    func loadThreadHistoryIfNeeded(
+        threadId: String,
+        forceRefresh: Bool = false
+    ) async throws -> ThreadHistoryLoadOutcome {
         let hasLocalMessages = !(messagesByThread[threadId] ?? []).isEmpty
         let currentState = historyStateByThread[threadId]
         let hasNewestCursor = normalizedHistoryCursor(currentState?.newestCursor) != nil
         if !forceRefresh, hydratedThreadIDs.contains(threadId), hasLocalMessages, hasNewestCursor {
-            return
+            return .alreadyHydrated
         }
 
-        if loadingThreadIDs.contains(threadId) {
-            return
+        if forceRefresh {
+            forcedHistoryLoadThreadIDs.insert(threadId)
+        }
+        if let existingTask = threadHistoryLoadTaskByThreadID[threadId] {
+            return try await existingTask.value
         }
 
-        historyStateByThread[threadId, default: ThreadHistoryState()].isTailRefreshing = true
-        loadingThreadIDs.insert(threadId)
-        defer {
-            loadingThreadIDs.remove(threadId)
-            historyStateByThread[threadId, default: ThreadHistoryState()].isTailRefreshing = false
-        }
-
-        do {
-            if shouldPreferTailReloadForManagedHistory(threadId: threadId) {
-                try await loadTailThreadHistory(
-                    threadId: threadId,
-                    replaceLocalHistory: shouldReplaceLocalHistoryWithTailSnapshot(
-                        threadId: threadId,
-                        hasLocalMessages: hasLocalMessages,
-                        hasNewestCursor: hasNewestCursor
-                    ),
-                    prefetchOlderInBackground: !hasLocalMessages
-                )
-            } else if let newestCursor = normalizedHistoryCursor(currentState?.newestCursor),
-                      hasLocalMessages {
-                try await catchUpThreadHistoryToLatest(
-                    threadId: threadId,
-                    initialCursor: newestCursor,
-                    allowTailFallback: true
-                )
-            } else {
-                try await loadTailThreadHistory(
-                    threadId: threadId,
-                    replaceLocalHistory: shouldReplaceLocalHistoryWithTailSnapshot(
-                        threadId: threadId,
-                        hasLocalMessages: hasLocalMessages,
-                        hasNewestCursor: hasNewestCursor
-                    ),
-                    prefetchOlderInBackground: !hasLocalMessages
-                )
+        let refreshGeneration = currentPerThreadRefreshGeneration(for: threadId)
+        let task = Task<ThreadHistoryLoadOutcome, Error> { @MainActor in
+            historyStateByThread[threadId, default: ThreadHistoryState()].isTailRefreshing = true
+            loadingThreadIDs.insert(threadId)
+            defer {
+                if isPerThreadRefreshCurrent(for: threadId, generation: refreshGeneration) {
+                    loadingThreadIDs.remove(threadId)
+                    historyStateByThread[threadId, default: ThreadHistoryState()].isTailRefreshing = false
+                    threadHistoryLoadTaskByThreadID.removeValue(forKey: threadId)
+                    forcedHistoryLoadThreadIDs.remove(threadId)
+                }
             }
-        } catch let error as CodeRoverServiceError {
-            if case .rpcError(let rpcError) = error, rpcError.code == -32600 {
-                // Thread not materialized yet — mark as hydrated and return silently.
+
+            do {
+                let effectiveForceRefresh = forceRefresh || forcedHistoryLoadThreadIDs.contains(threadId)
+                if shouldPreferTailReloadForManagedHistory(threadId: threadId) {
+                    try await loadTailThreadHistory(
+                        threadId: threadId,
+                        replaceLocalHistory: shouldReplaceLocalHistoryWithTailSnapshot(
+                            threadId: threadId,
+                            hasLocalMessages: hasLocalMessages,
+                            hasNewestCursor: hasNewestCursor
+                        ),
+                        prefetchOlderInBackground: !hasLocalMessages,
+                        refreshGeneration: refreshGeneration
+                    )
+                } else if let newestCursor = normalizedHistoryCursor(currentState?.newestCursor),
+                          hasLocalMessages {
+                    try await catchUpThreadHistoryToLatest(
+                        threadId: threadId,
+                        initialCursor: newestCursor,
+                        allowTailFallback: true,
+                        refreshGeneration: refreshGeneration
+                    )
+                } else {
+                    try await loadTailThreadHistory(
+                        threadId: threadId,
+                        replaceLocalHistory: shouldReplaceLocalHistoryWithTailSnapshot(
+                            threadId: threadId,
+                            hasLocalMessages: hasLocalMessages,
+                            hasNewestCursor: hasNewestCursor
+                        ),
+                        prefetchOlderInBackground: !hasLocalMessages,
+                        refreshGeneration: refreshGeneration
+                    )
+                }
+                guard !Task.isCancelled,
+                      isPerThreadRefreshCurrent(for: threadId, generation: refreshGeneration) else {
+                    throw CancellationError()
+                }
+
                 hydratedThreadIDs.insert(threadId)
-                return
+                updateCurrentOutput(for: threadId)
+                if effectiveForceRefresh && threadHasActiveOrRunningTurn(threadId) {
+                    markThreadNeedingCanonicalHistoryReconcile(threadId)
+                } else if !threadHasActiveOrRunningTurn(threadId) {
+                    markThreadCanonicalHistoryReconciled(threadId)
+                }
+                return .loadedCanonicalHistory
+            } catch let error as CodeRoverServiceError {
+                if case .rpcError(let rpcError) = error, rpcError.code == -32600 {
+                    hydratedThreadIDs.insert(threadId)
+                    return .notMaterialized
+                }
+                throw error
             }
-            throw error
         }
 
-        hydratedThreadIDs.insert(threadId)
-        updateCurrentOutput(for: threadId)
+        threadHistoryLoadTaskByThreadID[threadId] = task
+        return try await task.value
     }
 
     func loadOlderThreadHistoryIfNeeded(threadId: String) async throws {
         guard isConnected, isInitialized else { return }
         guard !loadingThreadIDs.contains(threadId) else { return }
+        let refreshGeneration = currentPerThreadRefreshGeneration(for: threadId)
 
         guard let requestCursor = nextOlderHistoryCursor(for: threadId) else {
             try await loadThreadHistoryIfNeeded(threadId: threadId, forceRefresh: true)
@@ -403,6 +454,14 @@ extension CodeRoverService {
         applyTerminalStatesFromThreadRead(threadId: threadId, threadObject: threadObject)
         let historyMessages = decodeMessagesFromThreadRead(threadId: threadId, threadObject: threadObject)
         let historyWindow = decodeHistoryWindow(from: resultObject, fallbackMessages: historyMessages, mode: .before)
+        guard acceptThreadSyncMetadata(
+            threadId: threadId,
+            syncEpoch: historyWindow.syncEpoch,
+            sourceKind: historyWindow.projectionSource,
+            generation: refreshGeneration
+        ) else {
+            throw CancellationError()
+        }
 
         try await applyHistoryWindow(
             threadId: threadId,
@@ -426,6 +485,7 @@ extension CodeRoverService {
         guard !loadingThreadIDs.contains(threadId) else {
             return (cursor, true, false, 0)
         }
+        let refreshGeneration = currentPerThreadRefreshGeneration(for: threadId)
 
         historyStateByThread[threadId, default: ThreadHistoryState()].isTailRefreshing = true
         loadingThreadIDs.insert(threadId)
@@ -456,6 +516,14 @@ extension CodeRoverService {
 
         let historyMessages = decodeMessagesFromThreadRead(threadId: threadId, threadObject: threadObject)
         let historyWindow = decodeHistoryWindow(from: resultObject, fallbackMessages: historyMessages, mode: .after)
+        guard acceptThreadSyncMetadata(
+            threadId: threadId,
+            syncEpoch: historyWindow.syncEpoch,
+            sourceKind: historyWindow.projectionSource,
+            generation: refreshGeneration
+        ) else {
+            throw CancellationError()
+        }
         try await applyHistoryWindow(
             threadId: threadId,
             mode: .after,
@@ -537,7 +605,8 @@ extension CodeRoverService {
                 do {
                     try await self.loadTailThreadHistory(
                         threadId: threadId,
-                        replaceLocalHistory: false
+                        replaceLocalHistory: false,
+                        refreshGeneration: self.currentPerThreadRefreshGeneration(for: threadId)
                     )
                 } catch {
                     self.debugSyncLog(
@@ -635,7 +704,8 @@ extension CodeRoverService {
             try await catchUpThreadHistoryToLatest(
                 threadId: threadId,
                 initialCursor: newestCursor,
-                allowTailFallback: true
+                allowTailFallback: true,
+                refreshGeneration: currentPerThreadRefreshGeneration(for: threadId)
             )
             return
         }
@@ -803,30 +873,41 @@ extension CodeRoverService {
         from resultObject: RPCObject,
         fallbackMessages: [ChatMessage],
         mode: ThreadHistoryWindowMode
-    ) -> (
-        olderCursor: String?,
-        newerCursor: String?,
-        hasOlder: Bool,
-        hasNewer: Bool
-    ) {
+    ) -> DecodedHistoryWindow {
         let historyWindowObject = resultObject["historyWindow"]?.objectValue
             ?? resultObject["history_window"]?.objectValue
         if let historyWindowObject {
-            return (
-                historyWindowObject["olderCursor"]?.stringValue
+            return DecodedHistoryWindow(
+                olderCursor: historyWindowObject["olderCursor"]?.stringValue
                     ?? historyWindowObject["older_cursor"]?.stringValue,
-                historyWindowObject["newerCursor"]?.stringValue
+                newerCursor: historyWindowObject["newerCursor"]?.stringValue
                     ?? historyWindowObject["newer_cursor"]?.stringValue,
-                historyWindowObject["hasOlder"]?.boolValue ?? historyWindowObject["has_older"]?.boolValue ?? false,
-                historyWindowObject["hasNewer"]?.boolValue ?? historyWindowObject["has_newer"]?.boolValue ?? false
+                hasOlder: historyWindowObject["hasOlder"]?.boolValue ?? historyWindowObject["has_older"]?.boolValue ?? false,
+                hasNewer: historyWindowObject["hasNewer"]?.boolValue ?? historyWindowObject["has_newer"]?.boolValue ?? false,
+                servedFromProjection: historyWindowObject["servedFromProjection"]?.boolValue
+                    ?? historyWindowObject["served_from_projection"]?.boolValue
+                    ?? false,
+                projectionSource: historyWindowObject["projectionSource"]?.stringValue
+                    ?? historyWindowObject["projection_source"]?.stringValue,
+                syncEpoch: historyWindowObject["syncEpoch"]?.intValue
+                    ?? historyWindowObject["sync_epoch"]?.intValue
+                    ?? resultObject["syncEpoch"]?.intValue
+                    ?? resultObject["sync_epoch"]?.intValue
+                    ?? 1
             )
         }
 
-        return (
-            nil,
-            nil,
-            false,
-            false
+        return DecodedHistoryWindow(
+            olderCursor: nil,
+            newerCursor: nil,
+            hasOlder: false,
+            hasNewer: false,
+            servedFromProjection: false,
+            projectionSource: resultObject["sourceKind"]?.stringValue
+                ?? resultObject["source_kind"]?.stringValue,
+            syncEpoch: resultObject["syncEpoch"]?.intValue
+                ?? resultObject["sync_epoch"]?.intValue
+                ?? 1
         )
     }
 
@@ -852,7 +933,8 @@ extension CodeRoverService {
     func loadTailThreadHistory(
         threadId: String,
         replaceLocalHistory: Bool,
-        prefetchOlderInBackground: Bool = false
+        prefetchOlderInBackground: Bool = false,
+        refreshGeneration: UInt64? = nil
     ) async throws {
         debugRuntimeLog("thread/read tail request thread=\(threadId) replaceLocal=\(replaceLocalHistory)")
         let response = try await sendRequest(
@@ -880,6 +962,14 @@ extension CodeRoverService {
             latestLimit: 50
         )
         let historyWindow = decodeHistoryWindow(from: resultObject, fallbackMessages: historyMessages, mode: .tail)
+        guard acceptThreadSyncMetadata(
+            threadId: threadId,
+            syncEpoch: historyWindow.syncEpoch,
+            sourceKind: historyWindow.projectionSource,
+            generation: refreshGeneration
+        ) else {
+            throw CancellationError()
+        }
         debugRuntimeLog(
             "thread/read tail response thread=\(threadId) decoded=\(historyMessages.count) "
             + "older=\(historyWindow.olderCursor != nil) newer=\(historyWindow.newerCursor != nil) "
@@ -924,6 +1014,7 @@ extension CodeRoverService {
             mergedMessages = mergeCanonicalHistoryIntoTimelineState(
                 threadId: threadId,
                 historyMessages: historyMessages,
+                mode: mode,
                 activeThreadIDs: activeThreadIDs,
                 runningThreadIDs: runningIDs
             )
@@ -955,7 +1046,8 @@ extension CodeRoverService {
     func catchUpThreadHistoryToLatest(
         threadId: String,
         initialCursor: String,
-        allowTailFallback: Bool
+        allowTailFallback: Bool,
+        refreshGeneration: UInt64? = nil
     ) async throws {
         var cursor = initialCursor
         var pageCount = 0
@@ -983,7 +1075,8 @@ extension CodeRoverService {
                         threadId: threadId,
                         hasLocalMessages: !(messagesByThread[threadId] ?? []).isEmpty,
                         hasNewestCursor: normalizedHistoryCursor(historyStateByThread[threadId]?.newestCursor) != nil
-                    )
+                    ),
+                    refreshGeneration: refreshGeneration
                 )
                 break
             }

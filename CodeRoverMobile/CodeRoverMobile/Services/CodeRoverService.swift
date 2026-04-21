@@ -48,6 +48,11 @@ struct CodeRoverRunningThreadWatch: Equatable, Sendable {
     let expiresAt: Date
 }
 
+struct CodeRoverThreadResumeRequestSignature: Equatable, Sendable {
+    let projectPath: String?
+    let modelIdentifier: String?
+}
+
 struct CodeRoverSubagentIdentityEntry: Equatable, Sendable {
     var threadId: String?
     var agentId: String?
@@ -415,6 +420,17 @@ final class CodeRoverService {
     var hydratedThreadIDs: Set<String> = []
     var loadingThreadIDs: Set<String> = []
     var resumedThreadIDs: Set<String> = []
+    @ObservationIgnored var threadHistoryLoadTaskByThreadID: [String: Task<ThreadHistoryLoadOutcome, Error>] = [:]
+    @ObservationIgnored var forcedHistoryLoadThreadIDs: Set<String> = []
+    @ObservationIgnored var threadResumeTaskByThreadID: [String: Task<ConversationThread?, Error>] = [:]
+    @ObservationIgnored var threadResumeRequestSignatureByThreadID: [String: CodeRoverThreadResumeRequestSignature] = [:]
+    @ObservationIgnored var forcedResumeEscalationThreadIDs: Set<String> = []
+    @ObservationIgnored var turnStateRefreshTaskByThreadID: [String: Task<Bool, Never>] = [:]
+    @ObservationIgnored var threadRefreshGenerationByThreadID: [String: UInt64] = [:]
+    @ObservationIgnored var threadSyncEpochByThreadID: [String: Int] = [:]
+    @ObservationIgnored var threadSyncSourceKindByThreadID: [String: String] = [:]
+    @ObservationIgnored var threadsNeedingCanonicalHistoryReconcile: Set<String> = []
+    @ObservationIgnored var canonicalHistoryReconcileTaskByThreadID: [String: Task<Void, Never>] = [:]
     var pendingRealtimeHistoryCatchUpThreadIDs: Set<String> = []
     var realtimeHistoryCatchUpTaskByThread: [String: Task<Void, Never>] = [:]
     var olderHistoryBackfillTaskByThread: [String: Task<Void, Never>] = [:]
