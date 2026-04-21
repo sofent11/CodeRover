@@ -191,4 +191,71 @@ class CodeRoverTimelineSemanticsTest {
         assertNotNull(reconciled.subagentAction)
         assertEquals(listOf("child-1"), reconciled.subagentAction?.agentRows?.map { it.threadId })
     }
+
+    @Test
+    fun shouldReconcileToolActivityRowMatchesProvisionalTurnScopedRowWithStableServerItem() {
+        val localMessage = ChatMessage(
+            id = "tool-local",
+            threadId = "thread-1",
+            role = MessageRole.SYSTEM,
+            kind = MessageKind.TOOL_ACTIVITY,
+            text = "Read app/src/A.kt",
+            turnId = "turn-1",
+            itemId = "turn:turn-1|kind:TOOL_ACTIVITY|1",
+            orderIndex = 1,
+        )
+        val serverMessage = ChatMessage(
+            id = "tool-server",
+            threadId = "thread-1",
+            role = MessageRole.SYSTEM,
+            kind = MessageKind.TOOL_ACTIVITY,
+            text = "Read app/src/A.kt\nOpen app/src/B.kt",
+            turnId = "turn-1",
+            itemId = "tool-item-1",
+            orderIndex = 2,
+        )
+
+        assertFalse(hasStableToolActivityIdentity(localMessage.itemId))
+        assertTrue(hasStableToolActivityIdentity(serverMessage.itemId))
+        assertTrue(
+            shouldReconcileToolActivityRow(
+                localMessage = localMessage,
+                serverMessage = serverMessage,
+                requiresExactText = false,
+            ),
+        )
+    }
+
+    @Test
+    fun reconcileExistingTimelineMessageRebindsProvisionalToolActivityItemIdToStableServerItemId() {
+        val reconciled = reconcileExistingTimelineMessage(
+            localMessage = ChatMessage(
+                id = "tool-local",
+                threadId = "thread-1",
+                role = MessageRole.SYSTEM,
+                kind = MessageKind.TOOL_ACTIVITY,
+                text = "Read app/src/A.kt",
+                turnId = "turn-1",
+                itemId = "turn:turn-1|kind:TOOL_ACTIVITY|1",
+                isStreaming = true,
+                orderIndex = 1,
+            ),
+            serverMessage = ChatMessage(
+                id = "tool-server",
+                threadId = "thread-1",
+                role = MessageRole.SYSTEM,
+                kind = MessageKind.TOOL_ACTIVITY,
+                text = "Read app/src/A.kt\nOpen app/src/B.kt",
+                turnId = "turn-1",
+                itemId = "tool-item-1",
+                timelineStatus = "completed",
+                orderIndex = 2,
+            ),
+            activeThreadIds = emptySet(),
+            runningThreadIds = emptySet(),
+        )
+
+        assertEquals("tool-item-1", reconciled.itemId)
+        assertEquals("Read app/src/A.kt\nOpen app/src/B.kt", reconciled.text)
+    }
 }

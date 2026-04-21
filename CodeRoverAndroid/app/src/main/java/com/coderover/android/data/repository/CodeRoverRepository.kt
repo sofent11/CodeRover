@@ -3067,6 +3067,7 @@ class CodeRoverRepository(context: Context) {
             }
             val text = when (kind) {
                 MessageKind.FILE_CHANGE -> decodeFileChangeText(item, fileChanges)
+                MessageKind.TOOL_ACTIVITY -> decodeToolActivityText(item)
                 MessageKind.COMMAND_EXECUTION -> decodeCommandExecutionText(item, commandState)
                 MessageKind.SUBAGENT_ACTION -> subagentAction?.summaryText ?: decodeItemText(item)
                 MessageKind.PLAN -> decodePlanText(item, planState)
@@ -3168,6 +3169,74 @@ class CodeRoverRepository(context: Context) {
     private fun decodeCommandExecutionText(item: JsonObject, commandState: CommandState?): String {
         val state = commandState ?: decodeCommandState(item, completedFallback = true) ?: return "Completed command"
         return "${state.phase.statusLabel} ${state.shortCommand}"
+    }
+
+    private fun decodeToolActivityText(item: JsonObject): String {
+        val output = firstNonBlank(
+            item.string("text"),
+            item.string("message"),
+            item.string("summary"),
+            item.string("stdout"),
+            item.string("stderr"),
+            item.string("output_text"),
+            item.string("outputText"),
+        )
+        if (output != null) {
+            val lines = output
+                .lines()
+                .map(String::trim)
+                .filter { it.isNotEmpty() && it.length <= 140 }
+            val acceptedPrefixes = listOf(
+                "running ",
+                "read ",
+                "search ",
+                "searched ",
+                "exploring ",
+                "list ",
+                "listing ",
+                "open ",
+                "opened ",
+                "find ",
+                "finding ",
+                "edit ",
+                "edited ",
+                "write ",
+                "wrote ",
+                "apply ",
+                "applied ",
+            )
+            val activityLines = lines.filter { line ->
+                val lower = line.lowercase()
+                acceptedPrefixes.any(lower::startsWith)
+            }
+            if (activityLines.isNotEmpty()) {
+                return activityLines.joinToString("\n")
+            }
+        }
+
+        val nestedTool = item["tool"]?.jsonObjectOrNull()
+        val nestedCall = item["call"]?.jsonObjectOrNull()
+        val descriptor = firstNonBlank(
+            item.string("kind"),
+            item.string("name"),
+            item.string("tool"),
+            item.string("tool_name"),
+            item.string("toolName"),
+            item.string("title"),
+            nestedTool?.string("kind"),
+            nestedTool?.string("name"),
+            nestedTool?.string("type"),
+            nestedTool?.string("title"),
+            nestedCall?.string("kind"),
+            nestedCall?.string("name"),
+            nestedCall?.string("type"),
+            nestedCall?.string("title"),
+        )
+        return toolActivitySummaryLine(
+            descriptor = descriptor,
+            rawStatus = item.string("status"),
+            isCompleted = true,
+        )
     }
 
     private fun decodeStructuredUserInputQuestions(value: JsonElement?): List<StructuredUserInputQuestion> {
@@ -3962,7 +4031,9 @@ class CodeRoverRepository(context: Context) {
     private fun canonicalTimelineKind(rawValue: String?): MessageKind {
         return when (normalizeMethodToken(rawValue.orEmpty())) {
             "thinking", "reasoning" -> MessageKind.THINKING
-            "filechange", "toolcall", "diff" -> MessageKind.FILE_CHANGE
+            "toolactivity" -> MessageKind.TOOL_ACTIVITY
+            "filechange", "diff" -> MessageKind.FILE_CHANGE
+            "toolcall" -> MessageKind.TOOL_ACTIVITY
             "commandexecution", "commanddelta", "command", "shellcommand", "shell" -> MessageKind.COMMAND_EXECUTION
             "collabagenttoolcall", "collabtoolcall", "subagentaction" -> MessageKind.SUBAGENT_ACTION
             "plan" -> MessageKind.PLAN
@@ -3974,12 +4045,24 @@ class CodeRoverRepository(context: Context) {
     private fun resolveTimelineMessageKind(rawValue: String?, item: JsonObject): MessageKind {
         val explicitKind = canonicalTimelineKind(rawValue)
         if (explicitKind != MessageKind.CHAT) {
+            if (explicitKind == MessageKind.TOOL_ACTIVITY && isFileChangePayload(item)) {
+                return MessageKind.FILE_CHANGE
+            }
             return explicitKind
         }
         return when {
+            isFileChangePayload(item) -> MessageKind.FILE_CHANGE
             isCommandExecutionPayload(item) -> MessageKind.COMMAND_EXECUTION
             else -> MessageKind.CHAT
         }
+    }
+
+    private fun isFileChangePayload(item: JsonObject): Boolean {
+        if (decodeFileChangeEntries(item).isNotEmpty()) {
+            return true
+        }
+        val diff = extractDiffText(item)
+        return diff.isNotBlank()
     }
 
     private fun isCommandExecutionPayload(item: JsonObject): Boolean {
@@ -4024,6 +4107,7 @@ class CodeRoverRepository(context: Context) {
     ): String {
         return when (kind) {
             MessageKind.FILE_CHANGE -> decodeFileChangeText(payload, fileChanges)
+            MessageKind.TOOL_ACTIVITY -> decodeToolActivityText(payload)
             MessageKind.COMMAND_EXECUTION -> decodeCommandExecutionText(payload, commandState)
             MessageKind.SUBAGENT_ACTION -> subagentAction?.summaryText ?: payload.deltaText()
             MessageKind.PLAN -> decodePlanText(payload, planState)
@@ -6266,9 +6350,25 @@ private fun CodeRoverRepository.mergeCanonicalHistoryIntoTimelineState(
     )
     val timelineState = ThreadTimelineState(seededCanonicalMessages)
     historyMessages.forEach { message ->
-        val reconciled = timelineState.message(message.id)?.let { existing ->
+        val existing = timelineState.message(message.id)
+            ?: when {
+                message.role == MessageRole.SYSTEM &&
+                    message.kind == MessageKind.TOOL_ACTIVITY &&
+                    normalizedIdentifier(message.turnId) != null -> {
+                    val turnId = normalizedIdentifier(message.turnId)
+                    timelineState.renderedMessages().lastOrNull { candidate ->
+                        candidate.role == MessageRole.SYSTEM &&
+                            candidate.kind == MessageKind.TOOL_ACTIVITY &&
+                            candidate.turnId == turnId &&
+                            shouldReconcileToolActivityRow(candidate, message, requiresExactText = false)
+                    }
+                }
+
+                else -> null
+            }
+        val reconciled = existing?.let {
             reconcileExistingTimelineMessage(
-                localMessage = existing,
+                localMessage = it,
                 serverMessage = message,
                 activeThreadIds = activeThreadIds,
                 runningThreadIds = runningThreadIds,
@@ -6334,7 +6434,14 @@ internal fun reconcileExistingTimelineMessage(
         kind = if (localMessage.kind == MessageKind.CHAT) serverMessage.kind else localMessage.kind,
         text = nextText,
         turnId = localMessage.turnId ?: serverMessage.turnId,
-        itemId = localMessage.itemId ?: serverMessage.itemId,
+        itemId = when {
+            localMessage.itemId == null -> serverMessage.itemId
+            localMessage.kind == MessageKind.TOOL_ACTIVITY &&
+                serverMessage.itemId != null &&
+                !hasStableToolActivityIdentity(localMessage.itemId) &&
+                localMessage.itemId != serverMessage.itemId -> serverMessage.itemId
+            else -> localMessage.itemId
+        },
         isStreaming = if (preservesRunningPresentation) {
             localMessage.isStreaming || serverMessage.isStreaming || localMessage.threadId in runningThreadIds
         } else {
@@ -6439,7 +6546,7 @@ internal fun shouldFinalizeSupersededCanonicalStreamingMessage(message: ChatMess
     }
     return when (message.kind) {
         MessageKind.THINKING, MessageKind.PLAN, MessageKind.SUBAGENT_ACTION, MessageKind.CHAT -> true
-        MessageKind.FILE_CHANGE, MessageKind.COMMAND_EXECUTION, MessageKind.USER_INPUT_PROMPT -> false
+        MessageKind.TOOL_ACTIVITY, MessageKind.FILE_CHANGE, MessageKind.COMMAND_EXECUTION, MessageKind.USER_INPUT_PROMPT -> false
     }
 }
 
@@ -6513,13 +6620,14 @@ private fun mergeHistoryMessages(existing: List<ChatMessage>, history: List<Chat
 private fun historyMessageSyncKey(message: ChatMessage): String {
     val primaryItemId = message.itemId?.trim().orEmpty()
     if (primaryItemId.isNotEmpty()) {
-        return "item|$primaryItemId|${message.createdAt}"
+        return "item|${message.role.name}|${message.kind.name}|$primaryItemId"
     }
     val turnId = message.turnId?.trim().orEmpty()
-    if (turnId.isNotEmpty()) {
-        return "turn|$turnId|${message.kind.name}|${message.createdAt}"
+    val normalizedText = message.text.trim()
+    if (turnId.isNotEmpty() && normalizedText.isNotEmpty()) {
+        return "turn|${message.role.name}|${message.kind.name}|$turnId|$normalizedText"
     }
-    return "fallback|${message.role.name}|${message.kind.name}|${message.createdAt}|${message.text.trim()}"
+    return "fallback|${message.role.name}|${message.kind.name}|${message.createdAt}|$normalizedText"
 }
 
 private fun mergeHistoryState(
@@ -6592,8 +6700,83 @@ private fun firstNonBlank(vararg values: String?): String? {
     return values.firstOrNull { !it.isNullOrBlank() }?.trim()
 }
 
+private fun normalizedToolActivityStatus(rawStatus: String?, isCompleted: Boolean): String {
+    return when (normalizeMethodToken(rawStatus.orEmpty())) {
+        "failed", "error" -> "Failed"
+        "stopped", "cancelled", "canceled", "interrupted" -> "Stopped"
+        "completed", "complete", "done", "finished", "success", "succeeded" -> "Completed"
+        "running", "inprogress", "working" -> "Running"
+        else -> if (isCompleted) "Completed" else "Running"
+    }
+}
+
+private fun toolActivitySummaryLine(
+    descriptor: String?,
+    rawStatus: String?,
+    isCompleted: Boolean,
+    fallback: String = "tool",
+): String {
+    val statusLabel = normalizedToolActivityStatus(rawStatus, isCompleted)
+    val descriptorLabel = descriptor?.trim()?.takeIf(String::isNotEmpty) ?: fallback
+    return "$statusLabel $descriptorLabel"
+}
+
 internal fun normalizedIdentifier(value: String?): String? {
     return value?.trim()?.takeIf(String::isNotEmpty)
+}
+
+internal fun normalizedToolActivityLines(text: String): List<String> {
+    return text.trim()
+        .lines()
+        .map(String::trim)
+        .map(String::lowercase)
+        .filter(String::isNotEmpty)
+}
+
+internal fun hasStableToolActivityIdentity(value: String?): Boolean {
+    val normalized = normalizedIdentifier(value) ?: return false
+    return !(normalized.startsWith("turn:") && normalized.contains("|kind:${MessageKind.TOOL_ACTIVITY.name}"))
+}
+
+internal fun shouldReconcileToolActivityRow(
+    localMessage: ChatMessage,
+    serverMessage: ChatMessage,
+    requiresExactText: Boolean,
+): Boolean {
+    val localItemId = normalizedIdentifier(localMessage.itemId)
+    val serverItemId = normalizedIdentifier(serverMessage.itemId)
+    if (localItemId != null && serverItemId != null && localItemId == serverItemId) {
+        return true
+    }
+
+    val localHasStableIdentity = hasStableToolActivityIdentity(localItemId)
+    val serverHasStableIdentity = hasStableToolActivityIdentity(serverItemId)
+    if (localHasStableIdentity && serverHasStableIdentity) {
+        return false
+    }
+
+    val localLines = normalizedToolActivityLines(localMessage.text)
+    val serverLines = normalizedToolActivityLines(serverMessage.text)
+    if (localLines.isEmpty() || serverLines.isEmpty()) {
+        return !localHasStableIdentity || !serverHasStableIdentity
+    }
+
+    if (localLines == serverLines) {
+        return true
+    }
+
+    if (requiresExactText) {
+        return false
+    }
+
+    return localLines.hasPrefix(serverLines) || serverLines.hasPrefix(localLines)
+}
+
+private fun List<String>.hasPrefix(other: List<String>): Boolean {
+    if (other.size > size) {
+        return false
+    }
+    return subList(0, other.size) == other
 }
 
 internal fun normalizedHistoryCursor(value: String?): String? {

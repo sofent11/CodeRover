@@ -28,8 +28,9 @@ internal fun projectTimelineMessages(messages: List<ChatMessage>): List<ChatMess
     val visibleMessages = removeHiddenSystemMarkers(messages)
     val suppressedCommandMetadata = removeDuplicateCommandMetadataMessages(visibleMessages)
     val reordered = enforceIntraTurnOrder(suppressedCommandMetadata)
-    val collapsedThinking = collapseConsecutiveThinkingMessages(reordered)
-    val dedupedFileChanges = removeDuplicateFileChangeMessages(collapsedThinking)
+    val collapsedThinking = collapseThinkingMessages(reordered)
+    val dedupedUsers = removeDuplicateUserMessages(collapsedThinking)
+    val dedupedFileChanges = removeDuplicateFileChangeMessages(dedupedUsers)
     val dedupedSubagentActions = removeDuplicateSubagentActionMessages(dedupedFileChanges)
     return removeDuplicateAssistantMessages(dedupedSubagentActions)
 }
@@ -88,7 +89,19 @@ internal fun buildTimelineRenderItems(messages: List<ChatMessage>): List<Timelin
 internal const val COMMAND_BURST_COLLAPSED_VISIBLE_COUNT = 5
 
 private fun isCommandBurstCandidate(message: ChatMessage): Boolean {
-    return message.role == MessageRole.SYSTEM && message.kind == MessageKind.COMMAND_EXECUTION
+    if (message.role != MessageRole.SYSTEM) {
+        return false
+    }
+    return when (message.kind) {
+        MessageKind.TOOL_ACTIVITY, MessageKind.COMMAND_EXECUTION -> true
+        MessageKind.THINKING,
+        MessageKind.CHAT,
+        MessageKind.PLAN,
+        MessageKind.USER_INPUT_PROMPT,
+        MessageKind.FILE_CHANGE,
+        MessageKind.SUBAGENT_ACTION,
+        -> false
+    }
 }
 
 private fun canShareCommandBurst(previous: ChatMessage, incoming: ChatMessage): Boolean {
@@ -113,7 +126,7 @@ private fun enforceIntraTurnOrder(messages: List<ChatMessage>): List<ChatMessage
             return@forEach
         }
         val turnMessages = indices.map { result[it] }
-        val sorted = if (hasInterleavedAssistantThinkingFlow(turnMessages)) {
+        val sorted = if (hasInterleavedAssistantActivityFlow(turnMessages)) {
             turnMessages.sortedWith(
                 compareBy<ChatMessage> { it.role != MessageRole.USER }
                     .thenBy(ChatMessage::orderIndex),
@@ -131,7 +144,7 @@ private fun enforceIntraTurnOrder(messages: List<ChatMessage>): List<ChatMessage
     return result
 }
 
-private fun hasInterleavedAssistantThinkingFlow(messages: List<ChatMessage>): Boolean {
+private fun hasInterleavedAssistantActivityFlow(messages: List<ChatMessage>): Boolean {
     val assistantItemIds = messages
         .filter { it.role == MessageRole.ASSISTANT }
         .mapNotNull { normalizedIdentifier(it.itemId) }
@@ -145,7 +158,7 @@ private fun hasInterleavedAssistantThinkingFlow(messages: List<ChatMessage>): Bo
     messages.sortedBy(ChatMessage::orderIndex).forEach { message ->
         if (message.role == MessageRole.ASSISTANT) {
             seenAssistant = true
-        } else if (message.role == MessageRole.SYSTEM && message.kind == MessageKind.THINKING) {
+        } else if (isInterleavableSystemActivity(message)) {
             if (!seenAssistant) {
                 hasThinkingBeforeAssistant = true
             } else if (hasThinkingBeforeAssistant) {
@@ -156,16 +169,32 @@ private fun hasInterleavedAssistantThinkingFlow(messages: List<ChatMessage>): Bo
     return false
 }
 
+private fun isInterleavableSystemActivity(message: ChatMessage): Boolean {
+    if (message.role != MessageRole.SYSTEM) {
+        return false
+    }
+    return when (message.kind) {
+        MessageKind.THINKING, MessageKind.TOOL_ACTIVITY, MessageKind.COMMAND_EXECUTION -> true
+        MessageKind.CHAT,
+        MessageKind.PLAN,
+        MessageKind.USER_INPUT_PROMPT,
+        MessageKind.FILE_CHANGE,
+        MessageKind.SUBAGENT_ACTION,
+        -> false
+    }
+}
+
 private fun intraTurnPriority(message: ChatMessage): Int {
     return when (message.role) {
         MessageRole.USER -> 0
         MessageRole.SYSTEM -> when (message.kind) {
             MessageKind.THINKING -> 1
-            MessageKind.COMMAND_EXECUTION -> 2
-            MessageKind.SUBAGENT_ACTION -> 3
-            MessageKind.CHAT, MessageKind.PLAN -> 4
-            MessageKind.FILE_CHANGE -> 5
-            MessageKind.USER_INPUT_PROMPT -> 6
+            MessageKind.TOOL_ACTIVITY -> 2
+            MessageKind.COMMAND_EXECUTION -> 3
+            MessageKind.SUBAGENT_ACTION -> 4
+            MessageKind.CHAT, MessageKind.PLAN -> 5
+            MessageKind.FILE_CHANGE -> 6
+            MessageKind.USER_INPUT_PROMPT -> 7
         }
 
         MessageRole.ASSISTANT -> 4
@@ -291,7 +320,7 @@ private val COMMAND_METADATA_MARKERS = listOf(
 
 private val COMMAND_TRANSCRIPT_LINE_PREFIXES = listOf("| <>", "|<", "<>", "$", ">")
 
-private fun collapseConsecutiveThinkingMessages(messages: List<ChatMessage>): List<ChatMessage> {
+private fun collapseThinkingMessages(messages: List<ChatMessage>): List<ChatMessage> {
     val result = mutableListOf<ChatMessage>()
     messages.forEach { message ->
         if (message.role != MessageRole.SYSTEM || message.kind != MessageKind.THINKING) {
@@ -299,18 +328,15 @@ private fun collapseConsecutiveThinkingMessages(messages: List<ChatMessage>): Li
             return@forEach
         }
 
-        val previous = result.lastOrNull()
-        if (previous == null ||
-            previous.role != MessageRole.SYSTEM ||
-            previous.kind != MessageKind.THINKING ||
-            !shouldMergeThinkingRows(previous, message)
-        ) {
+        val previousIndex = latestReusableThinkingIndex(result, message)
+        if (previousIndex == null) {
             result += message
             return@forEach
         }
 
+        val previous = result[previousIndex]
         val mergedText = mergeThinkingText(previous.text, message.text)
-        result[result.lastIndex] = previous.copy(
+        result[previousIndex] = previous.copy(
             text = mergedText,
             isStreaming = message.isStreaming,
             turnId = message.turnId ?: previous.turnId,
@@ -318,6 +344,22 @@ private fun collapseConsecutiveThinkingMessages(messages: List<ChatMessage>): Li
         )
     }
     return result
+}
+
+private fun latestReusableThinkingIndex(messages: List<ChatMessage>, incoming: ChatMessage): Int? {
+    for (index in messages.indices.reversed()) {
+        val candidate = messages[index]
+        if (candidate.role == MessageRole.ASSISTANT || candidate.role == MessageRole.USER) {
+            break
+        }
+        if (candidate.role == MessageRole.SYSTEM &&
+            candidate.kind == MessageKind.THINKING &&
+            shouldMergeThinkingRows(candidate, incoming)
+        ) {
+            return index
+        }
+    }
+    return null
 }
 
 private fun shouldMergeThinkingRows(previous: ChatMessage, incoming: ChatMessage): Boolean {
@@ -414,6 +456,59 @@ private fun removeDuplicateAssistantMessages(messages: List<ChatMessage>): List<
         result += message
     }
     return result
+}
+
+private fun removeDuplicateUserMessages(messages: List<ChatMessage>): List<ChatMessage> {
+    val result = mutableListOf<ChatMessage>()
+    messages.forEach { message ->
+        if (message.role != MessageRole.USER) {
+            result += message
+            return@forEach
+        }
+
+        val previousIndex = result.indices.reversed().firstOrNull { index ->
+            shouldMergeUserMessages(result[index], message)
+        }
+        if (previousIndex == null) {
+            result += message
+            return@forEach
+        }
+
+        result[previousIndex] = mergeUserMessages(result[previousIndex], message)
+    }
+    return result
+}
+
+private fun shouldMergeUserMessages(previous: ChatMessage, incoming: ChatMessage): Boolean {
+    if (previous.role != MessageRole.USER ||
+        incoming.role != MessageRole.USER ||
+        previous.threadId != incoming.threadId ||
+        normalizedMessageText(previous.text) != normalizedMessageText(incoming.text)
+    ) {
+        return false
+    }
+
+    val previousTurnId = normalizedIdentifier(previous.turnId)
+    val incomingTurnId = normalizedIdentifier(incoming.turnId)
+    if (previousTurnId != null && incomingTurnId != null) {
+        return previousTurnId == incomingTurnId &&
+            kotlin.math.abs(incoming.createdAt - previous.createdAt) <= 12_000L
+    }
+
+    return kotlin.math.abs(incoming.createdAt - previous.createdAt) <= 12_000L
+}
+
+private fun mergeUserMessages(previous: ChatMessage, incoming: ChatMessage): ChatMessage {
+    return previous.copy(
+        text = if (incoming.text.isNotBlank()) incoming.text else previous.text,
+        turnId = previous.turnId ?: incoming.turnId,
+        itemId = previous.itemId ?: incoming.itemId,
+        attachments = if (previous.attachments.isEmpty()) incoming.attachments else previous.attachments,
+    )
+}
+
+private fun normalizedMessageText(text: String): String {
+    return text.trim()
 }
 
 private fun removeDuplicateFileChangeMessages(messages: List<ChatMessage>): List<ChatMessage> {

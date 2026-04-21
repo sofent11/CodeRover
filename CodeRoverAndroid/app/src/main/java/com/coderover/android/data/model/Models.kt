@@ -480,6 +480,7 @@ enum class MessageRole {
 enum class MessageKind {
     CHAT,
     THINKING,
+    TOOL_ACTIVITY,
     FILE_CHANGE,
     COMMAND_EXECUTION,
     SUBAGENT_ACTION,

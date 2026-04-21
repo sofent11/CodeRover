@@ -198,6 +198,93 @@ class TurnTimelineReducerTest {
     }
 
     @Test
+    fun projectTimelineMessagesPlacesToolActivityBeforeAssistantAndFileChangeWithinTurn() {
+        val messages = listOf(
+            ChatMessage(
+                id = "assistant-1",
+                threadId = "thread-1",
+                role = MessageRole.ASSISTANT,
+                kind = MessageKind.CHAT,
+                text = "Answer",
+                turnId = "turn-1",
+                orderIndex = 3,
+            ),
+            ChatMessage(
+                id = "tool-1",
+                threadId = "thread-1",
+                role = MessageRole.SYSTEM,
+                kind = MessageKind.TOOL_ACTIVITY,
+                text = "Read app/src/A.kt",
+                turnId = "turn-1",
+                orderIndex = 2,
+            ),
+            ChatMessage(
+                id = "file-1",
+                threadId = "thread-1",
+                role = MessageRole.SYSTEM,
+                kind = MessageKind.FILE_CHANGE,
+                text = "Edited app/src/A.kt +2 -1",
+                turnId = "turn-1",
+                orderIndex = 4,
+            ),
+            ChatMessage(
+                id = "user-1",
+                threadId = "thread-1",
+                role = MessageRole.USER,
+                kind = MessageKind.CHAT,
+                text = "Question",
+                turnId = "turn-1",
+                orderIndex = 1,
+            ),
+        )
+
+        val projected = projectTimelineMessages(messages)
+
+        assertEquals(listOf("user-1", "tool-1", "assistant-1", "file-1"), projected.map { it.id })
+    }
+
+    @Test
+    fun projectTimelineMessagesMergesDuplicateUserRowsFromRealtimeAndHistory() {
+        val messages = listOf(
+            ChatMessage(
+                id = "user-realtime",
+                threadId = "thread-1",
+                role = MessageRole.USER,
+                kind = MessageKind.CHAT,
+                text = "Question",
+                turnId = "turn-1",
+                orderIndex = 1,
+                createdAt = 1_000L,
+            ),
+            ChatMessage(
+                id = "user-history",
+                threadId = "thread-1",
+                role = MessageRole.USER,
+                kind = MessageKind.CHAT,
+                text = "Question",
+                turnId = "turn-1",
+                itemId = "user-item-1",
+                orderIndex = 2,
+                createdAt = 3_000L,
+            ),
+            ChatMessage(
+                id = "assistant-1",
+                threadId = "thread-1",
+                role = MessageRole.ASSISTANT,
+                kind = MessageKind.CHAT,
+                text = "Answer",
+                turnId = "turn-1",
+                orderIndex = 3,
+            ),
+        )
+
+        val projected = projectTimelineMessages(messages)
+
+        assertEquals(listOf("user-realtime", "assistant-1"), projected.map { it.id })
+        assertEquals("user-item-1", projected.first().itemId)
+    }
+
+    @Test
     fun buildAggregatedFileChangeInfoPinsDiffActionsToLastStableFileChangeMessageInBlock() {
         val messages = listOf(
             ChatMessage(
@@ -270,4 +357,27 @@ class TurnTimelineReducerTest {
 
         assertEquals(listOf("command-1"), projected.map { it.id })
     }
+
+    @Test
+    fun buildTimelineRenderItemsGroupsToolActivityAndCommandExecutionIntoOneBurst() {
+        val messages = (1..6).map { index ->
+            ChatMessage(
+                id = "msg-$index",
+                threadId = "thread-1",
+                role = MessageRole.SYSTEM,
+                kind = if (index.isOdd()) MessageKind.TOOL_ACTIVITY else MessageKind.COMMAND_EXECUTION,
+                text = "Tool $index",
+                turnId = "turn-1",
+                orderIndex = index,
+            )
+        }
+
+        val items = buildTimelineRenderItems(messages)
+
+        assertEquals(1, items.size)
+        val burst = items.single() as TimelineRenderItem.CommandBurst
+        assertEquals(messages.map { it.id }, burst.messages.map { it.id })
+    }
 }
+
+private fun Int.isOdd(): Boolean = this % 2 == 1

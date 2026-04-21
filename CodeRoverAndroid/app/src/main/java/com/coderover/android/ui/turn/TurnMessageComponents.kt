@@ -355,6 +355,7 @@ private fun SystemMessageBlock(
 ) {
     when (message.kind) {
         MessageKind.THINKING -> ThinkingMessageContent(message)
+        MessageKind.TOOL_ACTIVITY -> DefaultSystemMessageContent(message)
         MessageKind.FILE_CHANGE -> FileChangeMessageContent(
             message = message,
             aggregatedPresentation = aggregatedFileChangePresentation,
@@ -617,6 +618,7 @@ private fun DefaultSystemMessageContent(message: ChatMessage) {
 internal fun systemMessageTitle(kind: MessageKind): String {
     return when (kind) {
         MessageKind.THINKING -> "Thinking"
+        MessageKind.TOOL_ACTIVITY -> "Tool"
         MessageKind.FILE_CHANGE -> "File change"
         MessageKind.COMMAND_EXECUTION -> "Command"
         MessageKind.SUBAGENT_ACTION -> "Subagents"
@@ -630,7 +632,7 @@ internal fun systemMessageTitle(kind: MessageKind): String {
 internal fun systemAccentColor(kind: MessageKind): Color {
     return when (kind) {
         MessageKind.THINKING, MessageKind.PLAN -> PlanAccent
-        MessageKind.COMMAND_EXECUTION -> CommandAccent
+        MessageKind.TOOL_ACTIVITY, MessageKind.COMMAND_EXECUTION -> CommandAccent
         MessageKind.SUBAGENT_ACTION -> MaterialTheme.colorScheme.primary
         MessageKind.FILE_CHANGE -> MaterialTheme.colorScheme.secondary
         MessageKind.USER_INPUT_PROMPT -> MaterialTheme.colorScheme.tertiary
