@@ -95,4 +95,19 @@ class TurnCommandPresentationTest {
 
         assertTrue(isCommandTranscriptMessage(message))
     }
+
+    @Test
+    fun isCommandCompletionPlaceholderDetectsRepositoryFallbackMessage() {
+        val message = ChatMessage(
+            id = "command-1",
+            threadId = "thread-1",
+            role = MessageRole.SYSTEM,
+            kind = MessageKind.COMMAND_EXECUTION,
+            text = "Completed command",
+            turnId = "turn-1",
+            orderIndex = 1,
+        )
+
+        assertTrue(isCommandCompletionPlaceholder(message))
+    }
 }

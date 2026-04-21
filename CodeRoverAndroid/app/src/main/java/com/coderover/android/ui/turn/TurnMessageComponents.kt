@@ -360,7 +360,22 @@ private fun SystemMessageBlock(
             aggregatedPresentation = aggregatedFileChangePresentation,
             suppressActions = suppressFileChangeActions,
         )
-        MessageKind.COMMAND_EXECUTION -> CommandExecutionMessageContent(message)
+        MessageKind.COMMAND_EXECUTION -> {
+            if (isCommandCompletionPlaceholder(message)) {
+                TurnSystemCard(
+                    title = "Session complete",
+                    showsProgress = false,
+                ) {
+                    Text(
+                        text = "Assistant finished this turn.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            } else {
+                CommandExecutionMessageContent(message)
+            }
+        }
         MessageKind.SUBAGENT_ACTION -> SubagentActionMessageContent(message, onTapSubagentThread)
         MessageKind.PLAN -> PlanMessageContent(message)
         MessageKind.USER_INPUT_PROMPT -> TurnSystemCard(

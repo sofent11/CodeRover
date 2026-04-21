@@ -173,6 +173,12 @@ internal fun isCommandTranscriptMessage(message: ChatMessage): Boolean {
     return message.kind == MessageKind.CHAT && parseCommandTranscriptPreview(message.text, message.isStreaming) != null
 }
 
+internal fun isCommandCompletionPlaceholder(message: ChatMessage): Boolean {
+    return message.kind == MessageKind.COMMAND_EXECUTION &&
+        message.commandState == null &&
+        message.text.trim().equals("Completed command", ignoreCase = true)
+}
+
 private data class ParsedCommandTranscriptUi(
     val command: String?,
     val statusLabel: String,
