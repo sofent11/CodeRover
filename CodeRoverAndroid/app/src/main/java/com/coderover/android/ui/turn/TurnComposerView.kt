@@ -89,7 +89,7 @@ internal fun TurnComposerView(
             .padding(top = 6.dp, bottom = 6.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        AnimatedVisibility(visible = !state.isConnected) {
+        AnimatedVisibility(visible = shouldShowComposerDisconnectedBanner(state, threadIdForQueue)) {
             ComposerDisconnectedBanner(
                 state = state,
                 threadId = threadIdForQueue,

@@ -194,6 +194,21 @@ internal fun composerConnectionMessage(state: AppState, threadId: String? = stat
     }
 }
 
+internal fun shouldShowComposerDisconnectedBanner(
+    state: AppState,
+    threadId: String? = state.selectedThreadId,
+): Boolean {
+    val historyState = (threadId ?: state.selectedThreadId)?.let(state.historyStateByThread::get)
+    val hasLiveTransport = when (state.connectionPhase) {
+        ConnectionPhase.LOADING_CHATS,
+        ConnectionPhase.SYNCING,
+        ConnectionPhase.CONNECTED -> true
+        ConnectionPhase.CONNECTING,
+        ConnectionPhase.OFFLINE -> false
+    }
+    return !hasLiveTransport && !historyState.shouldDescribeThreadRefresh()
+}
+
 internal fun isComposerReconnectInFlight(state: AppState): Boolean {
     return when (state.connectionPhase) {
         ConnectionPhase.CONNECTING,
