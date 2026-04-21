@@ -38,4 +38,43 @@ class TurnFileChangeSummaryParserTest {
         assertEquals(2, groups.first().entries.size)
         assertTrue(groups.first().entries.any { it.path == "c.kt" })
     }
+
+    @Test
+    fun parsesInlineEditedRowsIntoUpdatedEntries() {
+        val entries = parseFileChangeEntries(
+            """
+            Edited app/src/main/java/com/example/MainActivity.kt +12 -3
+            Renamed app/src/Old.kt +0 -0
+            """.trimIndent(),
+        )
+
+        assertEquals(2, entries.size)
+        assertEquals("app/src/main/java/com/example/MainActivity.kt", entries[0].path)
+        assertEquals("Updated", entries[0].actionLabel)
+        assertEquals(12, entries[0].additions)
+        assertEquals(3, entries[0].deletions)
+        assertEquals("Moved", entries[1].actionLabel)
+    }
+
+    @Test
+    fun removesInlineEditingRowsFromFallbackBody() {
+        val body = removeInlineEditingRows(
+            """
+            Edited app/src/A.kt +3 -1
+
+            ```diff
+            diff --git a/app/src/A.kt b/app/src/A.kt
+            ```
+            """.trimIndent(),
+        )
+
+        assertEquals(
+            """
+            ```diff
+            diff --git a/app/src/A.kt b/app/src/A.kt
+            ```
+            """.trimIndent(),
+            body,
+        )
+    }
 }

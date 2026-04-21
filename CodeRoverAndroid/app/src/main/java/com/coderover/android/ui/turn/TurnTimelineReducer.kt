@@ -442,12 +442,9 @@ private fun duplicateFileChangeKey(message: ChatMessage): String? {
     if (message.role != MessageRole.SYSTEM || message.kind != MessageKind.FILE_CHANGE) {
         return null
     }
-    val normalizedText = message.text.trim()
     val turnId = normalizedIdentifier(message.turnId) ?: return null
-    if (normalizedText.isEmpty()) {
-        return null
-    }
-    return "$turnId|$normalizedText"
+    val summaryKey = fileChangeDedupeKey(message.text) ?: return null
+    return "$turnId|$summaryKey"
 }
 
 private fun normalizedIdentifier(value: String?): String? {

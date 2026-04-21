@@ -42,4 +42,32 @@ class TurnTimelineReducerTest {
 
         assertEquals(listOf("subagent-2"), projected.map { it.id })
     }
+
+    @Test
+    fun projectTimelineMessagesDedupesEquivalentFileChangeSummariesWithinTurn() {
+        val messages = listOf(
+            ChatMessage(
+                id = "file-1",
+                threadId = "thread-1",
+                role = MessageRole.SYSTEM,
+                kind = MessageKind.FILE_CHANGE,
+                text = "Edited app/src/A.kt +2 -1",
+                turnId = "turn-1",
+                orderIndex = 1,
+            ),
+            ChatMessage(
+                id = "file-2",
+                threadId = "thread-1",
+                role = MessageRole.SYSTEM,
+                kind = MessageKind.FILE_CHANGE,
+                text = "Updated app/src/A.kt +2 -1",
+                turnId = "turn-1",
+                orderIndex = 2,
+            ),
+        )
+
+        val projected = projectTimelineMessages(messages)
+
+        assertEquals(listOf("file-2"), projected.map { it.id })
+    }
 }

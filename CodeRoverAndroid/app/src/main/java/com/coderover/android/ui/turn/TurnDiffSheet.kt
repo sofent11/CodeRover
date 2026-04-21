@@ -21,6 +21,7 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -71,8 +72,25 @@ internal fun FileChangeMessageContent(message: ChatMessage) {
         buildDiffDetailFiles(message)
     }
     val canOpenDiffDetails = diffFiles.isNotEmpty() && !message.isStreaming
+    val diffAdditions = remember(entries, diffFiles) {
+        if (entries.isNotEmpty()) {
+            entries.sumOf(FileChangeEntryUi::additions)
+        } else {
+            diffFiles.sumOf(DiffFileDetailUi::additions)
+        }
+    }
+    val diffDeletions = remember(entries, diffFiles) {
+        if (entries.isNotEmpty()) {
+            entries.sumOf(FileChangeEntryUi::deletions)
+        } else {
+            diffFiles.sumOf(DiffFileDetailUi::deletions)
+        }
+    }
+    val summaryBodyText = remember(message.id, message.text) {
+        removeInlineEditingRows(message.text)
+    }
 
-    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         if (entries.isNotEmpty()) {
             groupedEntries.forEach { group ->
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -97,9 +115,17 @@ internal fun FileChangeMessageContent(message: ChatMessage) {
                     }
                 }
             }
-        } else if (message.text.isNotBlank()) {
+        }
+
+        if (canOpenDiffDetails) {
+            FileChangeDiffButton(
+                additions = diffAdditions,
+                deletions = diffDeletions,
+                onClick = { showDiffDetails = true },
+            )
+        } else if (entries.isEmpty() && summaryBodyText.isNotBlank()) {
             Text(
-                text = message.text.trim(),
+                text = summaryBodyText,
                 style = MaterialTheme.typography.bodyMedium.copy(fontFamily = monoFamily),
             )
         }
@@ -122,19 +148,10 @@ private fun FileChangeInlineSummaryRow(
     enabled: Boolean,
     onClick: () -> Unit,
 ) {
-    val rowModifier = if (enabled) {
-        Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(vertical = 1.dp)
-    } else {
-        Modifier
-            .fillMaxWidth()
-            .padding(vertical = 1.dp)
-    }
-
     Row(
-        modifier = rowModifier,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 1.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
@@ -238,6 +255,43 @@ internal fun DiffDetailDialog(
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun FileChangeDiffButton(
+    additions: Int,
+    deletions: Int,
+    onClick: () -> Unit,
+) {
+    OutlinedButton(
+        onClick = onClick,
+        shape = RoundedCornerShape(12.dp),
+    ) {
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                imageVector = Icons.Outlined.Description,
+                contentDescription = null,
+                modifier = Modifier.size(14.dp),
+            )
+            Text(
+                text = "Diff",
+                style = MaterialTheme.typography.bodyMedium.copy(fontFamily = monoFamily),
+            )
+            Text(
+                text = "+$additions",
+                style = MaterialTheme.typography.bodyMedium.copy(fontFamily = monoFamily),
+                color = CommandAccent,
+            )
+            Text(
+                text = "-$deletions",
+                style = MaterialTheme.typography.bodyMedium.copy(fontFamily = monoFamily),
+                color = Danger,
+            )
         }
     }
 }

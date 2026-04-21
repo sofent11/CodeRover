@@ -12,6 +12,16 @@ internal data class FileChangeGroupUi(
     val entries: List<FileChangeEntryUi>,
 )
 
+private val INLINE_ACTION_REGEX = Regex("(?i)^(edited|updated|added|created|deleted|removed|renamed|moved)\\s+(.+?)$")
+private val INLINE_TOTALS_REGEX = Regex("[+＋]\\s*(\\d+)\\s*[-−–—﹣－]\\s*(\\d+)")
+private val TRAILING_INLINE_TOTALS_REGEX = Regex("\\s*[+＋]\\s*\\d+\\s*[-−–—﹣－]\\s*\\d+\\s*$")
+private val TRAILING_LINE_COLUMN_REGEX = Regex(":\\d+(?::\\d+)?$")
+private val FILE_LIKE_TOKEN_REGEX = Regex("[A-Za-z0-9_+.-]+\\.[A-Za-z0-9]+$")
+private val INLINE_EDITING_ROW_REGEX = Regex(
+    "(?i)^(edited|updated|added|created|deleted|removed|renamed|moved)\\s+.+\\s+[+＋]\\s*\\d+\\s*[-−–—﹣－]\\s*\\d+\\s*$",
+)
+private val COLLAPSIBLE_NEWLINES_REGEX = Regex("\\n{3,}")
+
 private class MutableFileChangeEntry(
     var path: String,
     var actionLabel: String,
@@ -75,17 +85,30 @@ internal fun parseFileChangeEntries(text: String): List<FileChangeEntryUi> {
 
             line.startsWith("+++ b/") -> upsert(line.removePrefix("+++ b/"), "Changed")
             line.startsWith("Added ") || line.startsWith("Updated ") || line.startsWith("Modified ") ||
-                line.startsWith("Deleted ") || line.startsWith("Created ") || line.startsWith("Renamed ") -> {
+                line.startsWith("Deleted ") || line.startsWith("Created ") || line.startsWith("Renamed ") ||
+                line.startsWith("Edited ") || line.startsWith("Removed ") || line.startsWith("Moved ") -> {
                 val parts = line.split(' ', limit = 2)
                 val action = parts.firstOrNull().orEmpty()
-                val path = parts.getOrNull(1)?.substringBefore(" (+")?.substringBefore(" (-")?.trim().orEmpty()
+                val path = parts.getOrNull(1)
+                    ?.substringBefore(" (+")
+                    ?.substringBefore(" (-")
+                    ?.substringBefore(" +")
+                    ?.substringBefore(" -")
+                    ?.trim()
+                    .orEmpty()
                 val normalizedAction = when (action) {
                     "Modified" -> "Updated"
                     "Created" -> "Added"
                     "Renamed" -> "Moved"
+                    "Edited" -> "Updated"
+                    "Removed" -> "Deleted"
                     else -> action
                 }
                 upsert(path, normalizedAction)
+                INLINE_TOTALS_REGEX.find(line)?.let { totals ->
+                    entries[path]?.additions = totals.groupValues.getOrNull(1)?.toIntOrNull() ?: 0
+                    entries[path]?.deletions = totals.groupValues.getOrNull(2)?.toIntOrNull() ?: 0
+                }
             }
 
             currentKey != null && line.startsWith("+") && !line.startsWith("+++") -> {
@@ -94,6 +117,19 @@ internal fun parseFileChangeEntries(text: String): List<FileChangeEntryUi> {
 
             currentKey != null && line.startsWith("-") && !line.startsWith("---") -> {
                 entries[currentKey]?.deletions = (entries[currentKey]?.deletions ?: 0) + 1
+            }
+
+            else -> {
+                val inlineEntry = parseInlineFileEntry(line)
+                if (inlineEntry != null) {
+                    upsert(inlineEntry.path, inlineEntry.actionLabel)
+                    inlineEntry.additions?.let { additions ->
+                        entries[inlineEntry.path]?.additions = additions
+                    }
+                    inlineEntry.deletions?.let { deletions ->
+                        entries[inlineEntry.path]?.deletions = deletions
+                    }
+                }
             }
         }
     }
@@ -128,4 +164,116 @@ internal fun groupFileChangeEntries(entries: List<FileChangeEntryUi>): List<File
         grouped.getValue(entry.actionLabel) += entry
     }
     return order.map { key -> FileChangeGroupUi(actionLabel = key, entries = grouped.getValue(key)) }
+}
+
+internal fun fileChangeDedupeKey(text: String): String? {
+    val entries = parseFileChangeEntries(text)
+    if (entries.isNotEmpty()) {
+        return entries
+            .sortedBy(FileChangeEntryUi::path)
+            .joinToString(separator = "||") { entry ->
+                "${entry.path}|${entry.actionLabel}|+${entry.additions}|-${entry.deletions}"
+            }
+    }
+    val normalized = text.trim().replace("\r\n", "\n")
+    return normalized.ifEmpty { null }
+}
+
+internal fun removeInlineEditingRows(text: String): String {
+    val filtered = text
+        .lines()
+        .filterNot(::isInlineEditingRow)
+        .joinToString("\n")
+    return filtered
+        .replace(COLLAPSIBLE_NEWLINES_REGEX, "\n\n")
+        .trim()
+}
+
+private fun isInlineEditingRow(line: String): Boolean {
+    val trimmed = line.trim()
+    return trimmed.isNotEmpty() && INLINE_EDITING_ROW_REGEX.matches(trimmed)
+}
+
+private data class InlineFileEntry(
+    val path: String,
+    val actionLabel: String,
+    val additions: Int?,
+    val deletions: Int?,
+)
+
+private fun parseInlineFileEntry(line: String): InlineFileEntry? {
+    var candidate = line.trim()
+    if (candidate.startsWith("- ") || candidate.startsWith("* ")) {
+        candidate = candidate.drop(2)
+    } else if (candidate.startsWith("• ")) {
+        candidate = candidate.drop(2)
+    }
+    candidate = candidate.replace("`", "").trim()
+    if (candidate.isEmpty()) {
+        return null
+    }
+
+    val totals = INLINE_TOTALS_REGEX.find(candidate)
+    val additions = totals?.groupValues?.getOrNull(1)?.toIntOrNull()
+    val deletions = totals?.groupValues?.getOrNull(2)?.toIntOrNull()
+    val withoutTotals = when {
+        totals != null -> candidate.removeRange(totals.range.first, candidate.length).trim()
+        else -> candidate.replace(TRAILING_INLINE_TOTALS_REGEX, "").trim()
+    }
+
+    val actionMatch = INLINE_ACTION_REGEX.matchEntire(withoutTotals)
+    if (actionMatch != null) {
+        val action = actionMatch.groupValues[1]
+        val rawPath = actionMatch.groupValues[2]
+        val normalizedPath = normalizeInlinePath(rawPath)
+        if (!looksLikePath(normalizedPath)) {
+            return null
+        }
+        return InlineFileEntry(
+            path = normalizedPath,
+            actionLabel = fileChangeActionLabel(action),
+            additions = additions,
+            deletions = deletions,
+        )
+    }
+
+    if (totals != null) {
+        val rawPath = withoutTotals.substringBefore(' ').trim()
+        val normalizedPath = normalizeInlinePath(rawPath)
+        if (looksLikePath(normalizedPath)) {
+            return InlineFileEntry(
+                path = normalizedPath,
+                actionLabel = "Updated",
+                additions = additions,
+                deletions = deletions,
+            )
+        }
+    }
+
+    return null
+}
+
+private fun normalizeInlinePath(rawToken: String): String {
+    var token = rawToken.trim().replace("\"", "").replace("'", "")
+    if (token.contains(" ")) {
+        token = token.substringBefore(' ')
+    }
+    while (token.lastOrNull() in listOf(',', '.', ';', ')')) {
+        token = token.dropLast(1)
+    }
+    if (token.startsWith("(")) {
+        token = token.drop(1)
+    }
+    token = token.replace(TRAILING_LINE_COLUMN_REGEX, "")
+    return token
+}
+
+private fun looksLikePath(token: String): Boolean {
+    if (token.isBlank()) {
+        return false
+    }
+    if (token.contains("/") || token.startsWith("./") || token.startsWith("../")) {
+        return true
+    }
+    return FILE_LIKE_TOKEN_REGEX.matches(token)
 }
