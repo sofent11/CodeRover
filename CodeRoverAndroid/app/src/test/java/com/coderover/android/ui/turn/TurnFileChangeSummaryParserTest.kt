@@ -77,4 +77,34 @@ class TurnFileChangeSummaryParserTest {
             body,
         )
     }
+
+    @Test
+    fun parsesStructuredFileChangeSectionsWithPatchedKindAndDiffFence() {
+        val entries = parseFileChangeEntries(
+            """
+            Path: apps/node-service-api/package.json
+            Kind: patched
+            Totals: +2 -1
+
+            ```diff
+            diff --git a/apps/node-service-api/package.json b/apps/node-service-api/package.json
+            index 1111111..2222222 100644
+            --- a/apps/node-service-api/package.json
+            +++ b/apps/node-service-api/package.json
+            @@ -1,5 +1,6 @@
+             {
+            -  "name": "old"
+            +  "name": "new",
+            +  "private": true
+             }
+            ```
+            """.trimIndent(),
+        )
+
+        assertEquals(1, entries.size)
+        assertEquals("apps/node-service-api/package.json", entries[0].path)
+        assertEquals("Updated", entries[0].actionLabel)
+        assertEquals(2, entries[0].additions)
+        assertEquals(1, entries[0].deletions)
+    }
 }

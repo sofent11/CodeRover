@@ -36,7 +36,7 @@ private class MutableDiffFileDetail(
 
 internal fun buildDiffDetailFiles(message: ChatMessage): List<DiffFileDetailUi> {
     if (message.fileChanges.isNotEmpty()) {
-        return message.fileChanges.map { change ->
+        val fileChangeDetails = message.fileChanges.map { change ->
             val hunks = parseDiffHunks(change.diff)
             val (additions, deletions) = resolveDiffCounts(
                 additions = change.additions,
@@ -53,6 +53,15 @@ internal fun buildDiffDetailFiles(message: ChatMessage): List<DiffFileDetailUi> 
                 rawBody = change.diff.trim(),
             )
         }
+        val parsedTextDetails = parseDiffDetailFiles(message.text)
+        return if (
+            parsedTextDetails.isNotEmpty() &&
+            fileChangeDetails.all { it.additions == 0 && it.deletions == 0 && it.rawBody.isBlank() }
+        ) {
+            parsedTextDetails
+        } else {
+            fileChangeDetails
+        }
     }
     return parseDiffDetailFiles(message.text)
 }
@@ -62,6 +71,26 @@ internal fun buildRepositoryDiffFiles(rawPatch: String): List<DiffFileDetailUi> 
 }
 
 private fun parseDiffDetailFiles(text: String): List<DiffFileDetailUi> {
+    val structuredSections = parseStructuredFileChangeSections(text)
+    if (structuredSections.isNotEmpty()) {
+        return structuredSections.map { section ->
+            val hunks = parseDiffHunks(section.diffBody)
+            val (additions, deletions) = resolveDiffCounts(
+                additions = section.additions,
+                deletions = section.deletions,
+                rawDiff = section.diffBody,
+                parsedHunks = hunks,
+            )
+            DiffFileDetailUi(
+                path = section.path,
+                actionLabel = section.actionLabel,
+                additions = additions,
+                deletions = deletions,
+                hunks = hunks,
+                rawBody = section.diffBody,
+            )
+        }
+    }
     val lines = text.lines()
     val files = mutableListOf<MutableDiffFileDetail>()
     var current: MutableDiffFileDetail? = null

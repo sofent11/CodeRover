@@ -193,8 +193,9 @@ internal fun FileChangeMessageContent(
 ) {
     var showDiffDetails by remember(message.id) { mutableStateOf(false) }
     val entries = remember(message.id, message.text, message.fileChanges) {
+        val parsedEntries = parseFileChangeEntries(message.text)
         if (message.fileChanges.isNotEmpty()) {
-            message.fileChanges.map { change ->
+            val fileChangeEntries = message.fileChanges.map { change ->
                 val (additions, deletions) = resolveDiffCounts(
                     additions = change.additions,
                     deletions = change.deletions,
@@ -207,8 +208,16 @@ internal fun FileChangeMessageContent(
                     deletions = deletions,
                 )
             }
+            if (
+                parsedEntries.isNotEmpty() &&
+                fileChangeEntries.all { it.additions == 0 && it.deletions == 0 }
+            ) {
+                parsedEntries
+            } else {
+                fileChangeEntries
+            }
         } else {
-            parseFileChangeEntries(message.text)
+            parsedEntries
         }
     }
     val effectiveEntries = remember(entries, aggregatedPresentation) {
