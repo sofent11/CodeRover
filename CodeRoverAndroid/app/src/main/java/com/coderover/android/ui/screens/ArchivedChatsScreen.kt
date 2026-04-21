@@ -1,6 +1,8 @@
 package com.coderover.android.ui.screens
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -18,8 +20,12 @@ import androidx.compose.material.icons.outlined.Unarchive
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.SwipeToDismissBox
+import androidx.compose.material3.SwipeToDismissBoxState
+import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -32,7 +38,6 @@ import androidx.compose.ui.unit.dp
 import com.coderover.android.data.model.ThreadSummary
 import com.coderover.android.ui.shared.HapticFeedback
 import com.coderover.android.ui.shared.ParityListRow
-import com.coderover.android.ui.shared.ParityToolbarItemSurface
 import com.coderover.android.ui.shared.relativeTimeLabel
 import com.coderover.android.ui.theme.Danger
 
@@ -114,55 +119,108 @@ private fun ArchivedChatRow(
     onUnarchive: () -> Unit,
     onDeleteRequest: () -> Unit,
 ) {
-    ParityListRow(
+    val dismissState = rememberSwipeToDismissBoxState(
+        confirmValueChange = { target ->
+            when (target) {
+                SwipeToDismissBoxValue.StartToEnd -> {
+                    onUnarchive()
+                    false
+                }
+                SwipeToDismissBoxValue.EndToStart -> {
+                    onDeleteRequest()
+                    false
+                }
+                SwipeToDismissBoxValue.Settled -> false
+            }
+        },
+    )
+
+    SwipeToDismissBox(
+        state = dismissState,
+        backgroundContent = {
+            ArchivedSwipeBackground(state = dismissState)
+        },
+        enableDismissFromStartToEnd = true,
+        enableDismissFromEndToStart = true,
+    ) {
+        ParityListRow(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            isSelected = false,
+        ) {
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(end = 16.dp),
+            ) {
+                Text(
+                    text = thread.displayTitle,
+                    style = MaterialTheme.typography.bodyLarge,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                relativeTimeLabel(thread.updatedAt ?: thread.createdAt)?.let { dateStr ->
+                    Text(
+                        text = dateStr,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            Icon(
+                imageVector = Icons.Outlined.Archive,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                modifier = Modifier.size(18.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun ArchivedSwipeBackground(
+    state: SwipeToDismissBoxState,
+) {
+    val targetValue = state.targetValue
+    val isUnarchive = targetValue == SwipeToDismissBoxValue.StartToEnd
+    val icon = if (isUnarchive) Icons.Outlined.Unarchive else Icons.Outlined.Delete
+    val label = if (isUnarchive) "Unarchive" else "Delete"
+    val containerColor = if (isUnarchive) {
+        MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+    } else {
+        Danger.copy(alpha = 0.12f)
+    }
+    val contentColor = if (isUnarchive) {
+        MaterialTheme.colorScheme.primary
+    } else {
+        Danger
+    }
+
+    Box(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 12.dp),
-        isSelected = false,
+            .padding(horizontal = 16.dp, vertical = 6.dp),
+        contentAlignment = if (isUnarchive) Alignment.CenterStart else Alignment.CenterEnd,
     ) {
-        Column(
-            modifier = Modifier
-                .weight(1f)
-                .padding(end = 16.dp),
-        ) {
-            Text(
-                text = thread.displayTitle,
-                style = MaterialTheme.typography.bodyLarge,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            relativeTimeLabel(thread.updatedAt ?: thread.createdAt)?.let { dateStr ->
-                Text(
-                    text = dateStr,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
         Row(
+            modifier = Modifier
+                .background(containerColor, shape = androidx.compose.foundation.shape.RoundedCornerShape(18.dp))
+                .padding(horizontal = 14.dp, vertical = 12.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            TextButton(onClick = onUnarchive) {
-                Icon(
-                    imageVector = Icons.Outlined.Unarchive,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(16.dp),
-                )
-                Text("Unarchive")
-            }
-            ParityToolbarItemSurface(
-                size = 30.dp,
-                onClick = onDeleteRequest,
-            ) {
-                Icon(
-                    imageVector = Icons.Outlined.Delete,
-                    contentDescription = "Delete archived chat",
-                    tint = Danger,
-                    modifier = Modifier.size(16.dp),
-                )
-            }
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = contentColor,
+                modifier = Modifier.size(16.dp),
+            )
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelLarge,
+                color = contentColor,
+            )
         }
     }
 }

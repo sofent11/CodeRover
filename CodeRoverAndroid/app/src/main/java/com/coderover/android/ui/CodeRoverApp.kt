@@ -421,20 +421,14 @@ private fun CodeRoverAppShell(
                             )
                         }
                         AppShellContent.THREAD, AppShellContent.EMPTY -> {
-                            Surface(
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                                shape = androidx.compose.foundation.shape.RoundedCornerShape(28.dp),
-                                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f),
-                                border = androidx.compose.foundation.BorderStroke(1.dp, BorderStrong),
-                                shadowElevation = 3.dp,
-                            ) {
-                                TopAppBar(
-                                    colors = TopAppBarDefaults.topAppBarColors(
-                                        containerColor = androidx.compose.ui.graphics.Color.Transparent,
-                                        scrolledContainerColor = androidx.compose.ui.graphics.Color.Transparent,
-                                    ),
-                                    title = {
-                                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            TopAppBar(
+                                colors = TopAppBarDefaults.topAppBarColors(
+                                    containerColor = androidx.compose.ui.graphics.Color.Transparent,
+                                    scrolledContainerColor = androidx.compose.ui.graphics.Color.Transparent,
+                                ),
+                                title = {
+                                    if (shellContent == AppShellContent.THREAD) {
+                                        Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
                                             Text(
                                                 text = currentShellHeader.title,
                                                 maxLines = 1,
@@ -445,122 +439,107 @@ private fun CodeRoverAppShell(
                                                 verticalAlignment = Alignment.CenterVertically,
                                                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                                             ) {
-                                                if (currentShellHeader.providerTitle != null || currentShellHeader.pathSubtitle != null) {
-                                                    currentShellHeader.providerTitle?.let { providerTitle ->
-                                                        StatusTag(
-                                                            text = providerTitle,
-                                                            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.78f),
-                                                            contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                        )
-                                                    }
-                                                    val pathLabel = currentShellHeader.pathSubtitle
-                                                    if (pathLabel != null) {
-                                                        Text(
-                                                            text = pathLabel,
-                                                            style = MaterialTheme.typography.labelMedium.copy(fontFamily = monoFamily),
-                                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                            maxLines = 1,
-                                                            overflow = TextOverflow.Ellipsis,
-                                                            modifier = Modifier.clickable(enabled = currentShellHeader.fullPath != null) {
-                                                                haptic.triggerImpactFeedback()
-                                                                repositoryPathToShowInSheet = currentShellHeader.fullPath
-                                                            },
-                                                        )
-                                                    }
-                                                } else {
+                                                currentShellHeader.providerTitle?.let { providerTitle ->
+                                                    StatusTag(
+                                                        text = providerTitle,
+                                                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f),
+                                                        contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                    )
+                                                }
+                                                val pathLabel = currentShellHeader.pathSubtitle
+                                                if (pathLabel != null) {
                                                     Text(
-                                                        text = currentShellHeader.subtitle,
-                                                        style = MaterialTheme.typography.labelMedium,
+                                                        text = pathLabel,
+                                                        style = MaterialTheme.typography.labelMedium.copy(fontFamily = monoFamily),
                                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                                         maxLines = 1,
                                                         overflow = TextOverflow.Ellipsis,
+                                                        modifier = Modifier.clickable(enabled = currentShellHeader.fullPath != null) {
+                                                            haptic.triggerImpactFeedback()
+                                                            repositoryPathToShowInSheet = currentShellHeader.fullPath
+                                                        },
                                                     )
                                                 }
                                             }
                                         }
-                                    },
-                                    navigationIcon = {
-                                        ParityToolbarItemSurface(
-                                            modifier = Modifier.padding(start = 10.dp),
-                                            onClick = navigationAction ?: { isSidebarOpen = true },
-                                        ) {
-                                            Icon(
-                                                imageVector = if (navigationAction == null) Icons.Outlined.Menu else Icons.AutoMirrored.Outlined.ArrowBack,
-                                                contentDescription = if (navigationAction == null) "Open drawer" else "Back",
-                                            )
-                                        }
-                                    },
-                                    actions = {
-                                        if (shellContent == AppShellContent.THREAD) {
-                                            TurnTopBarActions(
-                                                showsDesktopRestart = state.isConnected &&
-                                                    state.activeRuntimeProviderId == "codex" &&
-                                                    state.activeRuntimeCapabilities.desktopRestart,
-                                                isRestartingDesktopApp = isRestartingDesktopApp,
-                                                gitRepoSyncResult = state.gitRepoSyncResult,
-                                                gitSyncState = state.gitSyncState,
-                                                currentThread = selectedThread,
-                                                canForkToLocal = when {
-                                                    selectedThread == null -> false
-                                                    selectedThread.isManagedWorktreeProject ->
-                                                        !state.gitBranchTargets?.localCheckoutPath.isNullOrBlank()
-                                                    else -> !selectedThread.normalizedProjectPath.isNullOrBlank()
-                                                },
-                                                isRunningThreadProjectAction = isRoutingThreadProject,
-                                                isRunningGitAction = state.isRunningGitAction,
-                                                showsDiscardRuntimeChangesAndSync = state.shouldShowDiscardRuntimeChangesAndSync,
-                                                contextWindowUsage = state.contextWindowUsage,
-                                                enabled = state.isConnected &&
-                                                    selectedThread?.cwd != null &&
-                                                    !isSelectedThreadRunning &&
-                                                    !state.isRunningGitAction &&
-                                                    !isRoutingThreadProject,
-                                                onTapDesktopRestart = {
-                                                    haptic.triggerImpactFeedback()
-                                                    isShowingDesktopRestartConfirmation = true
-                                                },
-                                                onShowRepoDiff = {
-                                                    val cwd = selectedThread?.cwd ?: return@TurnTopBarActions
-                                                    coroutineScope.launch {
-                                                        repositoryDiffBody = viewModel.gitDiff(cwd)
+                                    } else {
+                                        Text(
+                                            text = currentShellHeader.title,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            style = MaterialTheme.typography.titleMedium,
+                                        )
+                                    }
+                                },
+                                navigationIcon = {
+                                    ParityToolbarItemSurface(
+                                        modifier = Modifier.padding(start = 10.dp),
+                                        onClick = navigationAction ?: { isSidebarOpen = true },
+                                    ) {
+                                        Icon(
+                                            imageVector = if (navigationAction == null) Icons.Outlined.Menu else Icons.AutoMirrored.Outlined.ArrowBack,
+                                            contentDescription = if (navigationAction == null) "Open drawer" else "Back",
+                                        )
+                                    }
+                                },
+                                actions = {
+                                    if (shellContent == AppShellContent.THREAD) {
+                                        TurnTopBarActions(
+                                            showsDesktopRestart = state.isConnected &&
+                                                state.activeRuntimeProviderId == "codex" &&
+                                                state.activeRuntimeCapabilities.desktopRestart,
+                                            isRestartingDesktopApp = isRestartingDesktopApp,
+                                            gitRepoSyncResult = state.gitRepoSyncResult,
+                                            gitSyncState = state.gitSyncState,
+                                            currentThread = selectedThread,
+                                            canForkToLocal = when {
+                                                selectedThread == null -> false
+                                                selectedThread.isManagedWorktreeProject ->
+                                                    !state.gitBranchTargets?.localCheckoutPath.isNullOrBlank()
+                                                else -> !selectedThread.normalizedProjectPath.isNullOrBlank()
+                                            },
+                                            isRunningThreadProjectAction = isRoutingThreadProject,
+                                            isRunningGitAction = state.isRunningGitAction,
+                                            showsDiscardRuntimeChangesAndSync = state.shouldShowDiscardRuntimeChangesAndSync,
+                                            contextWindowUsage = state.contextWindowUsage,
+                                            enabled = state.isConnected &&
+                                                selectedThread?.cwd != null &&
+                                                !isSelectedThreadRunning &&
+                                                !state.isRunningGitAction &&
+                                                !isRoutingThreadProject,
+                                            onTapDesktopRestart = {
+                                                haptic.triggerImpactFeedback()
+                                                isShowingDesktopRestartConfirmation = true
+                                            },
+                                            onShowRepoDiff = {
+                                                val cwd = selectedThread?.cwd ?: return@TurnTopBarActions
+                                                coroutineScope.launch {
+                                                    repositoryDiffBody = viewModel.gitDiff(cwd)
+                                                }
+                                            },
+                                            onSelectGitAction = { action ->
+                                                val cwd = selectedThread?.cwd ?: return@TurnTopBarActions
+                                                val threadId = selectedThread?.id ?: return@TurnTopBarActions
+                                                coroutineScope.launch {
+                                                    viewModel.performGitAction(cwd, action, threadId)
+                                                    viewModel.gitStatus(cwd)
+                                                }
+                                            },
+                                            onSelectThreadProjectAction = { action ->
+                                                val threadId = selectedThread?.id ?: return@TurnTopBarActions
+                                                val targetThread = selectedThread ?: return@TurnTopBarActions
+                                                coroutineScope.launch {
+                                                    if (isRoutingThreadProject) {
+                                                        return@launch
                                                     }
-                                                },
-                                                onSelectGitAction = { action ->
-                                                    val cwd = selectedThread?.cwd ?: return@TurnTopBarActions
-                                                    val threadId = selectedThread?.id ?: return@TurnTopBarActions
-                                                    coroutineScope.launch {
-                                                        viewModel.performGitAction(cwd, action, threadId)
-                                                        viewModel.gitStatus(cwd)
-                                                    }
-                                                },
-                                                onSelectThreadProjectAction = { action ->
-                                                    val threadId = selectedThread?.id ?: return@TurnTopBarActions
-                                                    val targetThread = selectedThread ?: return@TurnTopBarActions
-                                                    coroutineScope.launch {
-                                                        if (isRoutingThreadProject) {
-                                                            return@launch
-                                                        }
-                                                        isRoutingThreadProject = true
-                                                        try {
-                                                            val movedOrForkedThread = when (action) {
-                                                                TurnThreadProjectAction.HANDOFF -> {
-                                                                    if (targetThread.isManagedWorktreeProject) {
-                                                                        viewModel.handoffThreadToLocal(threadId)
-                                                                    } else {
-                                                                        viewModel.handoffThreadToManagedWorktree(
-                                                                            threadId = threadId,
-                                                                            baseBranch = state.gitBranchTargets?.currentBranch
-                                                                                ?.trim()
-                                                                                ?.takeIf(String::isNotEmpty)
-                                                                                ?: state.gitBranchTargets?.defaultBranch,
-                                                                        )
-                                                                    }
-                                                                }
-                                                                TurnThreadProjectAction.FORK_TO_LOCAL -> {
-                                                                    viewModel.forkThreadToLocal(threadId)
-                                                                }
-                                                                TurnThreadProjectAction.FORK_TO_WORKTREE -> {
-                                                                    viewModel.forkThreadToManagedWorktree(
+                                                    isRoutingThreadProject = true
+                                                    try {
+                                                        val movedOrForkedThread = when (action) {
+                                                            TurnThreadProjectAction.HANDOFF -> {
+                                                                if (targetThread.isManagedWorktreeProject) {
+                                                                    viewModel.handoffThreadToLocal(threadId)
+                                                                } else {
+                                                                    viewModel.handoffThreadToManagedWorktree(
                                                                         threadId = threadId,
                                                                         baseBranch = state.gitBranchTargets?.currentBranch
                                                                             ?.trim()
@@ -569,27 +548,39 @@ private fun CodeRoverAppShell(
                                                                     )
                                                                 }
                                                             }
-                                                            movedOrForkedThread?.cwd?.let { movedCwd ->
-                                                                viewModel.gitBranchesWithStatus(movedCwd)
-                                                                viewModel.gitStatus(movedCwd)
+                                                            TurnThreadProjectAction.FORK_TO_LOCAL -> {
+                                                                viewModel.forkThreadToLocal(threadId)
                                                             }
-                                                        } catch (_: Throwable) {
-                                                            // Repository surfaces the failure through app state.
-                                                        } finally {
-                                                            isRoutingThreadProject = false
+                                                            TurnThreadProjectAction.FORK_TO_WORKTREE -> {
+                                                                viewModel.forkThreadToManagedWorktree(
+                                                                    threadId = threadId,
+                                                                    baseBranch = state.gitBranchTargets?.currentBranch
+                                                                        ?.trim()
+                                                                        ?.takeIf(String::isNotEmpty)
+                                                                        ?: state.gitBranchTargets?.defaultBranch,
+                                                                )
+                                                            }
                                                         }
+                                                        movedOrForkedThread?.cwd?.let { movedCwd ->
+                                                            viewModel.gitBranchesWithStatus(movedCwd)
+                                                            viewModel.gitStatus(movedCwd)
+                                                        }
+                                                    } catch (_: Throwable) {
+                                                        // Repository surfaces the failure through app state.
+                                                    } finally {
+                                                        isRoutingThreadProject = false
                                                     }
-                                                },
-                                                onCompactContext = {
-                                                    selectedThread?.id?.let { threadId ->
-                                                        viewModel.compactThreadContext(threadId)
-                                                    }
-                                                },
-                                            )
-                                        }
-                                    },
-                                )
-                            }
+                                                }
+                                            },
+                                            onCompactContext = {
+                                                selectedThread?.id?.let { threadId ->
+                                                    viewModel.compactThreadContext(threadId)
+                                                }
+                                            },
+                                        )
+                                    }
+                                },
+                            )
                         }
                     }
                 },

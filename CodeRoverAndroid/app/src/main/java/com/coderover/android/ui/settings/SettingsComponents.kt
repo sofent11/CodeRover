@@ -37,16 +37,20 @@ fun SettingsCard(
     title: String,
     content: @Composable () -> Unit,
 ) {
-    ParityCard(cornerRadius = 22.dp, padding = 18.dp) {
-        Column(
-            verticalArrangement = Arrangement.spacedBy(14.dp),
-        ) {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Medium,
-            )
-            content()
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(
+            text = title.uppercase(),
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 4.dp),
+        )
+        ParityCard(cornerRadius = 22.dp, padding = 18.dp) {
+            Column(
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                content()
+            }
         }
     }
 }
