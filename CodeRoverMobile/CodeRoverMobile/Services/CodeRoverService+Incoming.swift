@@ -703,6 +703,8 @@ extension CodeRoverService {
         switch rawValue?.trimmingCharacters(in: .whitespacesAndNewlines) {
         case "thinking":
             return .thinking
+        case "toolActivity":
+            return .toolActivity
         case "fileChange":
             return .fileChange
         case "commandExecution":
@@ -886,7 +888,7 @@ extension CodeRoverService {
         switch message.kind {
         case .thinking, .plan, .subagentAction, .chat:
             return true
-        case .fileChange, .commandExecution, .userInputPrompt:
+        case .toolActivity, .fileChange, .commandExecution, .userInputPrompt:
             return false
         }
     }

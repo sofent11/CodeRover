@@ -1541,7 +1541,7 @@ extension CodeRoverService {
         return normalized.isEmpty ? "/" : normalized
     }
 
-    // Creates/updates a streaming system item message (thinking/fileChange/commandExecution).
+    // Creates/updates a streaming system item message (thinking/toolActivity/fileChange/commandExecution).
     func upsertStreamingSystemItemMessage(
         threadId: String,
         turnId: String?,
@@ -1559,6 +1559,9 @@ extension CodeRoverService {
             : Set<String>()
         let incomingCommandKey = kind == .commandExecution
             ? commandExecutionPreviewKey(from: text)
+            : nil
+        let incomingToolActivityKey = kind == .toolActivity
+            ? toolActivityPreviewKey(from: text)
             : nil
         let messageID: String?
         if let existingMessageID = streamingSystemMessageByItemID[key] {
@@ -1586,6 +1589,29 @@ extension CodeRoverService {
                 streamingSystemMessageByItemID[syntheticKey] = existingMessageID
             }
             messageID = existingMessageID
+        } else if kind == .toolActivity,
+                  let resolvedTurnId, !resolvedTurnId.isEmpty,
+                  let incomingToolActivityKey {
+            let matchingRows = (messagesByThread[threadId] ?? []).filter { candidate in
+                guard candidate.role == .system,
+                      candidate.kind == .toolActivity,
+                      candidate.turnId == resolvedTurnId,
+                      let candidateKey = toolActivityPreviewKey(from: candidate.text),
+                      canReuseLiveToolActivityRow(candidate, incomingItemId: itemId) else {
+                    return false
+                }
+                return candidateKey == incomingToolActivityKey
+            }
+
+            if matchingRows.count == 1, let existingMessageID = matchingRows.first?.id {
+                streamingSystemMessageByItemID[key] = existingMessageID
+                if let syntheticKey {
+                    streamingSystemMessageByItemID[syntheticKey] = existingMessageID
+                }
+                messageID = existingMessageID
+            } else {
+                messageID = nil
+            }
         } else if kind == .fileChange,
                   let resolvedTurnId, !resolvedTurnId.isEmpty,
                   !incomingFileChangePathKeys.isEmpty,
@@ -1634,6 +1660,12 @@ extension CodeRoverService {
                 if kind == .commandExecution {
                     // Command status rows are snapshots ("running" -> "completed"), not deltas.
                     messagesByThread[threadId]?[index].text = incomingTrimmed
+                } else if kind == .toolActivity {
+                    messagesByThread[threadId]?[index].text = mergeToolActivityText(
+                        existing: existing,
+                        incoming: incoming,
+                        isStreaming: isStreaming
+                    )
                 } else {
                     let isFileChangeSnapshot = kind == .fileChange
                         && isFileChangeSnapshotPayload(incomingTrimmed)
@@ -1685,6 +1717,15 @@ extension CodeRoverService {
                             kind: .commandExecution,
                             turnId: resolvedTurnId,
                             commandKey: incomingCommandKey
+                        )
+                    } else if kind == .toolActivity,
+                              let incomingToolActivityKey {
+                        pruneDuplicateSystemRows(
+                            in: &threadMessages,
+                            keepIndex: refreshedIndex,
+                            kind: .toolActivity,
+                            turnId: resolvedTurnId,
+                            toolActivityKey: incomingToolActivityKey
                         )
                     }
                 }
@@ -1856,6 +1897,84 @@ extension CodeRoverService {
         return command.isEmpty ? nil : command
     }
 
+    private func toolActivityPreviewKey(from text: String) -> String? {
+        let lines = text
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter {
+                !$0.isEmpty
+                    && !isStreamingPlaceholder($0, for: .toolActivity)
+            }
+            .map { $0.lowercased() }
+
+        guard !lines.isEmpty else {
+            return nil
+        }
+
+        return lines.joined(separator: "\n")
+    }
+
+    private func canReuseLiveToolActivityRow(_ candidate: ChatMessage, incomingItemId: String) -> Bool {
+        let candidateItemId = normalizedStreamingItemID(candidate.itemId)
+        let incomingItemId = normalizedStreamingItemID(incomingItemId)
+
+        if let candidateItemId, let incomingItemId, candidateItemId == incomingItemId {
+            return true
+        }
+
+        return !Self.hasStableToolActivityIdentity(candidateItemId)
+    }
+
+    func mergeToolActivityText(existing: String, incoming: String, isStreaming: Bool) -> String {
+        let existingTrimmed = existing.trimmingCharacters(in: .whitespacesAndNewlines)
+        let incomingTrimmed = incoming.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if incomingTrimmed.isEmpty {
+            return existingTrimmed
+        }
+        if existingTrimmed.isEmpty || isStreamingPlaceholder(existingTrimmed, for: .toolActivity) {
+            return incomingTrimmed
+        }
+        if isStreamingPlaceholder(incomingTrimmed, for: .toolActivity) {
+            return existingTrimmed
+        }
+
+        let incomingLines = incomingTrimmed
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard !incomingLines.isEmpty else {
+            return existingTrimmed
+        }
+
+        var mergedLines = existingTrimmed
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        for line in incomingLines where !mergedLines.contains(where: {
+            $0.caseInsensitiveCompare(line) == .orderedSame
+        }) {
+            if !isStreaming,
+               let existingIndex = mergedLines.firstIndex(where: { candidate in
+                   let existingTokens = candidate.split(whereSeparator: \.isWhitespace)
+                   let incomingTokens = line.split(whereSeparator: \.isWhitespace)
+                   guard existingTokens.count >= 2, incomingTokens.count >= 2 else {
+                       return false
+                   }
+                   return existingTokens.dropFirst().elementsEqual(incomingTokens.dropFirst(), by: { lhs, rhs in
+                       String(lhs).caseInsensitiveCompare(String(rhs)) == .orderedSame
+                   })
+               }) {
+                mergedLines[existingIndex] = line
+            } else {
+                mergedLines.append(line)
+            }
+        }
+
+        return mergedLines.joined(separator: "\n")
+    }
+
     private func isFileChangeSnapshotPayload(_ text: String) -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
@@ -1918,7 +2037,8 @@ extension CodeRoverService {
         kind: ChatMessageKind,
         turnId: String,
         fileChangePathKeys: Set<String> = Set<String>(),
-        commandKey: String? = nil
+        commandKey: String? = nil,
+        toolActivityKey: String? = nil
     ) {
         guard threadMessages.indices.contains(keepIndex) else { return }
         let keepID = threadMessages[keepIndex].id
@@ -1942,6 +2062,10 @@ extension CodeRoverService {
 
             if kind == .commandExecution, let commandKey {
                 return commandExecutionPreviewKey(from: candidate.text) == commandKey
+            }
+
+            if kind == .toolActivity, let toolActivityKey {
+                return toolActivityPreviewKey(from: candidate.text) == toolActivityKey
             }
 
             return false
@@ -2788,6 +2912,8 @@ extension CodeRoverService {
         switch kind {
         case .thinking:
             return "Thinking..."
+        case .toolActivity:
+            return "Running tool"
         case .fileChange:
             return "Applying file changes..."
         case .commandExecution:

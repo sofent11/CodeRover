@@ -85,7 +85,16 @@ private enum TurnTimelineRenderProjection {
     }
 
     private static func isCommandBurstCandidate(_ message: ChatMessage) -> Bool {
-        message.role == .system && message.kind == .commandExecution
+        guard message.role == .system else {
+            return false
+        }
+
+        switch message.kind {
+        case .toolActivity, .commandExecution:
+            return true
+        case .thinking, .chat, .plan, .userInputPrompt, .fileChange, .subagentAction:
+            return false
+        }
     }
 
     private static func canShareCommandBurst(previous: ChatMessage, incoming: ChatMessage) -> Bool {

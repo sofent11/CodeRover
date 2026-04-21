@@ -280,6 +280,41 @@ func shortCommandPreview(from rawCommand: String, maxLength: Int = 92) -> String
     return preview
 }
 
+func normalizedToolActivityStatus(_ rawStatus: String?, isCompleted: Bool) -> String {
+    let normalized = rawStatus?
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+        .lowercased() ?? ""
+    switch normalized {
+    case "failed", "error":
+        return "Failed"
+    case "stopped", "cancelled", "canceled", "interrupted":
+        return "Stopped"
+    case "completed", "complete", "done", "finished", "success", "succeeded":
+        return "Completed"
+    case "running", "inprogress", "working":
+        return "Running"
+    default:
+        return isCompleted ? "Completed" : "Running"
+    }
+}
+
+func normalizedToolActivityDescriptor(_ descriptor: String?) -> String? {
+    guard let descriptor else { return nil }
+    let trimmed = descriptor.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed.isEmpty ? nil : trimmed
+}
+
+func toolActivitySummaryLine(
+    descriptor: String?,
+    rawStatus: String?,
+    isCompleted: Bool,
+    fallback: String = "tool"
+) -> String {
+    let statusLabel = normalizedToolActivityStatus(rawStatus, isCompleted: isCompleted)
+    let descriptorLabel = normalizedToolActivityDescriptor(descriptor) ?? fallback
+    return "\(statusLabel) \(descriptorLabel)"
+}
+
 func unwrapShellCommandIfPresent(_ command: String) -> String {
     let tokens = command
         .split(separator: " ", omittingEmptySubsequences: true)

@@ -118,8 +118,25 @@ extension CodeRoverService {
                     timelineStatus: timelineStatus
                 )
 
-            case "toolcall", "diff":
-                guard let decodedFileChangeText = decodeHistoryToolCallOrDiffItemText(from: itemObject) else {
+            case "toolcall":
+                guard let decodedToolCall = decodeHistoryToolCallItem(from: itemObject) else {
+                    return nil
+                }
+                return makeHistoryMessage(
+                    role: .system,
+                    kind: decodedToolCall.kind,
+                    text: decodedToolCall.text,
+                    threadId: threadId,
+                    turnId: turnID,
+                    itemId: itemID,
+                    createdAt: timestamp,
+                    providerItemId: providerItemID,
+                    timelineOrdinal: timelineOrdinal,
+                    timelineStatus: timelineStatus
+                )
+
+            case "diff":
+                guard let decodedFileChangeText = decodeHistoryDiffItemText(from: itemObject) else {
                     return nil
                 }
                 return makeHistoryMessage(
@@ -361,12 +378,243 @@ extension CodeRoverService {
             mode: mode
         )
         var state = ThreadTimelineState(messages: seededCanonicalMessages)
+        let assistantHistoryCountByTurn = Dictionary(
+            grouping: historyMessages.filter { $0.role == .assistant }
+        ) { $0.turnId ?? "" }
+        .mapValues(\.count)
 
         for message in historyMessages {
             if let existing = state.message(for: message.id) {
                 state.upsert(
                     Self.reconcileExistingMessage(
                         existing,
+                        with: message,
+                        activeThreadIDs: activeThreadIDs,
+                        runningThreadIDs: runningThreadIDs
+                    )
+                )
+            } else if message.role == .assistant,
+                      let turnId = normalizedHistoryIdentifier(message.turnId),
+                      let existing = state.renderedMessages().last(where: { candidate in
+                          candidate.role == .assistant
+                              && candidate.turnId == turnId
+                              && normalizedMessageText(candidate.text) == normalizedMessageText(message.text)
+                      }) {
+                state.upsert(
+                    Self.reconcileExistingMessage(
+                        existing,
+                        with: message,
+                        activeThreadIDs: activeThreadIDs,
+                        runningThreadIDs: runningThreadIDs
+                    )
+                )
+            } else if message.role == .assistant,
+                      let turnId = normalizedHistoryIdentifier(message.turnId),
+                      let incomingItemId = normalizedHistoryIdentifier(message.itemId),
+                      let existing = state.renderedMessages().last(where: { candidate in
+                          candidate.role == .assistant
+                              && candidate.turnId == turnId
+                              && (
+                                  normalizedHistoryIdentifier(candidate.itemId) == nil
+                                      || normalizedHistoryIdentifier(candidate.itemId) == incomingItemId
+                              )
+                      }) {
+                state.upsert(
+                    Self.reconcileExistingMessage(
+                        existing,
+                        with: message,
+                        activeThreadIDs: activeThreadIDs,
+                        runningThreadIDs: runningThreadIDs
+                    )
+                )
+            } else if message.role == .assistant,
+                      let turnId = normalizedHistoryIdentifier(message.turnId),
+                      (activeThreadIDs.contains(message.threadId) || runningThreadIDs.contains(message.threadId)),
+                      let existing = state.renderedMessages().last(where: { candidate in
+                          candidate.role == .assistant
+                              && candidate.turnId == turnId
+                              && candidate.isStreaming
+                      }) {
+                state.upsert(
+                    Self.reconcileExistingMessage(
+                        existing,
+                        with: message,
+                        activeThreadIDs: activeThreadIDs,
+                        runningThreadIDs: runningThreadIDs
+                    )
+                )
+            } else if message.role == .assistant,
+                      let turnId = normalizedHistoryIdentifier(message.turnId),
+                      !(activeThreadIDs.contains(message.threadId) || runningThreadIDs.contains(message.threadId)),
+                      assistantHistoryCountByTurn[turnId] == 1 {
+                let renderedMessages = state.renderedMessages()
+                let candidateIndices = renderedMessages.indices.filter { index in
+                    let candidate = renderedMessages[index]
+                    return candidate.role == .assistant
+                        && candidate.turnId == turnId
+                        && !candidate.isStreaming
+                }
+
+                if candidateIndices.count == 1,
+                   let candidateIndex = candidateIndices.last,
+                   Self.shouldReplaceClosedAssistantMessage(renderedMessages[candidateIndex], with: message) {
+                    state.upsert(
+                        Self.reconcileExistingMessage(
+                            renderedMessages[candidateIndex],
+                            with: message,
+                            activeThreadIDs: activeThreadIDs,
+                            runningThreadIDs: runningThreadIDs
+                        )
+                    )
+                } else {
+                    state.upsert(message)
+                }
+            } else if message.role == .user,
+                      let turnId = normalizedHistoryIdentifier(message.turnId),
+                      let userIndex = Self.uniqueUserHistoryMergeIndex(
+                          in: state.renderedMessages(),
+                          message: message,
+                          turnId: turnId
+                      ) {
+                let renderedMessages = state.renderedMessages()
+                state.upsert(
+                    Self.reconcileExistingMessage(
+                        renderedMessages[userIndex],
+                        with: message,
+                        activeThreadIDs: activeThreadIDs,
+                        runningThreadIDs: runningThreadIDs
+                    )
+                )
+            } else if message.role == .system,
+                      message.kind == .thinking,
+                      let turnId = normalizedHistoryIdentifier(message.turnId),
+                      let existing = state.renderedMessages().last(where: { candidate in
+                          candidate.role == .system
+                              && candidate.kind == .thinking
+                              && candidate.turnId == turnId
+                      }) {
+                state.upsert(
+                    Self.reconcileExistingMessage(
+                        existing,
+                        with: message,
+                        activeThreadIDs: activeThreadIDs,
+                        runningThreadIDs: runningThreadIDs
+                    )
+                )
+            } else if message.role == .system,
+                      message.kind == .fileChange,
+                      let turnId = normalizedHistoryIdentifier(message.turnId),
+                      let existing = state.renderedMessages().last(where: { candidate in
+                          candidate.role == .system
+                              && candidate.kind == .fileChange
+                              && (candidate.turnId == nil || candidate.turnId == turnId)
+                      }) {
+                state.upsert(
+                    Self.reconcileExistingMessage(
+                        existing,
+                        with: message,
+                        activeThreadIDs: activeThreadIDs,
+                        runningThreadIDs: runningThreadIDs
+                    )
+                )
+            } else if message.role == .system,
+                      message.kind == .toolActivity,
+                      let turnId = normalizedHistoryIdentifier(message.turnId) {
+                let candidateIndices = state.renderedMessages().indices.filter { index in
+                    let candidate = state.renderedMessages()[index]
+                    return candidate.role == .system
+                        && candidate.kind == .toolActivity
+                        && candidate.turnId == turnId
+                }
+
+                if let itemIndex = candidateIndices.last(where: { index in
+                    normalizedHistoryIdentifier(state.renderedMessages()[index].itemId) == normalizedHistoryIdentifier(message.itemId)
+                }) {
+                    state.upsert(
+                        Self.reconcileExistingMessage(
+                            state.renderedMessages()[itemIndex],
+                            with: message,
+                            activeThreadIDs: activeThreadIDs,
+                            runningThreadIDs: runningThreadIDs
+                        )
+                    )
+                } else if candidateIndices.count == 1,
+                          let index = candidateIndices.last,
+                          Self.isProvisionalToolActivityRow(state.renderedMessages()[index]),
+                          Self.shouldReconcileToolActivityRow(
+                              state.renderedMessages()[index],
+                              with: message,
+                              requiresExactText: false
+                          ) {
+                    state.upsert(
+                        Self.reconcileExistingMessage(
+                            state.renderedMessages()[index],
+                            with: message,
+                            activeThreadIDs: activeThreadIDs,
+                            runningThreadIDs: runningThreadIDs
+                        )
+                    )
+                } else {
+                    state.upsert(message)
+                }
+            } else if message.role == .system,
+                      message.kind == .commandExecution,
+                      let turnId = normalizedHistoryIdentifier(message.turnId),
+                      let incomingCommandKey = Self.normalizedCommandExecutionPreviewKey(from: message.text),
+                      let existing = state.renderedMessages().last(where: { candidate in
+                          guard candidate.role == .system,
+                                candidate.kind == .commandExecution,
+                                candidate.turnId == turnId,
+                                let candidateCommandKey = Self.normalizedCommandExecutionPreviewKey(from: candidate.text) else {
+                              return false
+                          }
+                          return candidateCommandKey == incomingCommandKey
+                      }) {
+                state.upsert(
+                    Self.reconcileExistingMessage(
+                        existing,
+                        with: message,
+                        activeThreadIDs: activeThreadIDs,
+                        runningThreadIDs: runningThreadIDs
+                    )
+                )
+            } else if message.role == .system,
+                      message.kind == .commandExecution,
+                      let turnId = normalizedHistoryIdentifier(message.turnId),
+                      let existing = state.renderedMessages().last(where: { candidate in
+                          candidate.role == .system
+                              && candidate.kind == .commandExecution
+                              && candidate.turnId == turnId
+                      }) {
+                state.upsert(
+                    Self.reconcileExistingMessage(
+                        existing,
+                        with: message,
+                        activeThreadIDs: activeThreadIDs,
+                        runningThreadIDs: runningThreadIDs
+                    )
+                )
+            } else if let key = Self.historyMessageKey(for: message),
+                      let existing = state.renderedMessages().first(where: { candidate in
+                          Self.historyMessageKey(for: candidate) == key
+                      }) {
+                state.upsert(
+                    Self.reconcileExistingMessage(
+                        existing,
+                        with: message,
+                        activeThreadIDs: activeThreadIDs,
+                        runningThreadIDs: runningThreadIDs
+                    )
+                )
+            } else if message.role == .user,
+                      let pendingIndex = Self.uniquePendingUserHistoryMergeIndex(
+                          in: state.renderedMessages(),
+                          message: message
+                      ) {
+                let renderedMessages = state.renderedMessages()
+                state.upsert(
+                    Self.reconcileExistingMessage(
+                        renderedMessages[pendingIndex],
                         with: message,
                         activeThreadIDs: activeThreadIDs,
                         runningThreadIDs: runningThreadIDs
@@ -701,8 +949,17 @@ extension CodeRoverService {
         if value.turnId == nil {
             value.turnId = serverMessage.turnId
         }
-        if value.itemId == nil {
-            value.itemId = serverMessage.itemId
+        let localItemId = normalizedHistoryIdentifier(value.itemId)
+        let serverItemId = normalizedHistoryIdentifier(serverMessage.itemId)
+        if value.itemId == nil
+            || (
+                value.role == .system
+                    && value.kind == .toolActivity
+                    && serverItemId != nil
+                    && !hasStableToolActivityIdentity(localItemId)
+                    && localItemId != serverItemId
+            ) {
+            value.itemId = serverItemId
         }
         if value.kind == .chat && serverMessage.kind != .chat {
             value.kind = serverMessage.kind
@@ -845,6 +1102,119 @@ extension CodeRoverService {
             .joined(separator: "|")
     }
 
+    nonisolated static func shouldReplaceClosedAssistantMessage(
+        _ localMessage: ChatMessage,
+        with serverMessage: ChatMessage
+    ) -> Bool {
+        let localText = normalizedMessageText(localMessage.text)
+        let serverText = normalizedMessageText(serverMessage.text)
+
+        guard !serverText.isEmpty else {
+            return false
+        }
+
+        if localText.isEmpty || localText == serverText {
+            return true
+        }
+
+        return serverText.count > localText.count && serverText.hasPrefix(localText)
+    }
+
+    nonisolated static func userMessageAttachmentsLookCompatible(
+        localMessage: ChatMessage,
+        serverMessage: ChatMessage
+    ) -> Bool {
+        let localAttachments = attachmentSignature(for: localMessage.attachments)
+        let serverAttachments = attachmentSignature(for: serverMessage.attachments)
+        if !localAttachments.isEmpty,
+           !serverAttachments.isEmpty,
+           localAttachments != serverAttachments {
+            return false
+        }
+
+        return true
+    }
+
+    nonisolated static func shouldReconcileUserHistoryMessage(
+        _ candidate: ChatMessage,
+        with message: ChatMessage,
+        turnId: String
+    ) -> Bool {
+        guard candidate.role == .user,
+              candidate.deliveryState != .failed,
+              normalizedMessageText(candidate.text) == normalizedMessageText(message.text),
+              userMessageAttachmentsLookCompatible(localMessage: candidate, serverMessage: message) else {
+            return false
+        }
+
+        let candidateTurnId = normalizedHistoryIdentifier(candidate.turnId)
+        return candidateTurnId == nil || candidateTurnId == turnId
+    }
+
+    nonisolated static func shouldReconcilePendingUserHistoryMessage(
+        _ candidate: ChatMessage,
+        with message: ChatMessage
+    ) -> Bool {
+        guard candidate.role == .user,
+              candidate.deliveryState == .pending,
+              normalizedMessageText(candidate.text) == normalizedMessageText(message.text),
+              userMessageAttachmentsLookCompatible(localMessage: candidate, serverMessage: message) else {
+            return false
+        }
+
+        return true
+    }
+
+    nonisolated static func uniqueUserHistoryMergeIndex(
+        in merged: [ChatMessage],
+        message: ChatMessage,
+        turnId: String
+    ) -> Int? {
+        let matchingIndices = merged.indices.filter { index in
+            shouldReconcileUserHistoryMessage(merged[index], with: message, turnId: turnId)
+        }
+
+        guard matchingIndices.count == 1 else {
+            return nil
+        }
+
+        return matchingIndices[0]
+    }
+
+    nonisolated static func uniquePendingUserHistoryMergeIndex(
+        in merged: [ChatMessage],
+        message: ChatMessage
+    ) -> Int? {
+        let matchingIndices = merged.indices.filter { index in
+            shouldReconcilePendingUserHistoryMessage(merged[index], with: message)
+        }
+
+        guard matchingIndices.count == 1 else {
+            return nil
+        }
+
+        return matchingIndices[0]
+    }
+
+    nonisolated static func historyMessageKey(for message: ChatMessage) -> String? {
+        if let itemId = normalizedHistoryIdentifier(message.itemId) {
+            return "item:\(message.role.rawValue):\(message.kind.rawValue):\(itemId)"
+        }
+
+        let normalizedText = normalizedMessageText(message.text)
+        guard !normalizedText.isEmpty else {
+            return nil
+        }
+
+        return [
+            message.role.rawValue,
+            message.kind.rawValue,
+            normalizedHistoryIdentifier(message.turnId) ?? "no-turn",
+            normalizedText,
+            attachmentSignature(for: message.attachments)
+        ].joined(separator: "|")
+    }
+
     func normalizedItemType(_ rawType: String) -> String {
         rawType
             .replacingOccurrences(of: "_", with: "")
@@ -892,6 +1262,63 @@ extension CodeRoverService {
         )
         let normalized = collapsedWhitespace.lowercased()
         return normalized.isEmpty ? nil : normalized
+    }
+
+    nonisolated static func shouldReconcileToolActivityRow(
+        _ localMessage: ChatMessage,
+        with serverMessage: ChatMessage,
+        requiresExactText: Bool
+    ) -> Bool {
+        let localItemId = normalizedHistoryIdentifier(localMessage.itemId)
+        let serverItemId = normalizedHistoryIdentifier(serverMessage.itemId)
+        if let localItemId, let serverItemId, localItemId == serverItemId {
+            return true
+        }
+
+        let localHasStableIdentity = hasStableToolActivityIdentity(localItemId)
+        let serverHasStableIdentity = hasStableToolActivityIdentity(serverItemId)
+        if localHasStableIdentity && serverHasStableIdentity {
+            return false
+        }
+
+        let localLines = normalizedToolActivityLines(from: localMessage.text)
+        let serverLines = normalizedToolActivityLines(from: serverMessage.text)
+        if localLines.isEmpty || serverLines.isEmpty {
+            return !localHasStableIdentity || !serverHasStableIdentity
+        }
+
+        if localLines == serverLines {
+            return true
+        }
+
+        guard !requiresExactText else {
+            return false
+        }
+
+        return localLines.starts(with: serverLines) || serverLines.starts(with: localLines)
+    }
+
+    nonisolated static func hasStableToolActivityIdentity(_ value: String?) -> Bool {
+        guard let value else {
+            return false
+        }
+        return !(value.hasPrefix("turn:") && value.contains("|kind:\(ChatMessageKind.toolActivity.rawValue)"))
+    }
+
+    nonisolated static func isProvisionalToolActivityRow(_ message: ChatMessage) -> Bool {
+        let itemId = normalizedHistoryIdentifier(message.itemId)
+        guard !hasStableToolActivityIdentity(itemId) else {
+            return false
+        }
+
+        return message.isStreaming || normalizedToolActivityLines(from: message.text).isEmpty
+    }
+
+    nonisolated static func normalizedToolActivityLines(from text: String) -> [String] {
+        normalizedMessageText(text)
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+            .filter { !$0.isEmpty }
     }
 
     // Centralizes history-item -> ChatMessage mapping without changing ordering behavior.
@@ -1517,7 +1944,21 @@ extension CodeRoverService {
         return sections.joined(separator: "\n\n")
     }
 
-    func decodeHistoryToolCallOrDiffItemText(from itemObject: [String: JSONValue]) -> String? {
+    func decodeHistoryToolCallItem(from itemObject: [String: JSONValue]) -> (kind: ChatMessageKind, text: String)? {
+        if let fileChangeText = decodeHistoryToolCallFileChangeText(from: itemObject) {
+            return (.fileChange, fileChangeText)
+        }
+        if let activityText = decodeHistoryToolActivityText(from: itemObject) {
+            return (.toolActivity, activityText)
+        }
+        return nil
+    }
+
+    func decodeHistoryDiffItemText(from itemObject: [String: JSONValue]) -> String? {
+        decodeHistoryToolCallFileChangeText(from: itemObject)
+    }
+
+    func decodeHistoryToolCallFileChangeText(from itemObject: [String: JSONValue]) -> String? {
         let status = decodeHistoryNestedStatus(from: itemObject) ?? "completed"
 
         var synthetic = itemObject
@@ -1557,6 +1998,10 @@ extension CodeRoverService {
             }
         }
 
+        return nil
+    }
+
+    func decodeHistoryToolActivityText(from itemObject: [String: JSONValue]) -> String? {
         if let output = decodeHistoryFirstString(
             forAnyKey: [
                 "text",
@@ -1569,13 +2014,62 @@ extension CodeRoverService {
             ],
             in: .object(itemObject)
         ) {
-            let trimmedOutput = output.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmedOutput.isEmpty {
-                return "Status: \(status)\n\n\(trimmedOutput)"
+            let lines = output
+                .split(separator: "\n", omittingEmptySubsequences: false)
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty && $0.count <= 140 }
+            let acceptedPrefixes = [
+                "running ",
+                "read ",
+                "search ",
+                "searched ",
+                "exploring ",
+                "list ",
+                "listing ",
+                "open ",
+                "opened ",
+                "find ",
+                "finding ",
+                "edit ",
+                "edited ",
+                "write ",
+                "wrote ",
+                "apply ",
+                "applied ",
+            ]
+            let activityLines = lines.filter { line in
+                let lower = line.lowercased()
+                return acceptedPrefixes.contains { lower.hasPrefix($0) }
+            }
+            if !activityLines.isEmpty {
+                return activityLines.joined(separator: "\n")
             }
         }
 
-        return nil
+        let nestedTool = itemObject["tool"]?.objectValue
+        let nestedCall = itemObject["call"]?.objectValue
+        let descriptor = firstNonEmptyString([
+            itemObject["kind"]?.stringValue,
+            itemObject["name"]?.stringValue,
+            itemObject["tool"]?.stringValue,
+            itemObject["tool_name"]?.stringValue,
+            itemObject["toolName"]?.stringValue,
+            itemObject["title"]?.stringValue,
+            nestedTool?["kind"]?.stringValue,
+            nestedTool?["name"]?.stringValue,
+            nestedTool?["type"]?.stringValue,
+            nestedTool?["title"]?.stringValue,
+            nestedCall?["kind"]?.stringValue,
+            nestedCall?["name"]?.stringValue,
+            nestedCall?["type"]?.stringValue,
+            nestedCall?["title"]?.stringValue,
+        ])
+        let summary = toolActivitySummaryLine(
+            descriptor: descriptor,
+            rawStatus: decodeHistoryNestedStatus(from: itemObject),
+            isCompleted: true
+        )
+        return summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : summary
     }
 
     func decodeHistoryFileChangeEntries(

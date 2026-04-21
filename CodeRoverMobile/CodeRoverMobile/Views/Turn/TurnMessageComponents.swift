@@ -752,6 +752,7 @@ struct MessageRow: View, Equatable {
             let placeholderTexts: Set<String> = [
                 "...",
                 "Thinking...",
+                "Running tool",
                 "Applying file changes...",
                 "Updating...",
                 "Planning...",
@@ -999,6 +1000,8 @@ struct MessageRow: View, Equatable {
         switch message.kind {
         case .thinking:
             thinkingSystemView
+        case .toolActivity:
+            defaultSystemView(text: text)
         case .fileChange:
             fileChangeSystemView(text: text)
         case .commandExecution:

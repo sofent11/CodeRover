@@ -17,8 +17,10 @@ enum TurnTimelineReducer {
     static func project(messages: [ChatMessage]) -> TurnTimelineProjection {
         let visibleMessages = removeHiddenSystemMarkers(in: messages)
         let reordered = enforceIntraTurnOrder(in: visibleMessages)
-        let collapsedThinking = collapseConsecutiveThinkingMessages(in: reordered)
-        let dedupedFileChanges = removeDuplicateFileChangeMessages(in: collapsedThinking)
+        let collapsedThinking = collapseThinkingMessages(in: reordered)
+        let withoutCommandThinkingEchoes = removeRedundantThinkingCommandActivityMessages(in: collapsedThinking)
+        let dedupedUsers = removeDuplicateUserMessages(in: withoutCommandThinkingEchoes)
+        let dedupedFileChanges = removeDuplicateFileChangeMessages(in: dedupedUsers)
         let dedupedSubagentActions = removeDuplicateSubagentActionMessages(in: dedupedFileChanges)
         let dedupedAssistant = removeDuplicateAssistantMessages(in: dedupedSubagentActions)
         return TurnTimelineProjection(messages: dedupedAssistant)
@@ -61,13 +63,24 @@ enum TurnTimelineReducer {
             let turnMessages = indices.map { result[$0] }
 
             let sorted: [ChatMessage]
-            if hasInterleavedAssistantThinkingFlow(turnMessages) {
-                // Multi-item turn: only ensure user messages precede all others.
-                // Preserve the interleaved thinking → response → thinking → response order.
+            if hasInterleavedUserFlow(turnMessages) {
+                sorted = turnMessages.sorted { $0.orderIndex < $1.orderIndex }
+            } else if hasInterleavedAssistantActivityFlow(turnMessages) {
                 sorted = turnMessages.sorted { a, b in
-                    let aIsUser = a.role == .user
-                    let bIsUser = b.role == .user
-                    if aIsUser != bIsUser { return aIsUser }
+                    let userCount = turnMessages.reduce(into: 0) { partialResult, message in
+                        if message.role == .user {
+                            partialResult += 1
+                        }
+                    }
+                    let openingUserID = userCount == 1
+                        ? turnMessages
+                            .filter { $0.role == .user }
+                            .min(by: { $0.orderIndex < $1.orderIndex })?
+                            .id
+                        : nil
+                    let aIsOpeningUser = openingUserID != nil && a.id == openingUserID
+                    let bIsOpeningUser = openingUserID != nil && b.id == openingUserID
+                    if aIsOpeningUser != bIsOpeningUser { return aIsOpeningUser }
                     return a.orderIndex < b.orderIndex
                 }
             } else {
@@ -89,10 +102,27 @@ enum TurnTimelineReducer {
         return result
     }
 
-    // Detects multi-item turns where thinking/reasoning appears on BOTH sides of an
-    // assistant message (thinking → response → thinking). This distinguishes true
+    private static func hasInterleavedUserFlow(_ turnMessages: [ChatMessage]) -> Bool {
+        let ordered = turnMessages.sorted { $0.orderIndex < $1.orderIndex }
+        var seenNonUser = false
+
+        for message in ordered {
+            if message.role == .user {
+                if seenNonUser {
+                    return true
+                }
+            } else {
+                seenNonUser = true
+            }
+        }
+
+        return false
+    }
+
+    // Detects multi-item turns where visible system activity appears on BOTH sides of an
+    // assistant message (thinking/command → response → thinking/command). This distinguishes true
     // interleaved flows from single-item turns where events arrived out of order.
-    private static func hasInterleavedAssistantThinkingFlow(_ turnMessages: [ChatMessage]) -> Bool {
+    private static func hasInterleavedAssistantActivityFlow(_ turnMessages: [ChatMessage]) -> Bool {
         // Multiple distinct assistant item IDs = definitive multi-item turn.
         let distinctAssistantItemIds = Set(
             turnMessages
@@ -103,22 +133,35 @@ enum TurnTimelineReducer {
             return true
         }
 
-        // Check pattern: thinking → assistant → thinking (reasoning on both sides).
+        // Check pattern: activity → assistant → activity (system activity on both sides).
         let ordered = turnMessages.sorted { $0.orderIndex < $1.orderIndex }
-        var hasThinkingBeforeAssistant = false
+        var hasActivityBeforeAssistant = false
         var seenAssistant = false
         for message in ordered {
             if message.role == .assistant {
                 seenAssistant = true
-            } else if message.role == .system, message.kind == .thinking {
+            } else if isInterleavableSystemActivity(message) {
                 if !seenAssistant {
-                    hasThinkingBeforeAssistant = true
-                } else if hasThinkingBeforeAssistant {
+                    hasActivityBeforeAssistant = true
+                } else if hasActivityBeforeAssistant {
                     return true
                 }
             }
         }
         return false
+    }
+
+    private static func isInterleavableSystemActivity(_ message: ChatMessage) -> Bool {
+        guard message.role == .system else {
+            return false
+        }
+
+        switch message.kind {
+        case .thinking, .toolActivity, .commandExecution:
+            return true
+        case .chat, .plan, .userInputPrompt, .fileChange, .subagentAction:
+            return false
+        }
     }
 
     private static func intraTurnPriority(_ message: ChatMessage) -> Int {
@@ -129,19 +172,21 @@ enum TurnTimelineReducer {
             switch message.kind {
             case .thinking:
                 return 1
-            case .commandExecution:
+            case .toolActivity:
                 return 2
-            case .subagentAction:
+            case .commandExecution:
                 return 3
+            case .subagentAction:
+                return 4
             case .chat:
-                return 4
+                return 5
             case .plan:
-                return 4
+                return 5
             case .userInputPrompt:
-                return 6
+                return 7
             case .fileChange:
                 // Keep edited-file cards at the end of the turn timeline.
-                return 5
+                return 6
             }
         case .assistant:
             return 4
@@ -155,8 +200,9 @@ enum TurnTimelineReducer {
         }
     }
 
-    // Collapses noisy back-to-back thinking rows into one visual row (render-only).
-    static func collapseConsecutiveThinkingMessages(in messages: [ChatMessage]) -> [ChatMessage] {
+    // Collapses repeated thinking placeholders/activity rows within one turn segment so
+    // command cards can interleave without leaving stacked empty "Thinking..." rows behind.
+    static func collapseThinkingMessages(in messages: [ChatMessage]) -> [ChatMessage] {
         var result: [ChatMessage] = []
         result.reserveCapacity(messages.count)
 
@@ -166,12 +212,12 @@ enum TurnTimelineReducer {
                 continue
             }
 
-            guard var previous = result.last,
-                  previous.role == .system,
-                  previous.kind == .thinking else {
+            guard let previousIndex = latestReusableThinkingIndex(in: result, for: message) else {
                 result.append(message)
                 continue
             }
+
+            var previous = result[previousIndex]
 
             guard shouldMergeThinkingRows(previous: previous, incoming: message) else {
                 result.append(message)
@@ -187,29 +233,106 @@ enum TurnTimelineReducer {
             previous.isStreaming = message.isStreaming
             previous.turnId = message.turnId ?? previous.turnId
             previous.itemId = message.itemId ?? previous.itemId
-            result[result.count - 1] = previous
+            result[previousIndex] = previous
         }
 
         return result
     }
 
-    // Preserves separate reasoning blocks when they come from different item ids.
+    private static func latestReusableThinkingIndex(
+        in messages: [ChatMessage],
+        for incoming: ChatMessage
+    ) -> Int? {
+        for index in messages.indices.reversed() {
+            let candidate = messages[index]
+            if candidate.role == .assistant || candidate.role == .user {
+                break
+            }
+
+            guard candidate.role == .system, candidate.kind == .thinking else {
+                continue
+            }
+
+            if shouldMergeThinkingRows(previous: candidate, incoming: incoming) {
+                return index
+            }
+        }
+
+        return nil
+    }
+
     private static func shouldMergeThinkingRows(previous: ChatMessage, incoming: ChatMessage) -> Bool {
         let previousItemId = normalizedIdentifier(previous.itemId)
         let incomingItemId = normalizedIdentifier(incoming.itemId)
-        if let previousItemId, let incomingItemId {
-            return previousItemId == incomingItemId
+        if let previousItemId, let incomingItemId,
+           previousItemId == incomingItemId {
+            return true
         }
-        if previousItemId != nil || incomingItemId != nil {
+
+        guard hasCompatibleThinkingTurnScope(previous: previous, incoming: incoming) else {
             return false
         }
 
-        let previousTurnId = normalizedIdentifier(previous.turnId)
-        let incomingTurnId = normalizedIdentifier(incoming.turnId)
-        guard previousTurnId == incomingTurnId else {
+        if isPlaceholderThinkingRow(previous) {
+            return true
+        }
+
+        let previousHasStableIdentity = hasStableThinkingIdentity(previous)
+        let incomingHasStableIdentity = hasStableThinkingIdentity(incoming)
+
+        if previousHasStableIdentity,
+           incomingHasStableIdentity,
+           previousItemId != nil,
+           incomingItemId != nil {
             return false
         }
-        return previousTurnId != nil
+
+        if isPlaceholderThinkingRow(incoming) {
+            return !previousHasStableIdentity
+        }
+
+        if !previousHasStableIdentity || !incomingHasStableIdentity {
+            return thinkingSnapshotsOverlap(previous: previous, incoming: incoming)
+        }
+
+        return false
+    }
+
+    private static func hasCompatibleThinkingTurnScope(previous: ChatMessage, incoming: ChatMessage) -> Bool {
+        let previousTurnId = normalizedIdentifier(previous.turnId)
+        let incomingTurnId = normalizedIdentifier(incoming.turnId)
+        guard let previousTurnId, let incomingTurnId else {
+            return true
+        }
+        return previousTurnId == incomingTurnId
+    }
+
+    private static func hasStableThinkingIdentity(_ message: ChatMessage) -> Bool {
+        guard let itemId = normalizedIdentifier(message.itemId) else {
+            return false
+        }
+        return !(itemId.hasPrefix("turn:") && itemId.contains("|kind:\(ChatMessageKind.thinking.rawValue)"))
+    }
+
+    private static func isPlaceholderThinkingRow(_ message: ChatMessage) -> Bool {
+        ThinkingDisclosureParser.normalizedThinkingContent(from: message.text).isEmpty
+    }
+
+    private static func thinkingSnapshotsOverlap(previous: ChatMessage, incoming: ChatMessage) -> Bool {
+        let previousText = ThinkingDisclosureParser.normalizedThinkingContent(from: previous.text)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let incomingText = ThinkingDisclosureParser.normalizedThinkingContent(from: incoming.text)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !previousText.isEmpty, !incomingText.isEmpty else {
+            return previousText.isEmpty || incomingText.isEmpty
+        }
+
+        let previousLower = previousText.lowercased()
+        let incomingLower = incomingText.lowercased()
+        return previousLower == incomingLower
+            || previousLower.contains(incomingLower)
+            || incomingLower.contains(previousLower)
     }
 
     private static func normalizedIdentifier(_ value: String?) -> String? {
@@ -249,6 +372,168 @@ enum TurnTimelineReducer {
         }
 
         return "\(existingTrimmed)\n\(incomingTrimmed)"
+    }
+
+    private static func removeRedundantThinkingCommandActivityMessages(
+        in messages: [ChatMessage]
+    ) -> [ChatMessage] {
+        let commandKeysByTurn = messages.reduce(into: [String: Set<String>]()) { partialResult, message in
+            guard message.role == .system,
+                  message.kind == .commandExecution,
+                  let turnId = normalizedIdentifier(message.turnId),
+                  let commandKey = commandActivityKey(from: message.text) else {
+                return
+            }
+            partialResult[turnId, default: Set<String>()].insert(commandKey)
+        }
+
+        guard !commandKeysByTurn.isEmpty else {
+            return messages
+        }
+
+        return messages.filter { message in
+            guard message.role == .system,
+                  message.kind == .thinking,
+                  let turnId = normalizedIdentifier(message.turnId),
+                  let commandKeys = commandKeysByTurn[turnId] else {
+                return true
+            }
+
+            let normalizedThinking = ThinkingDisclosureParser.normalizedThinkingContent(from: message.text)
+            let lines = normalizedThinking
+                .split(separator: "\n", omittingEmptySubsequences: false)
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+
+            guard !lines.isEmpty else {
+                return true
+            }
+
+            return !lines.allSatisfy { line in
+                guard let commandKey = commandActivityKey(from: line) else {
+                    return false
+                }
+                return commandKeys.contains(commandKey)
+            }
+        }
+    }
+
+    private static func commandActivityKey(from text: String) -> String? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return nil
+        }
+
+        let normalized = trimmed
+            .replacingOccurrences(
+                of: #"\s+"#,
+                with: " ",
+                options: .regularExpression
+            )
+            .lowercased()
+        return normalized.isEmpty ? nil : normalized
+    }
+
+    // Collapses optimistic local user rows with their confirmed realtime/history echoes.
+    static func removeDuplicateUserMessages(in messages: [ChatMessage]) -> [ChatMessage] {
+        var result: [ChatMessage] = []
+        result.reserveCapacity(messages.count)
+
+        for message in messages {
+            guard message.role == .user else {
+                result.append(message)
+                continue
+            }
+
+            let matchingIndices = result.indices.reversed().filter { index in
+                shouldMergeUserMessages(previous: result[index], incoming: message)
+            }
+            guard matchingIndices.count == 1,
+                  let previousIndex = matchingIndices.first else {
+                result.append(message)
+                continue
+            }
+
+            result[previousIndex] = mergedUserMessage(previous: result[previousIndex], incoming: message)
+        }
+
+        return result
+    }
+
+    private static func shouldMergeUserMessages(previous: ChatMessage, incoming: ChatMessage) -> Bool {
+        guard previous.role == .user,
+              incoming.role == .user,
+              previous.threadId == incoming.threadId,
+              normalizedMessageText(previous.text) == normalizedMessageText(incoming.text),
+              userMessageAttachmentsLookCompatible(previous: previous, incoming: incoming) else {
+            return false
+        }
+
+        let previousTurnId = normalizedIdentifier(previous.turnId)
+        let incomingTurnId = normalizedIdentifier(incoming.turnId)
+        if let previousTurnId, let incomingTurnId {
+            return previousTurnId == incomingTurnId
+                && previous.deliveryState == .pending
+                && incoming.deliveryState == .confirmed
+                && abs(incoming.createdAt.timeIntervalSince(previous.createdAt)) <= 12
+        }
+
+        let isPendingToConfirmedUpgrade = previous.deliveryState == .pending
+            && incoming.deliveryState == .confirmed
+        let isTurnBindingUpgrade = previousTurnId == nil && incomingTurnId != nil
+        guard isPendingToConfirmedUpgrade || isTurnBindingUpgrade else {
+            return false
+        }
+
+        return abs(incoming.createdAt.timeIntervalSince(previous.createdAt)) <= 12
+    }
+
+    private static func mergedUserMessage(previous: ChatMessage, incoming: ChatMessage) -> ChatMessage {
+        var merged = previous
+
+        if merged.deliveryState == .pending || incoming.deliveryState == .confirmed {
+            merged.deliveryState = incoming.deliveryState
+        }
+        if merged.turnId == nil {
+            merged.turnId = incoming.turnId
+        }
+        if merged.itemId == nil {
+            merged.itemId = incoming.itemId
+        }
+        if merged.attachments.isEmpty && !incoming.attachments.isEmpty {
+            merged.attachments = incoming.attachments
+        }
+
+        let incomingText = incoming.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !incomingText.isEmpty {
+            merged.text = incoming.text
+        }
+
+        return merged
+    }
+
+    private static func normalizedMessageText(_ text: String) -> String {
+        text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func attachmentSignature(for message: ChatMessage) -> String {
+        message.attachments
+            .map { attachment in
+                attachment.payloadDataURL ?? attachment.sourceURL ?? attachment.thumbnailBase64JPEG
+            }
+            .joined(separator: "|")
+    }
+
+    private static func userMessageAttachmentsLookCompatible(previous: ChatMessage, incoming: ChatMessage) -> Bool {
+        let previousAttachments = attachmentSignature(for: previous)
+        let incomingAttachments = attachmentSignature(for: incoming)
+        if !previousAttachments.isEmpty,
+           !incomingAttachments.isEmpty,
+           previousAttachments != incomingAttachments {
+            return false
+        }
+
+        return true
     }
 
     // Hides duplicated assistant rows caused by mixed completion/history payloads.
@@ -311,33 +596,30 @@ enum TurnTimelineReducer {
 
     // Keeps only the newest matching file-change card when multiple event channels emit the same diff.
     static func removeDuplicateFileChangeMessages(in messages: [ChatMessage]) -> [ChatMessage] {
-        var latestIndexByKey: [String: Int] = [:]
-        for (index, message) in messages.enumerated() {
-            guard message.role == .system,
-                  message.kind == .fileChange,
-                  let key = duplicateFileChangeKey(for: message) else {
-                continue
-            }
-            latestIndexByKey[key] = index
-        }
+        let signatures = messages.map { fileChangeDedupSignature(for: $0) }
+        var supersededIndices: Set<Int> = []
 
-        var result: [ChatMessage] = []
-        result.reserveCapacity(messages.count)
-
-        for (index, message) in messages.enumerated() {
-            guard message.role == .system,
-                  message.kind == .fileChange,
-                  let key = duplicateFileChangeKey(for: message) else {
-                result.append(message)
+        for olderIndex in messages.indices {
+            guard let olderSignature = signatures[olderIndex] else {
                 continue
             }
 
-            if latestIndexByKey[key] == index {
-                result.append(message)
+            for newerIndex in messages.indices where newerIndex > olderIndex {
+                guard let newerSignature = signatures[newerIndex],
+                      fileChangeMessage(newerSignature, supersedes: olderSignature) else {
+                    continue
+                }
+                supersededIndices.insert(olderIndex)
+                break
             }
         }
 
-        return result
+        return messages.enumerated().compactMap { index, message in
+            if signatures[index] != nil, supersededIndices.contains(index) {
+                return nil
+            }
+            return message
+        }
     }
 
     static func removeDuplicateSubagentActionMessages(in messages: [ChatMessage]) -> [ChatMessage] {
@@ -416,18 +698,115 @@ enum TurnTimelineReducer {
 
     // Keys file-change cards by turn + rendered payload so repeated turn/diff snapshots collapse to one row.
     private static func duplicateFileChangeKey(for message: ChatMessage) -> String? {
-        guard let turnId = normalizedIdentifier(message.turnId) else {
-            return nil
-        }
+        let turnLabel = normalizedIdentifier(message.turnId) ?? "turnless"
 
         if let summaryKey = TurnFileChangeSummaryParser.dedupeKey(from: message.text) {
-            return "\(turnId)|\(summaryKey)"
+            return "\(turnLabel)|\(summaryKey)"
         }
 
         let normalizedText = message.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalizedText.isEmpty else {
             return nil
         }
-        return "\(turnId)|\(normalizedText)"
+        return "\(turnLabel)|\(normalizedText)"
     }
+
+    private static func fileChangeDedupSignature(for message: ChatMessage) -> FileChangeDedupSignature? {
+        guard message.role == .system,
+              message.kind == .fileChange else {
+            return nil
+        }
+
+        let turnId = normalizedIdentifier(message.turnId)
+        let key = duplicateFileChangeKey(for: message)
+        let entries = TurnFileChangeSummaryParser.parse(from: message.text)?.entries ?? []
+        let paths = Set(entries.map(\.path))
+        let singleEntryDescriptor: FileChangeSingleEntryDescriptor? = {
+            guard entries.count == 1, let entry = entries.first else { return nil }
+            return FileChangeSingleEntryDescriptor(
+                path: entry.path,
+                additions: entry.additions,
+                deletions: entry.deletions,
+                action: entry.action
+            )
+        }()
+
+        guard key != nil || !paths.isEmpty || singleEntryDescriptor != nil else {
+            return nil
+        }
+
+        return FileChangeDedupSignature(
+            turnId: turnId,
+            key: key,
+            paths: paths,
+            singleEntryDescriptor: singleEntryDescriptor,
+            isStreaming: message.isStreaming
+        )
+    }
+
+    private static func fileChangeMessage(
+        _ newer: FileChangeDedupSignature,
+        supersedes older: FileChangeDedupSignature
+    ) -> Bool {
+        let sameTurn: Bool
+        if let newerTurn = newer.turnId, let olderTurn = older.turnId {
+            sameTurn = newerTurn == olderTurn
+        } else {
+            sameTurn = older.turnId == nil || newer.turnId == nil
+        }
+        guard sameTurn else {
+            return false
+        }
+
+        if let newerKey = newer.key, let olderKey = older.key, newerKey == olderKey {
+            return true
+        }
+
+        if let newerSingle = newer.singleEntryDescriptor,
+           let olderSingle = older.singleEntryDescriptor,
+           (older.isStreaming || older.turnId == nil),
+           singleFileChangeLooksLikePathUpgrade(newer: newerSingle, older: olderSingle) {
+            return true
+        }
+
+        return !newer.paths.isEmpty && !older.paths.isEmpty && newer.paths == older.paths
+    }
+
+    private static func singleFileChangeLooksLikePathUpgrade(
+        newer: FileChangeSingleEntryDescriptor,
+        older: FileChangeSingleEntryDescriptor
+    ) -> Bool {
+        guard newer.path == older.path else {
+            return false
+        }
+
+        if newer.action == older.action,
+           newer.additions == older.additions,
+           newer.deletions == older.deletions {
+            return true
+        }
+
+        if newer.action == older.action,
+           newer.additions >= older.additions,
+           newer.deletions >= older.deletions {
+            return true
+        }
+
+        return false
+    }
+}
+
+private struct FileChangeDedupSignature {
+    let turnId: String?
+    let key: String?
+    let paths: Set<String>
+    let singleEntryDescriptor: FileChangeSingleEntryDescriptor?
+    let isStreaming: Bool
+}
+
+private struct FileChangeSingleEntryDescriptor {
+    let path: String
+    let additions: Int
+    let deletions: Int
+    let action: TurnFileChangeAction?
 }

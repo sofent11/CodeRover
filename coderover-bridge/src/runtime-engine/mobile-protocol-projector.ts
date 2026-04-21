@@ -109,7 +109,10 @@ export function projectRuntimeEventToMobileProtocol(
         },
       };
 
-    case "tool_delta":
+    case "tool_delta": {
+      const kind = Array.isArray(event.changes) && event.changes.length > 0
+        ? "fileChange"
+        : "toolActivity";
       return {
         kind: "notification",
         method: event.completed ? "timeline/itemCompleted" : "timeline/itemTextUpdated",
@@ -118,7 +121,7 @@ export function projectRuntimeEventToMobileProtocol(
           turnId: event.turnId,
           timelineItemId: event.itemId,
           providerItemId: event.itemId,
-          kind: "fileChange",
+          kind,
           role: "system",
           status: event.completed ? "completed" : "streaming",
           text: event.delta,
@@ -127,6 +130,7 @@ export function projectRuntimeEventToMobileProtocol(
           changes: event.changes,
         },
       };
+    }
 
     case "command_delta":
       return {

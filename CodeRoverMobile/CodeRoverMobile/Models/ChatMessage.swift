@@ -21,6 +21,7 @@ enum ChatMessageDeliveryState: String, Codable, Hashable, Sendable {
 enum ChatMessageKind: String, Codable, Hashable, Sendable {
     case chat
     case thinking
+    case toolActivity
     case fileChange
     case commandExecution
     case subagentAction

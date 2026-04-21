@@ -3340,9 +3340,22 @@ export function createRuntimeManager({
       case "reasoning":
         return "thinking";
       case "filechange":
-      case "toolcall":
       case "diff":
         return "fileChange";
+      case "toolcall": {
+        const itemObject = asObject(record?.itemObject);
+        const directPatch = normalizeOptionalString(
+          itemObject.diff
+          || itemObject.unified_diff
+          || itemObject.unifiedDiff
+          || itemObject.patch
+        );
+        const text = normalizeOptionalString(itemObject.text || itemObject.message);
+        const hasFileChangeSignal = (Array.isArray(itemObject.changes) && itemObject.changes.length > 0)
+          || Boolean(directPatch)
+          || Boolean(text && (/diff --git |\n@@ |\n+++ |\n--- /.test(text)));
+        return hasFileChangeSignal ? "fileChange" : "toolActivity";
+      }
       case "commandexecution":
         return "commandExecution";
       case "plan":
@@ -3404,6 +3417,14 @@ export function createRuntimeManager({
           || normalizedItemObject.cmd
           || normalizedItemObject.text
         ) || "command";
+      case "toolActivity":
+        return normalizeOptionalString(
+          normalizedItemObject.toolName
+          || normalizedItemObject.tool_name
+          || asObject(normalizedItemObject.metadata).toolName
+          || asObject(normalizedItemObject.metadata).tool_name
+          || normalizedItemObject.text
+        ) || "tool";
       case "fileChange":
         return normalizeOptionalString(normalizedItemObject.text) || "file-change";
       case "plan":
