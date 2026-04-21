@@ -64,6 +64,8 @@ internal fun TurnMessageBubble(
     grouped: Boolean = false,
     replyPresentation: ReplyPresentation? = null,
     copyBlockText: String? = null,
+    aggregatedFileChangePresentation: FileChangeBlockPresentation? = null,
+    suppressFileChangeActions: Boolean = false,
     assistantRevertPresentation: AssistantRevertPresentation? = null,
     onTapAssistantRevert: (ChatMessage) -> Unit = {},
 ) {
@@ -96,6 +98,8 @@ internal fun TurnMessageBubble(
                     message = message,
                     onSubmitStructuredInput = onSubmitStructuredInput,
                     onTapSubagentThread = onTapSubagentThread,
+                    aggregatedFileChangePresentation = aggregatedFileChangePresentation,
+                    suppressFileChangeActions = suppressFileChangeActions,
                 )
             }
         }
@@ -344,10 +348,16 @@ private fun SystemMessageBlock(
     message: ChatMessage,
     onSubmitStructuredInput: (kotlinx.serialization.json.JsonElement, Map<String, String>) -> Unit,
     onTapSubagentThread: (String) -> Unit,
+    aggregatedFileChangePresentation: FileChangeBlockPresentation? = null,
+    suppressFileChangeActions: Boolean = false,
 ) {
     when (message.kind) {
         MessageKind.THINKING -> ThinkingMessageContent(message)
-        MessageKind.FILE_CHANGE -> FileChangeMessageContent(message)
+        MessageKind.FILE_CHANGE -> FileChangeMessageContent(
+            message = message,
+            aggregatedPresentation = aggregatedFileChangePresentation,
+            suppressActions = suppressFileChangeActions,
+        )
         MessageKind.COMMAND_EXECUTION -> CommandExecutionMessageContent(message)
         MessageKind.SUBAGENT_ACTION -> SubagentActionMessageContent(message, onTapSubagentThread)
         MessageKind.PLAN -> PlanMessageContent(message)

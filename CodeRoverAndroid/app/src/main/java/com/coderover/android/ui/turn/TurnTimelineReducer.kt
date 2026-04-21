@@ -1,10 +1,8 @@
 package com.coderover.android.ui.turn
 
 import com.coderover.android.data.model.ChatMessage
-import com.coderover.android.data.model.CommandPhase
 import com.coderover.android.data.model.MessageKind
 import com.coderover.android.data.model.MessageRole
-import com.coderover.android.ui.shared.relativeTimeLabel
 
 internal sealed interface TimelineRenderItem {
     val key: String
@@ -19,37 +17,7 @@ internal sealed interface TimelineRenderItem {
             append(messages.firstOrNull()?.id ?: "unknown")
         }
     }
-
-    data class TurnSection(
-        val turnId: String,
-        val messages: List<ChatMessage>,
-    ) : TimelineRenderItem {
-        override val key: String = buildString {
-            append("turn:")
-            append(turnId)
-            append(':')
-            append(messages.firstOrNull()?.id)
-            append(':')
-            append(messages.lastOrNull()?.id)
-        }
-    }
 }
-
-internal data class TurnSectionLabelUi(
-    val text: String,
-    val kind: MessageKind? = null,
-    val isAssistantReply: Boolean = false,
-)
-
-internal data class TurnSectionSummaryUi(
-    val statusLabel: String,
-    val detail: String,
-)
-
-internal data class CollapsedTurnPreviewUi(
-    val title: String,
-    val body: String,
-)
 
 internal enum class ReplyPresentation {
     DRAFT,
@@ -129,85 +97,6 @@ private fun canShareCommandBurst(previous: ChatMessage, incoming: ChatMessage): 
         return true
     }
     return previousTurnId == incomingTurnId
-}
-
-internal fun buildTurnSectionLabels(messages: List<ChatMessage>): List<TurnSectionLabelUi> {
-    val labels = mutableListOf<TurnSectionLabelUi>()
-    val seen = mutableSetOf<String>()
-    messages.forEach { message ->
-        val label = when {
-            message.role == MessageRole.ASSISTANT && message.kind == MessageKind.CHAT ->
-                TurnSectionLabelUi(text = "Reply", isAssistantReply = true)
-
-            message.role == MessageRole.SYSTEM ->
-                TurnSectionLabelUi(
-                    text = systemMessageTitle(message.kind),
-                    kind = message.kind,
-                )
-
-            else -> null
-        } ?: return@forEach
-        val key = "${label.text}:${label.kind}:${label.isAssistantReply}"
-        if (seen.add(key)) {
-            labels += label
-        }
-    }
-    return labels
-}
-
-internal fun buildTurnSectionSummary(messages: List<ChatMessage>): TurnSectionSummaryUi {
-    val statusLabel = when {
-        messages.any(ChatMessage::isStreaming) -> "Running"
-        messages.any { it.kind == MessageKind.USER_INPUT_PROMPT } -> "Input needed"
-        messages.any { it.commandState?.phase == CommandPhase.FAILED } -> "Needs attention"
-        messages.any { it.commandState?.phase == CommandPhase.STOPPED } -> "Stopped"
-        else -> "Completed"
-    }
-    val lastTimestamp = messages.maxOfOrNull(ChatMessage::createdAt)
-    val relativeTime = relativeTimeLabel(lastTimestamp)
-    val systemCount = messages.count { it.role == MessageRole.SYSTEM }
-    val assistantCount = messages.count { it.role == MessageRole.ASSISTANT }
-    val detailParts = buildList {
-        add("${messages.size} items")
-        if (systemCount > 0) {
-            add("$systemCount updates")
-        }
-        if (assistantCount > 0) {
-            add("$assistantCount replies")
-        }
-        relativeTime?.let(::add)
-    }
-    return TurnSectionSummaryUi(
-        statusLabel = statusLabel,
-        detail = detailParts.joinToString(" · "),
-    )
-}
-
-internal fun buildCollapsedTurnMessages(messages: List<ChatMessage>): List<ChatMessage> {
-    if (messages.size <= 2) {
-        return messages
-    }
-    val preserved = linkedMapOf<String, ChatMessage>()
-    messages.lastOrNull()?.let { preserved[it.id] = it }
-    messages
-        .lastOrNull { it.role == MessageRole.ASSISTANT && it.kind == MessageKind.CHAT }
-        ?.let { preserved[it.id] = it }
-    return messages.filter { preserved.containsKey(it.id) }
-}
-
-internal fun buildCollapsedTurnPreview(messages: List<ChatMessage>): CollapsedTurnPreviewUi? {
-    val assistantReply = messages.lastOrNull { it.role == MessageRole.ASSISTANT && it.kind == MessageKind.CHAT }
-    if (assistantReply != null && assistantReply.text.isNotBlank()) {
-        return CollapsedTurnPreviewUi(
-            title = if (assistantReply.isStreaming) "Draft reply" else "Final reply",
-            body = assistantReply.text.trim(),
-        )
-    }
-    val latestSystem = messages.lastOrNull { it.role == MessageRole.SYSTEM && it.text.isNotBlank() } ?: return null
-    return CollapsedTurnPreviewUi(
-        title = systemMessageTitle(latestSystem.kind),
-        body = latestSystem.text.trim(),
-    )
 }
 
 private fun enforceIntraTurnOrder(messages: List<ChatMessage>): List<ChatMessage> {

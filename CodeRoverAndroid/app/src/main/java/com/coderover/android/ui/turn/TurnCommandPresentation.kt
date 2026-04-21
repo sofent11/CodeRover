@@ -42,7 +42,7 @@ internal fun buildCommandOutputDetailText(message: ChatMessage): String {
         return message.text.trim()
     }
     return buildString {
-        append(commandState.phase.statusLabel)
+        append(commandPhaseStatusLabel(commandState.phase))
         append(" ")
         append(commandState.fullCommand)
         commandState.cwd?.let {
@@ -118,7 +118,7 @@ internal fun buildCommandDetail(
 
     return CommandDetailUi(
         command = commandState.fullCommand,
-        statusLabel = commandState.phase.statusLabel,
+        statusLabel = commandPhaseStatusLabel(commandState.phase),
         cwd = commandState.cwd,
         exitCode = commandState.exitCode,
         durationMs = commandState.durationMs,
@@ -148,13 +148,23 @@ internal fun parseCommandPreview(text: String, isStreaming: Boolean): CommandPre
     val output = lines.drop(if (command == null) 0 else 1).take(4)
     val lowered = text.lowercase()
     val status = when {
-        isStreaming -> "Running"
-        lowered.contains("error") || lowered.contains("failed") || lowered.contains("exit code") -> "Needs attention"
-        else -> "Completed"
+        isStreaming -> commandPhaseStatusLabel(CommandPhase.RUNNING)
+        lowered.contains("stopped") -> commandPhaseStatusLabel(CommandPhase.STOPPED)
+        lowered.contains("error") || lowered.contains("failed") || lowered.contains("exit code") -> commandPhaseStatusLabel(CommandPhase.FAILED)
+        else -> commandPhaseStatusLabel(CommandPhase.COMPLETED)
     }
     return CommandPreviewUi(
         command = command,
         outputLines = output,
         statusLabel = status,
     )
+}
+
+internal fun commandPhaseStatusLabel(phase: CommandPhase): String {
+    return when (phase) {
+        CommandPhase.RUNNING -> "running"
+        CommandPhase.COMPLETED -> "completed"
+        CommandPhase.FAILED -> "failed"
+        CommandPhase.STOPPED -> "stopped"
+    }
 }

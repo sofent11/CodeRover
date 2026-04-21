@@ -76,6 +76,7 @@ import com.coderover.android.data.storage.UserPreferencesStore
 import java.util.Comparator
 import java.io.File
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicBoolean
@@ -113,6 +114,15 @@ class CodeRoverRepository(context: Context) {
     private companion object {
         const val TAG = "CodeRoverRepo"
         const val SELECTED_THREAD_SYNC_INTERVAL_MS = 3_000L
+        const val MAX_CACHED_THREADS = 40
+        const val MAX_CACHED_THREADS_WITH_MESSAGES = 6
+        const val MAX_CACHED_MESSAGES_PER_THREAD = 120
+        const val MAX_CACHED_MESSAGE_TEXT_CHARS = 8_000
+        const val MAX_CACHED_COMMAND_CHARS = 1_500
+        const val MAX_CACHED_COMMAND_OUTPUT_CHARS = 4_000
+        const val MAX_CACHED_FILE_CHANGES = 12
+        const val MAX_CACHED_FILE_DIFF_CHARS = 2_000
+        const val MAX_CACHED_ATTACHMENT_THUMBNAIL_CHARS = 32_000
     }
 
     private data class ThreadListPage(
@@ -155,7 +165,7 @@ class CodeRoverRepository(context: Context) {
     private val nextClientGeneration = AtomicLong(0)
     private val activeClientGeneration = AtomicLong(0)
     private val isConnectInFlight = AtomicBoolean(false)
-    internal val threadTimelineStateByThread = mutableMapOf<String, ThreadTimelineState>()
+    internal val threadTimelineStateByThread = ConcurrentHashMap<String, ThreadTimelineState>()
     private val threadHistoryRefreshInFlight = mutableSetOf<String>()
     private val threadHistoryRefreshPending = mutableSetOf<String>()
     private val pendingRealtimeHistoryCatchUpThreadIds = mutableSetOf<String>()
@@ -5180,14 +5190,15 @@ class CodeRoverRepository(context: Context) {
 
         val cachedThreads = updated.threads
             .sortedByDescending { it.updatedAt ?: it.createdAt ?: 0L }
-            .take(40)
+            .take(MAX_CACHED_THREADS)
         val cachedThreadIds = cachedThreads.map(ThreadSummary::id).toSet()
         val cachedMessagesByThread = cachedThreads
-            .take(8)
+            .take(MAX_CACHED_THREADS_WITH_MESSAGES)
             .mapNotNull { thread ->
                 updated.messagesByThread[thread.id]
                     ?.sortedBy(ChatMessage::orderIndex)
-                    ?.takeLast(200)
+                    ?.takeLast(MAX_CACHED_MESSAGES_PER_THREAD)
+                    ?.map(::sanitizeCachedConversationMessage)
                     ?.takeIf(List<ChatMessage>::isNotEmpty)
                     ?.let { messages -> thread.id to messages }
             }
@@ -5198,13 +5209,47 @@ class CodeRoverRepository(context: Context) {
         store.saveCachedMessagesByThread(cachedMessagesByThread)
         store.saveCachedHistoryStateByThread(
             cachedThreads
-                .take(8)
+                .take(MAX_CACHED_THREADS_WITH_MESSAGES)
                 .mapNotNull { thread ->
                     updated.historyStateByThread[thread.id]?.let { historyState ->
                         thread.id to historyState
                     }
                 }
                 .toMap(),
+        )
+    }
+
+    private fun sanitizeCachedConversationMessage(message: ChatMessage): ChatMessage {
+        return message.copy(
+            text = message.text.trimForCache(MAX_CACHED_MESSAGE_TEXT_CHARS),
+            attachments = message.attachments.map(::sanitizeCachedAttachment),
+            fileChanges = message.fileChanges
+                .take(MAX_CACHED_FILE_CHANGES)
+                .map(::sanitizeCachedFileChange),
+            commandState = message.commandState?.let(::sanitizeCachedCommandState),
+        )
+    }
+
+    private fun sanitizeCachedAttachment(attachment: ImageAttachment): ImageAttachment {
+        return attachment.copy(
+            thumbnailBase64JPEG = attachment.thumbnailBase64JPEG.trimForCache(MAX_CACHED_ATTACHMENT_THUMBNAIL_CHARS),
+            sourceBase64JPEG = null,
+            payloadDataURL = null,
+        )
+    }
+
+    private fun sanitizeCachedFileChange(change: FileChangeEntry): FileChangeEntry {
+        return change.copy(
+            diff = change.diff.trimForCache(MAX_CACHED_FILE_DIFF_CHARS),
+        )
+    }
+
+    private fun sanitizeCachedCommandState(commandState: CommandState): CommandState {
+        return commandState.copy(
+            shortCommand = commandState.shortCommand.trimForCache(MAX_CACHED_COMMAND_CHARS),
+            fullCommand = commandState.fullCommand.trimForCache(MAX_CACHED_COMMAND_CHARS),
+            cwd = commandState.cwd?.trimForCache(MAX_CACHED_COMMAND_CHARS),
+            outputTail = commandState.outputTail.trimForCache(MAX_CACHED_COMMAND_OUTPUT_CHARS),
         )
     }
 
@@ -6010,6 +6055,13 @@ private fun mergeRenderedTimelineMessages(
     val canonicalIds = canonicalMessages.mapTo(mutableSetOf(), ChatMessage::id)
     return (canonicalMessages + overlayMessages.filterNot { it.id in canonicalIds })
         .sortedWith(Comparator(::compareRenderedTimelineMessages))
+}
+
+private fun String.trimForCache(maxChars: Int): String {
+    if (length <= maxChars) {
+        return this
+    }
+    return take(maxChars).trimEnd() + "\n…"
 }
 
 private fun CodeRoverRepository.synchronizeThreadTimelineState(

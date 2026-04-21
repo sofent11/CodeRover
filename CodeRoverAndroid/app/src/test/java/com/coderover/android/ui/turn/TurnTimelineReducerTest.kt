@@ -70,4 +70,43 @@ class TurnTimelineReducerTest {
 
         assertEquals(listOf("file-2"), projected.map { it.id })
     }
+
+    @Test
+    fun buildAggregatedFileChangeInfoPinsDiffActionsToLastStableFileChangeMessageInBlock() {
+        val messages = listOf(
+            ChatMessage(
+                id = "user-1",
+                threadId = "thread-1",
+                role = MessageRole.USER,
+                kind = MessageKind.CHAT,
+                text = "Fix this",
+                turnId = "turn-1",
+                orderIndex = 1,
+            ),
+            ChatMessage(
+                id = "file-1",
+                threadId = "thread-1",
+                role = MessageRole.SYSTEM,
+                kind = MessageKind.FILE_CHANGE,
+                text = "Edited app/src/A.kt +2 -1",
+                turnId = "turn-1",
+                orderIndex = 2,
+            ),
+            ChatMessage(
+                id = "file-2",
+                threadId = "thread-1",
+                role = MessageRole.SYSTEM,
+                kind = MessageKind.FILE_CHANGE,
+                text = "Edited app/src/B.kt +3 -0",
+                turnId = "turn-1",
+                orderIndex = 3,
+            ),
+        )
+
+        val aggregated = buildAggregatedFileChangeInfo(messages)
+
+        assertEquals(setOf("file-1"), aggregated.suppressedMessageIds)
+        assertEquals(listOf("file-2"), aggregated.presentationByMessageId.keys.toList())
+        assertEquals(2, aggregated.presentationByMessageId["file-2"]?.entries?.size)
+    }
 }

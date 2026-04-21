@@ -84,6 +84,9 @@ internal fun TurnTimeline(
             isThreadRunning = isRunning,
         )
     }
+    val aggregatedFileChangeInfo = remember(messages) {
+        buildAggregatedFileChangeInfo(messages)
+    }
     val isNearBottom by remember(listState, renderItems.size) {
         derivedStateOf {
             if (renderItems.isEmpty()) {
@@ -188,6 +191,8 @@ internal fun TurnTimeline(
                             onSubmitStructuredInput = onSubmitStructuredInput,
                             onTapSubagentThread = onTapSubagentThread,
                             copyBlockText = copyBlockTextByMessageId[message.id],
+                            aggregatedFileChangePresentation = aggregatedFileChangeInfo.presentationByMessageId[message.id],
+                            suppressFileChangeActions = aggregatedFileChangeInfo.suppressedMessageIds.contains(message.id),
                             assistantRevertPresentation = assistantRevertPresentationByMessageId[message.id],
                             onTapAssistantRevert = onTapAssistantRevert,
                         )
@@ -201,10 +206,10 @@ internal fun TurnTimeline(
                             onTapAssistantRevert = onTapAssistantRevert,
                             onTapSubagentThread = onTapSubagentThread,
                             onSubmitStructuredInput = onSubmitStructuredInput,
+                            aggregatedFileChangeInfo = aggregatedFileChangeInfo,
                         )
                     }
 
-                    is TimelineRenderItem.TurnSection -> Unit
                 }
             }
         }
@@ -245,7 +250,6 @@ private fun renderItemContainsMessage(item: TimelineRenderItem, messageId: Strin
     return when (item) {
         is TimelineRenderItem.Message -> item.message.id == messageId
         is TimelineRenderItem.CommandBurst -> item.messages.any { it.id == messageId }
-        is TimelineRenderItem.TurnSection -> item.messages.any { it.id == messageId }
     }
 }
 
@@ -257,6 +261,7 @@ private fun TurnCommandBurst(
     onTapAssistantRevert: (ChatMessage) -> Unit,
     onTapSubagentThread: (String) -> Unit,
     onSubmitStructuredInput: (kotlinx.serialization.json.JsonElement, Map<String, String>) -> Unit,
+    aggregatedFileChangeInfo: AggregatedFileChangeInfo,
 ) {
     var isExpanded by rememberSaveable(item.key) { mutableStateOf(false) }
     val pinnedMessages = remember(item.messages) { item.messages.take(COMMAND_BURST_COLLAPSED_VISIBLE_COUNT) }
@@ -269,6 +274,8 @@ private fun TurnCommandBurst(
                 onSubmitStructuredInput = onSubmitStructuredInput,
                 onTapSubagentThread = onTapSubagentThread,
                 copyBlockText = copyBlockTextByMessageId[message.id],
+                aggregatedFileChangePresentation = aggregatedFileChangeInfo.presentationByMessageId[message.id],
+                suppressFileChangeActions = aggregatedFileChangeInfo.suppressedMessageIds.contains(message.id),
                 assistantRevertPresentation = assistantRevertPresentationByMessageId[message.id],
                 onTapAssistantRevert = onTapAssistantRevert,
             )
@@ -318,6 +325,8 @@ private fun TurnCommandBurst(
                     onSubmitStructuredInput = onSubmitStructuredInput,
                     onTapSubagentThread = onTapSubagentThread,
                     copyBlockText = copyBlockTextByMessageId[message.id],
+                    aggregatedFileChangePresentation = aggregatedFileChangeInfo.presentationByMessageId[message.id],
+                    suppressFileChangeActions = aggregatedFileChangeInfo.suppressedMessageIds.contains(message.id),
                     assistantRevertPresentation = assistantRevertPresentationByMessageId[message.id],
                     onTapAssistantRevert = onTapAssistantRevert,
                 )

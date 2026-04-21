@@ -720,31 +720,45 @@ data class ThreadTimelineState(
     private val itemsById: MutableMap<String, ChatMessage> = linkedMapOf(),
     private val orderedItemIds: MutableList<String> = mutableListOf(),
 ) {
+    private val lock = Any()
+
     constructor(messages: List<ChatMessage>) : this() {
         replaceAll(messages)
     }
 
     fun replaceAll(messages: List<ChatMessage>) {
-        itemsById.clear()
-        orderedItemIds.clear()
-        messages.forEach(::upsert)
+        synchronized(lock) {
+            itemsById.clear()
+            orderedItemIds.clear()
+            messages.forEach { message ->
+                itemsById[message.id] = message
+                orderedItemIds += message.id
+            }
+            sortOrderedIdsLocked()
+        }
     }
 
     fun upsert(message: ChatMessage) {
-        itemsById[message.id] = message
-        if (!orderedItemIds.contains(message.id)) {
-            orderedItemIds += message.id
+        synchronized(lock) {
+            itemsById[message.id] = message
+            if (!orderedItemIds.contains(message.id)) {
+                orderedItemIds += message.id
+            }
+            sortOrderedIdsLocked()
         }
+    }
+
+    fun message(id: String): ChatMessage? = synchronized(lock) { itemsById[id] }
+
+    fun renderedMessages(): List<ChatMessage> = synchronized(lock) { orderedItemIds.mapNotNull(itemsById::get) }
+
+    private fun sortOrderedIdsLocked() {
         orderedItemIds.sortWith(
             Comparator { lhs, rhs ->
                 compareTimelineMessages(itemsById[lhs], itemsById[rhs])
             },
         )
     }
-
-    fun message(id: String): ChatMessage? = itemsById[id]
-
-    fun renderedMessages(): List<ChatMessage> = orderedItemIds.mapNotNull(itemsById::get)
 
     private fun compareTimelineMessages(lhs: ChatMessage?, rhs: ChatMessage?): Int {
         if (lhs == null || rhs == null) {

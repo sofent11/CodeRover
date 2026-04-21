@@ -40,13 +40,157 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import com.coderover.android.data.model.ChatMessage
+import com.coderover.android.data.model.MessageKind
+import com.coderover.android.data.model.MessageRole
 import com.coderover.android.ui.shared.StatusTag
 import com.coderover.android.ui.theme.CommandAccent
 import com.coderover.android.ui.theme.Danger
 import com.coderover.android.ui.theme.monoFamily
 
+internal data class FileChangeBlockPresentation(
+    val entries: List<FileChangeEntryUi>,
+    val bodyText: String,
+)
+
+internal data class AggregatedFileChangeInfo(
+    val presentationByMessageId: Map<String, FileChangeBlockPresentation>,
+    val suppressedMessageIds: Set<String>,
+)
+
+private data class MutableAggregatedFileChangeEntry(
+    val path: String,
+    var actionLabel: String,
+    var additions: Int,
+    var deletions: Int,
+    var rawBody: String,
+)
+
+internal fun buildAggregatedFileChangeInfo(messages: List<ChatMessage>): AggregatedFileChangeInfo {
+    if (messages.isEmpty()) {
+        return AggregatedFileChangeInfo(
+            presentationByMessageId = emptyMap(),
+            suppressedMessageIds = emptySet(),
+        )
+    }
+
+    val presentationByMessageId = linkedMapOf<String, FileChangeBlockPresentation>()
+    val suppressedMessageIds = linkedSetOf<String>()
+    var index = 0
+
+    while (index < messages.size) {
+        if (messages[index].role == MessageRole.USER) {
+            index += 1
+            continue
+        }
+
+        var blockEnd = index
+        while (blockEnd + 1 < messages.size && messages[blockEnd + 1].role != MessageRole.USER) {
+            blockEnd += 1
+        }
+
+        val blockMessages = messages.subList(index, blockEnd + 1)
+        val stableFileChangeMessages = blockMessages.filter { message ->
+            message.role == MessageRole.SYSTEM &&
+                message.kind == MessageKind.FILE_CHANGE &&
+                !message.isStreaming
+        }
+        val presentation = buildFileChangeBlockPresentation(stableFileChangeMessages)
+        if (presentation != null) {
+            val ownerMessage = stableFileChangeMessages.last()
+            presentationByMessageId[ownerMessage.id] = presentation
+            stableFileChangeMessages
+                .dropLast(1)
+                .forEach { suppressedMessageIds += it.id }
+        }
+
+        index = blockEnd + 1
+    }
+
+    return AggregatedFileChangeInfo(
+        presentationByMessageId = presentationByMessageId,
+        suppressedMessageIds = suppressedMessageIds,
+    )
+}
+
+internal fun buildFileChangeBlockPresentation(messages: List<ChatMessage>): FileChangeBlockPresentation? {
+    if (messages.isEmpty()) {
+        return null
+    }
+
+    val aggregatedEntries = linkedMapOf<String, MutableAggregatedFileChangeEntry>()
+    val fallbackSummaryLines = mutableListOf<String>()
+
+    messages.forEach { message ->
+        val detailFiles = buildDiffDetailFiles(message)
+        if (detailFiles.isNotEmpty()) {
+            detailFiles.forEach { file ->
+                val normalizedPath = file.path.trim().removePrefix("a/").removePrefix("b/")
+                val key = normalizedPath.lowercase()
+                val existing = aggregatedEntries[key]
+                if (existing == null) {
+                    aggregatedEntries[key] = MutableAggregatedFileChangeEntry(
+                        path = normalizedPath,
+                        actionLabel = file.actionLabel,
+                        additions = file.additions,
+                        deletions = file.deletions,
+                        rawBody = file.rawBody.trim(),
+                    )
+                } else {
+                    existing.actionLabel = file.actionLabel
+                    existing.additions = file.additions
+                    existing.deletions = file.deletions
+                    if (file.rawBody.isNotBlank()) {
+                        existing.rawBody = file.rawBody.trim()
+                    }
+                }
+            }
+        }
+
+        val cleanedBody = removeInlineEditingRows(message.text).trim()
+        if (cleanedBody.isNotBlank()) {
+            fallbackSummaryLines += cleanedBody
+        }
+    }
+
+    val entries = aggregatedEntries.values.map { entry ->
+        FileChangeEntryUi(
+            path = entry.path,
+            actionLabel = entry.actionLabel,
+            additions = entry.additions,
+            deletions = entry.deletions,
+        )
+    }
+    if (entries.isEmpty()) {
+        val fallbackEntries = messages
+            .flatMap { parseFileChangeEntries(it.text) }
+            .distinctBy { entry -> entry.path.trim().removePrefix("a/").removePrefix("b/").lowercase() }
+        if (fallbackEntries.isEmpty()) {
+            val fallbackBody = fallbackSummaryLines.joinToString("\n\n").trim()
+            return fallbackBody.takeIf(String::isNotBlank)?.let { FileChangeBlockPresentation(emptyList(), it) }
+        }
+        return FileChangeBlockPresentation(
+            entries = fallbackEntries,
+            bodyText = fallbackEntries.joinToString("\n") { entry ->
+                "${entry.actionLabel} ${entry.path} +${entry.additions} -${entry.deletions}"
+            },
+        )
+    }
+
+    val bodyText = aggregatedEntries.values.joinToString("\n\n") { entry ->
+        entry.rawBody.ifBlank {
+            "${entry.actionLabel} ${entry.path} +${entry.additions} -${entry.deletions}"
+        }
+    }.trim()
+
+    return FileChangeBlockPresentation(entries = entries, bodyText = bodyText)
+}
+
 @Composable
-internal fun FileChangeMessageContent(message: ChatMessage) {
+internal fun FileChangeMessageContent(
+    message: ChatMessage,
+    aggregatedPresentation: FileChangeBlockPresentation? = null,
+    suppressActions: Boolean = false,
+) {
     var showDiffDetails by remember(message.id) { mutableStateOf(false) }
     val entries = remember(message.id, message.text, message.fileChanges) {
         if (message.fileChanges.isNotEmpty()) {
@@ -67,31 +211,38 @@ internal fun FileChangeMessageContent(message: ChatMessage) {
             parseFileChangeEntries(message.text)
         }
     }
-    val groupedEntries = remember(entries) { groupFileChangeEntries(entries) }
-    val diffFiles = remember(message.id, message.text, message.fileChanges) {
-        buildDiffDetailFiles(message)
+    val effectiveEntries = remember(entries, aggregatedPresentation) {
+        aggregatedPresentation?.entries ?: entries
     }
-    val canOpenDiffDetails = diffFiles.isNotEmpty() && !message.isStreaming
-    val diffAdditions = remember(entries, diffFiles) {
-        if (entries.isNotEmpty()) {
-            entries.sumOf(FileChangeEntryUi::additions)
+    val groupedEntries = remember(effectiveEntries) { groupFileChangeEntries(effectiveEntries) }
+    val diffFiles = remember(message.id, message.text, message.fileChanges, aggregatedPresentation) {
+        aggregatedPresentation
+            ?.bodyText
+            ?.takeIf(String::isNotBlank)
+            ?.let(::buildRepositoryDiffFiles)
+            ?: buildDiffDetailFiles(message)
+    }
+    val canOpenDiffDetails = diffFiles.isNotEmpty() && !message.isStreaming && !suppressActions
+    val diffAdditions = remember(effectiveEntries, diffFiles) {
+        if (effectiveEntries.isNotEmpty()) {
+            effectiveEntries.sumOf(FileChangeEntryUi::additions)
         } else {
             diffFiles.sumOf(DiffFileDetailUi::additions)
         }
     }
-    val diffDeletions = remember(entries, diffFiles) {
-        if (entries.isNotEmpty()) {
-            entries.sumOf(FileChangeEntryUi::deletions)
+    val diffDeletions = remember(effectiveEntries, diffFiles) {
+        if (effectiveEntries.isNotEmpty()) {
+            effectiveEntries.sumOf(FileChangeEntryUi::deletions)
         } else {
             diffFiles.sumOf(DiffFileDetailUi::deletions)
         }
     }
-    val summaryBodyText = remember(message.id, message.text) {
-        removeInlineEditingRows(message.text)
+    val summaryBodyText = remember(message.id, message.text, aggregatedPresentation) {
+        aggregatedPresentation?.bodyText ?: removeInlineEditingRows(message.text)
     }
 
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        if (entries.isNotEmpty()) {
+        if (effectiveEntries.isNotEmpty()) {
             groupedEntries.forEach { group ->
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text(
@@ -123,7 +274,7 @@ internal fun FileChangeMessageContent(message: ChatMessage) {
                 deletions = diffDeletions,
                 onClick = { showDiffDetails = true },
             )
-        } else if (entries.isEmpty() && summaryBodyText.isNotBlank()) {
+        } else if (effectiveEntries.isEmpty() && summaryBodyText.isNotBlank()) {
             Text(
                 text = summaryBodyText,
                 style = MaterialTheme.typography.bodyMedium.copy(fontFamily = monoFamily),
@@ -134,8 +285,8 @@ internal fun FileChangeMessageContent(message: ChatMessage) {
         DiffDetailDialog(
             title = "Repository changes",
             files = diffFiles,
-            fallbackBody = remember(message.id, message.fileChanges, message.text) {
-                buildDiffDetailText(message)
+            fallbackBody = remember(message.id, message.fileChanges, message.text, aggregatedPresentation) {
+                aggregatedPresentation?.bodyText ?: buildDiffDetailText(message)
             },
             onDismiss = { showDiffDetails = false },
         )

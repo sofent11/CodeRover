@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.Code
@@ -47,7 +48,7 @@ internal fun CommandExecutionMessageContent(message: ChatMessage) {
             CommandPreviewUi(
                 command = state.shortCommand.ifBlank { state.fullCommand },
                 outputLines = emptyList(),
-                statusLabel = state.phase.statusLabel,
+                statusLabel = commandPhaseStatusLabel(state.phase),
             )
         } ?: parseCommandPreview(message.text, message.isStreaming)
     }
@@ -153,7 +154,9 @@ internal fun CommandDetailDialog(
                 .fillMaxHeight(0.88f),
         ) {
             Column(
-                modifier = Modifier.padding(horizontal = 18.dp, vertical = 18.dp),
+                modifier = Modifier
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 18.dp, vertical = 18.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
                 Row(
@@ -231,7 +234,7 @@ internal fun CommandDetailDialog(
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
                                 Text(
-                                    text = "Output",
+                                    text = commandOutputDisclosureLabel(detail),
                                     style = MaterialTheme.typography.labelSmall.copy(fontFamily = monoFamily),
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
@@ -331,12 +334,21 @@ private fun formattedDuration(ms: Int): String {
     return "${minutes}m ${remainingSeconds}s"
 }
 
+private fun commandOutputDisclosureLabel(detail: CommandDetailUi): String {
+    val outputLineCount = detail.outputSections.sumOf { section -> section.lines.size }
+    return if (outputLineCount > 0) {
+        "Output (last $outputLineCount lines)"
+    } else {
+        "Output"
+    }
+}
+
 @Composable
 private fun commandStatusAccentColor(statusLabel: String): Color {
     return when {
         statusLabel.contains("run", ignoreCase = true) -> CommandAccent
         statusLabel.contains("completed", ignoreCase = true) -> Color(0xFF2AA876)
-        statusLabel.contains("attention", ignoreCase = true) || statusLabel.contains("stop", ignoreCase = true) -> Danger
+        statusLabel.contains("failed", ignoreCase = true) || statusLabel.contains("stop", ignoreCase = true) -> Danger
         else -> CommandAccent
     }
 }
