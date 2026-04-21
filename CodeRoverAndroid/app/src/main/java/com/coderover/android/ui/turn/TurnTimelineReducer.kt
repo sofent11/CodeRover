@@ -26,7 +26,8 @@ internal enum class ReplyPresentation {
 
 internal fun projectTimelineMessages(messages: List<ChatMessage>): List<ChatMessage> {
     val visibleMessages = removeHiddenSystemMarkers(messages)
-    val reordered = enforceIntraTurnOrder(visibleMessages)
+    val suppressedCommandMetadata = removeDuplicateCommandMetadataMessages(visibleMessages)
+    val reordered = enforceIntraTurnOrder(suppressedCommandMetadata)
     val collapsedThinking = collapseConsecutiveThinkingMessages(reordered)
     val dedupedFileChanges = removeDuplicateFileChangeMessages(collapsedThinking)
     val dedupedSubagentActions = removeDuplicateSubagentActionMessages(dedupedFileChanges)
@@ -208,6 +209,48 @@ private fun removeHiddenSystemMarkers(messages: List<ChatMessage>): List<ChatMes
         message.role == MessageRole.SYSTEM && message.itemId == TurnSessionDiffResetMarker.MANUAL_PUSH_ITEM_ID
     }
 }
+
+private fun removeDuplicateCommandMetadataMessages(messages: List<ChatMessage>): List<ChatMessage> {
+    val commandTurnIds = messages
+        .filter { it.role == MessageRole.SYSTEM && it.kind == MessageKind.COMMAND_EXECUTION }
+        .mapNotNull { normalizedIdentifier(it.turnId) }
+        .toSet()
+    if (commandTurnIds.isEmpty()) {
+        return messages
+    }
+    return messages.filterNot { message ->
+        val turnId = normalizedIdentifier(message.turnId) ?: return@filterNot false
+        turnId in commandTurnIds && isCommandMetadataTranscript(message)
+    }
+}
+
+private fun isCommandMetadataTranscript(message: ChatMessage): Boolean {
+    if (message.role != MessageRole.SYSTEM || message.kind != MessageKind.CHAT) {
+        return false
+    }
+    val text = message.text.trim()
+    if (text.isEmpty()) {
+        return false
+    }
+    val normalized = text.lowercase()
+    val hasCommandHeader = normalized.startsWith("output:")
+    val hasMetadataMarkers = COMMAND_METADATA_MARKERS.any(normalized::contains)
+    val hasTranscriptCommands = text
+        .lineSequence()
+        .map(String::trim)
+        .count { line -> COMMAND_TRANSCRIPT_LINE_PREFIXES.any(line::startsWith) } >= 1
+    return hasCommandHeader && (hasMetadataMarkers || hasTranscriptCommands)
+}
+
+private val COMMAND_METADATA_MARKERS = listOf(
+    "chunk id:",
+    "wall time:",
+    "original token count:",
+    "process running with session id",
+    "process exited with code",
+)
+
+private val COMMAND_TRANSCRIPT_LINE_PREFIXES = listOf("| <>", "|<", "<>", "$", ">")
 
 private fun collapseConsecutiveThinkingMessages(messages: List<ChatMessage>): List<ChatMessage> {
     val result = mutableListOf<ChatMessage>()

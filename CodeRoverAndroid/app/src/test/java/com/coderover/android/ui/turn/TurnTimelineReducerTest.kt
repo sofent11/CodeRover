@@ -109,4 +109,39 @@ class TurnTimelineReducerTest {
         assertEquals(listOf("file-2"), aggregated.presentationByMessageId.keys.toList())
         assertEquals(2, aggregated.presentationByMessageId["file-2"]?.entries?.size)
     }
+
+    @Test
+    fun projectTimelineMessagesSuppressesRawCommandMetadataTranscriptWhenCommandRowsExist() {
+        val messages = listOf(
+            ChatMessage(
+                id = "meta-1",
+                threadId = "thread-1",
+                role = MessageRole.SYSTEM,
+                kind = MessageKind.CHAT,
+                text = """
+                    Output:
+                    | <> ls -lh /repo completed
+                    Chunk ID: abc123
+                    Wall time: 2.1 seconds
+                    Process exited with code 0
+                    Original token count: 0
+                """.trimIndent(),
+                turnId = "turn-1",
+                orderIndex = 1,
+            ),
+            ChatMessage(
+                id = "command-1",
+                threadId = "thread-1",
+                role = MessageRole.SYSTEM,
+                kind = MessageKind.COMMAND_EXECUTION,
+                text = "completed ls -lh /repo",
+                turnId = "turn-1",
+                orderIndex = 2,
+            ),
+        )
+
+        val projected = projectTimelineMessages(messages)
+
+        assertEquals(listOf("command-1"), projected.map { it.id })
+    }
 }

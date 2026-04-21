@@ -81,7 +81,9 @@ internal fun TurnMessageBubble(
             )
         }
 
-        message.role == MessageRole.ASSISTANT && message.kind == MessageKind.CHAT -> {
+        message.role == MessageRole.ASSISTANT &&
+            message.kind == MessageKind.CHAT &&
+            !isCommandTranscriptMessage(message) -> {
             NonUserMessageBlock(copyBlockText = copyBlockText) {
                 AssistantMessageBlock(
                     message = message,
@@ -584,6 +586,12 @@ private fun SubagentActionMessageContent(
 
 @Composable
 private fun DefaultSystemMessageContent(message: ChatMessage) {
+    if (isCommandTranscriptMessage(message)) {
+        CommandExecutionMessageContent(
+            message = message.copy(kind = MessageKind.COMMAND_EXECUTION),
+        )
+        return
+    }
     RichMessageText(
         text = message.text.trim(),
         textColor = MaterialTheme.colorScheme.onSurfaceVariant,

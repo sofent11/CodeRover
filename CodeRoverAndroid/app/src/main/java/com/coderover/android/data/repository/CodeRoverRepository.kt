@@ -3038,14 +3038,7 @@ class CodeRoverRepository(context: Context) {
 
                 else -> MessageRole.SYSTEM
             }
-            val kind = when (type) {
-                "reasoning" -> MessageKind.THINKING
-                "filechange", "toolcall", "diff" -> MessageKind.FILE_CHANGE
-                "commandexecution" -> MessageKind.COMMAND_EXECUTION
-                "collabagenttoolcall", "collabtoolcall", "subagentaction" -> MessageKind.SUBAGENT_ACTION
-                "plan" -> MessageKind.PLAN
-                else -> MessageKind.CHAT
-            }
+            val kind = resolveTimelineMessageKind(type, item)
             val fileChanges = if (kind == MessageKind.FILE_CHANGE) {
                 decodeFileChangeEntries(item)
             } else {
@@ -3295,7 +3288,10 @@ class CodeRoverRepository(context: Context) {
         val commandArray = item.array("command")
             ?.mapNotNull { element -> element.stringOrNull()?.trim()?.takeIf(String::isNotEmpty) }
             .orEmpty()
-        return commandArray.takeIf { it.isNotEmpty() }?.joinToString(" ")
+        if (commandArray.isNotEmpty()) {
+            return commandArray.joinToString(" ")
+        }
+        return parseCommandExecutionTranscript(decodeItemText(item)).command
     }
 
     private fun commandExecutionStatus(item: JsonObject): String? {
@@ -3306,7 +3302,7 @@ class CodeRoverRepository(context: Context) {
             item["payload"]?.jsonObjectOrNull()?.string("status"),
             item["data"]?.jsonObjectOrNull()?.string("status"),
             item["event"]?.jsonObjectOrNull()?.string("status"),
-        )
+        ) ?: parseCommandExecutionTranscript(decodeItemText(item)).status
     }
 
     private fun commandExecutionWorkingDirectory(item: JsonObject): String? {
@@ -3340,7 +3336,7 @@ class CodeRoverRepository(context: Context) {
     }
 
     private fun commandExecutionOutputText(item: JsonObject): String? {
-        return firstNonBlank(
+        val directOutput = firstNonBlank(
             item.string("stdout"),
             item.string("stderr"),
             item.string("output_text"),
@@ -3356,6 +3352,8 @@ class CodeRoverRepository(context: Context) {
             item["event"]?.jsonObjectOrNull()?.string("delta"),
             item["event"]?.jsonObjectOrNull()?.string("text"),
         )
+        return directOutput?.let { parseCommandExecutionTranscript(it).outputText ?: it.trim() }
+            ?: parseCommandExecutionTranscript(decodeItemText(item)).outputText
     }
 
     private fun shortCommandPreview(rawCommand: String, maxLength: Int = 92): String {
@@ -3940,12 +3938,39 @@ class CodeRoverRepository(context: Context) {
         return when (normalizeMethodToken(rawValue.orEmpty())) {
             "thinking", "reasoning" -> MessageKind.THINKING
             "filechange", "toolcall", "diff" -> MessageKind.FILE_CHANGE
-            "commandexecution" -> MessageKind.COMMAND_EXECUTION
+            "commandexecution", "commanddelta", "command", "shellcommand", "shell" -> MessageKind.COMMAND_EXECUTION
             "collabagenttoolcall", "collabtoolcall", "subagentaction" -> MessageKind.SUBAGENT_ACTION
             "plan" -> MessageKind.PLAN
             "userinputprompt" -> MessageKind.USER_INPUT_PROMPT
             else -> MessageKind.CHAT
         }
+    }
+
+    private fun resolveTimelineMessageKind(rawValue: String?, item: JsonObject): MessageKind {
+        val explicitKind = canonicalTimelineKind(rawValue)
+        if (explicitKind != MessageKind.CHAT) {
+            return explicitKind
+        }
+        return when {
+            isCommandExecutionPayload(item) -> MessageKind.COMMAND_EXECUTION
+            else -> MessageKind.CHAT
+        }
+    }
+
+    private fun isCommandExecutionPayload(item: JsonObject): Boolean {
+        if (extractCommandExecutionCommand(item) != null) {
+            return true
+        }
+        if (commandExecutionStatus(item) != null) {
+            return true
+        }
+        if (commandExecutionWorkingDirectory(item) != null ||
+            commandExecutionExitCode(item) != null ||
+            commandExecutionDurationMs(item) != null
+        ) {
+            return true
+        }
+        return looksLikeCommandExecutionTranscript(decodeItemText(item))
     }
 
     private fun canonicalTimelineTextMode(rawValue: String?): String {
@@ -4317,7 +4342,7 @@ class CodeRoverRepository(context: Context) {
 
         markRealtimeTurnStarted(threadId = threadId, turnId = turnId)
         val role = canonicalTimelineRole(payload.string("role"))
-        val kind = canonicalTimelineKind(payload.string("kind"))
+        val kind = resolveTimelineMessageKind(payload.string("kind"), payload)
         val textMode = canonicalTimelineTextMode(payload.string("textMode") ?: payload.string("text_mode"))
         val providerItemId = firstNonBlank(
             payload.string("providerItemId"),
