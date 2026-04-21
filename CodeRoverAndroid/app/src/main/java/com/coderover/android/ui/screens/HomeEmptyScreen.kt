@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -39,13 +40,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.coderover.android.R
 import com.coderover.android.data.model.AppState
 import com.coderover.android.data.model.ConnectionPhase
-import com.coderover.android.ui.shared.ParityToolbarItemSurface
+import com.coderover.android.ui.shared.GlassCard
 import com.coderover.android.ui.theme.CommandAccent
 import com.coderover.android.ui.theme.Danger
 import com.coderover.android.ui.theme.PlanAccent
@@ -93,83 +95,85 @@ fun HomeEmptyScreen(
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        ParityToolbarItemSurface(
-            size = 88.dp,
-            onClick = null,
+        Column(
+            modifier = Modifier.widthIn(max = 280.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Image(
-                painter = painterResource(R.drawable.app_logo),
-                contentDescription = null,
-                modifier = Modifier
-                    .size(88.dp)
-                    .clip(RoundedCornerShape(22.dp)),
+            GlassCard(cornerRadius = 22.dp, padding = 0.dp) {
+                Image(
+                    painter = painterResource(R.drawable.app_logo),
+                    contentDescription = null,
+                    modifier = Modifier
+                        .size(88.dp)
+                        .clip(RoundedCornerShape(22.dp)),
+                )
+            }
+            Spacer(Modifier.height(20.dp))
+
+            ConnectionBadge(
+                phase = state.connectionPhase,
+                label = statusLabel,
             )
-        }
-        Spacer(Modifier.height(24.dp))
 
-        ConnectionBadge(
-            phase = state.connectionPhase,
-            label = statusLabel,
-        )
+            if (securityLabel.isNotBlank()) {
+                Spacer(Modifier.height(14.dp))
+                Text(
+                    text = securityLabel,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                )
+            }
 
-        Spacer(Modifier.height(14.dp))
-        if (securityLabel.isNotBlank()) {
-            Text(
-                text = securityLabel,
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.Center,
-            )
-        }
+            state.lastErrorMessage?.let { error ->
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    text = error,
+                    style = MaterialTheme.typography.labelLarge,
+                    color = Danger,
+                    textAlign = TextAlign.Center,
+                )
+            }
 
-        state.lastErrorMessage?.let { error ->
-            Spacer(Modifier.height(10.dp))
-            Text(
-                text = error,
-                style = MaterialTheme.typography.labelLarge,
-                color = Danger,
-                textAlign = TextAlign.Center,
-            )
-        }
+            Spacer(Modifier.height(18.dp))
 
-        Spacer(Modifier.height(24.dp))
+            Button(
+                onClick = onToggleConnection,
+                enabled = !isConnectionActionInFlight,
+                shape = RoundedCornerShape(18.dp),
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (state.connectionPhase == ConnectionPhase.LOADING_CHATS ||
+                        state.connectionPhase == ConnectionPhase.SYNCING ||
+                        state.connectionPhase == ConnectionPhase.CONNECTED
+                    ) {
+                        MaterialTheme.colorScheme.surfaceVariant
+                    } else {
+                        Color.Black
+                    },
+                    contentColor = if (state.connectionPhase == ConnectionPhase.LOADING_CHATS ||
+                        state.connectionPhase == ConnectionPhase.SYNCING ||
+                        state.connectionPhase == ConnectionPhase.CONNECTED
+                    ) {
+                        MaterialTheme.colorScheme.onSurface
+                    } else {
+                        Color.White
+                    },
+                ),
+            ) {
+                Text(buttonLabel)
+            }
 
-        Button(
-            onClick = onToggleConnection,
-            enabled = !isConnectionActionInFlight,
-            shape = RoundedCornerShape(18.dp),
-            modifier = Modifier.fillMaxWidth(0.78f),
-            colors = ButtonDefaults.buttonColors(
-                containerColor = if (state.connectionPhase == ConnectionPhase.LOADING_CHATS ||
-                    state.connectionPhase == ConnectionPhase.SYNCING ||
-                    state.connectionPhase == ConnectionPhase.CONNECTED
-                ) {
-                    MaterialTheme.colorScheme.surfaceVariant
-                } else {
-                    MaterialTheme.colorScheme.onSurface
-                },
-                contentColor = if (state.connectionPhase == ConnectionPhase.LOADING_CHATS ||
-                    state.connectionPhase == ConnectionPhase.SYNCING ||
-                    state.connectionPhase == ConnectionPhase.CONNECTED
-                ) {
-                    MaterialTheme.colorScheme.onSurface
-                } else {
-                    MaterialTheme.colorScheme.surface
-                },
-            ),
-        ) {
-            Text(buttonLabel)
-        }
+            Spacer(Modifier.height(8.dp))
 
-        Spacer(Modifier.height(10.dp))
-
-        TextButton(
-            onClick = onOpenPairing,
-            modifier = Modifier.fillMaxWidth(0.78f),
-        ) {
-            Icon(Icons.Outlined.QrCodeScanner, contentDescription = null)
-            Spacer(Modifier.width(8.dp))
-            Text("Scan QR Code")
+            TextButton(
+                onClick = onOpenPairing,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Icon(Icons.Outlined.QrCodeScanner, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text("Scan QR Code")
+            }
         }
     }
 }
@@ -207,10 +211,14 @@ private fun ConnectionBadge(
 
     Surface(
         shape = RoundedCornerShape(999.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f),
+        border = androidx.compose.foundation.BorderStroke(
+            1.dp,
+            MaterialTheme.colorScheme.outline.copy(alpha = 0.14f),
+        ),
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {

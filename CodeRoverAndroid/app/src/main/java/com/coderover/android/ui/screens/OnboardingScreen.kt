@@ -82,7 +82,8 @@ fun OnboardingScreen(onContinue: () -> Unit) {
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 24.dp)
-                .padding(bottom = 40.dp),
+                .padding(bottom = 40.dp)
+                .widthIn(max = 320.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Image(
@@ -223,6 +224,7 @@ private fun OnboardingCommandRow(command: String) {
     GlassCard(
         modifier = Modifier.fillMaxWidth(),
         cornerRadius = 8.dp,
+        padding = 10.dp,
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,

@@ -15,11 +15,11 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.PhotoCamera
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ListItem
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
@@ -72,7 +72,9 @@ fun PairingEntryScreen(
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Center,
-                modifier = Modifier.fillMaxSize()
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 24.dp)
             ) {
                 androidx.compose.material3.Icon(
                     imageVector = Icons.Outlined.PhotoCamera,
@@ -93,7 +95,7 @@ fun PairingEntryScreen(
                     color = Color.White.copy(alpha = 0.6f),
                     style = MaterialTheme.typography.bodyMedium,
                     textAlign = TextAlign.Center,
-                    modifier = Modifier.padding(horizontal = 40.dp)
+                    modifier = Modifier.widthIn(max = 320.dp)
                 )
                 Spacer(Modifier.height(20.dp))
                 Button(
@@ -193,17 +195,24 @@ private fun TransportCandidateRow(
     GlassCard(
         modifier = Modifier.fillMaxWidth(),
         cornerRadius = 18.dp,
+        padding = 0.dp,
     ) {
-        ListItem(
-            headlineContent = {
-                Text(candidate.label ?: candidate.kind.replace('_', ' ').replaceFirstChar(Char::uppercase))
-            },
-            supportingContent = {
-                Text(candidate.url)
-            },
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable(onClick = onClick),
-        )
+                .clickable(onClick = onClick)
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Text(
+                text = candidate.label ?: candidate.kind.replace('_', ' ').replaceFirstChar(Char::uppercase),
+                style = MaterialTheme.typography.bodyLarge,
+            )
+            Text(
+                text = candidate.url,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }

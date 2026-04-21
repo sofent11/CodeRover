@@ -209,11 +209,12 @@ private fun TurnToolbarDiffPill(
             .clip(RoundedCornerShape(999.dp))
             .clickable(onClick = onClick),
         shape = RoundedCornerShape(999.dp),
-        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f),
-        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.22f)),
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
+        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.2f)),
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+            horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(3.dp),
         ) {
             Text(
                 text = "+${totals.additions}",

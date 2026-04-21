@@ -22,6 +22,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.graphics.Brush
@@ -32,16 +33,19 @@ import androidx.compose.ui.unit.dp
 import com.coderover.android.data.model.AppState
 import com.coderover.android.data.model.ConnectionPhase
 import com.coderover.android.ui.theme.Border
+import com.coderover.android.ui.theme.BorderStrong
 import com.coderover.android.ui.theme.CommandAccent
+import com.coderover.android.ui.theme.DarkOverlayHighlight
+import com.coderover.android.ui.theme.OverlayHighlight
 import com.coderover.android.ui.theme.PlanAccent
 
 object ParityUi {
     val sectionSpacing = 24.dp
     val compactSpacing = 8.dp
     val rowCornerRadius = 14.dp
-    val cardCornerRadius = 20.dp
+    val cardCornerRadius = 22.dp
     val composerCornerRadius = 28.dp
-    val toolbarItemSize = 38.dp
+    val toolbarItemSize = 40.dp
     val floatingButtonSize = 44.dp
     val sectionLabelPadding = 4.dp
 }
@@ -85,21 +89,33 @@ fun ParityCard(
     padding: Dp = 16.dp,
     content: @Composable ColumnScope.() -> Unit,
 ) {
+    val darkMode = isSystemInDarkTheme()
+    val baseSurface = MaterialTheme.colorScheme.surface
+    val borderColor = if (darkMode) {
+        MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f)
+    } else {
+        BorderStrong
+    }
     Surface(
         modifier = modifier,
         shape = RoundedCornerShape(cornerRadius),
-        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.82f),
-        border = BorderStroke(1.dp, Border),
-        tonalElevation = 1.dp,
-        shadowElevation = 2.dp,
+        color = baseSurface.copy(alpha = if (darkMode) 0.94f else 0.9f),
+        border = BorderStroke(1.dp, borderColor),
+        tonalElevation = if (darkMode) 0.dp else 1.dp,
+        shadowElevation = if (darkMode) 0.dp else 3.dp,
     ) {
         Column(
             modifier = Modifier
                 .background(
                     brush = Brush.verticalGradient(
                         colors = listOf(
-                            MaterialTheme.colorScheme.surface.copy(alpha = 0.98f),
-                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                            if (darkMode) {
+                                baseSurface.copy(alpha = 0.98f)
+                            } else {
+                                OverlayHighlight
+                            },
+                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = if (darkMode) 0.42f else 0.38f),
+                            baseSurface.copy(alpha = if (darkMode) 0.94f else 0.82f),
                         ),
                     ),
                 )
@@ -113,11 +129,13 @@ fun ParityCard(
 fun GlassCard(
     modifier: Modifier = Modifier,
     cornerRadius: Dp = ParityUi.cardCornerRadius,
+    padding: Dp = 16.dp,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     ParityCard(
         modifier = modifier,
         cornerRadius = cornerRadius,
+        padding = padding,
         content = content,
     )
 }
@@ -167,19 +185,25 @@ fun ParityListRow(
     isSelected: Boolean = false,
     content: @Composable RowScope.() -> Unit,
 ) {
+    val darkMode = isSystemInDarkTheme()
     Surface(
         modifier = modifier,
         shape = RoundedCornerShape(ParityUi.rowCornerRadius),
         color = if (isSelected) {
-            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.82f)
+            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = if (darkMode) 0.84f else 0.92f)
         } else {
             Color.Transparent
+        },
+        border = if (isSelected) {
+            BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = if (darkMode) 0.5f else 0.25f))
+        } else {
+            null
         },
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 12.dp),
+                .padding(horizontal = 16.dp, vertical = 11.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             content = content,
@@ -195,13 +219,17 @@ fun ParityToolbarItemSurface(
     onClick: (() -> Unit)? = null,
     content: @Composable BoxScope.() -> Unit,
 ) {
+    val darkMode = isSystemInDarkTheme()
     Surface(
         modifier = modifier.size(size),
         shape = CircleShape,
-        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f),
-        border = BorderStroke(1.dp, Border),
-        tonalElevation = 1.dp,
-        shadowElevation = 2.dp,
+        color = MaterialTheme.colorScheme.surface.copy(alpha = if (darkMode) 0.92f else 0.9f),
+        border = BorderStroke(
+            1.dp,
+            MaterialTheme.colorScheme.outline.copy(alpha = if (darkMode) 0.38f else 0.2f),
+        ),
+        tonalElevation = if (darkMode) 0.dp else 1.dp,
+        shadowElevation = if (darkMode) 0.dp else 2.dp,
         onClick = onClick ?: {},
         enabled = enabled && onClick != null,
     ) {
@@ -308,13 +336,14 @@ fun relativeTimeLabel(timestamp: Long?): String? {
 fun AppBackdrop(
     modifier: Modifier = Modifier,
 ) {
+    val darkMode = isSystemInDarkTheme()
     Box(
         modifier = modifier
             .background(
                 brush = Brush.verticalGradient(
                     colors = listOf(
                         MaterialTheme.colorScheme.background,
-                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = if (darkMode) 0.44f else 0.6f),
                         MaterialTheme.colorScheme.background,
                     ),
                 ),
@@ -327,7 +356,7 @@ fun AppBackdrop(
                 .background(
                     brush = Brush.radialGradient(
                         colors = listOf(
-                            MaterialTheme.colorScheme.primary.copy(alpha = 0.10f),
+                            MaterialTheme.colorScheme.primary.copy(alpha = if (darkMode) 0.12f else 0.1f),
                             Color.Transparent,
                         ),
                     ),
@@ -341,7 +370,7 @@ fun AppBackdrop(
                 .background(
                     brush = Brush.radialGradient(
                         colors = listOf(
-                            MaterialTheme.colorScheme.tertiary.copy(alpha = 0.08f),
+                            MaterialTheme.colorScheme.tertiary.copy(alpha = if (darkMode) 0.07f else 0.09f),
                             Color.Transparent,
                         ),
                     ),
@@ -354,7 +383,11 @@ fun AppBackdrop(
                 .background(
                     brush = Brush.verticalGradient(
                         colors = listOf(
-                            Color.White.copy(alpha = 0.28f),
+                            if (darkMode) {
+                                DarkOverlayHighlight
+                            } else {
+                                OverlayHighlight.copy(alpha = 0.5f)
+                            },
                             Color.Transparent,
                         ),
                     ),

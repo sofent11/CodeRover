@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -35,6 +36,7 @@ import com.coderover.android.ui.sidebar.SidebarProjectPickerSheet
 import com.coderover.android.ui.sidebar.SidebarSearchField
 import com.coderover.android.ui.sidebar.SidebarThreadListView
 import com.coderover.android.ui.sidebar.buildSidebarThreadGroups
+import com.coderover.android.ui.shared.AppBackdrop
 import com.coderover.android.ui.theme.Danger
 import com.coderover.android.ui.turn.TurnSessionDiffSummaryCalculator
 
@@ -97,6 +99,7 @@ fun SidebarScreen(
             .fillMaxHeight()
             .background(MaterialTheme.colorScheme.surface),
     ) {
+        AppBackdrop(modifier = Modifier.fillMaxSize())
         Column(modifier = Modifier.fillMaxHeight()) {
             SidebarHeaderView()
             SidebarSearchField(
@@ -152,7 +155,7 @@ fun SidebarScreen(
                 isConnected = state.isConnected,
                 isSearchActive = isSearchActive,
                 modifier = Modifier.weight(1f),
-                bottomContentPadding = 96.dp,
+                bottomContentPadding = 104.dp,
             )
         }
         SidebarFloatingSettingsButton(

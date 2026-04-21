@@ -4,9 +4,6 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Modifier
@@ -19,7 +16,6 @@ import com.coderover.android.ui.settings.SettingsArchivedChatsCard
 import com.coderover.android.ui.settings.SettingsBridgeCard
 import com.coderover.android.ui.settings.SettingsConnectionCard
 import com.coderover.android.ui.settings.SettingsNotificationsCard
-import com.coderover.android.ui.settings.SettingsOverviewCard
 import com.coderover.android.ui.settings.SettingsRuntimeDefaultsCard
 
 @Composable
@@ -38,12 +34,8 @@ fun SettingsScreen(
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
-        verticalArrangement = Arrangement.spacedBy(24.dp),
+        verticalArrangement = Arrangement.spacedBy(18.dp),
     ) {
-        item {
-            SettingsOverviewCard(state = state)
-        }
-
         item {
             SettingsArchivedChatsCard(
                 threads = state.threads,
@@ -73,6 +65,13 @@ fun SettingsScreen(
         }
 
         item {
+            SettingsBridgeCard(
+                state = state,
+                onKeepAwakeChanged = viewModel::setBridgeKeepAwakeEnabled,
+            )
+        }
+
+        item {
             SettingsConnectionCard(
                 state = state,
                 onReconnect = viewModel::connectActivePairing,
@@ -80,13 +79,6 @@ fun SettingsScreen(
                 onSelectPairing = viewModel::selectPairing,
                 onRemovePairing = viewModel::removePairing,
                 onPreferredTransportSelected = viewModel::setPreferredTransport,
-            )
-        }
-
-        item {
-            SettingsBridgeCard(
-                state = state,
-                onKeepAwakeChanged = viewModel::setBridgeKeepAwakeEnabled,
             )
         }
 

@@ -49,6 +49,7 @@ import com.coderover.android.data.model.AccessMode
 import com.coderover.android.data.model.AppState
 import com.coderover.android.data.model.ModelOption
 import com.coderover.android.ui.shared.HapticFeedback
+import com.coderover.android.ui.shared.ParityToolbarItemSurface
 import com.coderover.android.ui.theme.CommandAccent
 import com.coderover.android.ui.theme.PlanAccent
 import com.coderover.android.ui.theme.monoFamily
@@ -96,17 +97,21 @@ internal fun ComposerPrimaryToolbar(
     ) {
         // Attachment menu
         Box {
-            Icon(
-                Icons.Outlined.Add,
-                contentDescription = "Attachment and plan options",
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier
-                    .size(22.dp)
-                    .clickable(enabled = !isRunning) {
-                        haptic.triggerImpactFeedback()
-                        turnViewModel.plusMenuExpanded = true
-                    }
-            )
+            ParityToolbarItemSurface(
+                size = 30.dp,
+                enabled = !isRunning,
+                onClick = {
+                    haptic.triggerImpactFeedback()
+                    turnViewModel.plusMenuExpanded = true
+                },
+            ) {
+                Icon(
+                    Icons.Outlined.Add,
+                    contentDescription = "Attachment and plan options",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
             DropdownMenu(
                 expanded = turnViewModel.plusMenuExpanded,
                 onDismissRequest = { turnViewModel.plusMenuExpanded = false },
@@ -298,40 +303,44 @@ internal fun ComposerPrimaryToolbar(
         Spacer(modifier = Modifier.weight(1f))
 
         if (isQueuePaused && queuedCount > 0) {
-            IconButton(
+            Surface(
+                modifier = Modifier.size(32.dp),
+                shape = CircleShape,
+                color = Color(0xFFFF9800),
                 onClick = {
                     haptic.triggerImpactFeedback(style = HapticFeedback.Style.LIGHT)
                     onResumeQueue()
                 },
-                modifier = Modifier
-                    .size(28.dp)
-                    .background(Color(0xFFFF9800), CircleShape),
             ) {
-                Icon(
-                    Icons.Outlined.Refresh,
-                    contentDescription = "Resume queued messages",
-                    tint = MaterialTheme.colorScheme.surface,
-                    modifier = Modifier.size(12.dp),
-                )
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        Icons.Outlined.Refresh,
+                        contentDescription = "Resume queued messages",
+                        tint = MaterialTheme.colorScheme.surface,
+                        modifier = Modifier.size(13.dp),
+                    )
+                }
             }
         }
 
         if (isRunning) {
-            IconButton(
+            Surface(
+                modifier = Modifier.size(34.dp),
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.onSurface,
                 onClick = {
                     haptic.triggerImpactFeedback()
                     onStop(activeTurnId)
                 },
-                modifier = Modifier
-                    .size(32.dp)
-                    .background(MaterialTheme.colorScheme.onSurface, CircleShape),
             ) {
-                Icon(
-                    Icons.Outlined.Close,
-                    contentDescription = "Stop",
-                    tint = MaterialTheme.colorScheme.surface,
-                    modifier = Modifier.size(12.dp),
-                )
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        Icons.Outlined.Close,
+                        contentDescription = "Stop",
+                        tint = MaterialTheme.colorScheme.surface,
+                        modifier = Modifier.size(13.dp),
+                    )
+                }
             }
         }
 
@@ -345,22 +354,23 @@ internal fun ComposerPrimaryToolbar(
         } else {
             MaterialTheme.colorScheme.onSurface
         }
-        IconButton(
+        Surface(
+            modifier = Modifier
+                .size(34.dp),
+            enabled = !isSendDisabled,
+            shape = CircleShape,
+            color = sendButtonBackgroundColor,
             onClick = {
                 haptic.triggerImpactFeedback()
                 onSend()
             },
-            enabled = !isSendDisabled,
-            modifier = Modifier
-                .size(32.dp)
-                .background(sendButtonBackgroundColor, CircleShape),
         ) {
             Box(contentAlignment = Alignment.Center) {
                 Icon(
                     Icons.AutoMirrored.Outlined.Send,
                     contentDescription = "Send",
                     tint = sendButtonIconColor,
-                    modifier = Modifier.size(12.dp),
+                    modifier = Modifier.size(13.dp),
                 )
                 if (queuedCount > 0) {
                     QueueBadge(
