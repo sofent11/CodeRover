@@ -105,6 +105,22 @@ extension CodeRoverService {
         }
     }
 
+    // Gives the visible Codex thread a short-lived catch-up window so reopen/manual
+    // refresh paths can recover live output that is only present in resume snapshots.
+    func primeDisplayedCodexThreadCatchUp(threadId: String, ttl: TimeInterval = 30) {
+        guard activeThreadId == threadId,
+              runtimeProviderID(for: threads.first(where: { $0.id == threadId })?.provider) == "codex" else {
+            return
+        }
+
+        beginForegroundAggressivePolling(threadId: threadId, ttl: ttl)
+    }
+
+    func requestPrioritizedThreadSync(threadId: String) {
+        primeDisplayedCodexThreadCatchUp(threadId: threadId)
+        requestImmediateSync(threadId: threadId)
+    }
+
     func syncThreadsList() async {
         guard isConnected, isInitialized else {
             return
@@ -283,6 +299,7 @@ extension CodeRoverService {
         hydratedThreadIDs.remove(threadId)
         loadingThreadIDs.remove(threadId)
         resumedThreadIDs.remove(threadId)
+        resumeSeededHistoryThreadIDs.remove(threadId)
         historyStateByThread.removeValue(forKey: threadId)
     }
 
@@ -301,6 +318,7 @@ extension CodeRoverService {
         hydratedThreadIDs.remove(threadId)
         loadingThreadIDs.remove(threadId)
         resumedThreadIDs.remove(threadId)
+        resumeSeededHistoryThreadIDs.remove(threadId)
         lastPublishedMessageSignatureByThread.removeValue(forKey: threadId)
         foregroundAggressivePollingDeadlineByThread.removeValue(forKey: threadId)
         streamingSystemMessageByItemID = streamingSystemMessageByItemID.filter { key, _ in
@@ -342,6 +360,7 @@ extension CodeRoverService {
 
         hydratedThreadIDs.remove(threadId)
         resumedThreadIDs.remove(threadId)
+        resumeSeededHistoryThreadIDs.remove(threadId)
         foregroundAggressivePollingDeadlineByThread.removeValue(forKey: threadId)
 
         if let turnId = activeTurnIdByThread.removeValue(forKey: threadId) {
@@ -440,6 +459,7 @@ extension CodeRoverService {
         hydratedThreadIDs.remove(threadId)
         loadingThreadIDs.remove(threadId)
         resumedThreadIDs.remove(threadId)
+        resumeSeededHistoryThreadIDs.remove(threadId)
         streamingSystemMessageByItemID = streamingSystemMessageByItemID.filter { key, _ in
             !key.hasPrefix("\(threadId)|item:")
         }
@@ -461,6 +481,7 @@ extension CodeRoverService {
     func clearHydrationCaches() {
         hydratedThreadIDs.removeAll()
         loadingThreadIDs.removeAll()
+        resumeSeededHistoryThreadIDs.removeAll()
     }
 
     func shouldTreatAsThreadNotFound(_ error: Error) -> Bool {

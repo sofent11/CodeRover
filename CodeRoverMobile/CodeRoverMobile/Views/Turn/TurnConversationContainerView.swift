@@ -10,6 +10,7 @@ struct TurnConversationContainerView: View {
     let threadID: String
     let messages: [ChatMessage]
     let timelineChangeToken: Int
+    let displayActivationToken: Int
     let activeTurnID: String?
     let isThreadRunning: Bool
     let latestTurnTerminalState: CodeRoverTurnTerminalState?
@@ -58,6 +59,7 @@ struct TurnConversationContainerView: View {
                 threadID: threadID,
                 messages: timelineMessages,
                 timelineChangeToken: timelineChangeToken,
+                displayActivationToken: displayActivationToken,
                 activeTurnID: activeTurnID,
                 isThreadRunning: isThreadRunning,
                 latestTurnTerminalState: latestTurnTerminalState,

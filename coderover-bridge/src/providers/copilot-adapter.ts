@@ -924,6 +924,39 @@ export function buildCopilotHistory({
     return created;
   }
 
+  function appendAssistantMessage(
+    turnState: ImportedTurnState,
+    itemId: string,
+    text: string,
+    createdAtSeed?: unknown
+  ): void {
+    const normalizedText = normalizeOptionalString(text);
+    if (!normalizedText) {
+      return;
+    }
+
+    const previousAssistantItem = [...turnState.turn.items].reverse().find((item) => item.type === "agent_message");
+    if (normalizeOptionalString(previousAssistantItem?.text) === normalizedText) {
+      return;
+    }
+
+    turnState.turn.items.push({
+      id: itemId,
+      type: "agent_message",
+      role: "assistant",
+      content: [{ type: "text", text: normalizedText }],
+      text: normalizedText,
+      message: null,
+      createdAt: nextTimestamp(createdAtSeed),
+      status: null,
+      command: null,
+      metadata: null,
+      plan: null,
+      summary: null,
+      fileChanges: [],
+    });
+  }
+
   for (const [index, event] of events.entries()) {
     const type = normalizeOptionalString(event.type);
     const data = asRecord(event.data);
@@ -964,25 +997,30 @@ export function buildCopilotHistory({
 
     if (type === "assistant.message") {
       const turnState = ensureTurn(eventKey, event.timestamp);
-      const text = normalizeOptionalString(data.content) || "";
-      turnState.turn.items.push({
-        id: normalizeOptionalString(data.messageId)
+      const text = extractCopilotAssistantMessageText(data);
+      appendAssistantMessage(
+        turnState,
+        normalizeOptionalString(data.messageId)
           || normalizeOptionalString(event.id)
-          || `assistant-${createHash("md5").update(`${eventKey}-${text}`).digest("hex")}`,
-        type: "agent_message",
-        role: "assistant",
-        content: [{ type: "text", text }],
+          || `assistant-${createHash("md5").update(`${eventKey}-${text || "empty"}`).digest("hex")}`,
         text,
-        message: null,
-        createdAt: nextTimestamp(event.timestamp),
-        status: null,
-        command: null,
-        metadata: null,
-        plan: null,
-        summary: null,
-        fileChanges: [],
-      });
+        event.timestamp
+      );
       lastTurnKey = eventKey;
+      continue;
+    }
+
+    if (type === "session.task_complete") {
+      const turnKey = lastTurnKey || eventKey;
+      const turnState = ensureTurn(turnKey, event.timestamp);
+      const summary = formatCopilotTaskCompleteText(normalizeOptionalString(data.summary));
+      appendAssistantMessage(
+        turnState,
+        normalizeOptionalString(event.id)
+          || `task-complete-${createHash("md5").update(`${turnKey}-${summary || "empty"}`).digest("hex")}`,
+        summary,
+        event.timestamp
+      );
       continue;
     }
 
@@ -1003,6 +1041,9 @@ export function buildCopilotHistory({
       const turnState = ensureTurn(turnKey, event.timestamp);
       toolTurnKeyById.set(toolCallId, turnKey);
       const toolName = normalizeOptionalString(data.toolName) || "Tool";
+      if (toolName === "task_complete") {
+        continue;
+      }
       const itemType = data.arguments && asRecord(data.arguments).command ? "command_execution" : "tool_call";
       const item = ensureItem(turnState, toolCallId, () => ({
         id: toolCallId,
@@ -1043,6 +1084,13 @@ function summarizeCopilotToolResult(data: UnknownRecord, item: RuntimeStoreItem)
   const normalizedString = normalizeOptionalString(result);
   if (normalizedString) {
     return normalizedString;
+  }
+
+  const resultRecord = asRecord(result);
+  const contentString = normalizeOptionalString(resultRecord.content)
+    || normalizeOptionalString(resultRecord.detailedContent);
+  if (contentString) {
+    return contentString;
   }
 
   if (item.type === "command_execution") {
@@ -1149,6 +1197,35 @@ function extractTextContent(content: unknown): string {
   return normalizeOptionalString(record.text)
     || normalizeOptionalString(asRecord(record.content).text)
     || "";
+}
+
+function extractCopilotAssistantMessageText(data: UnknownRecord): string {
+  return normalizeOptionalString(data.content)
+    || formatCopilotTaskCompleteText(extractCopilotTaskCompleteSummary(data))
+    || "";
+}
+
+function extractCopilotTaskCompleteSummary(data: UnknownRecord): string | null {
+  const toolRequests = Array.isArray(data.toolRequests) ? data.toolRequests : [];
+  for (const request of toolRequests) {
+    const requestRecord = asRecord(request);
+    if (normalizeOptionalString(requestRecord.name) !== "task_complete") {
+      continue;
+    }
+    const argumentsRecord = asRecord(requestRecord.arguments);
+    return normalizeOptionalString(argumentsRecord.summary)
+      || normalizeOptionalString(requestRecord.intentionSummary)
+      || null;
+  }
+  return null;
+}
+
+function formatCopilotTaskCompleteText(summary: string | null): string | null {
+  const normalizedSummary = normalizeOptionalString(summary);
+  if (!normalizedSummary) {
+    return null;
+  }
+  return `Task complete\n\n${normalizedSummary}`;
 }
 
 function extractToolCallContentText(content: unknown): string {

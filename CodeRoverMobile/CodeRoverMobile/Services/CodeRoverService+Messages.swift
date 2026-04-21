@@ -72,6 +72,12 @@ extension CodeRoverService {
         return dict[threadId] ?? 0
     }
 
+    // Returns a lightweight token that changes whenever the thread is reopened for display.
+    func threadDisplayActivationRevision(for threadId: String) -> Int {
+        let dict = threadDisplayActivationRevisionByThread
+        return dict[threadId] ?? 0
+    }
+
     // Refreshes the derived output cache and bumps the thread timeline revision.
     func updateCurrentOutput(for threadId: String) {
         publishThreadMessagesMutationIfNeeded(for: threadId)
@@ -215,8 +221,10 @@ extension CodeRoverService {
     // Sets the active thread and lazily hydrates old messages from server history.
     func prepareThreadForDisplay(threadId: String) async {
         activeThreadId = threadId
+        noteThreadDisplayActivated(for: threadId)
         markThreadAsViewed(threadId)
         updateCurrentOutput(for: threadId)
+        primeDisplayedCodexThreadCatchUp(threadId: threadId)
 
         guard isConnected else {
             return
@@ -237,14 +245,17 @@ extension CodeRoverService {
         await refreshInFlightTurnState(threadId: threadId)
         guard !Task.isCancelled else { return }
 
-        if threadHasActiveOrRunningTurn(threadId) {
+        let shouldForceLiveSnapshot = activeThreadId == threadId
+            && runtimeProviderID(for: threads.first(where: { $0.id == threadId })?.provider) == "codex"
+        if shouldForceLiveSnapshot || threadHasActiveOrRunningTurn(threadId) {
             // When reopening a running thread, force a fresh resume snapshot so the
             // timeline catches up with output produced while the thread was off-screen.
+            // Codex can keep newer live output in thread/resume before thread/read catches up.
             _ = try? await ensureThreadResumed(threadId: threadId, force: true)
             guard !Task.isCancelled else { return }
             updateCurrentOutput(for: threadId)
         }
-        requestImmediateSync(threadId: threadId)
+        requestPrioritizedThreadSync(threadId: threadId)
     }
 
     // Starts a short-lived watch for a running thread that just went off-screen.
@@ -318,7 +329,11 @@ extension CodeRoverService {
             if shouldPreferTailReloadForManagedHistory(threadId: threadId) {
                 try await loadTailThreadHistory(
                     threadId: threadId,
-                    replaceLocalHistory: hasLocalMessages && !hasNewestCursor,
+                    replaceLocalHistory: shouldReplaceLocalHistoryWithTailSnapshot(
+                        threadId: threadId,
+                        hasLocalMessages: hasLocalMessages,
+                        hasNewestCursor: hasNewestCursor
+                    ),
                     prefetchOlderInBackground: !hasLocalMessages
                 )
             } else if let newestCursor = normalizedHistoryCursor(currentState?.newestCursor),
@@ -331,7 +346,11 @@ extension CodeRoverService {
             } else {
                 try await loadTailThreadHistory(
                     threadId: threadId,
-                    replaceLocalHistory: hasLocalMessages && !hasNewestCursor,
+                    replaceLocalHistory: shouldReplaceLocalHistoryWithTailSnapshot(
+                        threadId: threadId,
+                        hasLocalMessages: hasLocalMessages,
+                        hasNewestCursor: hasNewestCursor
+                    ),
                     prefetchOlderInBackground: !hasLocalMessages
                 )
             }
@@ -914,6 +933,10 @@ extension CodeRoverService {
             "history apply thread=\(threadId) mode=\(mode.rawValue) existing=\(existingMessages.count) "
             + "incoming=\(historyMessages.count) merged=\(mergedMessages.count) replace=\(replaceLocalHistory)"
         )
+        coderoverDiagnosticLog(
+            "CodeRoverHistory",
+            "applyHistoryWindow thread=\(threadId) mode=\(mode.rawValue) existing=\(existingMessages.count) incoming=\(historyMessages.count) merged=\(mergedMessages.count) replace=\(replaceLocalHistory) active=\(activeThreadId == threadId) running=\(threadHasActiveOrRunningTurn(threadId)) newest=\(normalizedHistoryCursor(historyStateByThread[threadId]?.newestCursor) ?? "nil")"
+        )
 
         mergeHistoryWindow(
             threadId: threadId,
@@ -956,7 +979,11 @@ extension CodeRoverService {
                 }
                 try await loadTailThreadHistory(
                     threadId: threadId,
-                    replaceLocalHistory: !(messagesByThread[threadId] ?? []).isEmpty
+                    replaceLocalHistory: shouldReplaceLocalHistoryWithTailSnapshot(
+                        threadId: threadId,
+                        hasLocalMessages: !(messagesByThread[threadId] ?? []).isEmpty,
+                        hasNewestCursor: normalizedHistoryCursor(historyStateByThread[threadId]?.newestCursor) != nil
+                    )
                 )
                 break
             }
@@ -2435,6 +2462,12 @@ extension CodeRoverService {
 // ─── Private helpers ──────────────────────────────────────────
 
 extension CodeRoverService {
+    func noteThreadDisplayActivated(for threadId: String) {
+        var nextRevisions = threadDisplayActivationRevisionByThread
+        nextRevisions[threadId, default: 0] &+= 1
+        threadDisplayActivationRevisionByThread = nextRevisions
+    }
+
     func messagePublicationSignature(for threadId: String) -> Int {
         var hasher = Hasher()
         hasher.combine(threadId)

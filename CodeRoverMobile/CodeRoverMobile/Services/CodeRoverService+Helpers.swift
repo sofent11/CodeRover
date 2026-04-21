@@ -44,6 +44,43 @@ extension CodeRoverService {
         return provider != "codex"
     }
 
+    func shouldReplaceLocalHistoryWithTailSnapshot(
+        threadId: String,
+        hasLocalMessages: Bool,
+        hasNewestCursor: Bool
+    ) -> Bool {
+        guard hasLocalMessages else {
+            return false
+        }
+
+        guard !resumeSeededHistoryThreadIDs.contains(threadId) else {
+            coderoverDiagnosticLog(
+                "CodeRoverHistory",
+                "preserve tail merge thread=\(threadId) reason=resume-seeded"
+            )
+            return false
+        }
+
+        if threadHasActiveOrRunningTurn(threadId) {
+            coderoverDiagnosticLog(
+                "CodeRoverHistory",
+                "preserve tail merge thread=\(threadId) reason=running"
+            )
+            return false
+        }
+
+        if activeThreadId == threadId,
+           runtimeProviderID(for: thread(for: threadId)?.provider) == "codex" {
+            coderoverDiagnosticLog(
+                "CodeRoverHistory",
+                "preserve tail merge thread=\(threadId) reason=visible-codex"
+            )
+            return false
+        }
+
+        return !hasNewestCursor
+    }
+
     func threadIndex(for threadId: String) -> Int? {
         threadIndexByID[threadId]
     }

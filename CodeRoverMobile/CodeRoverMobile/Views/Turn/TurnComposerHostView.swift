@@ -100,7 +100,7 @@ struct TurnComposerHostView: View {
             onSelectGitBaseBranch: viewModel.selectGitBaseBranch,
             onRefreshGitBranches: onRefreshGitBranches,
             onManualRefresh: {
-                coderover.requestImmediateSync(threadId: thread.id)
+                coderover.requestPrioritizedThreadSync(threadId: thread.id)
             },
             onReconnect: onReconnect,
             onSelectModel: coderover.setSelectedModelId,

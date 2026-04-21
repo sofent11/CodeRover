@@ -572,6 +572,9 @@ extension CodeRoverService {
         state.isLoadingOlder = false
         state.isTailRefreshing = false
         historyStateByThread[threadId] = state
+        if normalizedHistoryCursor(state.newestCursor) != nil {
+            resumeSeededHistoryThreadIDs.remove(threadId)
+        }
     }
 
     func decodeHistoryTimestamp(from object: [String: JSONValue]) -> Date? {
@@ -668,9 +671,17 @@ extension CodeRoverService {
         if value.role == .assistant {
             let serverText = normalizedMessageText(serverMessage.text)
             if !serverText.isEmpty {
-                value.text = preservesRunningPresentation
-                    ? mergeStreamingSnapshotText(existingText: value.text, incomingText: serverMessage.text)
-                    : serverMessage.text
+                if preservesRunningPresentation || shouldPreserveMoreRecentLocalText(
+                    localText: value.text,
+                    incomingText: serverMessage.text
+                ) {
+                    value.text = mergeStreamingSnapshotText(
+                        existingText: value.text,
+                        incomingText: serverMessage.text
+                    )
+                } else {
+                    value.text = serverMessage.text
+                }
             }
             value.isStreaming = preservesRunningPresentation
                 ? (localMessage.isStreaming || serverMessage.isStreaming || runningThreadIDs.contains(localMessage.threadId))
@@ -678,9 +689,22 @@ extension CodeRoverService {
         } else if value.role == .system {
             let serverText = normalizedMessageText(serverMessage.text)
             if !serverText.isEmpty {
-                value.text = preservesRunningPresentation && localMessage.isStreaming
-                    ? mergeStreamingSnapshotText(existingText: value.text, incomingText: serverMessage.text)
-                    : serverMessage.text
+                let shouldPreserveLocalSnapshot = preservesRunningPresentation && localMessage.isStreaming
+                let supportsStaleSnapshotProtection = value.kind == .thinking
+                    || value.kind == .plan
+                    || value.kind == .subagentAction
+                    || value.kind == .chat
+                if shouldPreserveLocalSnapshot || (supportsStaleSnapshotProtection && shouldPreserveMoreRecentLocalText(
+                    localText: value.text,
+                    incomingText: serverMessage.text
+                )) {
+                    value.text = mergeStreamingSnapshotText(
+                        existingText: value.text,
+                        incomingText: serverMessage.text
+                    )
+                } else {
+                    value.text = serverMessage.text
+                }
             }
             value.isStreaming = preservesRunningPresentation
                 ? (localMessage.isStreaming || serverMessage.isStreaming || runningThreadIDs.contains(localMessage.threadId))
@@ -692,6 +716,31 @@ extension CodeRoverService {
 
     nonisolated static func normalizedMessageText(_ text: String) -> String {
         text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    // Detects stale history snapshots that carry an older prefix of text we already rendered locally.
+    nonisolated static func shouldPreserveMoreRecentLocalText(
+        localText: String,
+        incomingText: String
+    ) -> Bool {
+        let normalizedLocal = normalizedMessageText(localText)
+        let normalizedIncoming = normalizedMessageText(incomingText)
+
+        guard !normalizedLocal.isEmpty,
+              !normalizedIncoming.isEmpty,
+              normalizedLocal != normalizedIncoming else {
+            return false
+        }
+
+        if normalizedLocal.count > normalizedIncoming.count,
+           normalizedLocal.hasPrefix(normalizedIncoming) {
+            return true
+        }
+
+        return mergeStreamingSnapshotText(
+            existingText: localText,
+            incomingText: incomingText
+        ) == localText
     }
 
     nonisolated static func normalizedHistoryIdentifier(_ value: String?) -> String? {

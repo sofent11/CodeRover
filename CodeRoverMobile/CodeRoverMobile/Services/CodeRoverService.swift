@@ -280,9 +280,16 @@ final class CodeRoverService {
     var threadTimelineStateByThread: [String: ThreadTimelineState] = [:]
     // Monotonic per-thread revision so views can react to message mutations without hashing full transcripts.
     var messageRevisionByThread: [String: Int] = [:]
+    // Monotonic per-thread display activation token so reopening the same thread can
+    // reset scroll/session UI even when the underlying thread id did not change.
+    var threadDisplayActivationRevisionByThread: [String: Int] = [:]
     // Caches the last published timeline signature so no-op sync merges do not trigger UI work.
     var lastPublishedMessageSignatureByThread: [String: Int] = [:]
     var historyStateByThread: [String: ThreadHistoryState] = [:]
+    // Tracks threads whose latest visible history came from a fresh thread/resume snapshot
+    // before thread/read exposed a stable cursor window. For these threads, stale tail
+    // snapshots must merge instead of replacing the newer local timeline.
+    var resumeSeededHistoryThreadIDs: Set<String> = []
     // Tracks locally started turns whose first realtime item may legitimately bridge over a server-seeded user cursor.
     var pendingRealtimeSeededTurnIDByThread: [String: String] = [:]
     // Keeps foreground aggressive polling scoped to active/recently-started Codex turns instead of every open thread.

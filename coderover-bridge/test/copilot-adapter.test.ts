@@ -281,3 +281,123 @@ test("hydrateThread refreshes Copilot history when session-state files change", 
     fs.rmSync(homeDir, { recursive: true, force: true });
   }
 });
+
+test("hydrateThread imports Copilot task_complete summaries into visible assistant history", async () => {
+  const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "coderover-copilot-store-"));
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "coderover-copilot-home-"));
+  const store = createRuntimeStore({ baseDir });
+  const adapter = createCopilotAdapter({ store, homeDir });
+
+  try {
+    writeCopilotSession(
+      homeDir,
+      "session-4",
+      [
+        "id: session-4",
+        "cwd: /tmp/copilot-task-complete",
+        "summary: Task complete import",
+        "created_at: 2026-04-19T13:00:00.000Z",
+        "updated_at: 2026-04-19T13:05:00.000Z",
+      ].join("\n"),
+      [
+        {
+          id: "evt-user",
+          type: "user.message",
+          timestamp: "2026-04-19T13:00:01.000Z",
+          data: {
+            interactionId: "turn-1",
+            content: "Finish the task",
+          },
+        },
+        {
+          id: "evt-assistant",
+          type: "assistant.message",
+          timestamp: "2026-04-19T13:00:02.000Z",
+          data: {
+            interactionId: "turn-1",
+            messageId: "assistant-1",
+            content: "",
+            toolRequests: [
+              {
+                name: "task_complete",
+                arguments: {
+                  summary: "Implemented the fix and verified the result.",
+                },
+              },
+            ],
+          },
+        },
+        {
+          id: "evt-tool-start",
+          type: "tool.execution_start",
+          timestamp: "2026-04-19T13:00:03.000Z",
+          data: {
+            interactionId: "turn-1",
+            toolCallId: "task-complete-1",
+            toolName: "task_complete",
+            arguments: {
+              summary: "Implemented the fix and verified the result.",
+            },
+          },
+        },
+        {
+          id: "evt-tool-end",
+          type: "tool.execution_complete",
+          timestamp: "2026-04-19T13:00:04.000Z",
+          data: {
+            interactionId: "turn-1",
+            toolCallId: "task-complete-1",
+            toolName: "task_complete",
+            success: true,
+            result: {
+              content: "Implemented the fix and verified the result.",
+            },
+          },
+        },
+        {
+          id: "evt-task-complete",
+          type: "session.task_complete",
+          timestamp: "2026-04-19T13:00:05.000Z",
+          data: {
+            summary: "Implemented the fix and verified the result.",
+            success: true,
+          },
+        },
+        {
+          id: "evt-end",
+          type: "assistant.turn_end",
+          timestamp: "2026-04-19T13:00:06.000Z",
+          data: {
+            turnId: "turn-1",
+          },
+        },
+      ]
+    );
+
+    const threadMeta = store.createThread({
+      id: "copilot:session-4",
+      provider: "copilot",
+      providerSessionId: "session-4",
+      title: "Task complete import",
+      preview: "Task complete import",
+      cwd: "/tmp/copilot-task-complete",
+      createdAt: "2026-04-19T13:00:00.000Z",
+      updatedAt: "2026-04-19T13:05:00.000Z",
+    });
+
+    await adapter.hydrateThread(threadMeta);
+
+    const history = store.getThreadHistory("copilot:session-4");
+    assert.deepEqual(
+      history?.turns[0]?.items.map((item) => ({ type: item.type, text: item.text })),
+      [
+        { type: "user_message", text: "Finish the task" },
+        { type: "agent_message", text: "Task complete\n\nImplemented the fix and verified the result." },
+      ]
+    );
+  } finally {
+    store.shutdown();
+    fs.rmSync(baseDir, { recursive: true, force: true });
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});

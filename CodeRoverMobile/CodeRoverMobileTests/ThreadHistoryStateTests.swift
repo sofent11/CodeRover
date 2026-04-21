@@ -565,6 +565,203 @@ final class ThreadHistoryStateTests: XCTestCase {
         XCTAssertEqual(service.historyStateByThread[threadID]?.newestCursor, "cursor-1")
     }
 
+    func testPrepareThreadForDisplayForceResumesActiveCodexThreadWithoutLocalRunningState() async {
+        let service = makeService()
+        let threadID = "thread-open-live-codex"
+        service.isConnected = true
+        service.isInitialized = false
+        service.threads = [ConversationThread(id: threadID, title: "Thread", provider: "codex")]
+        service.messagesByThread[threadID] = makeMessages(threadID: threadID, range: 1 ... 1)
+        service.resumedThreadIDs.insert(threadID)
+
+        var observedMethods: [String] = []
+        service.requestTransportOverride = { method, params in
+            observedMethods.append(method)
+
+            if observedMethods.count == 1 {
+                XCTAssertEqual(method, "thread/read")
+                XCTAssertEqual(params?.objectValue?["includeTurns"]?.boolValue, true)
+                return RPCMessage(
+                    id: .string(UUID().uuidString),
+                    result: .object([
+                        "thread": .object([
+                            "id": .string(threadID),
+                            "turns": .array([
+                                .object([
+                                    "id": .string("turn-1"),
+                                    "status": .string("completed"),
+                                    "items": .array([]),
+                                ]),
+                            ]),
+                        ]),
+                    ]),
+                    includeJSONRPC: false
+                )
+            }
+
+            XCTAssertEqual(method, "thread/resume")
+            return RPCMessage(
+                id: .string(UUID().uuidString),
+                result: .object([
+                    "thread": self.makeThreadPayload(
+                        threadID: threadID,
+                        title: "Resume",
+                        messageRange: 1 ... 2
+                    ),
+                ]),
+                includeJSONRPC: false
+            )
+        }
+
+        await service.prepareThreadForDisplay(threadId: threadID)
+
+        XCTAssertEqual(observedMethods, ["thread/read", "thread/resume"])
+        XCTAssertNotNil(service.foregroundAggressivePollingDeadlineByThread[threadID])
+        XCTAssertEqual(service.messagesByThread[threadID]?.last?.itemId, "item-2")
+    }
+
+    func testPrepareThreadForDisplayBumpsDisplayActivationRevision() async {
+        let service = makeService()
+        let threadID = "thread-display-activation"
+
+        await service.prepareThreadForDisplay(threadId: threadID)
+        let firstRevision = service.threadDisplayActivationRevision(for: threadID)
+
+        await service.prepareThreadForDisplay(threadId: threadID)
+        let secondRevision = service.threadDisplayActivationRevision(for: threadID)
+
+        XCTAssertEqual(firstRevision, 1)
+        XCTAssertEqual(secondRevision, 2)
+    }
+
+    func testLoadThreadHistoryKeepsResumeSeededCodexMessagesWhenTailSnapshotIsOlder() async throws {
+        let service = makeService()
+        let threadID = "thread-resume-seeded-codex"
+        service.isConnected = true
+        service.isInitialized = true
+        service.threads = [ConversationThread(id: threadID, title: "Thread", provider: "codex")]
+        service.messagesByThread[threadID] = makeMessages(threadID: threadID, range: 1 ... 2)
+        service.resumeSeededHistoryThreadIDs.insert(threadID)
+
+        let tailExpectation = expectation(description: "tail request without replace")
+        service.requestTransportOverride = { method, params in
+            XCTAssertEqual(method, "thread/read")
+            let historyObject = try XCTUnwrap(params?.objectValue?["history"]?.objectValue)
+            XCTAssertEqual(historyObject["mode"]?.stringValue, "tail")
+            tailExpectation.fulfill()
+            return RPCMessage(
+                id: .string(UUID().uuidString),
+                result: .object([
+                    "thread": self.makeThreadPayload(
+                        threadID: threadID,
+                        title: "Tail",
+                        messageRange: 1 ... 1
+                    ),
+                    "historyWindow": self.makeHistoryWindowObject(
+                        olderCursor: "cursor-1",
+                        newerCursor: "cursor-1",
+                        hasOlder: false,
+                        hasNewer: true
+                    ),
+                ]),
+                includeJSONRPC: false
+            )
+        }
+
+        try await service.loadThreadHistoryIfNeeded(threadId: threadID)
+
+        await fulfillment(of: [tailExpectation], timeout: 1.0)
+        XCTAssertEqual(service.messagesByThread[threadID]?.map(\.itemId), ["item-1", "item-2"])
+        XCTAssertEqual(service.historyStateByThread[threadID]?.newestCursor, "cursor-1")
+    }
+
+    func testVisibleCodexThreadKeepsLocalTimelineWhenTailSnapshotIsOlderAndCursorMissing() async throws {
+        let service = makeService()
+        let threadID = "thread-visible-codex-tail-merge"
+        service.isConnected = true
+        service.isInitialized = true
+        service.activeThreadId = threadID
+        service.threads = [ConversationThread(id: threadID, title: "Thread", provider: "codex")]
+        service.messagesByThread[threadID] = makeMessages(threadID: threadID, range: 1 ... 2)
+
+        let tailExpectation = expectation(description: "tail request without replace for visible codex thread")
+        service.requestTransportOverride = { method, params in
+            XCTAssertEqual(method, "thread/read")
+            let historyObject = try XCTUnwrap(params?.objectValue?["history"]?.objectValue)
+            XCTAssertEqual(historyObject["mode"]?.stringValue, "tail")
+            tailExpectation.fulfill()
+            return RPCMessage(
+                id: .string(UUID().uuidString),
+                result: .object([
+                    "thread": self.makeThreadPayload(
+                        threadID: threadID,
+                        title: "Tail",
+                        messageRange: 1 ... 1
+                    ),
+                    "historyWindow": self.makeHistoryWindowObject(
+                        olderCursor: "cursor-1",
+                        newerCursor: "cursor-1",
+                        hasOlder: false,
+                        hasNewer: true
+                    ),
+                ]),
+                includeJSONRPC: false
+            )
+        }
+
+        try await service.loadThreadHistoryIfNeeded(threadId: threadID)
+
+        await fulfillment(of: [tailExpectation], timeout: 1.0)
+        XCTAssertEqual(service.messagesByThread[threadID]?.map(\.itemId), ["item-1", "item-2"])
+        XCTAssertEqual(service.historyStateByThread[threadID]?.newestCursor, "cursor-1")
+    }
+
+    func testMergeCanonicalHistoryKeepsLongerLocalAssistantTextWhenServerSnapshotIsStale() {
+        let service = makeService()
+        let threadID = "thread-stale-snapshot"
+
+        service.messagesByThread[threadID] = [
+            ChatMessage(
+                id: "item-1",
+                threadId: threadID,
+                role: .assistant,
+                text: "newer local text",
+                createdAt: Date(timeIntervalSince1970: 1),
+                turnId: "turn-1",
+                itemId: "item-1",
+                isStreaming: false,
+                deliveryState: .confirmed,
+                orderIndex: 1
+            ),
+        ]
+        service.threadTimelineStateByThread[threadID] = ThreadTimelineState(
+            messages: service.messagesByThread[threadID] ?? []
+        )
+
+        let merged = service.mergeCanonicalHistoryIntoTimelineState(
+            threadId: threadID,
+            historyMessages: [
+                ChatMessage(
+                    id: "item-1",
+                    threadId: threadID,
+                    role: .assistant,
+                    text: "newer",
+                    createdAt: Date(timeIntervalSince1970: 1),
+                    turnId: "turn-1",
+                    itemId: "item-1",
+                    isStreaming: false,
+                    deliveryState: .confirmed,
+                    orderIndex: 1
+                ),
+            ],
+            activeThreadIDs: [],
+            runningThreadIDs: []
+        )
+
+        XCTAssertEqual(merged.first?.text, "newer local text")
+        XCTAssertEqual(service.messagesByThread[threadID]?.first?.text, "newer local text")
+    }
+
     func testUpdateCurrentOutputPublishesInPlaceMessageMutation() {
         let service = makeService()
         let threadID = "thread-observation"

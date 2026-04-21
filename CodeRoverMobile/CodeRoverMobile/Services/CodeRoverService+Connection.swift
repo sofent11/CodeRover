@@ -296,6 +296,7 @@ extension CodeRoverService {
         if let threadId = activeThreadId
             ?? resolvedPreferredThreadId
             ?? threads.first(where: { $0.syncState == .live })?.id {
+            primeDisplayedCodexThreadCatchUp(threadId: threadId)
             await syncActiveThreadState(threadId: threadId)
         }
     }

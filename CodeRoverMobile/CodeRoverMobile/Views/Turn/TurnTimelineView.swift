@@ -216,6 +216,7 @@ struct TurnTimelineView<EmptyState: View, Composer: View>: View {
     let threadID: String
     let messages: [ChatMessage]
     let timelineChangeToken: Int
+    let displayActivationToken: Int
     let activeTurnID: String?
     let isThreadRunning: Bool
     let latestTurnTerminalState: CodeRoverTurnTerminalState?
@@ -411,6 +412,10 @@ struct TurnTimelineView<EmptyState: View, Composer: View>: View {
                 // when the user is already at the bottom.
                 .onChange(of: timelineChangeToken) { _, _ in
                     recomputeBlockInfoIfNeeded()
+                    handleTimelineMutation(using: proxy)
+                }
+                .onChange(of: displayActivationToken) { _, _ in
+                    beginScrollSessionIfNeeded(force: true)
                     handleTimelineMutation(using: proxy)
                 }
                 .onChange(of: isThreadRunning) { _, _ in

@@ -1052,6 +1052,10 @@ extension CodeRoverService {
                         "CodeRoverThreads",
                         "ensureThreadResumed mergedHistory thread=\(threadId) existing=\(existingMessages.count) decoded=\(historyMessages.count) merged=\(merged.count)"
                     )
+                    if runtimeProviderID(for: decodedThread.provider) == "codex",
+                       normalizedHistoryCursor(historyStateByThread[threadId]?.newestCursor) == nil {
+                        resumeSeededHistoryThreadIDs.insert(threadId)
+                    }
                     persistMessages()
                     updateCurrentOutput(for: threadId)
                 }

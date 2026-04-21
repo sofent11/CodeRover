@@ -44,6 +44,7 @@ struct TurnView: View {
         let rawMessages = coderover.messages(for: thread.id)
         let threadDisplayPhase = coderover.threadDisplayPhase(threadId: thread.id)
         let timelineChangeToken = coderover.messageRevision(for: thread.id)
+        let displayActivationToken = coderover.threadDisplayActivationRevision(for: thread.id)
         let historyState = coderover.historyStateByThread[thread.id]
         let hasOlderHistory = historyState?.hasOlderOnServer ?? false
         let projectedMessages = TurnTimelineReducer.project(messages: rawMessages).messages
@@ -62,6 +63,7 @@ struct TurnView: View {
             threadID: thread.id,
             messages: projectedMessages,
             timelineChangeToken: timelineChangeToken,
+            displayActivationToken: displayActivationToken,
             activeTurnID: activeTurnID,
             isThreadRunning: isThreadRunning,
             latestTurnTerminalState: latestTurnTerminalState,
