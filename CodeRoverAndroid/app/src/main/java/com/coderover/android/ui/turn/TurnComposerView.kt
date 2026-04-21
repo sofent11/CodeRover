@@ -3,6 +3,7 @@ package com.coderover.android.ui.turn
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -268,41 +269,58 @@ internal fun TurnComposerView(
                     )
                 }
 
-                TurnComposerInputTextView(
-                    input = input,
-                    onInputChanged = onInputChanged,
-                    onFocusedChanged = { turnViewModel.isFocused = it },
-                    onPasteImageData = { imageDataItems ->
-                        turnViewModel.setComposerNotice(null)
-                        turnViewModel.addComposerAttachments(imageDataItems)
-                    },
-                    onSend = {
-                        if (presentation.canSend) {
-                            turnViewModel.requestAssistantResponseAnchor()
-                            val reviewSelection = turnViewModel.composerReviewSelection?.target
-                            if (reviewSelection != null && threadIdForQueue != null) {
-                                onStartReview(
-                                    threadIdForQueue,
-                                    reviewSelection.serviceTarget,
-                                    if (reviewSelection == TurnComposerReviewTarget.BASE_BRANCH) {
-                                        turnViewModel.reviewBaseBranchName(state)
-                                    } else {
-                                        null
-                                    },
-                                )
-                            } else {
-                                onSend(
-                                    turnViewModel.composeSendText(input),
-                                    turnViewModel.readyComposerAttachments,
-                                    turnViewModel.readySkillMentions,
-                                    turnViewModel.isPlanModeArmed && supportsPlanMode,
-                                )
+                val hasComposerLeadingContent = turnViewModel.composerAttachments.isNotEmpty() ||
+                    turnViewModel.composerMentionedFiles.isNotEmpty() ||
+                    turnViewModel.composerMentionedSkills.isNotEmpty() ||
+                    turnViewModel.composerReviewSelection != null ||
+                    turnViewModel.isSubagentsSelectionArmed
+
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(
+                            start = 16.dp,
+                            end = 16.dp,
+                            top = if (hasComposerLeadingContent) 8.dp else 14.dp,
+                            bottom = 12.dp,
+                        ),
+                ) {
+                    TurnComposerInputTextView(
+                        input = input,
+                        onInputChanged = onInputChanged,
+                        onFocusedChanged = { turnViewModel.isFocused = it },
+                        onPasteImageData = { imageDataItems ->
+                            turnViewModel.setComposerNotice(null)
+                            turnViewModel.addComposerAttachments(imageDataItems)
+                        },
+                        onSend = {
+                            if (presentation.canSend) {
+                                turnViewModel.requestAssistantResponseAnchor()
+                                val reviewSelection = turnViewModel.composerReviewSelection?.target
+                                if (reviewSelection != null && threadIdForQueue != null) {
+                                    onStartReview(
+                                        threadIdForQueue,
+                                        reviewSelection.serviceTarget,
+                                        if (reviewSelection == TurnComposerReviewTarget.BASE_BRANCH) {
+                                            turnViewModel.reviewBaseBranchName(state)
+                                        } else {
+                                            null
+                                        },
+                                    )
+                                } else {
+                                    onSend(
+                                        turnViewModel.composeSendText(input),
+                                        turnViewModel.readyComposerAttachments,
+                                        turnViewModel.readySkillMentions,
+                                        turnViewModel.isPlanModeArmed && supportsPlanMode,
+                                    )
+                                }
+                                turnViewModel.clearComposerSelections()
                             }
-                            turnViewModel.clearComposerSelections()
-                        }
-                    },
-                    sendEnabled = presentation.canSend,
-                )
+                        },
+                        sendEnabled = presentation.canSend,
+                    )
+                }
 
                 val reasoningMenuDisabled = !supportsReasoningOptions || reasoningOptions.isEmpty() || selectedModel == null
                 ComposerPrimaryToolbar(

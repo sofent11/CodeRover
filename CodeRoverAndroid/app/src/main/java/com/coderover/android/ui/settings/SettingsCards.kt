@@ -4,6 +4,7 @@ import android.content.Intent
 import android.provider.Settings
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -537,25 +538,39 @@ private fun SettingsButton(
     enabled: Boolean = true,
     onClick: () -> Unit,
 ) {
-    androidx.compose.material3.Button(
+    Surface(
         onClick = onClick,
         enabled = enabled,
         modifier = Modifier.fillMaxWidth(),
-        colors = androidx.compose.material3.ButtonDefaults.buttonColors(
-            containerColor = if (isDestructive) Danger.copy(alpha = 0.08f) else MaterialTheme.colorScheme.primary.copy(alpha = 0.08f),
-            contentColor = if (isDestructive) Danger else MaterialTheme.colorScheme.primary,
-            disabledContainerColor = if (isDestructive) Danger.copy(alpha = 0.04f) else MaterialTheme.colorScheme.primary.copy(alpha = 0.04f),
-            disabledContentColor = if (isDestructive) Danger.copy(alpha = 0.5f) else MaterialTheme.colorScheme.primary.copy(alpha = 0.5f),
-        ),
         shape = RoundedCornerShape(10.dp),
-        contentPadding = PaddingValues(vertical = 10.dp)
+        color = if (isDestructive) {
+            Danger.copy(alpha = 0.06f)
+        } else {
+            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.42f)
+        },
+        border = androidx.compose.foundation.BorderStroke(
+            1.dp,
+            if (isDestructive) {
+                Danger.copy(alpha = 0.12f)
+            } else {
+                MaterialTheme.colorScheme.outline.copy(alpha = 0.12f)
+            },
+        ),
     ) {
-        Text(
-            title,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            fontWeight = FontWeight.Medium,
-        )
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 10.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                title,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                fontWeight = FontWeight.Medium,
+                color = if (isDestructive) Danger else MaterialTheme.colorScheme.onSurface,
+            )
+        }
     }
 }
 
@@ -684,9 +699,7 @@ fun SettingsPairAnotherMacCard(
         ) {
             Text("Paste from Clipboard")
         }
-        Button(onClick = onImport, shape = RoundedCornerShape(16.dp)) {
-            Text("Import Pairing")
-        }
+        SettingsButton(title = "Import Pairing", onClick = onImport)
     }
 }
 

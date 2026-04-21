@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -35,17 +36,16 @@ internal fun TurnComposerInputTextView(
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 4.dp)
-            .heightIn(min = 32.dp, max = 220.dp),
+            .heightIn(min = 28.dp),
     ) {
         if (input.isEmpty()) {
             Text(
                 text = "Ask for follow-up changes, or type / for Codex commands",
                 style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.52f),
                 modifier = Modifier
                     .align(Alignment.TopStart)
-                    .padding(vertical = 8.dp),
+                    .padding(top = 8.dp),
             )
         }
         AndroidView(
@@ -77,7 +77,8 @@ internal fun TurnComposerInputTextView(
             },
             modifier = Modifier
                 .fillMaxWidth()
-                .heightIn(min = 32.dp, max = 220.dp),
+                .wrapContentHeight()
+                .heightIn(min = 28.dp),
         )
     }
 }

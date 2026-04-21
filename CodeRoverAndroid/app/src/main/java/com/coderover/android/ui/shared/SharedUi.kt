@@ -92,32 +92,26 @@ fun ParityCard(
     val darkMode = isSystemInDarkTheme()
     val baseSurface = MaterialTheme.colorScheme.surface
     val borderColor = if (darkMode) {
-        MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f)
+        MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.52f)
     } else {
-        BorderStrong
+        BorderStrong.copy(alpha = 0.72f)
     }
     Surface(
         modifier = modifier,
         shape = RoundedCornerShape(cornerRadius),
-        color = baseSurface.copy(alpha = if (darkMode) 0.94f else 0.9f),
+        color = baseSurface.copy(alpha = if (darkMode) 0.96f else 0.95f),
         border = BorderStroke(1.dp, borderColor),
-        tonalElevation = if (darkMode) 0.dp else 1.dp,
-        shadowElevation = if (darkMode) 0.dp else 3.dp,
+        tonalElevation = 0.dp,
+        shadowElevation = if (darkMode) 0.dp else 1.dp,
     ) {
         Column(
             modifier = Modifier
                 .background(
-                    brush = Brush.verticalGradient(
-                        colors = listOf(
-                            if (darkMode) {
-                                baseSurface.copy(alpha = 0.98f)
-                            } else {
-                                OverlayHighlight
-                            },
-                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = if (darkMode) 0.42f else 0.38f),
-                            baseSurface.copy(alpha = if (darkMode) 0.94f else 0.82f),
-                        ),
-                    ),
+                    color = if (darkMode) {
+                        baseSurface.copy(alpha = 0.98f)
+                    } else {
+                        MaterialTheme.colorScheme.surface.copy(alpha = 0.985f)
+                    },
                 )
                 .padding(padding),
             content = content,
@@ -158,20 +152,15 @@ fun GlassCard(
             bottomStart = cornerRadiusBottomStart,
             bottomEnd = cornerRadiusBottomEnd,
         ),
-        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.82f),
-        border = BorderStroke(1.dp, Border),
-        tonalElevation = 1.dp,
-        shadowElevation = 2.dp,
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f),
+        border = BorderStroke(1.dp, Border.copy(alpha = 0.78f)),
+        tonalElevation = 0.dp,
+        shadowElevation = 1.dp,
     ) {
         Column(
             modifier = Modifier
                 .background(
-                    brush = Brush.verticalGradient(
-                        colors = listOf(
-                            MaterialTheme.colorScheme.surface.copy(alpha = 0.98f),
-                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
-                        ),
-                    ),
+                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.98f),
                 )
                 .padding(padding),
             content = content,
@@ -190,12 +179,12 @@ fun ParityListRow(
         modifier = modifier,
         shape = RoundedCornerShape(ParityUi.rowCornerRadius),
         color = if (isSelected) {
-            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = if (darkMode) 0.84f else 0.92f)
+            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = if (darkMode) 0.74f else 0.8f)
         } else {
             Color.Transparent
         },
         border = if (isSelected) {
-            BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = if (darkMode) 0.5f else 0.25f))
+            BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = if (darkMode) 0.34f else 0.18f))
         } else {
             null
         },
@@ -223,13 +212,13 @@ fun ParityToolbarItemSurface(
     Surface(
         modifier = modifier.size(size),
         shape = CircleShape,
-        color = MaterialTheme.colorScheme.surface.copy(alpha = if (darkMode) 0.92f else 0.9f),
+        color = MaterialTheme.colorScheme.surface.copy(alpha = if (darkMode) 0.94f else 0.96f),
         border = BorderStroke(
             1.dp,
-            MaterialTheme.colorScheme.outline.copy(alpha = if (darkMode) 0.38f else 0.2f),
+            MaterialTheme.colorScheme.outline.copy(alpha = if (darkMode) 0.28f else 0.14f),
         ),
-        tonalElevation = if (darkMode) 0.dp else 1.dp,
-        shadowElevation = if (darkMode) 0.dp else 2.dp,
+        tonalElevation = 0.dp,
+        shadowElevation = 0.dp,
         onClick = onClick ?: {},
         enabled = enabled && onClick != null,
     ) {
@@ -298,12 +287,23 @@ fun ParityInputSurface(
     modifier: Modifier = Modifier,
     content: @Composable ColumnScope.() -> Unit,
 ) {
-    ParityCard(
+    val darkMode = isSystemInDarkTheme()
+    Surface(
         modifier = modifier,
-        cornerRadius = ParityUi.composerCornerRadius,
-        padding = 0.dp,
+        shape = RoundedCornerShape(ParityUi.composerCornerRadius),
+        color = MaterialTheme.colorScheme.surface.copy(alpha = if (darkMode) 0.94f else 0.985f),
+        border = BorderStroke(
+            1.dp,
+            MaterialTheme.colorScheme.outline.copy(alpha = if (darkMode) 0.18f else 0.1f),
+        ),
+        tonalElevation = 0.dp,
+        shadowElevation = 0.dp,
     ) {
-        content()
+        Column(
+            modifier = Modifier
+                .background(MaterialTheme.colorScheme.surface.copy(alpha = if (darkMode) 0.96f else 0.99f)),
+            content = content,
+        )
     }
 }
 

@@ -72,12 +72,13 @@ internal fun TurnTopBarActions(
         if (showsDesktopRestart) {
             ParityToolbarItemSurface(
                 modifier = Modifier.padding(end = 10.dp),
+                size = 36.dp,
                 enabled = !isRestartingDesktopApp,
                 onClick = onTapDesktopRestart,
             ) {
                 if (isRestartingDesktopApp) {
                     CircularProgressIndicator(
-                        modifier = Modifier.size(20.dp),
+                        modifier = Modifier.size(18.dp),
                         strokeWidth = 2.dp,
                         color = MaterialTheme.colorScheme.primary,
                     )
@@ -86,7 +87,7 @@ internal fun TurnTopBarActions(
                         imageVector = Icons.Outlined.Refresh,
                         contentDescription = "Restart Codex desktop app",
                         tint = MaterialTheme.colorScheme.onSurface,
-                        modifier = Modifier.size(22.dp),
+                        modifier = Modifier.size(18.dp),
                     )
                 }
             }
@@ -97,7 +98,7 @@ internal fun TurnTopBarActions(
                 usage = usage,
                 onCompact = onCompactContext,
             )
-            Spacer(Modifier.width(12.dp))
+            Spacer(Modifier.width(10.dp))
         }
 
         gitRepoSyncResult?.repoDiffTotals?.let { totals ->
@@ -141,12 +142,13 @@ private fun TurnThreadProjectActionsMenu(
     var expanded by remember { mutableStateOf(false) }
     Box(modifier = Modifier.padding(end = 10.dp)) {
         ParityToolbarItemSurface(
+            size = 36.dp,
             enabled = enabled,
             onClick = { expanded = true },
         ) {
             if (isRunningAction) {
                 CircularProgressIndicator(
-                    modifier = Modifier.size(20.dp),
+                    modifier = Modifier.size(18.dp),
                     strokeWidth = 2.dp,
                     color = MaterialTheme.colorScheme.primary,
                 )
@@ -159,7 +161,7 @@ private fun TurnThreadProjectActionsMenu(
                     } else {
                         MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
                     },
-                    modifier = Modifier.size(22.dp),
+                    modifier = Modifier.size(18.dp),
                 )
             }
         }
@@ -209,28 +211,28 @@ private fun TurnToolbarDiffPill(
             .clip(RoundedCornerShape(999.dp))
             .clickable(onClick = onClick),
         shape = RoundedCornerShape(999.dp),
-        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
-        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.2f)),
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
+        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.14f)),
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+            modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp),
             horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(3.dp),
         ) {
             Text(
                 text = "+${totals.additions}",
                 color = Color(0xFF34C759),
-                style = MaterialTheme.typography.labelMedium.copy(fontFamily = monoFamily),
+                style = MaterialTheme.typography.labelSmall.copy(fontFamily = monoFamily),
             )
             Text(
                 text = "-${totals.deletions}",
                 color = Color(0xFFFF3B30),
-                style = MaterialTheme.typography.labelMedium.copy(fontFamily = monoFamily),
+                style = MaterialTheme.typography.labelSmall.copy(fontFamily = monoFamily),
             )
             if (totals.binaryFiles > 0) {
                 Text(
                     text = "B${totals.binaryFiles}",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    style = MaterialTheme.typography.labelMedium.copy(fontFamily = monoFamily),
+                    style = MaterialTheme.typography.labelSmall.copy(fontFamily = monoFamily),
                 )
             }
         }
@@ -249,13 +251,14 @@ private fun TurnGitActionsMenu(
     var expanded by remember { mutableStateOf(false) }
     Box {
         ParityToolbarItemSurface(
+            size = 36.dp,
             enabled = enabled,
             onClick = { expanded = true },
         ) {
             Box(contentAlignment = Alignment.Center) {
                 if (isRunningGitAction) {
                     CircularProgressIndicator(
-                        modifier = Modifier.size(20.dp),
+                        modifier = Modifier.size(18.dp),
                         strokeWidth = 2.dp,
                         color = MaterialTheme.colorScheme.primary,
                     )
@@ -269,7 +272,7 @@ private fun TurnGitActionsMenu(
                             } else {
                                 MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
                             },
-                            modifier = Modifier.size(20.dp),
+                            modifier = Modifier.size(18.dp),
                         )
                         val syncStatusColor = when (gitSyncState) {
                             "behind_only", "diverged", "dirty_and_behind" -> Color(0xFFFF9800)
@@ -280,13 +283,13 @@ private fun TurnGitActionsMenu(
                                 modifier = Modifier
                                     .align(Alignment.TopEnd)
                                     .offset(x = 2.dp, y = (-2).dp)
-                                    .size(8.dp)
+                                    .size(7.dp)
                                     .background(syncStatusColor, CircleShape)
                             ) {
                                 Box(
                                     modifier = Modifier
                                         .fillMaxSize()
-                                        .padding(1.5.dp)
+                                        .padding(1.dp)
                                         .background(MaterialTheme.colorScheme.surface, CircleShape)
                                 )
                             }

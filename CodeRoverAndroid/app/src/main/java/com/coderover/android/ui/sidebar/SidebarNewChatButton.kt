@@ -9,7 +9,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.AddBox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -52,21 +52,21 @@ fun SidebarNewChatButton(
         ) {
             if (isCreatingThread) {
                 CircularProgressIndicator(
-                    modifier = Modifier.size(16.dp),
+                    modifier = Modifier.size(15.dp),
                     strokeWidth = 2.dp,
                     color = MaterialTheme.colorScheme.onSurface,
                 )
             } else {
                 Icon(
-                    imageVector = Icons.Outlined.Add,
+                    imageVector = Icons.Outlined.AddBox,
                     contentDescription = null,
-                    modifier = Modifier.size(18.dp),
+                    modifier = Modifier.size(19.dp),
                     tint = MaterialTheme.colorScheme.onSurface,
                 )
             }
             Text(
                 text = "New Chat",
-                style = MaterialTheme.typography.bodyLarge,
+                style = MaterialTheme.typography.bodyMedium,
                 fontWeight = FontWeight.Medium,
                 color = MaterialTheme.colorScheme.onSurface,
             )
@@ -74,11 +74,11 @@ fun SidebarNewChatButton(
         if (isCreatingThread && !statusMessage.isNullOrBlank()) {
             Text(
                 text = statusMessage,
-                style = MaterialTheme.typography.bodySmall,
+                style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(top = 6.dp, start = 26.dp),
+                modifier = Modifier.padding(top = 4.dp, start = 27.dp),
             )
         }
     }
