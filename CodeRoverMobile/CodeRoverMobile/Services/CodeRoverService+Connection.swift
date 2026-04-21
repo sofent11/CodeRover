@@ -408,6 +408,10 @@ extension CodeRoverService {
     }
 
     func userFacingConnectError(error: Error, attemptedURL: String, host: String?) -> String {
+        if isHistoryRequestTimeoutError(error) {
+            return error.localizedDescription
+        }
+
         if let nwError = error as? NWError {
             switch nwError {
             case .posix(let code) where code == .ECONNREFUSED:
@@ -448,6 +452,10 @@ extension CodeRoverService {
     }
 
     func isRecoverableTransientConnectionError(_ error: Error) -> Bool {
+        if isHistoryRequestTimeoutError(error) {
+            return false
+        }
+
         if let serviceError = error as? CodeRoverServiceError {
             if case .invalidInput(let message) = serviceError {
                 return message.localizedCaseInsensitiveContains("timed out")
@@ -468,7 +476,19 @@ extension CodeRoverService {
 
     // Suppresses benign socket abort/cancel noise even when foreground request tasks surface the disconnect later.
     func shouldSuppressUserFacingConnectionError(_ error: Error) -> Bool {
-        isBenignBackgroundDisconnect(error)
+        isBenignBackgroundDisconnect(error) || isHistoryRequestTimeoutError(error)
+    }
+
+    func isHistoryRequestTimeoutError(_ error: Error) -> Bool {
+        guard let serviceError = error as? CodeRoverServiceError else {
+            return false
+        }
+
+        if case .historyRequestTimedOut = serviceError {
+            return true
+        }
+
+        return false
     }
 
     // Surfaces only meaningful connection failures to the UI and keeps reconnect noise silent.

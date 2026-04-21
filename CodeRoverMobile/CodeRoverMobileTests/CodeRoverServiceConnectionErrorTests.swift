@@ -26,6 +26,19 @@ final class CodeRoverServiceConnectionErrorTests: XCTestCase {
         XCTAssertFalse(service.shouldSuppressUserFacingConnectionError(error))
     }
 
+    func testHistoryRequestTimeoutDoesNotSurfaceAsConnectionError() {
+        let service = CodeRoverService()
+        let error = CodeRoverServiceError.historyRequestTimedOut(threadId: "thread-history")
+
+        XCTAssertTrue(service.isHistoryRequestTimeoutError(error))
+        XCTAssertTrue(service.shouldSuppressUserFacingConnectionError(error))
+        XCTAssertFalse(service.isRecoverableTransientConnectionError(error))
+        XCTAssertEqual(
+            service.userFacingConnectFailureMessage(error),
+            "Conversation history is taking longer than expected. Keep the bridge connected and try reloading this chat."
+        )
+    }
+
     func testConnectionRefusedStillSurfacesToUser() {
         let service = CodeRoverService()
         let error = NWError.posix(.ECONNREFUSED)

@@ -405,6 +405,7 @@ final class CodeRoverService {
     var pendingRequests: [String: CheckedContinuation<RPCMessage, Error>] = [:]
     var pendingRequestTimeoutTasks: [String: Task<Void, Never>] = [:]
     var pendingRequestContexts: [String: CodeRoverPendingRequestContext] = [:]
+    var lastInboundWireActivityAt: Date = .distantPast
     // Test hook: intercepts outbound RPC requests without requiring a live socket.
     @ObservationIgnored var requestTransportOverride: ((String, JSONValue?) async throws -> RPCMessage)?
     var streamingAssistantMessageByTurnID: [String: String] = [:]

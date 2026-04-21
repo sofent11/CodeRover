@@ -25,6 +25,79 @@ final class ThreadHistoryStateTests: XCTestCase {
         XCTAssertFalse(state.hasNewerOnServer)
     }
 
+    func testThreadReadHistoryRequestsUseExtendedTimeoutBudget() {
+        let service = makeService()
+        let params: JSONValue = .object([
+            "threadId": .string("thread-large-history"),
+            "history": .object([
+                "mode": .string("tail"),
+                "limit": .integer(50),
+            ]),
+        ])
+
+        XCTAssertTrue(service.isHistoryThreadReadRequest(method: "thread/read", params: params))
+        XCTAssertTrue(service.shouldResetRequestTimeoutOnInboundActivity(method: "thread/read", params: params))
+        XCTAssertEqual(
+            service.requestTimeoutNanoseconds(for: "thread/read", params: params),
+            service.historyRequestTimeoutNanoseconds
+        )
+        XCTAssertEqual(
+            service.requestTimeoutNanoseconds(for: "thread/list", params: nil),
+            service.requestTimeoutNanoseconds
+        )
+    }
+
+    func testHistoryRequestTimeoutUsesInboundActivityAsIdleBaseline() {
+        let service = makeService()
+        let requestKey = "history-request"
+        let createdAt = Date(timeIntervalSince1970: 100)
+        let context = CodeRoverPendingRequestContext(
+            method: "thread/read",
+            threadId: "thread-large-history",
+            createdAt: createdAt
+        )
+        service.lastInboundWireActivityAt = createdAt.addingTimeInterval(80)
+
+        XCTAssertFalse(
+            service.shouldTimeOutPendingRequest(
+                requestKey: requestKey,
+                context: context,
+                timeoutNanoseconds: 90_000_000_000,
+                resetOnInboundActivity: true,
+                now: createdAt.addingTimeInterval(165)
+            )
+        )
+        XCTAssertTrue(
+            service.shouldTimeOutPendingRequest(
+                requestKey: requestKey,
+                context: context,
+                timeoutNanoseconds: 90_000_000_000,
+                resetOnInboundActivity: true,
+                now: createdAt.addingTimeInterval(171)
+            )
+        )
+    }
+
+    func testSyncThreadHistoryTimeoutKeepsConnectionErrorClear() async {
+        let service = makeService()
+        let threadID = "thread-history-timeout"
+        service.isConnected = true
+        service.isInitialized = true
+        service.threads = [ConversationThread(id: threadID, title: "History", provider: "codex")]
+        service.messagesByThread[threadID] = makeMessages(threadID: threadID, range: 1 ... 5)
+        service.lastErrorMessage = nil
+        service.requestTransportOverride = { _, _ in
+            throw CodeRoverServiceError.historyRequestTimedOut(threadId: threadID)
+        }
+
+        await service.syncThreadHistory(threadId: threadID, force: true)
+
+        XCTAssertTrue(service.isConnected)
+        XCTAssertNil(service.lastErrorMessage)
+        XCTAssertEqual(service.messagesByThread[threadID]?.map(\.itemId), ["item-1", "item-2", "item-3", "item-4", "item-5"])
+        XCTAssertFalse(service.loadingThreadIDs.contains(threadID))
+    }
+
     func testLoadThreadHistoryUsesAfterWhenNewestCursorExists() async throws {
         let service = makeService()
         let threadID = "thread-after-catch-up"

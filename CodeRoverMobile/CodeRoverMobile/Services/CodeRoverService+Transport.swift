@@ -9,6 +9,8 @@ import Network
 
 extension CodeRoverService {
     var requestTimeoutNanoseconds: UInt64 { 20_000_000_000 }
+    var historyRequestTimeoutNanoseconds: UInt64 { 90_000_000_000 }
+    var requestTimeoutPollNanoseconds: UInt64 { 1_000_000_000 }
 
     // Sends an RPC request and waits for the matching response by request id.
     func sendRequest(method: String, params: JSONValue?) async throws -> RPCMessage {
@@ -30,6 +32,12 @@ extension CodeRoverService {
             includeJSONRPC: false
         )
         let requestContext = pendingRequestContext(method: method, params: params)
+        let timeoutNanoseconds = requestTimeoutNanoseconds(for: method, params: params)
+        let timeoutError = requestTimeoutError(method: method, params: params, context: requestContext)
+        let resetTimeoutOnInboundActivity = shouldResetRequestTimeoutOnInboundActivity(
+            method: method,
+            params: params
+        )
         debugRuntimeLog("rpc -> request \(summarizeIncomingNotification(method: method, paramsObject: params?.objectValue))")
 
         return try await withCheckedThrowingContinuation { continuation in
@@ -37,22 +45,52 @@ extension CodeRoverService {
             pendingRequestContexts[requestKey] = requestContext
             pendingRequestTimeoutTasks[requestKey] = Task { @MainActor [weak self] in
                 guard let self else { return }
-                try? await Task.sleep(nanoseconds: requestTimeoutNanoseconds)
-                guard !Task.isCancelled else { return }
+                if !resetTimeoutOnInboundActivity {
+                    try? await Task.sleep(nanoseconds: timeoutNanoseconds)
+                    guard !Task.isCancelled else { return }
 
-                guard let pendingContinuation = pendingRequests.removeValue(forKey: requestKey) else {
+                    guard let pendingContinuation = pendingRequests.removeValue(forKey: requestKey) else {
+                        pendingRequestTimeoutTasks.removeValue(forKey: requestKey)
+                        pendingRequestContexts.removeValue(forKey: requestKey)
+                        return
+                    }
+
                     pendingRequestTimeoutTasks.removeValue(forKey: requestKey)
                     pendingRequestContexts.removeValue(forKey: requestKey)
+                    pendingContinuation.resume(throwing: timeoutError)
                     return
                 }
 
-                pendingRequestTimeoutTasks.removeValue(forKey: requestKey)
-                pendingRequestContexts.removeValue(forKey: requestKey)
-                pendingContinuation.resume(
-                    throwing: CodeRoverServiceError.invalidInput(
-                        "The Mac bridge did not respond in time. Reconnect and try again."
-                    )
-                )
+                while !Task.isCancelled {
+                    try? await Task.sleep(nanoseconds: requestTimeoutPollNanoseconds)
+                    guard !Task.isCancelled else { return }
+
+                    guard pendingRequests[requestKey] != nil else {
+                        pendingRequestTimeoutTasks.removeValue(forKey: requestKey)
+                        pendingRequestContexts.removeValue(forKey: requestKey)
+                        return
+                    }
+
+                    guard shouldTimeOutPendingRequest(
+                        requestKey: requestKey,
+                        context: requestContext,
+                        timeoutNanoseconds: timeoutNanoseconds,
+                        resetOnInboundActivity: true
+                    ) else {
+                        continue
+                    }
+
+                    guard let pendingContinuation = pendingRequests.removeValue(forKey: requestKey) else {
+                        pendingRequestTimeoutTasks.removeValue(forKey: requestKey)
+                        pendingRequestContexts.removeValue(forKey: requestKey)
+                        return
+                    }
+
+                    pendingRequestTimeoutTasks.removeValue(forKey: requestKey)
+                    pendingRequestContexts.removeValue(forKey: requestKey)
+                    pendingContinuation.resume(throwing: timeoutError)
+                    return
+                }
             }
 
             Task {
@@ -280,6 +318,56 @@ extension CodeRoverService {
             threadId: threadId,
             createdAt: Date()
         )
+    }
+
+    func requestTimeoutNanoseconds(for method: String, params: JSONValue?) -> UInt64 {
+        isHistoryThreadReadRequest(method: method, params: params)
+            ? historyRequestTimeoutNanoseconds
+            : requestTimeoutNanoseconds
+    }
+
+    func shouldResetRequestTimeoutOnInboundActivity(method: String, params: JSONValue?) -> Bool {
+        isHistoryThreadReadRequest(method: method, params: params)
+    }
+
+    func requestTimeoutError(
+        method: String,
+        params: JSONValue?,
+        context: CodeRoverPendingRequestContext
+    ) -> Error {
+        guard isHistoryThreadReadRequest(method: method, params: params) else {
+            return CodeRoverServiceError.invalidInput(
+                "The Mac bridge did not respond in time. Reconnect and try again."
+            )
+        }
+
+        return CodeRoverServiceError.historyRequestTimedOut(threadId: context.threadId)
+    }
+
+    func isHistoryThreadReadRequest(method: String, params: JSONValue?) -> Bool {
+        guard method == "thread/read" else {
+            return false
+        }
+
+        return params?.objectValue?["history"]?.objectValue?["mode"]?.stringValue != nil
+    }
+
+    func shouldTimeOutPendingRequest(
+        requestKey: String,
+        context: CodeRoverPendingRequestContext,
+        timeoutNanoseconds: UInt64,
+        resetOnInboundActivity: Bool,
+        now: Date = Date()
+    ) -> Bool {
+        let baseline: Date
+        if resetOnInboundActivity, lastInboundWireActivityAt > context.createdAt {
+            baseline = lastInboundWireActivityAt
+        } else {
+            baseline = context.createdAt
+        }
+
+        let timeoutInterval = TimeInterval(timeoutNanoseconds) / 1_000_000_000
+        return now.timeIntervalSince(baseline) >= timeoutInterval
     }
 
     func completePendingTurnStartIfNeeded(threadId: String, turnId: String?) {

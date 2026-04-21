@@ -13,6 +13,7 @@ enum CodeRoverServiceError: LocalizedError {
     case encodingFailed
     case disconnected
     case noPendingApproval
+    case historyRequestTimedOut(threadId: String?)
     case rpcError(RPCError)
 
     var errorDescription: String? {
@@ -29,6 +30,8 @@ enum CodeRoverServiceError: LocalizedError {
             return "WebSocket not connected"
         case .noPendingApproval:
             return "No pending approval request"
+        case .historyRequestTimedOut:
+            return "Conversation history is taking longer than expected. Keep the bridge connected and try reloading this chat."
         case .rpcError(let rpcError):
             return "RPC error \(rpcError.code): \(rpcError.message)"
         }

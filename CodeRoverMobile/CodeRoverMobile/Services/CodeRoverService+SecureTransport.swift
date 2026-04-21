@@ -191,6 +191,7 @@ extension CodeRoverService {
 
     // Handles raw bridge-wire JSON before any JSON-RPC decoding so secure controls stay separate.
     func processIncomingWireText(_ text: String) {
+        lastInboundWireActivityAt = Date()
         if let kind = wireMessageKind(from: text) {
             debugSecureLog("wire <- kind=\(kind) bytes=\(text.count)")
             switch kind {

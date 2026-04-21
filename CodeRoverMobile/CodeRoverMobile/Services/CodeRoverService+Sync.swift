@@ -166,6 +166,10 @@ extension CodeRoverService {
                 debugSyncLog("sync thread/read reported missing thread=\(threadId); waiting for send-time confirmation")
                 return
             }
+            if isHistoryRequestTimeoutError(error) {
+                debugSyncLog("sync thread/read timed out thread=\(threadId); keeping connection alive")
+                return
+            }
             presentConnectionErrorIfNeeded(error)
         }
     }
