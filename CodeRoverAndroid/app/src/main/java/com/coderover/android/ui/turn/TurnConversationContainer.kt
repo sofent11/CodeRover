@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -66,6 +67,12 @@ internal fun TurnConversationContainer(
     val timelineRenderItems = remember(renderItems, timelineMessages) {
         renderItems.filter { item ->
             (item as? TimelineRenderItem.Message)?.message?.kind != com.coderover.android.data.model.MessageKind.PLAN
+        }
+    }
+
+    LaunchedEffect(pinnedTaskPlanMessage?.id) {
+        if (pinnedTaskPlanMessage == null) {
+            isShowingPinnedPlanSheet = false
         }
     }
 

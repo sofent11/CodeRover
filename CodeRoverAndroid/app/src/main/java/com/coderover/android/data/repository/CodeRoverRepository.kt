@@ -2432,6 +2432,7 @@ class CodeRoverRepository(context: Context) {
                 mergeCanonicalHistoryIntoTimelineState(
                     threadId = threadId,
                     historyMessages = history,
+                    mode = mode,
                     activeThreadIds = currentState.activeTurnIdByThread.keys,
                     runningThreadIds = currentState.runningThreadIds,
                 )
@@ -3054,6 +3055,11 @@ class CodeRoverRepository(context: Context) {
             } else {
                 null
             }
+            val structuredUserInputRequest = if (kind == MessageKind.USER_INPUT_PROMPT) {
+                decodeStructuredUserInputRequest(item)
+            } else {
+                null
+            }
             val subagentAction = if (kind == MessageKind.SUBAGENT_ACTION) {
                 decodeSubagentActionItem(item)
             } else {
@@ -3064,9 +3070,10 @@ class CodeRoverRepository(context: Context) {
                 MessageKind.COMMAND_EXECUTION -> decodeCommandExecutionText(item, commandState)
                 MessageKind.SUBAGENT_ACTION -> subagentAction?.summaryText ?: decodeItemText(item)
                 MessageKind.PLAN -> decodePlanText(item, planState)
+                MessageKind.USER_INPUT_PROMPT -> structuredUserInputRequest?.let(::structuredUserInputFallbackText) ?: decodeItemText(item)
                 else -> decodeItemText(item)
             }
-            if (text.isBlank()) {
+            if (text.isBlank() && structuredUserInputRequest == null) {
                 return null
             }
             return ChatMessage(
@@ -3083,6 +3090,7 @@ class CodeRoverRepository(context: Context) {
                 commandState = commandState,
                 subagentAction = subagentAction,
                 planState = planState,
+                structuredUserInputRequest = structuredUserInputRequest,
                 providerItemId = providerItemId,
                 timelineOrdinal = timelineOrdinal,
                 timelineStatus = timelineStatus,
@@ -3188,6 +3196,23 @@ class CodeRoverRepository(context: Context) {
                 options = options,
             )
         }
+    }
+
+    private fun decodeStructuredUserInputRequest(item: JsonObject): StructuredUserInputRequest? {
+        val questions = decodeStructuredUserInputQuestions(
+            item["questions"] ?: item["request"]?.jsonObjectOrNull()?.get("questions"),
+        )
+        if (questions.isEmpty()) {
+            return null
+        }
+        val requestId = item["requestId"]
+            ?: item["request_id"]
+            ?: item["id"]
+            ?: JsonPrimitive("request-${UUID.randomUUID()}")
+        return StructuredUserInputRequest(
+            requestId = requestId,
+            questions = questions,
+        )
     }
 
     private fun structuredUserInputFallbackText(request: StructuredUserInputRequest): String {
@@ -3994,6 +4019,7 @@ class CodeRoverRepository(context: Context) {
         planState: PlanState?,
         commandState: CommandState?,
         subagentAction: SubagentAction?,
+        structuredUserInputRequest: StructuredUserInputRequest?,
         fileChanges: List<FileChangeEntry>,
     ): String {
         return when (kind) {
@@ -4001,6 +4027,7 @@ class CodeRoverRepository(context: Context) {
             MessageKind.COMMAND_EXECUTION -> decodeCommandExecutionText(payload, commandState)
             MessageKind.SUBAGENT_ACTION -> subagentAction?.summaryText ?: payload.deltaText()
             MessageKind.PLAN -> decodePlanText(payload, planState)
+            MessageKind.USER_INPUT_PROMPT -> structuredUserInputRequest?.let(::structuredUserInputFallbackText) ?: payload.deltaText()
             else -> payload.deltaText()
         }
     }
@@ -4021,12 +4048,13 @@ class CodeRoverRepository(context: Context) {
         commandState: CommandState?,
         subagentAction: SubagentAction?,
         planState: PlanState?,
+        structuredUserInputRequest: StructuredUserInputRequest?,
     ) {
         val existingCanonicalMessage = threadTimelineStateByThread[threadId]?.message(timelineItemId)
             ?: state.value.messagesByThread[threadId].orEmpty().firstOrNull { it.id == timelineItemId }
         val existingText = existingCanonicalMessage?.text.orEmpty()
         val nextText = when {
-            textMode == "append" -> existingText + incomingText
+            textMode == "append" -> mergeStreamingSnapshotText(existingText = existingText, incomingText = incomingText)
             incomingText.isBlank() -> existingText
             else -> incomingText
         }
@@ -4063,6 +4091,7 @@ class CodeRoverRepository(context: Context) {
             commandState = mergeCommandState(existingCanonicalMessage?.commandState, commandState),
             subagentAction = subagentAction ?: existingCanonicalMessage?.subagentAction,
             planState = planState ?: existingCanonicalMessage?.planState,
+            structuredUserInputRequest = structuredUserInputRequest ?: existingCanonicalMessage?.structuredUserInputRequest,
             providerItemId = providerItemId ?: existingCanonicalMessage?.providerItemId,
             timelineOrdinal = timelineOrdinal ?: existingCanonicalMessage?.timelineOrdinal,
             timelineStatus = timelineStatus ?: existingCanonicalMessage?.timelineStatus,
@@ -4257,6 +4286,10 @@ class CodeRoverRepository(context: Context) {
             "error", "turn/failed" -> {
                 val resolvedParams = params
                 val threadId = params.resolveThreadId() ?: state.value.selectedThreadId ?: return
+                val finalizedTimeline = finalizeCompletedTurnTimeline(
+                    threadId = threadId,
+                    turnId = params.resolveTurnId() ?: state.value.activeTurnIdByThread[threadId],
+                )
                 appendLocalMessage(
                     ChatMessage(
                         threadId = threadId,
@@ -4268,10 +4301,20 @@ class CodeRoverRepository(context: Context) {
                 )
                 updateState {
                     copy(
+                        messagesByThread = if (finalizedTimeline != null) {
+                            messagesByThread + (threadId to finalizedTimeline)
+                        } else {
+                            messagesByThread
+                        },
                         runningThreadIds = runningThreadIds - threadId,
                         activeTurnIdByThread = activeTurnIdByThread - threadId,
                         pendingRealtimeSeededTurnIdByThread = pendingRealtimeSeededTurnIdByThread - threadId,
-                        failedThreadIds = if (selectedThreadId != threadId) failedThreadIds + threadId else failedThreadIds
+                        failedThreadIds = if (selectedThreadId != threadId) failedThreadIds + threadId else failedThreadIds,
+                        threads = if (finalizedTimeline != null) {
+                            threads.refreshThreadSummaryFromMessages(threadId, finalizedTimeline)
+                        } else {
+                            threads
+                        },
                     )
                 }
                 checkAndSendNextQueuedDraft(threadId)
@@ -4361,6 +4404,11 @@ class CodeRoverRepository(context: Context) {
         } else {
             null
         }
+        val structuredUserInputRequest = if (kind == MessageKind.USER_INPUT_PROMPT) {
+            decodeStructuredUserInputRequest(payload)
+        } else {
+            null
+        }
         val fileChanges = if (kind == MessageKind.FILE_CHANGE) decodeFileChangeEntries(payload) else emptyList()
         val resolvedText = canonicalTimelineText(
             payload = payload,
@@ -4368,8 +4416,26 @@ class CodeRoverRepository(context: Context) {
             planState = planState,
             commandState = commandState,
             subagentAction = subagentAction,
+            structuredUserInputRequest = structuredUserInputRequest,
             fileChanges = fileChanges,
         )
+        val isStreaming = canonicalTimelineIsStreaming(timelineStatus, eventKind)
+
+        if (isStreaming) {
+            val updatedRenderedMessages = finalizeSupersededCanonicalStreamingMessages(
+                threadId = threadId,
+                turnId = turnId,
+                keepingTimelineItemId = timelineItemId,
+            )
+            if (updatedRenderedMessages != null) {
+                updateState {
+                    copy(
+                        messagesByThread = messagesByThread + (threadId to updatedRenderedMessages),
+                        threads = threads.refreshThreadSummaryFromMessages(threadId, updatedRenderedMessages),
+                    )
+                }
+            }
+        }
 
         upsertCanonicalTimelineMessage(
             threadId = threadId,
@@ -4380,18 +4446,20 @@ class CodeRoverRepository(context: Context) {
             kind = kind,
             incomingText = resolvedText,
             textMode = textMode,
-            isStreaming = canonicalTimelineIsStreaming(timelineStatus, eventKind),
+            isStreaming = isStreaming,
             timelineOrdinal = timelineOrdinal,
             timelineStatus = timelineStatus,
             fileChanges = fileChanges,
             commandState = commandState,
             subagentAction = subagentAction,
             planState = planState,
+            structuredUserInputRequest = structuredUserInputRequest,
         )
     }
 
     private fun handleTurnCompletedNotification(params: JsonObject) {
         val threadId = state.value.resolveRealtimeThreadId(params) ?: return
+        val resolvedTurnId = params.resolveTurnId() ?: state.value.activeTurnIdByThread[threadId]
         val status = params.string("status") ?: params["turn"]?.jsonObjectOrNull()?.string("status")
         val isFailed = status?.lowercase()?.contains("fail") == true ||
             status?.lowercase()?.contains("error") == true ||
@@ -4402,14 +4470,25 @@ class CodeRoverRepository(context: Context) {
             status?.lowercase()?.contains("interrupt") == true ||
             status?.lowercase()?.contains("stop") == true
         val terminalState = if (isFailed) ThreadRunBadgeState.FAILED else if (isStopped) null else ThreadRunBadgeState.READY
+        val finalizedTimeline = finalizeCompletedTurnTimeline(threadId = threadId, turnId = resolvedTurnId)
 
         updateState {
             copy(
+                messagesByThread = if (finalizedTimeline != null) {
+                    messagesByThread + (threadId to finalizedTimeline)
+                } else {
+                    messagesByThread
+                },
                 runningThreadIds = runningThreadIds - threadId,
                 activeTurnIdByThread = activeTurnIdByThread - threadId,
                 pendingRealtimeSeededTurnIdByThread = pendingRealtimeSeededTurnIdByThread - threadId,
                 readyThreadIds = if (terminalState == ThreadRunBadgeState.READY && selectedThreadId != threadId) readyThreadIds + threadId else readyThreadIds,
                 failedThreadIds = if (terminalState == ThreadRunBadgeState.FAILED && selectedThreadId != threadId) failedThreadIds + threadId else failedThreadIds,
+                threads = if (finalizedTimeline != null) {
+                    threads.refreshThreadSummaryFromMessages(threadId, finalizedTimeline)
+                } else {
+                    threads
+                },
             )
         }
         resumeSeededHistoryThreadIds.remove(threadId)
@@ -5074,6 +5153,7 @@ class CodeRoverRepository(context: Context) {
                         mergeCanonicalHistoryIntoTimelineState(
                             threadId = normalizedThreadId,
                             historyMessages = historyMessages,
+                            mode = null,
                             activeThreadIds = state.value.activeTurnIdByThread.keys,
                             runningThreadIds = state.value.runningThreadIds,
                         )
@@ -6082,6 +6162,62 @@ private fun mergeRenderedTimelineMessages(
         .sortedWith(Comparator(::compareRenderedTimelineMessages))
 }
 
+private fun CodeRoverRepository.finalizeSupersededCanonicalStreamingMessages(
+    threadId: String,
+    turnId: String?,
+    keepingTimelineItemId: String,
+): List<ChatMessage>? {
+    val normalizedTurnId = normalizedIdentifier(turnId) ?: return null
+    val overlayMessages = state.value.messagesByThread[threadId].orEmpty().filterNot(::isCanonicalTimelineMessage)
+    val timelineState = threadTimelineStateByThread[threadId]
+        ?: ThreadTimelineState(
+            state.value.messagesByThread[threadId].orEmpty().filter(::isCanonicalTimelineMessage),
+        )
+    val candidateIds = timelineState.renderedMessages().mapNotNull { message ->
+        if (message.id != keepingTimelineItemId &&
+            message.turnId == normalizedTurnId &&
+            message.isStreaming &&
+            shouldFinalizeSupersededCanonicalStreamingMessage(message)
+        ) {
+            message.id
+        } else {
+            null
+        }
+    }
+    if (candidateIds.isEmpty()) {
+        return null
+    }
+    candidateIds.forEach { candidateId ->
+        val candidate = timelineState.message(candidateId) ?: return@forEach
+        timelineState.upsert(candidate.copy(isStreaming = false))
+    }
+    threadTimelineStateByThread[threadId] = timelineState
+    return mergeRenderedTimelineMessages(
+        canonicalMessages = timelineState.renderedMessages(),
+        overlayMessages = overlayMessages,
+    )
+}
+
+private fun CodeRoverRepository.finalizeCompletedTurnTimeline(
+    threadId: String,
+    turnId: String?,
+): List<ChatMessage>? {
+    val existingRenderedMessages = state.value.messagesByThread[threadId].orEmpty()
+    if (existingRenderedMessages.isEmpty()) {
+        return null
+    }
+    val canonicalMessages = threadTimelineStateByThread[threadId]?.renderedMessages()
+        ?: existingRenderedMessages.filter(::isCanonicalTimelineMessage)
+    val overlayMessages = existingRenderedMessages.filterNot(::isCanonicalTimelineMessage)
+    val finalizedCanonical = finalizeCompletedTurnMessages(canonicalMessages, turnId)
+    val finalizedOverlay = finalizeCompletedTurnMessages(overlayMessages, turnId)
+    threadTimelineStateByThread[threadId] = ThreadTimelineState(finalizedCanonical)
+    return mergeRenderedTimelineMessages(
+        canonicalMessages = finalizedCanonical,
+        overlayMessages = finalizedOverlay,
+    )
+}
+
 private fun String.trimForCache(maxChars: Int): String {
     if (length <= maxChars) {
         return this
@@ -6116,14 +6252,19 @@ private fun CodeRoverRepository.upsertThreadTimelineMessage(message: ChatMessage
 private fun CodeRoverRepository.mergeCanonicalHistoryIntoTimelineState(
     threadId: String,
     historyMessages: List<ChatMessage>,
+    mode: String?,
     activeThreadIds: Set<String>,
     runningThreadIds: Set<String>,
 ): List<ChatMessage> {
     val overlayMessages = state.value.messagesByThread[threadId].orEmpty().filterNot(::isCanonicalTimelineMessage)
-    val timelineState = threadTimelineStateByThread[threadId]
-        ?: ThreadTimelineState(
-            state.value.messagesByThread[threadId].orEmpty().filter(::isCanonicalTimelineMessage),
-        )
+    val existingCanonicalMessages = threadTimelineStateByThread[threadId]?.renderedMessages()
+        ?: state.value.messagesByThread[threadId].orEmpty().filter(::isCanonicalTimelineMessage)
+    val seededCanonicalMessages = seedCanonicalMessagesForHistoryMerge(
+        existingCanonicalMessages = existingCanonicalMessages,
+        incomingMessages = historyMessages,
+        mode = mode,
+    )
+    val timelineState = ThreadTimelineState(seededCanonicalMessages)
     historyMessages.forEach { message ->
         val reconciled = timelineState.message(message.id)?.let { existing ->
             reconcileExistingTimelineMessage(
@@ -6139,7 +6280,7 @@ private fun CodeRoverRepository.mergeCanonicalHistoryIntoTimelineState(
     return mergeRenderedTimelineMessages(timelineState.renderedMessages(), overlayMessages)
 }
 
-private fun reconcileExistingTimelineMessage(
+internal fun reconcileExistingTimelineMessage(
     localMessage: ChatMessage,
     serverMessage: ChatMessage,
     activeThreadIds: Set<String>,
@@ -6148,19 +6289,50 @@ private fun reconcileExistingTimelineMessage(
     val threadIsActive = localMessage.threadId in activeThreadIds || localMessage.threadId in runningThreadIds
     val preservesRunningPresentation = threadIsActive &&
         (localMessage.turnId == null || serverMessage.turnId == null || localMessage.turnId == serverMessage.turnId)
-
-    val mergedText = when {
+    val nextText = when {
         serverMessage.text.isBlank() -> localMessage.text
-        preservesRunningPresentation && localMessage.isStreaming -> {
-            if (serverMessage.text.length >= localMessage.text.length) serverMessage.text else localMessage.text
+        localMessage.role == MessageRole.ASSISTANT -> {
+            if (preservesRunningPresentation || shouldPreserveMoreRecentLocalText(
+                    localText = localMessage.text,
+                    incomingText = serverMessage.text,
+                )
+            ) {
+                mergeStreamingSnapshotText(existingText = localMessage.text, incomingText = serverMessage.text)
+            } else {
+                serverMessage.text
+            }
         }
+
+        localMessage.role == MessageRole.SYSTEM -> {
+            val supportsStaleSnapshotProtection = localMessage.kind in setOf(
+                MessageKind.THINKING,
+                MessageKind.PLAN,
+                MessageKind.SUBAGENT_ACTION,
+                MessageKind.CHAT,
+            )
+            if ((preservesRunningPresentation && localMessage.isStreaming) ||
+                (supportsStaleSnapshotProtection && shouldPreserveMoreRecentLocalText(
+                    localText = localMessage.text,
+                    incomingText = serverMessage.text,
+                ))
+            ) {
+                mergeStreamingSnapshotText(existingText = localMessage.text, incomingText = serverMessage.text)
+            } else {
+                serverMessage.text
+            }
+        }
+
         else -> serverMessage.text
     }
 
     return localMessage.copy(
-        role = if (localMessage.role == MessageRole.ASSISTANT || serverMessage.role != MessageRole.SYSTEM) serverMessage.role else localMessage.role,
+        role = if (localMessage.role == MessageRole.ASSISTANT || serverMessage.role != MessageRole.SYSTEM) {
+            serverMessage.role
+        } else {
+            localMessage.role
+        },
         kind = if (localMessage.kind == MessageKind.CHAT) serverMessage.kind else localMessage.kind,
-        text = mergedText,
+        text = nextText,
         turnId = localMessage.turnId ?: serverMessage.turnId,
         itemId = localMessage.itemId ?: serverMessage.itemId,
         isStreaming = if (preservesRunningPresentation) {
@@ -6171,13 +6343,146 @@ private fun reconcileExistingTimelineMessage(
         attachments = if (localMessage.attachments.isEmpty()) serverMessage.attachments else localMessage.attachments,
         fileChanges = if (localMessage.fileChanges.isEmpty()) serverMessage.fileChanges else localMessage.fileChanges,
         commandState = localMessage.commandState ?: serverMessage.commandState,
+        subagentAction = localMessage.subagentAction ?: serverMessage.subagentAction,
         planState = localMessage.planState ?: serverMessage.planState,
         structuredUserInputRequest = localMessage.structuredUserInputRequest ?: serverMessage.structuredUserInputRequest,
         providerItemId = localMessage.providerItemId ?: serverMessage.providerItemId,
         timelineOrdinal = localMessage.timelineOrdinal ?: serverMessage.timelineOrdinal,
-        timelineStatus = localMessage.timelineStatus ?: serverMessage.timelineStatus,
+        timelineStatus = serverMessage.timelineStatus ?: localMessage.timelineStatus,
         orderIndex = localMessage.timelineOrdinal ?: serverMessage.timelineOrdinal ?: localMessage.orderIndex,
     )
+}
+
+internal fun seedCanonicalMessagesForHistoryMerge(
+    existingCanonicalMessages: List<ChatMessage>,
+    incomingMessages: List<ChatMessage>,
+    mode: String?,
+): List<ChatMessage> {
+    return if (mode == "tail") {
+        canonicalMessagesRetainedOutsideTailCoverage(existingCanonicalMessages, incomingMessages)
+    } else {
+        existingCanonicalMessages
+    }
+}
+
+internal fun canonicalMessagesRetainedOutsideTailCoverage(
+    existingCanonicalMessages: List<ChatMessage>,
+    incomingMessages: List<ChatMessage>,
+): List<ChatMessage> {
+    if (existingCanonicalMessages.isEmpty() || incomingMessages.isEmpty()) {
+        return existingCanonicalMessages
+    }
+
+    val incomingIds = incomingMessages.mapTo(mutableSetOf(), ChatMessage::id)
+    val oldestIncomingOrdinal = incomingMessages.mapNotNull(ChatMessage::timelineOrdinal).minOrNull()
+    val oldestIncomingDate = incomingMessages.minOfOrNull(ChatMessage::createdAt) ?: Long.MIN_VALUE
+
+    return existingCanonicalMessages.filter { message ->
+        if (message.id in incomingIds) {
+            return@filter true
+        }
+
+        if (oldestIncomingOrdinal != null && message.timelineOrdinal != null) {
+            return@filter message.timelineOrdinal < oldestIncomingOrdinal
+        }
+
+        message.createdAt < oldestIncomingDate
+    }
+}
+
+internal fun normalizedMessageText(text: String): String {
+    return text.trim()
+}
+
+internal fun mergeStreamingSnapshotText(existingText: String, incomingText: String): String {
+    if (existingText.isEmpty()) {
+        return incomingText
+    }
+    if (incomingText == existingText) {
+        return existingText
+    }
+    if (existingText.endsWith(incomingText)) {
+        return existingText
+    }
+    if (incomingText.length > existingText.length && incomingText.startsWith(existingText)) {
+        return incomingText
+    }
+    if (existingText.length > incomingText.length && existingText.startsWith(incomingText)) {
+        return existingText
+    }
+
+    val maxOverlap = minOf(existingText.length, incomingText.length)
+    for (overlap in maxOverlap downTo 1) {
+        if (existingText.takeLast(overlap) == incomingText.take(overlap)) {
+            return existingText + incomingText.drop(overlap)
+        }
+    }
+
+    return existingText + incomingText
+}
+
+internal fun shouldPreserveMoreRecentLocalText(localText: String, incomingText: String): Boolean {
+    val normalizedLocal = normalizedMessageText(localText)
+    val normalizedIncoming = normalizedMessageText(incomingText)
+    if (normalizedLocal.isEmpty() || normalizedIncoming.isEmpty() || normalizedLocal == normalizedIncoming) {
+        return false
+    }
+    if (normalizedLocal.length > normalizedIncoming.length && normalizedLocal.startsWith(normalizedIncoming)) {
+        return true
+    }
+    return mergeStreamingSnapshotText(existingText = localText, incomingText = incomingText) == localText
+}
+
+internal fun shouldFinalizeSupersededCanonicalStreamingMessage(message: ChatMessage): Boolean {
+    if (message.role == MessageRole.ASSISTANT) {
+        return true
+    }
+    return when (message.kind) {
+        MessageKind.THINKING, MessageKind.PLAN, MessageKind.SUBAGENT_ACTION, MessageKind.CHAT -> true
+        MessageKind.FILE_CHANGE, MessageKind.COMMAND_EXECUTION, MessageKind.USER_INPUT_PROMPT -> false
+    }
+}
+
+internal fun shouldPruneThinkingRowAfterTurnCompletion(message: ChatMessage): Boolean {
+    val trimmedText = message.text.trim()
+    if (trimmedText.isEmpty()) {
+        return true
+    }
+    if (trimmedText.equals("Thinking...", ignoreCase = true)) {
+        return true
+    }
+    val withoutPrefix = Regex("""(?is)^\s*thinking(?:\.\.\.)?\s*""").replace(trimmedText, "")
+    return withoutPrefix.trim().isEmpty()
+}
+
+internal fun finalizeCompletedTurnMessages(
+    messages: List<ChatMessage>,
+    turnId: String?,
+): List<ChatMessage> {
+    val normalizedTurnId = normalizedIdentifier(turnId)
+    val closedMessages = messages.map { message ->
+        val belongsToTurn = if (normalizedTurnId != null) {
+            message.turnId == normalizedTurnId || message.turnId == null
+        } else {
+            true
+        }
+        if (belongsToTurn && message.isStreaming && (message.role == MessageRole.SYSTEM || message.role == MessageRole.ASSISTANT)) {
+            message.copy(isStreaming = false)
+        } else {
+            message
+        }
+    }
+    return closedMessages.filterNot { message ->
+        val belongsToTurn = if (normalizedTurnId != null) {
+            message.turnId == normalizedTurnId || message.turnId == null
+        } else {
+            true
+        }
+        belongsToTurn &&
+            message.role == MessageRole.SYSTEM &&
+            message.kind == MessageKind.THINKING &&
+            shouldPruneThinkingRowAfterTurnCompletion(message)
+    }
 }
 
 private fun mergeHistoryMessages(existing: List<ChatMessage>, history: List<ChatMessage>): List<ChatMessage> {
@@ -6193,6 +6498,7 @@ private fun mergeHistoryMessages(existing: List<ChatMessage>, history: List<Chat
             previous.attachments.isEmpty() && message.attachments.isNotEmpty() -> message
             previous.fileChanges.isEmpty() && message.fileChanges.isNotEmpty() -> message
             previous.commandState == null && message.commandState != null -> message
+            previous.subagentAction == null && message.subagentAction != null -> message
             previous.planState == null && message.planState != null -> message
             previous.structuredUserInputRequest == null && message.structuredUserInputRequest != null -> message
             previous.text.length < message.text.length -> message

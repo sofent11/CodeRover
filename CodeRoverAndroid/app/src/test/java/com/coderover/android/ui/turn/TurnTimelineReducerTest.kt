@@ -9,8 +9,12 @@ import org.junit.Test
 
 class TurnTimelineReducerTest {
     @Test
-    fun projectTimelineMessagesKeepsLatestDuplicateSubagentActionPerTurn() {
-        val baseAction = SubagentAction(
+    fun projectTimelineMessagesPrefersSubagentActionRowWithResolvedAgents() {
+        val placeholderAction = SubagentAction(
+            tool = "spawnAgent",
+            status = "in_progress",
+        )
+        val resolvedAction = SubagentAction(
             tool = "spawnAgent",
             status = "in_progress",
             receiverThreadIds = listOf("child-1"),
@@ -24,7 +28,8 @@ class TurnTimelineReducerTest {
                 text = "Spawning 1 agent",
                 turnId = "turn-1",
                 orderIndex = 1,
-                subagentAction = baseAction,
+                itemId = "item-1",
+                subagentAction = placeholderAction,
             ),
             ChatMessage(
                 id = "subagent-2",
@@ -34,13 +39,15 @@ class TurnTimelineReducerTest {
                 text = "Spawning 1 agent",
                 turnId = "turn-1",
                 orderIndex = 2,
-                subagentAction = baseAction,
+                itemId = "item-1",
+                subagentAction = resolvedAction,
             ),
         )
 
         val projected = projectTimelineMessages(messages)
 
         assertEquals(listOf("subagent-2"), projected.map { it.id })
+        assertEquals(listOf("child-1"), projected.single().subagentAction?.agentRows?.map { it.threadId })
     }
 
     @Test
@@ -69,6 +76,125 @@ class TurnTimelineReducerTest {
         val projected = projectTimelineMessages(messages)
 
         assertEquals(listOf("file-2"), projected.map { it.id })
+    }
+
+    @Test
+    fun projectTimelineMessagesDedupesFileChangesByFallbackTextWhenSummaryKeyIsMissing() {
+        val messages = listOf(
+            ChatMessage(
+                id = "file-1",
+                threadId = "thread-1",
+                role = MessageRole.SYSTEM,
+                kind = MessageKind.FILE_CHANGE,
+                text = "Updated file list:\nfoo.txt",
+                turnId = "turn-1",
+                orderIndex = 1,
+            ),
+            ChatMessage(
+                id = "file-2",
+                threadId = "thread-1",
+                role = MessageRole.SYSTEM,
+                kind = MessageKind.FILE_CHANGE,
+                text = "Updated file list:\nfoo.txt",
+                turnId = "turn-1",
+                orderIndex = 2,
+            ),
+        )
+
+        val projected = projectTimelineMessages(messages)
+
+        assertEquals(listOf("file-2"), projected.map { it.id })
+    }
+
+    @Test
+    fun projectTimelineMessagesReplacesTurnScopedAssistantPlaceholderWithConcreteItemMessage() {
+        val messages = listOf(
+            ChatMessage(
+                id = "assistant-1",
+                threadId = "thread-1",
+                role = MessageRole.ASSISTANT,
+                kind = MessageKind.CHAT,
+                text = "Final answer",
+                turnId = "turn-1",
+                orderIndex = 1,
+            ),
+            ChatMessage(
+                id = "assistant-2",
+                threadId = "thread-1",
+                role = MessageRole.ASSISTANT,
+                kind = MessageKind.CHAT,
+                text = "Final answer",
+                turnId = "turn-1",
+                itemId = "item-1",
+                orderIndex = 2,
+            ),
+        )
+
+        val projected = projectTimelineMessages(messages)
+
+        assertEquals(listOf("assistant-2"), projected.map { it.id })
+    }
+
+    @Test
+    fun projectTimelineMessagesPreservesInterleavedThinkingAssistantOrderWithinTurn() {
+        val messages = listOf(
+            ChatMessage(
+                id = "assistant-1",
+                threadId = "thread-1",
+                role = MessageRole.ASSISTANT,
+                kind = MessageKind.CHAT,
+                text = "First answer",
+                turnId = "turn-1",
+                itemId = "assistant-item-1",
+                orderIndex = 3,
+            ),
+            ChatMessage(
+                id = "thinking-1",
+                threadId = "thread-1",
+                role = MessageRole.SYSTEM,
+                kind = MessageKind.THINKING,
+                text = "Thinking...",
+                turnId = "turn-1",
+                itemId = "thinking-item-1",
+                orderIndex = 2,
+            ),
+            ChatMessage(
+                id = "thinking-2",
+                threadId = "thread-1",
+                role = MessageRole.SYSTEM,
+                kind = MessageKind.THINKING,
+                text = "More thinking",
+                turnId = "turn-1",
+                itemId = "thinking-item-2",
+                orderIndex = 4,
+            ),
+            ChatMessage(
+                id = "assistant-2",
+                threadId = "thread-1",
+                role = MessageRole.ASSISTANT,
+                kind = MessageKind.CHAT,
+                text = "Second answer",
+                turnId = "turn-1",
+                itemId = "assistant-item-2",
+                orderIndex = 5,
+            ),
+            ChatMessage(
+                id = "user-1",
+                threadId = "thread-1",
+                role = MessageRole.USER,
+                kind = MessageKind.CHAT,
+                text = "Question",
+                turnId = "turn-1",
+                orderIndex = 1,
+            ),
+        )
+
+        val projected = projectTimelineMessages(messages)
+
+        assertEquals(
+            listOf("user-1", "thinking-1", "assistant-1", "thinking-2", "assistant-2"),
+            projected.map { it.id },
+        )
     }
 
     @Test

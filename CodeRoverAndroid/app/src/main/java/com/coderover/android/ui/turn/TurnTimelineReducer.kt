@@ -173,35 +173,74 @@ private fun intraTurnPriority(message: ChatMessage): Int {
 }
 
 private fun removeDuplicateSubagentActionMessages(messages: List<ChatMessage>): List<ChatMessage> {
-    val latestIndexByKey = mutableMapOf<String, Int>()
-    messages.forEachIndexed { index, message ->
-        val key = duplicateSubagentActionKey(message) ?: return@forEachIndexed
-        latestIndexByKey[key] = index
+    val result = mutableListOf<ChatMessage>()
+    messages.forEach { message ->
+        val action = message.subagentAction
+        if (message.role != MessageRole.SYSTEM || message.kind != MessageKind.SUBAGENT_ACTION || action == null) {
+            result += message
+            return@forEach
+        }
+
+        val previous = result.lastOrNull()
+        val previousAction = previous?.subagentAction
+        if (previous == null ||
+            previousAction == null ||
+            !shouldMergeSubagentActionMessages(
+                previous = previous,
+                previousAction = previousAction,
+                incoming = message,
+                incomingAction = action,
+            )
+        ) {
+            result += message
+            return@forEach
+        }
+
+        result[result.lastIndex] = preferredSubagentActionMessage(previous, message)
     }
-    return messages.filterIndexed { index, message ->
-        val key = duplicateSubagentActionKey(message) ?: return@filterIndexed true
-        latestIndexByKey[key] == index
-    }
+    return result
 }
 
-private fun duplicateSubagentActionKey(message: ChatMessage): String? {
-    if (message.role != MessageRole.SYSTEM || message.kind != MessageKind.SUBAGENT_ACTION) {
-        return null
+private fun shouldMergeSubagentActionMessages(
+    previous: ChatMessage,
+    previousAction: com.coderover.android.data.model.SubagentAction,
+    incoming: ChatMessage,
+    incomingAction: com.coderover.android.data.model.SubagentAction,
+): Boolean {
+    if (previous.role != MessageRole.SYSTEM ||
+        previous.kind != MessageKind.SUBAGENT_ACTION ||
+        previous.threadId != incoming.threadId ||
+        normalizedIdentifier(previous.turnId) != normalizedIdentifier(incoming.turnId) ||
+        previousAction.normalizedTool != incomingAction.normalizedTool ||
+        previous.text != incoming.text
+    ) {
+        return false
     }
-    val turnId = normalizedIdentifier(message.turnId) ?: return null
-    val action = message.subagentAction
-    val threadIds = action?.agentRows?.map { normalizedIdentifier(it.threadId) ?: it.threadId }
-        ?.filter(String::isNotBlank)
-        ?.sorted()
-        ?.joinToString(",")
-        .orEmpty()
-    val tool = action?.normalizedTool ?: "tool"
-    val status = action?.status?.trim()?.lowercase().orEmpty()
-    val text = message.text.trim()
-    if (text.isEmpty() && threadIds.isEmpty()) {
-        return null
+
+    val previousItemId = normalizedIdentifier(previous.itemId)
+    val incomingItemId = normalizedIdentifier(incoming.itemId)
+    if (previousItemId == null || incomingItemId == null || previousItemId != incomingItemId) {
+        return false
     }
-    return "$turnId|$tool|$status|$threadIds|$text"
+
+    val previousRows = previousAction.agentRows
+    val incomingRows = incomingAction.agentRows
+    if (previousRows.isEmpty() && incomingRows.isNotEmpty()) {
+        return true
+    }
+    return previousRows == incomingRows
+}
+
+private fun preferredSubagentActionMessage(previous: ChatMessage, incoming: ChatMessage): ChatMessage {
+    val previousRows = previous.subagentAction?.agentRows.orEmpty()
+    val incomingRows = incoming.subagentAction?.agentRows.orEmpty()
+    if (previousRows.isEmpty() && incomingRows.isNotEmpty()) {
+        return incoming
+    }
+    if (incoming.isStreaming != previous.isStreaming) {
+        return if (incoming.isStreaming) previous else incoming
+    }
+    return if (incoming.orderIndex >= previous.orderIndex) incoming else previous
 }
 
 private fun removeHiddenSystemMarkers(messages: List<ChatMessage>): List<ChatMessage> {
@@ -327,6 +366,7 @@ private fun mergeThinkingText(existing: String, incoming: String): String {
 
 private fun removeDuplicateAssistantMessages(messages: List<ChatMessage>): List<ChatMessage> {
     val seenTurnScoped = mutableSetOf<String>()
+    val firstIndexByTurnTextWithoutConcreteItem = mutableMapOf<String, Int>()
     val seenNoTurnByText = mutableMapOf<String, Long>()
     val result = mutableListOf<ChatMessage>()
     messages.forEach { message ->
@@ -341,11 +381,29 @@ private fun removeDuplicateAssistantMessages(messages: List<ChatMessage>): List<
         }
         val turnId = normalizedIdentifier(message.turnId)
         if (turnId != null) {
-            val itemScope = normalizedIdentifier(message.itemId) ?: "no-item"
-            val key = "$turnId|$itemScope|$normalizedText"
-            if (seenTurnScoped.add(key)) {
-                result += message
+            val itemScope = normalizedIdentifier(message.itemId)
+            val key = "$turnId|${itemScope ?: "no-item"}|$normalizedText"
+            if (key in seenTurnScoped) {
+                return@forEach
             }
+
+            val turnTextKey = "$turnId|$normalizedText"
+            if (itemScope != null) {
+                val existingIndex = firstIndexByTurnTextWithoutConcreteItem[turnTextKey]
+                if (existingIndex != null) {
+                    result[existingIndex] = message
+                    seenTurnScoped += key
+                    firstIndexByTurnTextWithoutConcreteItem -= turnTextKey
+                    return@forEach
+                }
+            } else if ("$turnId|no-item|$normalizedText" in seenTurnScoped) {
+                return@forEach
+            } else {
+                firstIndexByTurnTextWithoutConcreteItem[turnTextKey] = result.size
+            }
+
+            seenTurnScoped += key
+            result += message
             return@forEach
         }
         val previousTimestamp = seenNoTurnByText[normalizedText]
@@ -375,8 +433,15 @@ private fun duplicateFileChangeKey(message: ChatMessage): String? {
         return null
     }
     val turnId = normalizedIdentifier(message.turnId) ?: return null
-    val summaryKey = fileChangeDedupeKey(message.text) ?: return null
-    return "$turnId|$summaryKey"
+    val summaryKey = fileChangeDedupeKey(message.text)
+    if (summaryKey != null) {
+        return "$turnId|$summaryKey"
+    }
+    val normalizedText = message.text.trim()
+    if (normalizedText.isEmpty()) {
+        return null
+    }
+    return "$turnId|$normalizedText"
 }
 
 private fun normalizedIdentifier(value: String?): String? {
