@@ -340,4 +340,57 @@ class ThreadSummaryRefreshTest {
             ),
         )
     }
+
+    @Test
+    fun shouldReplaceLocalHistoryWithTailSnapshotSkipsResumeSeededRunningAndVisibleCodex() {
+        val threadId = "thread-1"
+        val codexState = AppState(
+            connectionPhase = ConnectionPhase.CONNECTED,
+            threads = listOf(ThreadSummary(id = threadId, provider = "codex")),
+            selectedThreadId = threadId,
+        )
+
+        assertFalse(
+            shouldReplaceLocalHistoryWithTailSnapshot(
+                state = codexState,
+                resumeSeededHistoryThreadIds = emptySet(),
+                threadId = threadId,
+                hasLocalMessages = true,
+                hasNewestCursor = false,
+            ),
+        )
+
+        assertFalse(
+            shouldReplaceLocalHistoryWithTailSnapshot(
+                state = codexState.copy(runningThreadIds = setOf(threadId)),
+                resumeSeededHistoryThreadIds = emptySet(),
+                threadId = threadId,
+                hasLocalMessages = true,
+                hasNewestCursor = false,
+            ),
+        )
+
+        assertFalse(
+            shouldReplaceLocalHistoryWithTailSnapshot(
+                state = codexState.copy(selectedThreadId = null),
+                resumeSeededHistoryThreadIds = setOf(threadId),
+                threadId = threadId,
+                hasLocalMessages = true,
+                hasNewestCursor = false,
+            ),
+        )
+
+        assertTrue(
+            shouldReplaceLocalHistoryWithTailSnapshot(
+                state = codexState.copy(
+                    threads = listOf(ThreadSummary(id = threadId, provider = "claude")),
+                    selectedThreadId = null,
+                ),
+                resumeSeededHistoryThreadIds = emptySet(),
+                threadId = threadId,
+                hasLocalMessages = true,
+                hasNewestCursor = false,
+            ),
+        )
+    }
 }

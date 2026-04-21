@@ -81,9 +81,12 @@ import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -123,6 +126,9 @@ class CodeRoverRepository(context: Context) {
         val newerCursor: String?,
         val hasOlder: Boolean,
         val hasNewer: Boolean,
+        val servedFromProjection: Boolean,
+        val projectionSource: String?,
+        val syncEpoch: Int,
     )
 
     data class NewerHistoryResult(
@@ -143,6 +149,7 @@ class CodeRoverRepository(context: Context) {
     private val threadHistoryRefreshMutex = Mutex()
     private val olderHistoryBackfillMutex = Mutex()
     private val realtimeHistoryCatchUpMutex = Mutex()
+    private val threadSyncCoordinator = ThreadSyncCoordinator()
     private val orderCounter = AtomicInteger(0)
     private val connectionEpoch = AtomicLong(0)
     private val nextClientGeneration = AtomicLong(0)
@@ -156,6 +163,11 @@ class CodeRoverRepository(context: Context) {
     private val olderHistoryBackfillTaskByThread = mutableMapOf<String, Job>()
     private val pendingHistoryChangedRefreshThreadIds = mutableSetOf<String>()
     private val historyChangedRefreshTaskByThread = mutableMapOf<String, Job>()
+    private val threadResumeTaskByThreadId = mutableMapOf<String, Deferred<ThreadSummary?>>()
+    private val threadResumeRequestSignatureByThreadId = mutableMapOf<String, ThreadResumeRequestSignature>()
+    private val threadHistoryLoadTaskByThreadId = mutableMapOf<String, Job>()
+    private val canonicalHistoryReconcileTaskByThreadId = mutableMapOf<String, Job>()
+    private val resumeSeededHistoryThreadIds = mutableSetOf<String>()
     private var selectedThreadSyncJob: Job? = null
     private val associatedManagedWorktreePathByThreadId = mutableMapOf<String, String>()
     private val authoritativeProjectPathByThreadId = mutableMapOf<String, String>()
@@ -738,6 +750,7 @@ class CodeRoverRepository(context: Context) {
         val updatedThreads = current.threads.filterNot { it.id == threadId }
         val updatedMessages = current.messagesByThread - threadId
         val newSelectedId = if (current.selectedThreadId == threadId) null else current.selectedThreadId
+        clearThreadSyncState(threadId)
         rememberAssociatedManagedWorktreePath(threadId, null)
         updateState { copy(threads = updatedThreads, messagesByThread = updatedMessages, selectedThreadId = newSelectedId) }
         scope.launch {
@@ -2169,7 +2182,11 @@ class CodeRoverRepository(context: Context) {
         if (shouldPreferTailReloadForManagedHistory(threadId)) {
             loadTailThreadHistory(
                 threadId = threadId,
-                replaceLocalHistory = hasLocalMessages && newestCursor == null,
+                replaceLocalHistory = shouldReplaceLocalHistoryWithTailSnapshot(
+                    threadId = threadId,
+                    hasLocalMessages = hasLocalMessages,
+                    hasNewestCursor = newestCursor != null,
+                ),
                 fallbackThreadObject = null,
                 prefetchOlderInBackground = !hasLocalMessages,
             )
@@ -2183,7 +2200,11 @@ class CodeRoverRepository(context: Context) {
         } else {
             loadTailThreadHistory(
                 threadId = threadId,
-                replaceLocalHistory = hasLocalMessages && newestCursor == null,
+                replaceLocalHistory = shouldReplaceLocalHistoryWithTailSnapshot(
+                    threadId = threadId,
+                    hasLocalMessages = hasLocalMessages,
+                    hasNewestCursor = newestCursor != null,
+                ),
                 fallbackThreadObject = null,
                 prefetchOlderInBackground = !hasLocalMessages,
             )
@@ -2238,6 +2259,16 @@ class CodeRoverRepository(context: Context) {
             latestLimit = 50,
         )
         val historyWindow = decodeHistoryWindow(historyResult, history)
+        val syncMetadata = decodeThreadSyncMetadata(historyResult ?: threadObject)
+        if (!acceptThreadSyncMetadata(
+                threadId = threadId,
+                syncEpoch = historyWindow.syncEpoch,
+                sourceKind = historyWindow.projectionSource ?: syncMetadata.sourceKind,
+                generation = currentRefreshGeneration(threadId),
+            )
+        ) {
+            return
+        }
         val activeTurnId = resolveActiveTurnId(summaryThreadObject)
         applyHistoryWindow(
             threadId = threadId,
@@ -2277,6 +2308,16 @@ class CodeRoverRepository(context: Context) {
         extractContextWindowUsageIfAvailable(threadId, threadObject)
         val history = decodeMessagesFromThreadRead(threadId, threadObject)
         val historyWindow = decodeHistoryWindow(result, history)
+        val syncMetadata = decodeThreadSyncMetadata(result)
+        if (!acceptThreadSyncMetadata(
+                threadId = threadId,
+                syncEpoch = historyWindow.syncEpoch,
+                sourceKind = historyWindow.projectionSource ?: syncMetadata.sourceKind,
+                generation = currentRefreshGeneration(threadId),
+            )
+        ) {
+            return NewerHistoryResult(cursor, historyWindow.hasNewer, false, 0)
+        }
         val activeTurnId = resolveActiveTurnId(threadObject)
         applyHistoryWindow(
             threadId = threadId,
@@ -2329,6 +2370,16 @@ class CodeRoverRepository(context: Context) {
             val threadObject = result?.threadPayload() ?: return@onSuccess
             val history = decodeMessagesFromThreadRead(threadId, threadObject)
             val historyWindow = decodeHistoryWindow(result, history)
+            val syncMetadata = decodeThreadSyncMetadata(result)
+            if (!acceptThreadSyncMetadata(
+                    threadId = threadId,
+                    syncEpoch = historyWindow.syncEpoch,
+                    sourceKind = historyWindow.projectionSource ?: syncMetadata.sourceKind,
+                    generation = currentRefreshGeneration(threadId),
+                )
+            ) {
+                return@onSuccess
+            }
             applyHistoryWindow(
                 threadId = threadId,
                 mode = "before",
@@ -2358,6 +2409,9 @@ class CodeRoverRepository(context: Context) {
     ) {
         val currentState = state.value
         val existingMessages = currentState.messagesByThread[threadId].orEmpty()
+        val mergedCanonicalWindow = history.any(::isCanonicalTimelineMessage) && !replaceLocalHistory
+        val shouldMarkForCanonicalReconcile = mergedCanonicalWindow &&
+            (currentState.runningThreadIds.contains(threadId) || threadId in resumeSeededHistoryThreadIds)
         val renderedMessages = if (history.any(::isCanonicalTimelineMessage)) {
             val canonicalMessages = if (replaceLocalHistory) {
                 synchronizeThreadTimelineState(
@@ -2416,6 +2470,16 @@ class CodeRoverRepository(context: Context) {
                 },
             )
         }
+
+        if (shouldMarkForCanonicalReconcile) {
+            markThreadNeedingCanonicalHistoryReconcile(threadId)
+        } else if (!state.value.threadHasActiveOrRunningTurn(threadId) && threadId !in resumeSeededHistoryThreadIds) {
+            markThreadCanonicalHistoryReconciled(threadId)
+        }
+
+        if (!state.value.threadHasActiveOrRunningTurn(threadId)) {
+            scheduleCanonicalHistoryReconcileIfNeeded(threadId)
+        }
     }
 
     private fun newestHistoryCursor(threadId: String): String? {
@@ -2472,7 +2536,11 @@ class CodeRoverRepository(context: Context) {
                 }
                 loadTailThreadHistory(
                     threadId = threadId,
-                    replaceLocalHistory = state.value.messagesByThread[threadId].orEmpty().isNotEmpty(),
+                    replaceLocalHistory = shouldReplaceLocalHistoryWithTailSnapshot(
+                        threadId = threadId,
+                        hasLocalMessages = state.value.messagesByThread[threadId].orEmpty().isNotEmpty(),
+                        hasNewestCursor = normalizedHistoryCursor(state.value.historyStateByThread[threadId]?.newestCursor) != null,
+                    ),
                     fallbackThreadObject = fallbackThreadObject,
                 )
                 break
@@ -4182,6 +4250,17 @@ class CodeRoverRepository(context: Context) {
 
     private suspend fun handleCanonicalTimelineTurnUpdated(params: JsonObject?) {
         val payload = params ?: return
+        state.value.resolveRealtimeThreadId(payload)?.let { threadId ->
+            val syncMetadata = decodeThreadSyncMetadata(payload)
+            if (!acceptThreadSyncMetadata(
+                    threadId = threadId,
+                    syncEpoch = syncMetadata.syncEpoch,
+                    sourceKind = syncMetadata.sourceKind,
+                )
+            ) {
+                return
+            }
+        }
         val normalizedState = normalizeMethodToken(payload.string("state").orEmpty())
         if (normalizedState == "running") {
             val threadId = state.value.resolveRealtimeThreadId(payload) ?: return
@@ -4205,6 +4284,15 @@ class CodeRoverRepository(context: Context) {
         val threadId = state.value.resolveRealtimeThreadId(payload) ?: return
         val timelineItemId = payload.resolveTimelineItemId() ?: return
         val turnId = payload.resolveTurnId() ?: state.value.activeTurnIdByThread[threadId]
+        val syncMetadata = decodeThreadSyncMetadata(payload)
+        if (!acceptThreadSyncMetadata(
+                threadId = threadId,
+                syncEpoch = syncMetadata.syncEpoch,
+                sourceKind = syncMetadata.sourceKind,
+            )
+        ) {
+            return
+        }
         if (!handleRealtimeHistoryEvent(
                 threadId = threadId,
                 turnId = turnId,
@@ -4289,14 +4377,19 @@ class CodeRoverRepository(context: Context) {
                 failedThreadIds = if (terminalState == ThreadRunBadgeState.FAILED && selectedThreadId != threadId) failedThreadIds + threadId else failedThreadIds,
             )
         }
+        resumeSeededHistoryThreadIds.remove(threadId)
         if (state.value.selectedThreadId == threadId) {
             scope.launch {
                 runCatching {
                     refreshThreadHistory(threadId, reason = "turn-completed")
                 }.onFailure { failure ->
                     Log.w(TAG, "post-completion tail refresh failed threadId=$threadId", failure)
+                }.onSuccess {
+                    scheduleCanonicalHistoryReconcileIfNeeded(threadId)
                 }
             }
+        } else {
+            scheduleCanonicalHistoryReconcileIfNeeded(threadId)
         }
         checkAndSendNextQueuedDraft(threadId)
     }
@@ -4332,6 +4425,8 @@ class CodeRoverRepository(context: Context) {
                     pendingRealtimeSeededTurnIdByThread = pendingRealtimeSeededTurnIdByThread - threadId,
                 )
             }
+            resumeSeededHistoryThreadIds.remove(threadId)
+            scheduleCanonicalHistoryReconcileIfNeeded(threadId)
         }
     }
 
@@ -4341,6 +4436,16 @@ class CodeRoverRepository(context: Context) {
         val threadId = payload.resolveThreadId() ?: activeThreadId ?: return
 
         if (activeThreadId != threadId) {
+            return
+        }
+
+        val syncMetadata = decodeThreadSyncMetadata(payload)
+        if (!acceptThreadSyncMetadata(
+                threadId = threadId,
+                syncEpoch = syncMetadata.syncEpoch,
+                sourceKind = syncMetadata.sourceKind,
+            )
+        ) {
             return
         }
 
@@ -4867,28 +4972,117 @@ class CodeRoverRepository(context: Context) {
         val normalizedThreadId = normalizedIdentifier(threadId) ?: return null
         val normalizedPreferredProjectPath = normalizedProjectPath(preferredProjectPath)
             ?: state.value.threads.firstOrNull { it.id == normalizedThreadId }?.normalizedProjectPath
-        val params = buildJsonObject(
-            "threadId" to JsonPrimitive(normalizedThreadId),
-            "cwd" to normalizedPreferredProjectPath?.let(::JsonPrimitive),
-            "model" to modelIdentifierOverride?.trim()?.takeIf(String::isNotEmpty)?.let(::JsonPrimitive),
+        val requestedSignature = ThreadResumeRequestSignature(
+            projectPath = normalizedPreferredProjectPath,
+            modelIdentifier = modelIdentifierOverride?.trim()?.takeIf(String::isNotEmpty),
         )
-        val response = activeClient().sendRequest("thread/resume", params)?.jsonObjectOrNull() ?: return null
-        val payload = response["result"]?.jsonObjectOrNull() ?: response
-        val threadPayload = payload["thread"]?.jsonObjectOrNull() ?: return null
-        val decodedThread = ThreadSummary.fromJson(threadPayload)
-            ?.let { decoded ->
-                if (decoded.normalizedProjectPath == null && normalizedPreferredProjectPath != null) {
-                    decoded.copy(cwd = normalizedPreferredProjectPath)
-                } else {
-                    decoded
+
+        threadResumeTaskByThreadId[normalizedThreadId]?.let { existingTask ->
+            if (threadResumeRequestSignatureByThreadId[normalizedThreadId] == requestedSignature) {
+                return existingTask.await()
+            }
+            threadSyncCoordinator.invalidateRefreshGeneration(normalizedThreadId)
+            existingTask.cancel()
+        }
+
+        val refreshGeneration = currentRefreshGeneration(normalizedThreadId)
+        lateinit var task: Deferred<ThreadSummary?>
+        task = scope.async(start = CoroutineStart.LAZY) {
+            try {
+                val params = buildJsonObject(
+                    "threadId" to JsonPrimitive(normalizedThreadId),
+                    "cwd" to normalizedPreferredProjectPath?.let(::JsonPrimitive),
+                    "model" to requestedSignature.modelIdentifier?.let(::JsonPrimitive),
+                )
+                val response = activeClient().sendRequest("thread/resume", params)?.jsonObjectOrNull() ?: return@async null
+                if (!isCurrentRefreshGeneration(normalizedThreadId, refreshGeneration)) {
+                    return@async null
+                }
+
+                val payload = response["result"]?.jsonObjectOrNull() ?: response
+                val syncMetadata = decodeThreadSyncMetadata(payload)
+                if (!acceptThreadSyncMetadata(
+                        threadId = normalizedThreadId,
+                        syncEpoch = syncMetadata.syncEpoch,
+                        sourceKind = syncMetadata.sourceKind,
+                        generation = refreshGeneration,
+                    )
+                ) {
+                    return@async null
+                }
+
+                val threadPayload = payload["thread"]?.jsonObjectOrNull() ?: return@async null
+                val decodedThread = ThreadSummary.fromJson(threadPayload)
+                    ?.let { decoded ->
+                        if (decoded.normalizedProjectPath == null && normalizedPreferredProjectPath != null) {
+                            decoded.copy(cwd = normalizedPreferredProjectPath)
+                        } else {
+                            decoded
+                        }
+                    }
+                    ?: return@async null
+
+                updateState {
+                    copy(
+                        threads = upsertThread(
+                            threads,
+                            decodedThread.copy(syncState = ThreadSyncState.LIVE),
+                            treatAsServerState = true,
+                        ),
+                    )
+                }
+
+                extractContextWindowUsageIfAvailable(normalizedThreadId, threadPayload)
+                val historyMessages = decodeMessagesFromThreadRead(normalizedThreadId, threadPayload)
+                if (historyMessages.isNotEmpty()) {
+                    val renderedMessages = if (historyMessages.any(::isCanonicalTimelineMessage)) {
+                        mergeCanonicalHistoryIntoTimelineState(
+                            threadId = normalizedThreadId,
+                            historyMessages = historyMessages,
+                            activeThreadIds = state.value.activeTurnIdByThread.keys,
+                            runningThreadIds = state.value.runningThreadIds,
+                        )
+                    } else {
+                        mergeHistoryMessages(
+                            state.value.messagesByThread[normalizedThreadId].orEmpty(),
+                            historyMessages,
+                        )
+                    }
+                    updateState {
+                        copy(
+                            messagesByThread = messagesByThread + (normalizedThreadId to renderedMessages),
+                            threads = threads.refreshThreadSummaryFromMessages(normalizedThreadId, renderedMessages),
+                        )
+                    }
+
+                    if (decodedThread.provider.equals("codex", ignoreCase = true) &&
+                        normalizedHistoryCursor(state.value.historyStateByThread[normalizedThreadId]?.newestCursor) == null
+                    ) {
+                        resumeSeededHistoryThreadIds += normalizedThreadId
+                    }
+
+                    if (state.value.threadHasActiveOrRunningTurn(normalizedThreadId) ||
+                        normalizedThreadId in resumeSeededHistoryThreadIds
+                    ) {
+                        markThreadNeedingCanonicalHistoryReconcile(normalizedThreadId)
+                    } else {
+                        markThreadCanonicalHistoryReconciled(normalizedThreadId)
+                    }
+                }
+
+                state.value.threads.firstOrNull { it.id == decodedThread.id } ?: decodedThread
+            } finally {
+                if (threadResumeTaskByThreadId[normalizedThreadId] === task) {
+                    threadResumeTaskByThreadId.remove(normalizedThreadId)
+                    threadResumeRequestSignatureByThreadId.remove(normalizedThreadId)
                 }
             }
-            ?: return null
-
-        updateState {
-            copy(threads = upsertThread(threads, decodedThread.copy(syncState = ThreadSyncState.LIVE), treatAsServerState = true))
         }
-        return state.value.threads.firstOrNull { it.id == decodedThread.id } ?: decodedThread
+
+        threadResumeTaskByThreadId[normalizedThreadId] = task
+        threadResumeRequestSignatureByThreadId[normalizedThreadId] = requestedSignature
+        task.start()
+        return task.await()
     }
 
     private fun rememberSuccessfulTransport(url: String) {
@@ -5047,18 +5241,23 @@ class CodeRoverRepository(context: Context) {
     }
 
     private suspend fun beginThreadHistoryRefresh(threadId: String): Boolean {
+        val currentJob = kotlinx.coroutines.currentCoroutineContext()[Job]
         val didStart = threadHistoryRefreshMutex.withLock {
             if (threadHistoryRefreshInFlight.contains(threadId)) {
                 threadHistoryRefreshPending += threadId
                 false
             } else {
                 threadHistoryRefreshInFlight += threadId
+                if (currentJob != null) {
+                    threadHistoryLoadTaskByThreadId[threadId] = currentJob
+                }
                 true
             }
         }
         if (!didStart) {
             return false
         }
+        threadSyncCoordinator.invalidateRefreshGeneration(threadId)
         updateState {
             copy(
                 historyStateByThread = historyStateByThread + (
@@ -5072,7 +5271,9 @@ class CodeRoverRepository(context: Context) {
     private suspend fun endThreadHistoryRefresh(threadId: String) {
         val shouldRerun = threadHistoryRefreshMutex.withLock {
             threadHistoryRefreshInFlight.remove(threadId)
-            threadHistoryRefreshPending.remove(threadId)
+            val rerun = threadHistoryRefreshPending.remove(threadId)
+            threadHistoryLoadTaskByThreadId.remove(threadId)
+            rerun
         }
         updateState {
             val currentHistoryState = historyStateByThread[threadId] ?: return@updateState this
@@ -5097,6 +5298,117 @@ class CodeRoverRepository(context: Context) {
         return threadHistoryRefreshMutex.withLock {
             threadHistoryRefreshInFlight.contains(threadId)
         }
+    }
+
+    private fun currentRefreshGeneration(threadId: String): Long {
+        return threadSyncCoordinator.currentRefreshGeneration(threadId)
+    }
+
+    private fun isCurrentRefreshGeneration(threadId: String, generation: Long): Boolean {
+        return threadSyncCoordinator.isRefreshCurrent(threadId, generation)
+    }
+
+    private fun acceptThreadSyncMetadata(
+        threadId: String,
+        syncEpoch: Int?,
+        sourceKind: String?,
+        generation: Long? = null,
+    ): Boolean {
+        return threadSyncCoordinator.acceptThreadSyncMetadata(
+            threadId = threadId,
+            syncEpoch = syncEpoch,
+            sourceKind = sourceKind,
+            generation = generation,
+        )
+    }
+
+    private fun decodeThreadSyncMetadata(objectValue: JsonObject?): DecodedThreadSyncMetadata {
+        return DecodedThreadSyncMetadata(
+            syncEpoch = objectValue?.int("syncEpoch") ?: objectValue?.int("sync_epoch"),
+            sourceKind = firstNonBlank(
+                objectValue?.string("sourceKind"),
+                objectValue?.string("source_kind"),
+                objectValue?.string("projectionSource"),
+                objectValue?.string("projection_source"),
+            ),
+        )
+    }
+
+    private fun shouldReplaceLocalHistoryWithTailSnapshot(
+        threadId: String,
+        hasLocalMessages: Boolean,
+        hasNewestCursor: Boolean,
+    ): Boolean {
+        return shouldReplaceLocalHistoryWithTailSnapshot(
+            state = state.value,
+            resumeSeededHistoryThreadIds = resumeSeededHistoryThreadIds,
+            threadId = threadId,
+            hasLocalMessages = hasLocalMessages,
+            hasNewestCursor = hasNewestCursor,
+        )
+    }
+
+    private fun markThreadNeedingCanonicalHistoryReconcile(threadId: String) {
+        threadSyncCoordinator.markThreadNeedingCanonicalHistoryReconcile(threadId)
+        scheduleCanonicalHistoryReconcileIfNeeded(threadId)
+    }
+
+    private fun markThreadCanonicalHistoryReconciled(threadId: String) {
+        threadSyncCoordinator.markThreadCanonicalHistoryReconciled(threadId)
+        resumeSeededHistoryThreadIds.remove(threadId)
+    }
+
+    private fun scheduleCanonicalHistoryReconcileIfNeeded(threadId: String) {
+        if (!threadSyncCoordinator.needsCanonicalHistoryReconcile(threadId)) {
+            return
+        }
+        if (!state.value.isConnected || state.value.threadHasActiveOrRunningTurn(threadId)) {
+            return
+        }
+        val thread = state.value.threads.firstOrNull { it.id == threadId } ?: return
+        if (thread.syncState != ThreadSyncState.LIVE) {
+            return
+        }
+        if (canonicalHistoryReconcileTaskByThreadId[threadId]?.isActive == true) {
+            return
+        }
+
+        canonicalHistoryReconcileTaskByThreadId[threadId] = scope.launch {
+            try {
+                refreshThreadHistory(threadId, reason = "canonical-reconcile")
+                if (!state.value.threadHasActiveOrRunningTurn(threadId)) {
+                    markThreadCanonicalHistoryReconciled(threadId)
+                }
+            } catch (failure: Throwable) {
+                Log.w(TAG, "canonical reconcile failed threadId=$threadId", failure)
+            } finally {
+                canonicalHistoryReconcileTaskByThreadId.remove(threadId)
+            }
+        }
+    }
+
+    private fun clearThreadSyncState(threadId: String) {
+        threadResumeTaskByThreadId.remove(threadId)?.cancel()
+        threadResumeRequestSignatureByThreadId.remove(threadId)
+        threadHistoryLoadTaskByThreadId.remove(threadId)?.cancel()
+        canonicalHistoryReconcileTaskByThreadId.remove(threadId)?.cancel()
+        resumeSeededHistoryThreadIds.remove(threadId)
+        threadSyncCoordinator.clearThread(threadId)
+    }
+
+    private fun clearAllThreadSyncState() {
+        (threadResumeTaskByThreadId.keys + threadHistoryLoadTaskByThreadId.keys + canonicalHistoryReconcileTaskByThreadId.keys)
+            .toSet()
+            .forEach(threadSyncCoordinator::invalidateRefreshGeneration)
+        threadResumeTaskByThreadId.values.forEach { it.cancel() }
+        threadResumeTaskByThreadId.clear()
+        threadResumeRequestSignatureByThreadId.clear()
+        threadHistoryLoadTaskByThreadId.values.forEach { it.cancel() }
+        threadHistoryLoadTaskByThreadId.clear()
+        canonicalHistoryReconcileTaskByThreadId.values.forEach { it.cancel() }
+        canonicalHistoryReconcileTaskByThreadId.clear()
+        resumeSeededHistoryThreadIds.clear()
+        threadSyncCoordinator.clearAll()
     }
 
     private fun scheduleOlderHistoryBackfill(threadId: String) {
@@ -5159,6 +5471,7 @@ class CodeRoverRepository(context: Context) {
         connectionEpoch.incrementAndGet()
         activeClientGeneration.set(0)
         stopSelectedThreadSyncLoop()
+        clearAllThreadSyncState()
         clientMutex.withLock {
             client?.disconnect()
             client = null
@@ -5946,6 +6259,28 @@ internal fun latestItemIdForRealtimeHistoryCatchUp(
     )
 }
 
+internal fun shouldReplaceLocalHistoryWithTailSnapshot(
+    state: AppState,
+    resumeSeededHistoryThreadIds: Set<String>,
+    threadId: String,
+    hasLocalMessages: Boolean,
+    hasNewestCursor: Boolean,
+): Boolean {
+    if (!hasLocalMessages) {
+        return false
+    }
+    if (threadId in resumeSeededHistoryThreadIds) {
+        return false
+    }
+    if (state.threadHasActiveOrRunningTurn(threadId)) {
+        return false
+    }
+    if (state.selectedCodexThreadIdForTailSync() == threadId) {
+        return false
+    }
+    return !hasNewestCursor
+}
+
 private fun decodeHistoryWindow(
     result: JsonObject?,
     fallbackMessages: List<ChatMessage>,
@@ -5958,6 +6293,20 @@ private fun decodeHistoryWindow(
             newerCursor = historyWindow.string("newerCursor") ?: historyWindow.string("newer_cursor"),
             hasOlder = historyWindow.bool("hasOlder") ?: historyWindow.bool("has_older") ?: false,
             hasNewer = historyWindow.bool("hasNewer") ?: historyWindow.bool("has_newer") ?: false,
+            servedFromProjection = historyWindow.bool("servedFromProjection")
+                ?: historyWindow.bool("served_from_projection")
+                ?: false,
+            projectionSource = firstNonBlank(
+                historyWindow.string("projectionSource"),
+                historyWindow.string("projection_source"),
+                result?.string("sourceKind"),
+                result?.string("source_kind"),
+            ),
+            syncEpoch = historyWindow.int("syncEpoch")
+                ?: historyWindow.int("sync_epoch")
+                ?: result?.int("syncEpoch")
+                ?: result?.int("sync_epoch")
+                ?: 1,
         )
     }
 
@@ -5966,6 +6315,12 @@ private fun decodeHistoryWindow(
         newerCursor = null,
         hasOlder = false,
         hasNewer = false,
+        servedFromProjection = false,
+        projectionSource = firstNonBlank(
+            result?.string("sourceKind"),
+            result?.string("source_kind"),
+        ),
+        syncEpoch = result?.int("syncEpoch") ?: result?.int("sync_epoch") ?: 1,
     )
 }
 
