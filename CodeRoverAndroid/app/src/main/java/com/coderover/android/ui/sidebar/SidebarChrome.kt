@@ -10,30 +10,25 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
@@ -56,7 +51,8 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.LocalFocusManager
 import com.coderover.android.data.model.RuntimeProvider
 import com.coderover.android.R
-import com.coderover.android.ui.theme.Border
+import com.coderover.android.ui.shared.ParityCard
+import com.coderover.android.ui.shared.ParityToolbarItemSurface
 import com.coderover.android.ui.theme.monoFamily
 
 @Composable
@@ -185,24 +181,17 @@ fun SidebarFloatingSettingsButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Surface(
-        onClick = onClick,
-        shape = CircleShape,
-        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f),
-        shadowElevation = 4.dp,
+    ParityToolbarItemSurface(
         modifier = modifier,
+        size = 44.dp,
+        onClick = onClick,
     ) {
-        Box(
-            modifier = Modifier.size(44.dp),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(
-                imageVector = Icons.Filled.Settings,
-                contentDescription = "Settings",
-                tint = MaterialTheme.colorScheme.onSurface,
-                modifier = Modifier.size(20.dp),
-            )
-        }
+        Icon(
+            imageVector = Icons.Filled.Settings,
+            contentDescription = "Settings",
+            tint = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.size(20.dp),
+        )
     }
 }
 
@@ -222,54 +211,57 @@ fun SidebarProjectPickerSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
         dragHandle = null,
-        containerColor = MaterialTheme.colorScheme.surface,
+        containerColor = Color.Transparent,
     ) {
-        Column(
+        ParityCard(
             modifier = Modifier
                 .padding(horizontal = 16.dp, vertical = 12.dp)
                 .padding(bottom = 24.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
+            cornerRadius = 30.dp,
+            padding = 18.dp,
         ) {
-            Text(
-                text = "Start new chat",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.padding(bottom = 12.dp, start = 8.dp),
-            )
-            Text(
-                text = "Runtime",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-            )
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 8.dp, vertical = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                providers.forEach { provider ->
-                    FilterChip(
-                        selected = provider.id == selectedProviderId,
-                        onClick = { onSelectProvider(provider.id) },
-                        label = { Text(provider.title) },
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(
+                    text = "Start new chat",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(bottom = 12.dp, start = 8.dp),
+                )
+                Text(
+                    text = "Runtime",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    providers.forEach { provider ->
+                        FilterChip(
+                            selected = provider.id == selectedProviderId,
+                            onClick = { onSelectProvider(provider.id) },
+                            label = { Text(provider.title) },
+                        )
+                    }
+                }
+                SidebarProjectPickerItem(
+                    name = "No Project",
+                    path = "Open without a local working directory",
+                    onSelectProject = { onSelectProject(null, selectedProviderId) },
+                )
+                projectPaths.forEach { projectPath ->
+                    SidebarProjectPickerItem(
+                        name = projectPath.substringAfterLast('/').ifEmpty { projectPath },
+                        path = projectPath,
+                        onSelectProject = { onSelectProject(projectPath, selectedProviderId) },
+                        onSelectWorktreeProject = {
+                            onSelectWorktreeProject(projectPath, selectedProviderId)
+                        },
                     )
                 }
-            }
-            SidebarProjectPickerItem(
-                name = "No Project",
-                path = "Open without a local working directory",
-                onSelectProject = { onSelectProject(null, selectedProviderId) },
-            )
-            projectPaths.forEach { projectPath ->
-                SidebarProjectPickerItem(
-                    name = projectPath.substringAfterLast('/').ifEmpty { projectPath },
-                    path = projectPath,
-                    onSelectProject = { onSelectProject(projectPath, selectedProviderId) },
-                    onSelectWorktreeProject = {
-                        onSelectWorktreeProject(projectPath, selectedProviderId)
-                    },
-                )
             }
         }
     }
@@ -282,18 +274,13 @@ private fun SidebarProjectPickerItem(
     onSelectProject: () -> Unit,
     onSelectWorktreeProject: (() -> Unit)? = null,
 ) {
-    Surface(
+    ParityCard(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(12.dp),
-        color = Color.Transparent,
+        cornerRadius = 18.dp,
+        padding = 12.dp,
     ) {
-        Column(
-            modifier = Modifier.padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(
                     imageVector = Icons.Outlined.Folder,
                     contentDescription = null,
@@ -314,18 +301,12 @@ private fun SidebarProjectPickerItem(
                     )
                 }
             }
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                FilledTonalButton(
-                    onClick = onSelectProject,
-                ) {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                FilledTonalButton(onClick = onSelectProject) {
                     Text("Local Chat")
                 }
                 onSelectWorktreeProject?.let { selectWorktreeProject ->
-                    OutlinedButton(
-                        onClick = selectWorktreeProject,
-                    ) {
+                    OutlinedButton(onClick = selectWorktreeProject) {
                         Text("Worktree Chat")
                     }
                 }

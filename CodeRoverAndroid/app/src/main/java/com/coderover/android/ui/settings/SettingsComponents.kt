@@ -29,6 +29,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.coderover.android.ui.shared.ParityCard
+import com.coderover.android.ui.shared.ParitySectionLabel
 import com.coderover.android.ui.theme.CommandAccent
 
 @Composable
@@ -37,19 +39,10 @@ fun SettingsCard(
     content: @Composable () -> Unit,
 ) {
     Column {
-        Text(
-            text = title.uppercase(),
-            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(horizontal = 4.dp),
-        )
+        ParitySectionLabel(title = title)
         Spacer(Modifier.height(8.dp))
-        Surface(
-            shape = RoundedCornerShape(20.dp),
-            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-        ) {
+        ParityCard(cornerRadius = 20.dp, padding = 16.dp) {
             Column(
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 content()

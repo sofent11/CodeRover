@@ -1,6 +1,7 @@
 package com.coderover.android.ui.screens
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -20,7 +21,6 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -36,7 +36,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.coderover.android.data.model.ThreadSummary
+import com.coderover.android.ui.shared.AppBackdrop
 import com.coderover.android.ui.shared.HapticFeedback
+import com.coderover.android.ui.shared.ParityListRow
+import com.coderover.android.ui.shared.ParityToolbarItemSurface
 import com.coderover.android.ui.shared.relativeTimeLabel
 import com.coderover.android.ui.theme.Danger
 
@@ -61,7 +64,10 @@ fun ArchivedChatsScreen(
                     )
                 },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
+                    ParityToolbarItemSurface(
+                        modifier = Modifier.padding(start = 10.dp),
+                        onClick = onBack,
+                    ) {
                         Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "Back")
                     }
                 },
@@ -90,21 +96,26 @@ fun ArchivedChatsScreen(
                 )
             }
         } else {
-            LazyColumn(
+            Box(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(paddingValues),
-                contentPadding = PaddingValues(bottom = 16.dp),
             ) {
-                items(archivedThreads, key = { it.id }) { thread ->
-                    ArchivedChatRow(
-                        thread = thread,
-                        onUnarchive = {
-                            haptic.triggerImpactFeedback(HapticFeedback.Style.LIGHT)
-                            onUnarchiveThread(thread.id)
-                        },
-                        onDeleteRequest = { threadPendingDeletion = thread }
-                    )
+                AppBackdrop(modifier = Modifier.fillMaxSize())
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(bottom = 16.dp, top = 8.dp),
+                ) {
+                    items(archivedThreads, key = { it.id }) { thread ->
+                        ArchivedChatRow(
+                            thread = thread,
+                            onUnarchive = {
+                                haptic.triggerImpactFeedback(HapticFeedback.Style.LIGHT)
+                                onUnarchiveThread(thread.id)
+                            },
+                            onDeleteRequest = { threadPendingDeletion = thread }
+                        )
+                    }
                 }
             }
         }
@@ -142,13 +153,12 @@ private fun ArchivedChatRow(
 ) {
     var showMenu by remember { mutableStateOf(false) }
 
-    Row(
+    ParityListRow(
         modifier = Modifier
             .fillMaxWidth()
             .clickable { showMenu = true }
             .padding(horizontal = 16.dp, vertical = 12.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
+        isSelected = false,
     ) {
         Column(
             modifier = Modifier
@@ -169,25 +179,30 @@ private fun ArchivedChatRow(
                 )
             }
         }
+        Icon(
+            imageVector = Icons.Outlined.Archive,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
 
-        DropdownMenu(
-            expanded = showMenu,
-            onDismissRequest = { showMenu = false }
-        ) {
-            DropdownMenuItem(
-                text = { Text("Unarchive") },
-                onClick = {
-                    showMenu = false
-                    onUnarchive()
-                }
-            )
-            DropdownMenuItem(
-                text = { Text("Delete", color = Danger) },
-                onClick = {
-                    showMenu = false
-                    onDeleteRequest()
-                }
-            )
-        }
+    DropdownMenu(
+        expanded = showMenu,
+        onDismissRequest = { showMenu = false }
+    ) {
+        DropdownMenuItem(
+            text = { Text("Unarchive") },
+            onClick = {
+                showMenu = false
+                onUnarchive()
+            }
+        )
+        DropdownMenuItem(
+            text = { Text("Delete", color = Danger) },
+            onClick = {
+                showMenu = false
+                onDeleteRequest()
+            }
+        )
     }
 }

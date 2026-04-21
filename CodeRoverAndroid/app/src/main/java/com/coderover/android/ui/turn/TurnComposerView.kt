@@ -31,6 +31,7 @@ import com.coderover.android.data.model.ImageAttachment
 import com.coderover.android.data.model.TurnSkillMention
 import com.coderover.android.data.model.ModelOption
 import com.coderover.android.ui.shared.GlassCard
+import com.coderover.android.ui.shared.ParityInputSurface
 import com.coderover.android.ui.shared.StatusTag
 import com.coderover.android.ui.theme.PlanAccent
 import kotlinx.coroutines.launch
@@ -160,9 +161,8 @@ internal fun TurnComposerView(
             )
         }
 
-        GlassCard(
+        ParityInputSurface(
             modifier = Modifier.fillMaxWidth(),
-            cornerRadius = 28.dp,
         ) {
             Column(
                 modifier = Modifier.fillMaxWidth(),
@@ -370,57 +370,59 @@ internal fun TurnComposerView(
             }
         }
 
-        TurnToolbarContent(
-            state = state,
-            turnViewModel = turnViewModel,
-            onSelectAccessMode = onSelectAccessMode,
-            onRefreshGitBranches = {
-                val currentCwdLocal = state.selectedThread?.cwd
-                if (currentCwdLocal != null) {
-                    coroutineScope.launch {
-                        viewModel.gitBranchesWithStatus(currentCwdLocal)
-                    }
-                }
-            },
-            onCheckoutGitBranch = { branch ->
-                val currentCwdLocal = state.selectedThread?.cwd
-                if (currentCwdLocal != null) {
-                    val branchTargets = state.gitBranchTargets
-                    val normalizedCurrentPath = normalizedProjectPath(state.selectedThread?.normalizedProjectPath)
-                    val normalizedWorktreePath = normalizedProjectPath(branchTargets?.worktreePathByBranch?.get(branch))
-                    val existingWorktreeThread = normalizedWorktreePath?.let { projectPath ->
-                        viewModel.findLiveThreadForProjectPath(projectPath, state.selectedThreadId)
-                    }
-                    val isCheckedOutElsewhereWithoutThread = branchTargets?.branchesCheckedOutElsewhere?.contains(branch) == true &&
-                        normalizedWorktreePath == null
-
-                    if (normalizedWorktreePath != null && normalizedWorktreePath != normalizedCurrentPath) {
-                        if (existingWorktreeThread != null) {
-                            turnViewModel.setComposerNotice("Opened the existing worktree chat for $branch.")
-                            viewModel.selectThread(existingWorktreeThread.id)
-                        } else {
-                            turnViewModel.setComposerNotice("This branch is already checked out in another worktree.")
-                        }
-                    } else if (isCheckedOutElsewhereWithoutThread) {
-                        turnViewModel.setComposerNotice("This branch is already open in another worktree.")
-                    } else {
+        AnimatedVisibility(visible = !turnViewModel.isFocused) {
+            TurnToolbarContent(
+                state = state,
+                turnViewModel = turnViewModel,
+                onSelectAccessMode = onSelectAccessMode,
+                onRefreshGitBranches = {
+                    val currentCwdLocal = state.selectedThread?.cwd
+                    if (currentCwdLocal != null) {
                         coroutineScope.launch {
-                            turnViewModel.setComposerNotice(null)
-                            viewModel.checkoutGitBranch(currentCwdLocal, branch)
                             viewModel.gitBranchesWithStatus(currentCwdLocal)
                         }
                     }
-                }
-            },
-            onSelectGitBaseBranch = { branch ->
-                state.selectedThreadId?.let { threadId ->
-                    viewModel.selectGitBaseBranch(threadId, branch)
-                }
-            },
-            onManualRefresh = {
-                viewModel.refreshThreadsIfConnected()
-            },
-        )
+                },
+                onCheckoutGitBranch = { branch ->
+                    val currentCwdLocal = state.selectedThread?.cwd
+                    if (currentCwdLocal != null) {
+                        val branchTargets = state.gitBranchTargets
+                        val normalizedCurrentPath = normalizedProjectPath(state.selectedThread?.normalizedProjectPath)
+                        val normalizedWorktreePath = normalizedProjectPath(branchTargets?.worktreePathByBranch?.get(branch))
+                        val existingWorktreeThread = normalizedWorktreePath?.let { projectPath ->
+                            viewModel.findLiveThreadForProjectPath(projectPath, state.selectedThreadId)
+                        }
+                        val isCheckedOutElsewhereWithoutThread = branchTargets?.branchesCheckedOutElsewhere?.contains(branch) == true &&
+                            normalizedWorktreePath == null
+
+                        if (normalizedWorktreePath != null && normalizedWorktreePath != normalizedCurrentPath) {
+                            if (existingWorktreeThread != null) {
+                                turnViewModel.setComposerNotice("Opened the existing worktree chat for $branch.")
+                                viewModel.selectThread(existingWorktreeThread.id)
+                            } else {
+                                turnViewModel.setComposerNotice("This branch is already checked out in another worktree.")
+                            }
+                        } else if (isCheckedOutElsewhereWithoutThread) {
+                            turnViewModel.setComposerNotice("This branch is already open in another worktree.")
+                        } else {
+                            coroutineScope.launch {
+                                turnViewModel.setComposerNotice(null)
+                                viewModel.checkoutGitBranch(currentCwdLocal, branch)
+                                viewModel.gitBranchesWithStatus(currentCwdLocal)
+                            }
+                        }
+                    }
+                },
+                onSelectGitBaseBranch = { branch ->
+                    state.selectedThreadId?.let { threadId ->
+                        viewModel.selectGitBaseBranch(threadId, branch)
+                    }
+                },
+                onManualRefresh = {
+                    viewModel.refreshThreadsIfConnected()
+                },
+            )
+        }
     }
 }
 

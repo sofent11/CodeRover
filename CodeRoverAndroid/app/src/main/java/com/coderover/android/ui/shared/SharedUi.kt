@@ -2,25 +2,31 @@ package com.coderover.android.ui.shared
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.coderover.android.data.model.AppState
@@ -28,6 +34,17 @@ import com.coderover.android.data.model.ConnectionPhase
 import com.coderover.android.ui.theme.Border
 import com.coderover.android.ui.theme.CommandAccent
 import com.coderover.android.ui.theme.PlanAccent
+
+object ParityUi {
+    val sectionSpacing = 24.dp
+    val compactSpacing = 8.dp
+    val rowCornerRadius = 14.dp
+    val cardCornerRadius = 20.dp
+    val composerCornerRadius = 28.dp
+    val toolbarItemSize = 38.dp
+    val floatingButtonSize = 44.dp
+    val sectionLabelPadding = 4.dp
+}
 
 @Composable
 fun StatusTag(
@@ -49,9 +66,23 @@ fun StatusTag(
 }
 
 @Composable
-fun GlassCard(
+fun ParitySectionLabel(
+    title: String,
     modifier: Modifier = Modifier,
-    cornerRadius: Dp = 20.dp,
+) {
+    Text(
+        text = title.uppercase(),
+        style = MaterialTheme.typography.labelMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = modifier.padding(horizontal = ParityUi.sectionLabelPadding),
+    )
+}
+
+@Composable
+fun ParityCard(
+    modifier: Modifier = Modifier,
+    cornerRadius: Dp = ParityUi.cardCornerRadius,
+    padding: Dp = 16.dp,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     Surface(
@@ -72,10 +103,23 @@ fun GlassCard(
                         ),
                     ),
                 )
-                .padding(16.dp),
+                .padding(padding),
             content = content,
         )
     }
+}
+
+@Composable
+fun GlassCard(
+    modifier: Modifier = Modifier,
+    cornerRadius: Dp = ParityUi.cardCornerRadius,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    ParityCard(
+        modifier = modifier,
+        cornerRadius = cornerRadius,
+        content = content,
+    )
 }
 
 @Composable
@@ -117,6 +161,124 @@ fun GlassCard(
     }
 }
 
+@Composable
+fun ParityListRow(
+    modifier: Modifier = Modifier,
+    isSelected: Boolean = false,
+    content: @Composable RowScope.() -> Unit,
+) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(ParityUi.rowCornerRadius),
+        color = if (isSelected) {
+            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.82f)
+        } else {
+            Color.Transparent
+        },
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            content = content,
+        )
+    }
+}
+
+@Composable
+fun ParityToolbarItemSurface(
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    size: Dp = ParityUi.toolbarItemSize,
+    onClick: (() -> Unit)? = null,
+    content: @Composable BoxScope.() -> Unit,
+) {
+    Surface(
+        modifier = modifier.size(size),
+        shape = CircleShape,
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f),
+        border = BorderStroke(1.dp, Border),
+        tonalElevation = 1.dp,
+        shadowElevation = 2.dp,
+        onClick = onClick ?: {},
+        enabled = enabled && onClick != null,
+    ) {
+        Box(
+            modifier = Modifier.fillMaxWidth(),
+            contentAlignment = Alignment.Center,
+            content = content,
+        )
+    }
+}
+
+@Composable
+fun ParityToolbarIconButton(
+    icon: ImageVector,
+    contentDescription: String,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    onClick: () -> Unit,
+) {
+    ParityToolbarItemSurface(
+        modifier = modifier,
+        enabled = enabled,
+        onClick = onClick,
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = contentDescription,
+            tint = if (enabled) {
+                MaterialTheme.colorScheme.onSurface
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)
+            },
+        )
+    }
+}
+
+@Composable
+fun ParityIconButton(
+    icon: ImageVector,
+    contentDescription: String,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    onClick: () -> Unit,
+) {
+    ParityToolbarItemSurface(
+        modifier = modifier,
+        enabled = enabled,
+        onClick = onClick,
+    ) {
+        IconButton(onClick = onClick, enabled = enabled) {
+            Icon(
+                imageVector = icon,
+                contentDescription = contentDescription,
+                tint = if (enabled) {
+                    MaterialTheme.colorScheme.onSurface
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)
+                },
+            )
+        }
+    }
+}
+
+@Composable
+fun ParityInputSurface(
+    modifier: Modifier = Modifier,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    ParityCard(
+        modifier = modifier,
+        cornerRadius = ParityUi.composerCornerRadius,
+        padding = 0.dp,
+    ) {
+        content()
+    }
+}
+
 fun connectionStatusLabel(phase: ConnectionPhase): String {
     return when (phase) {
         ConnectionPhase.CONNECTING -> "Connecting"
@@ -147,15 +309,16 @@ fun AppBackdrop(
     modifier: Modifier = Modifier,
 ) {
     Box(
-        modifier = modifier.background(
-            brush = Brush.verticalGradient(
-                colors = listOf(
-                    MaterialTheme.colorScheme.background,
-                    MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
-                    MaterialTheme.colorScheme.background,
+        modifier = modifier
+            .background(
+                brush = Brush.verticalGradient(
+                    colors = listOf(
+                        MaterialTheme.colorScheme.background,
+                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                        MaterialTheme.colorScheme.background,
+                    ),
                 ),
             ),
-        ),
     ) {
         Box(
             modifier = Modifier
@@ -179,6 +342,19 @@ fun AppBackdrop(
                     brush = Brush.radialGradient(
                         colors = listOf(
                             MaterialTheme.colorScheme.tertiary.copy(alpha = 0.08f),
+                            Color.Transparent,
+                        ),
+                    ),
+                ),
+        )
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(180.dp)
+                .background(
+                    brush = Brush.verticalGradient(
+                        colors = listOf(
+                            Color.White.copy(alpha = 0.28f),
                             Color.Transparent,
                         ),
                     ),

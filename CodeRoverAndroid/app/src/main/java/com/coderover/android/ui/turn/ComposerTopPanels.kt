@@ -12,7 +12,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material3.Icon
@@ -24,6 +23,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.coderover.android.ui.shared.ParityCard
 
 @Composable
 internal fun SlashCommandAutocompletePanel(
@@ -55,38 +55,38 @@ internal fun SlashCommandAutocompletePanel(
                     query.isEmpty() || haystack.contains(query)
                 }
             if (commands.isEmpty()) return
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(max = 180.dp)
-                    .padding(4.dp)
-                    .background(
-                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.8f),
-                        RoundedCornerShape(20.dp),
-                    )
-                    .padding(horizontal = 4.dp),
+            ParityCard(
+                modifier = Modifier.fillMaxWidth(),
+                cornerRadius = 28.dp,
+                padding = 4.dp,
             ) {
-                items(commands) { command ->
-                    val isEnabled = isCommandEnabled(command, hasComposerContentConflictingWithReview)
-                    val title = when (command) {
-                        TurnComposerSlashCommand.CODE_REVIEW -> "/review"
-                        TurnComposerSlashCommand.SUBAGENTS -> "/subagents"
-                        TurnComposerSlashCommand.STATUS -> "/status"
-                    }
-                    val subtitle = commandSubtitleFor(command, isEnabled, hasComposerContentConflictingWithReview)
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable(enabled = isEnabled) { onSelectCommand(command) }
-                            .padding(horizontal = 12.dp, vertical = 8.dp),
-                        verticalArrangement = Arrangement.spacedBy(2.dp),
-                    ) {
-                        Text(text = title, style = MaterialTheme.typography.bodyMedium)
-                        Text(
-                            text = subtitle,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 180.dp),
+                ) {
+                    items(commands) { command ->
+                        val isEnabled = isCommandEnabled(command, hasComposerContentConflictingWithReview)
+                        val title = when (command) {
+                            TurnComposerSlashCommand.CODE_REVIEW -> "/review"
+                            TurnComposerSlashCommand.SUBAGENTS -> "/subagents"
+                            TurnComposerSlashCommand.STATUS -> "/status"
+                        }
+                        val subtitle = commandSubtitleFor(command, isEnabled, hasComposerContentConflictingWithReview)
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable(enabled = isEnabled) { onSelectCommand(command) }
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalArrangement = Arrangement.spacedBy(2.dp),
+                        ) {
+                            Text(text = title, style = MaterialTheme.typography.bodyMedium)
+                            Text(
+                                text = subtitle,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                     }
                 }
             }
@@ -99,65 +99,65 @@ internal fun SlashCommandAutocompletePanel(
                 resolvedBaseBranchName,
                 isLoadingGitBranchTargets,
             )
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(max = 160.dp)
-                    .padding(4.dp)
-                    .background(
-                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.8f),
-                        RoundedCornerShape(20.dp),
-                    )
-                    .padding(horizontal = 4.dp),
+            ParityCard(
+                modifier = Modifier.fillMaxWidth(),
+                cornerRadius = 28.dp,
+                padding = 4.dp,
             ) {
-                item {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 8.dp),
-                        verticalArrangement = Arrangement.spacedBy(3.dp),
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 160.dp),
+                ) {
+                    item {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalArrangement = Arrangement.spacedBy(3.dp),
                         ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = "Code Review",
-                                    style = MaterialTheme.typography.titleMedium,
-                                )
-                                Text(
-                                    text = "Choose what the reviewer should compare.",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                            IconButton(onClick = onClose) {
-                                Icon(
-                                    imageVector = Icons.Outlined.Close,
-                                    contentDescription = "Close",
-                                    modifier = Modifier.size(18.dp),
-                                )
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = "Code Review",
+                                        style = MaterialTheme.typography.titleMedium,
+                                    )
+                                    Text(
+                                        text = "Choose what the reviewer should compare.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                                IconButton(onClick = onClose) {
+                                    Icon(
+                                        imageVector = Icons.Outlined.Close,
+                                        contentDescription = "Close",
+                                        modifier = Modifier.size(18.dp),
+                                    )
+                                }
                             }
                         }
                     }
-                }
-                item {
-                    ReviewTargetButton(
-                        target = TurnComposerReviewTarget.UNCOMMITTED_CHANGES,
-                        subtitle = "Review everything currently modified in the repo",
-                        isEnabled = true,
-                        onSelectReviewTarget = onSelectReviewTarget,
-                    )
-                }
-                if (showsGitBranchSelector) {
                     item {
                         ReviewTargetButton(
-                            target = TurnComposerReviewTarget.BASE_BRANCH,
-                            subtitle = baseBranchSubtitle,
-                            isEnabled = isBaseBranchTargetAvailable,
+                            target = TurnComposerReviewTarget.UNCOMMITTED_CHANGES,
+                            subtitle = "Review everything currently modified in the repo",
+                            isEnabled = true,
                             onSelectReviewTarget = onSelectReviewTarget,
                         )
+                    }
+                    if (showsGitBranchSelector) {
+                        item {
+                            ReviewTargetButton(
+                                target = TurnComposerReviewTarget.BASE_BRANCH,
+                                subtitle = baseBranchSubtitle,
+                                isEnabled = isBaseBranchTargetAvailable,
+                                onSelectReviewTarget = onSelectReviewTarget,
+                            )
+                        }
                     }
                 }
             }

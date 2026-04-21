@@ -51,6 +51,7 @@ import com.coderover.android.data.model.ThreadSummary
 import com.coderover.android.data.model.ThreadRunBadgeState
 import com.coderover.android.data.model.ThreadSyncState
 import com.coderover.android.ui.shared.HapticFeedback
+import com.coderover.android.ui.shared.ParityListRow
 import com.coderover.android.ui.shared.relativeTimeLabel
 import com.coderover.android.ui.theme.Danger
 import com.coderover.android.ui.theme.monoFamily
@@ -170,11 +171,11 @@ fun SidebarThreadListView(
                                             haptic.triggerImpactFeedback()
                                             onLoadMoreProjectGroup(group)
                                         }
-                                        .padding(horizontal = 18.dp, vertical = 8.dp),
+                                        .padding(start = 48.dp, end = 18.dp, top = 4.dp, bottom = 8.dp),
                                 ) {
                                     Text(
-                                        text = "More",
-                                        style = MaterialTheme.typography.bodyMedium,
+                                        text = "Show ${group.totalThreadCount - group.threads.size} more",
+                                        style = MaterialTheme.typography.labelLarge,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
                                 }
@@ -351,6 +352,14 @@ private fun SidebarProjectGroupHeader(
             )
         }
         Icon(
+            imageVector = Icons.AutoMirrored.Outlined.KeyboardArrowRight,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier
+                .size(18.dp)
+                .graphicsLayer { rotationZ = if (expanded) 90f else 0f },
+        )
+        Icon(
             imageVector = Icons.Outlined.Add,
             contentDescription = "New chat in project",
             tint = MaterialTheme.colorScheme.onSurface,
@@ -446,17 +455,9 @@ private fun SidebarThreadRowView(
     val leadingPadding = (16 + depth * 18).dp
     val expansionIconTint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f)
     Box {
-        androidx.compose.foundation.layout.Box(
+        ParityListRow(
             modifier = Modifier
                 .padding(start = leadingPadding, end = 16.dp)
-                .background(
-                    if (isSelected) {
-                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.8f)
-                    } else {
-                        Color.Transparent
-                    },
-                    shape = RoundedCornerShape(14.dp),
-                )
                 .combinedClickable(
                     onClick = {
                         haptic.triggerImpactFeedback()
@@ -466,8 +467,8 @@ private fun SidebarThreadRowView(
                         haptic.triggerImpactFeedback(HapticFeedback.Style.MEDIUM)
                         onExpandMenu()
                     },
-                )
-                .padding(vertical = 12.dp, horizontal = 16.dp),
+                ),
+            isSelected = isSelected,
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),

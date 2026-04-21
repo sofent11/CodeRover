@@ -22,17 +22,14 @@ import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Menu
-import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -52,7 +49,6 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
@@ -69,6 +65,7 @@ import com.coderover.android.ui.screens.SettingsScreen
 import com.coderover.android.ui.screens.SidebarScreen
 import com.coderover.android.ui.shared.AppBackdrop
 import com.coderover.android.ui.shared.HapticFeedback
+import com.coderover.android.ui.shared.ParityToolbarItemSurface
 import com.coderover.android.ui.shared.StatusTag
 import com.coderover.android.ui.shared.WhatsNewDialog
 import com.coderover.android.ui.theme.monoFamily
@@ -395,25 +392,28 @@ private fun CodeRoverAppShell(
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                                 ) {
-                                    if (shellContent == AppShellContent.THREAD && selectedThread != null) {
-                                        StatusTag(
-                                            text = selectedThread.providerBadgeTitle,
-                                            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.75f),
-                                            contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        )
-                                        Text(
-                                            text = selectedThread.normalizedProjectPath ?: "Your paired Mac",
-                                            style = MaterialTheme.typography.labelMedium.copy(fontFamily = monoFamily),
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis,
-                                            modifier = Modifier.clickable {
-                                                haptic.triggerImpactFeedback()
-                                                selectedThread.cwd?.let { cwd ->
-                                                    repositoryPathToShowInSheet = cwd
-                                                }
-                                            },
-                                        )
+                                    if (currentShellHeader.providerTitle != null || currentShellHeader.pathSubtitle != null) {
+                                        currentShellHeader.providerTitle?.let { providerTitle ->
+                                            StatusTag(
+                                                text = providerTitle,
+                                                containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.75f),
+                                                contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            )
+                                        }
+                                        val pathLabel = currentShellHeader.pathSubtitle
+                                        if (pathLabel != null) {
+                                            Text(
+                                                text = pathLabel,
+                                                style = MaterialTheme.typography.labelMedium.copy(fontFamily = monoFamily),
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                                modifier = Modifier.clickable(enabled = currentShellHeader.fullPath != null) {
+                                                    haptic.triggerImpactFeedback()
+                                                    repositoryPathToShowInSheet = currentShellHeader.fullPath
+                                                },
+                                            )
+                                        }
                                     } else {
                                         Text(
                                             text = currentShellHeader.subtitle,
@@ -427,18 +427,14 @@ private fun CodeRoverAppShell(
                             }
                         },
                         navigationIcon = {
-                            Surface(
-                                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f),
-                                modifier = Modifier
-                                    .padding(start = 10.dp)
-                                    .clip(androidx.compose.foundation.shape.CircleShape),
+                            ParityToolbarItemSurface(
+                                modifier = Modifier.padding(start = 10.dp),
+                                onClick = { isSidebarOpen = true },
                             ) {
-                                IconButton(
-                                    onClick = { isSidebarOpen = true },
-                                    modifier = Modifier.padding(2.dp),
-                                ) {
-                                    Icon(Icons.Outlined.Menu, contentDescription = "Open drawer")
-                                }
+                                Icon(
+                                    imageVector = Icons.Outlined.Menu,
+                                    contentDescription = "Open drawer",
+                                )
                             }
                         },
                         actions = {
@@ -537,15 +533,6 @@ private fun CodeRoverAppShell(
                                         }
                                     },
                                 )
-                            } else {
-                                Surface(
-                                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f),
-                                    modifier = Modifier.padding(end = 10.dp),
-                                ) {
-                                    IconButton(onClick = {}) {
-                                        Icon(Icons.Outlined.Tune, contentDescription = null)
-                                    }
-                                }
                             }
                         },
                     )
@@ -722,12 +709,15 @@ private fun CodeRoverAppShell(
     }
 }
 
-private data class ShellHeader(
+internal data class ShellHeader(
     val title: String,
     val subtitle: String,
+    val providerTitle: String? = null,
+    val pathSubtitle: String? = null,
+    val fullPath: String? = null,
 )
 
-private fun shellHeader(
+internal fun shellHeader(
     shellContent: AppShellContent,
     state: AppState,
 ): ShellHeader {
@@ -749,10 +739,10 @@ private fun shellHeader(
 
         AppShellContent.THREAD -> ShellHeader(
             title = state.selectedThread?.displayTitle ?: "CodeRover",
-            subtitle = listOfNotNull(
-                state.selectedThread?.providerBadgeTitle,
-                state.selectedThread?.projectDisplayName,
-            ).joinToString(" · ").ifBlank { "Your paired Mac" },
+            subtitle = "Your paired Mac",
+            providerTitle = state.selectedThread?.providerBadgeTitle,
+            pathSubtitle = state.selectedThread?.normalizedProjectPath ?: "Your paired Mac",
+            fullPath = state.selectedThread?.cwd,
         )
 
         AppShellContent.EMPTY -> ShellHeader(

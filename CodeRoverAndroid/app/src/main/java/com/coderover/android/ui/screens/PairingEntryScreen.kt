@@ -2,6 +2,7 @@ package com.coderover.android.ui.screens
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -24,7 +25,6 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -43,8 +43,6 @@ import com.coderover.android.data.model.PairingRecord
 import com.coderover.android.data.model.TransportCandidate
 import com.coderover.android.ui.components.PairingScannerView
 import com.coderover.android.ui.shared.GlassCard
-import com.coderover.android.ui.theme.Danger
-
 import androidx.compose.material3.AlertDialog
 import com.coderover.android.ui.shared.HapticFeedback
 import android.content.Intent
@@ -154,30 +152,33 @@ fun PairingEntryScreen(
         ModalBottomSheet(
             onDismissRequest = {},
             sheetState = transportSheetState,
+            containerColor = Color.Transparent,
         ) {
-            Column(
+            GlassCard(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 8.dp)
                     .padding(bottom = 24.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
+                cornerRadius = 30.dp,
             ) {
-                Text(
-                    text = "Choose a transport",
-                    style = MaterialTheme.typography.titleMedium,
-                )
-                Text(
-                    text = "This Mac advertised multiple bridge routes. Pick the local or relay address Android should use for this pairing.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                pairing.transportCandidates.forEach { candidate ->
-                    TransportCandidateRow(
-                        candidate = candidate,
-                        onClick = {
-                            onSelectTransport(pairing.macDeviceId, candidate.url)
-                        },
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "Choose a transport",
+                        style = MaterialTheme.typography.titleMedium,
                     )
+                    Text(
+                        text = "This Mac advertised multiple bridge routes. Pick the local or relay address Android should use for this pairing.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    pairing.transportCandidates.forEach { candidate ->
+                        TransportCandidateRow(
+                            candidate = candidate,
+                            onClick = {
+                                onSelectTransport(pairing.macDeviceId, candidate.url)
+                            },
+                        )
+                    }
                 }
             }
         }
@@ -189,11 +190,9 @@ private fun TransportCandidateRow(
     candidate: TransportCandidate,
     onClick: () -> Unit,
 ) {
-    Surface(
-        onClick = onClick,
-        shape = RoundedCornerShape(18.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.42f),
+    GlassCard(
         modifier = Modifier.fillMaxWidth(),
+        cornerRadius = 18.dp,
     ) {
         ListItem(
             headlineContent = {
@@ -202,6 +201,9 @@ private fun TransportCandidateRow(
             supportingContent = {
                 Text(candidate.url)
             },
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onClick),
         )
     }
 }

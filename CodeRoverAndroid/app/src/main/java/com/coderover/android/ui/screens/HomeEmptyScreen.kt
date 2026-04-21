@@ -22,6 +22,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.QrCodeScanner
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -44,6 +45,7 @@ import androidx.compose.ui.unit.dp
 import com.coderover.android.R
 import com.coderover.android.data.model.AppState
 import com.coderover.android.data.model.ConnectionPhase
+import com.coderover.android.ui.shared.ParityToolbarItemSurface
 import com.coderover.android.ui.theme.CommandAccent
 import com.coderover.android.ui.theme.Danger
 import com.coderover.android.ui.theme.PlanAccent
@@ -91,21 +93,26 @@ fun HomeEmptyScreen(
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Image(
-            painter = painterResource(R.drawable.app_logo),
-            contentDescription = null,
-            modifier = Modifier
-                .size(88.dp)
-                .clip(RoundedCornerShape(22.dp)),
-        )
+        ParityToolbarItemSurface(
+            size = 88.dp,
+            onClick = null,
+        ) {
+            Image(
+                painter = painterResource(R.drawable.app_logo),
+                contentDescription = null,
+                modifier = Modifier
+                    .size(88.dp)
+                    .clip(RoundedCornerShape(22.dp)),
+            )
+        }
         Spacer(Modifier.height(24.dp))
-        
+
         ConnectionBadge(
             phase = state.connectionPhase,
             label = statusLabel,
         )
 
-        Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(14.dp))
         if (securityLabel.isNotBlank()) {
             Text(
                 text = securityLabel,
@@ -113,20 +120,49 @@ fun HomeEmptyScreen(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,
             )
-            Spacer(Modifier.height(24.dp))
         }
+
+        state.lastErrorMessage?.let { error ->
+            Spacer(Modifier.height(10.dp))
+            Text(
+                text = error,
+                style = MaterialTheme.typography.labelLarge,
+                color = Danger,
+                textAlign = TextAlign.Center,
+            )
+        }
+
+        Spacer(Modifier.height(24.dp))
 
         Button(
             onClick = onToggleConnection,
             enabled = !isConnectionActionInFlight,
             shape = RoundedCornerShape(18.dp),
             modifier = Modifier.fillMaxWidth(0.78f),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = if (state.connectionPhase == ConnectionPhase.LOADING_CHATS ||
+                    state.connectionPhase == ConnectionPhase.SYNCING ||
+                    state.connectionPhase == ConnectionPhase.CONNECTED
+                ) {
+                    MaterialTheme.colorScheme.surfaceVariant
+                } else {
+                    MaterialTheme.colorScheme.onSurface
+                },
+                contentColor = if (state.connectionPhase == ConnectionPhase.LOADING_CHATS ||
+                    state.connectionPhase == ConnectionPhase.SYNCING ||
+                    state.connectionPhase == ConnectionPhase.CONNECTED
+                ) {
+                    MaterialTheme.colorScheme.onSurface
+                } else {
+                    MaterialTheme.colorScheme.surface
+                },
+            ),
         ) {
             Text(buttonLabel)
         }
-        
+
         Spacer(Modifier.height(10.dp))
-        
+
         TextButton(
             onClick = onOpenPairing,
             modifier = Modifier.fillMaxWidth(0.78f),
@@ -134,16 +170,6 @@ fun HomeEmptyScreen(
             Icon(Icons.Outlined.QrCodeScanner, contentDescription = null)
             Spacer(Modifier.width(8.dp))
             Text("Scan QR Code")
-        }
-        
-        state.lastErrorMessage?.let { error ->
-            Spacer(Modifier.height(16.dp))
-            Text(
-                text = error,
-                style = MaterialTheme.typography.labelLarge,
-                color = Danger,
-                textAlign = TextAlign.Center,
-            )
         }
     }
 }

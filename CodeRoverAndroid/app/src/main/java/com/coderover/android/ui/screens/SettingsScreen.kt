@@ -19,6 +19,7 @@ import com.coderover.android.ui.settings.SettingsArchivedChatsCard
 import com.coderover.android.ui.settings.SettingsBridgeCard
 import com.coderover.android.ui.settings.SettingsConnectionCard
 import com.coderover.android.ui.settings.SettingsNotificationsCard
+import com.coderover.android.ui.settings.SettingsOverviewCard
 import com.coderover.android.ui.settings.SettingsRuntimeDefaultsCard
 
 @Composable
@@ -39,6 +40,10 @@ fun SettingsScreen(
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(24.dp),
     ) {
+        item {
+            SettingsOverviewCard(state = state)
+        }
+
         item {
             SettingsArchivedChatsCard(
                 threads = state.threads,

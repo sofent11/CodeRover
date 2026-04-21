@@ -2,7 +2,6 @@ package com.coderover.android.ui.turn
 
 import android.content.ClipboardManager
 import android.content.Context
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
@@ -41,7 +40,7 @@ internal fun TurnComposerInputTextView(
     ) {
         if (input.isEmpty()) {
             Text(
-                text = "Ask for follow-up changes",
+                text = "Ask for follow-up changes, or type / for Codex commands",
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
                 modifier = Modifier

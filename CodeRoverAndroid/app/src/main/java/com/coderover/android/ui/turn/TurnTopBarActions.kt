@@ -40,6 +40,7 @@ import com.coderover.android.data.model.GitDiffTotals
 import com.coderover.android.data.model.GitRepoSyncResult
 import com.coderover.android.data.model.ThreadSummary
 import com.coderover.android.data.model.TurnGitActionKind
+import com.coderover.android.ui.shared.ParityToolbarItemSurface
 import com.coderover.android.ui.theme.monoFamily
 
 internal enum class TurnThreadProjectAction {
@@ -69,29 +70,24 @@ internal fun TurnTopBarActions(
 ) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         if (showsDesktopRestart) {
-            Surface(
+            ParityToolbarItemSurface(
                 modifier = Modifier.padding(end = 10.dp),
-                shape = CircleShape,
-                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f),
+                enabled = !isRestartingDesktopApp,
+                onClick = onTapDesktopRestart,
             ) {
-                IconButton(
-                    onClick = onTapDesktopRestart,
-                    enabled = !isRestartingDesktopApp,
-                ) {
-                    if (isRestartingDesktopApp) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(20.dp),
-                            strokeWidth = 2.dp,
-                            color = MaterialTheme.colorScheme.primary,
-                        )
-                    } else {
-                        Icon(
-                            imageVector = Icons.Outlined.Refresh,
-                            contentDescription = "Restart Codex desktop app",
-                            tint = MaterialTheme.colorScheme.onSurface,
-                            modifier = Modifier.size(22.dp),
-                        )
-                    }
+                if (isRestartingDesktopApp) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(20.dp),
+                        strokeWidth = 2.dp,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                } else {
+                    Icon(
+                        imageVector = Icons.Outlined.Refresh,
+                        contentDescription = "Restart Codex desktop app",
+                        tint = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.size(22.dp),
+                    )
                 }
             }
         }
@@ -144,13 +140,13 @@ private fun TurnThreadProjectActionsMenu(
 ) {
     var expanded by remember { mutableStateOf(false) }
     Box(modifier = Modifier.padding(end = 10.dp)) {
-        IconButton(
-            onClick = { expanded = true },
+        ParityToolbarItemSurface(
             enabled = enabled,
+            onClick = { expanded = true },
         ) {
             if (isRunningAction) {
                 CircularProgressIndicator(
-                    modifier = Modifier.size(24.dp),
+                    modifier = Modifier.size(20.dp),
                     strokeWidth = 2.dp,
                     color = MaterialTheme.colorScheme.primary,
                 )
@@ -163,7 +159,7 @@ private fun TurnThreadProjectActionsMenu(
                     } else {
                         MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
                     },
-                    modifier = Modifier.size(24.dp),
+                    modifier = Modifier.size(22.dp),
                 )
             }
         }
@@ -214,6 +210,7 @@ private fun TurnToolbarDiffPill(
             .clickable(onClick = onClick),
         shape = RoundedCornerShape(999.dp),
         color = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f),
+        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.22f)),
     ) {
         Row(
             modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
@@ -250,14 +247,14 @@ private fun TurnGitActionsMenu(
 ) {
     var expanded by remember { mutableStateOf(false) }
     Box {
-        IconButton(
-            onClick = { expanded = true },
+        ParityToolbarItemSurface(
             enabled = enabled,
+            onClick = { expanded = true },
         ) {
             Box(contentAlignment = Alignment.Center) {
                 if (isRunningGitAction) {
                     CircularProgressIndicator(
-                        modifier = Modifier.size(24.dp),
+                        modifier = Modifier.size(20.dp),
                         strokeWidth = 2.dp,
                         color = MaterialTheme.colorScheme.primary,
                     )
@@ -271,7 +268,7 @@ private fun TurnGitActionsMenu(
                             } else {
                                 MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
                             },
-                            modifier = Modifier.size(24.dp),
+                            modifier = Modifier.size(20.dp),
                         )
                         val syncStatusColor = when (gitSyncState) {
                             "behind_only", "diverged", "dirty_and_behind" -> Color(0xFFFF9800)
