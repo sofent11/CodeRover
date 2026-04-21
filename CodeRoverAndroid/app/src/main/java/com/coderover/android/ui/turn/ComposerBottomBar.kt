@@ -20,7 +20,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.Send
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Check
-import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -324,7 +324,7 @@ internal fun ComposerPrimaryToolbar(
 
         if (isRunning) {
             Surface(
-                modifier = Modifier.size(34.dp),
+                modifier = Modifier.size(32.dp),
                 shape = CircleShape,
                 color = MaterialTheme.colorScheme.onSurface,
                 onClick = {
@@ -334,10 +334,10 @@ internal fun ComposerPrimaryToolbar(
             ) {
                 Box(contentAlignment = Alignment.Center) {
                     Icon(
-                        Icons.Outlined.Close,
+                        Icons.Filled.Stop,
                         contentDescription = "Stop",
                         tint = MaterialTheme.colorScheme.surface,
-                        modifier = Modifier.size(13.dp),
+                        modifier = Modifier.size(12.dp),
                     )
                 }
             }
