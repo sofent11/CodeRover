@@ -34,6 +34,7 @@ import com.coderover.android.ui.sidebar.SidebarHeaderView
 import com.coderover.android.ui.sidebar.SidebarNewChatButton
 import com.coderover.android.ui.sidebar.SidebarProjectPickerSheet
 import com.coderover.android.ui.sidebar.SidebarSearchField
+import com.coderover.android.ui.sidebar.SidebarThreadGroup
 import com.coderover.android.ui.sidebar.SidebarThreadListView
 import com.coderover.android.ui.sidebar.buildSidebarThreadGroups
 import com.coderover.android.ui.shared.AppBackdrop
@@ -63,6 +64,7 @@ fun SidebarScreen(
     var threadPendingRename by remember { mutableStateOf<ThreadSummary?>(null) }
     var threadPendingDeletion by remember { mutableStateOf<ThreadSummary?>(null) }
     var threadPendingArchiveToggle by remember { mutableStateOf<ThreadSummary?>(null) }
+    var projectGroupPendingArchive by remember { mutableStateOf<SidebarThreadGroup?>(null) }
 
     val sidebarScope = rememberCoroutineScope()
     val groups = remember(state.threads, query, visibleCountByProjectId) {
@@ -139,6 +141,7 @@ fun SidebarScreen(
                 onCreateThreadInProject = { projectPath ->
                     onCreateThread(projectPath, state.selectedProviderId)
                 },
+                onArchiveProjectGroup = { projectGroupPendingArchive = it },
                 onRequestRenameThread = { threadPendingRename = it },
                 onRequestDeleteThread = { threadPendingDeletion = it },
                 onArchiveToggleThread = { thread ->
@@ -180,6 +183,36 @@ fun SidebarScreen(
             onSelectWorktreeProject = { projectPath, providerId ->
                 showProjectPicker = false
                 onCreateManagedWorktreeThread(projectPath, providerId)
+            },
+        )
+    }
+
+    projectGroupPendingArchive?.let { group ->
+        AlertDialog(
+            onDismissRequest = { projectGroupPendingArchive = null },
+            title = { Text("Archive Project") },
+            text = { Text("Archive all active chats in \"${group.label}\"?") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        state.threads
+                            .filter { thread ->
+                                thread.syncState == ThreadSyncState.LIVE &&
+                                    thread.normalizedProjectPath == group.projectPath
+                            }
+                            .forEach { thread ->
+                                onArchiveThread(thread.id)
+                            }
+                        projectGroupPendingArchive = null
+                    },
+                ) {
+                    Text("Archive")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { projectGroupPendingArchive = null }) {
+                    Text("Cancel")
+                }
             },
         )
     }

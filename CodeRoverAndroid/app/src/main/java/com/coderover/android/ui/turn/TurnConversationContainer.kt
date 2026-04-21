@@ -1,6 +1,7 @@
 package com.coderover.android.ui.turn
 
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -94,38 +95,45 @@ internal fun TurnConversationContainer(
             )
         }
 
-        pendingApproval?.let { approval ->
-            TurnApprovalBanner(
-                approval = approval,
-                onApprove = onApprove,
-                onDeny = onDeny,
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 4.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            pendingApproval?.let { approval ->
+                TurnApprovalBanner(
+                    approval = approval,
+                    onApprove = onApprove,
+                    onDeny = onDeny,
+                )
+            }
+
+            pinnedTaskPlanMessage?.let { planMessage ->
+                PlanExecutionAccessory(
+                    message = planMessage,
+                    onTap = { isShowingPinnedPlanSheet = true },
+                    modifier = Modifier.padding(horizontal = 12.dp),
+                )
+            }
+
+            TurnComposerSlot(
+                state = state,
+                input = input,
+                isRunning = isRunning,
+                onInputChanged = onInputChanged,
+                onSend = onSend,
+                onStartReview = onStartReview,
+                onShowStatus = onShowStatus,
+                onStop = onStop,
+                onReconnect = onReconnect,
+                onSelectModel = onSelectModel,
+                onSelectReasoning = onSelectReasoning,
+                onSelectAccessMode = onSelectAccessMode,
+                turnViewModel = turnViewModel,
+                viewModel = viewModel,
             )
         }
-
-        pinnedTaskPlanMessage?.let { planMessage ->
-            PlanExecutionAccessory(
-                message = planMessage,
-                onTap = { isShowingPinnedPlanSheet = true },
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-            )
-        }
-
-        TurnComposerSlot(
-            state = state,
-            input = input,
-            isRunning = isRunning,
-            onInputChanged = onInputChanged,
-            onSend = onSend,
-            onStartReview = onStartReview,
-            onShowStatus = onShowStatus,
-            onStop = onStop,
-            onReconnect = onReconnect,
-            onSelectModel = onSelectModel,
-            onSelectReasoning = onSelectReasoning,
-            onSelectAccessMode = onSelectAccessMode,
-            turnViewModel = turnViewModel,
-            viewModel = viewModel,
-        )
     }
 
     if (isShowingPinnedPlanSheet && pinnedTaskPlanMessage != null) {

@@ -83,6 +83,8 @@ fun HomeEmptyScreen(
         ConnectionPhase.CONNECTED -> "Disconnect"
         ConnectionPhase.OFFLINE -> "Reconnect"
     }
+    val showsScanAction = state.connectionPhase == ConnectionPhase.CONNECTING ||
+        (state.pairings.isNotEmpty() && !state.isConnected)
     val isConnectionActionInFlight = when (state.connectionPhase) {
         ConnectionPhase.CONNECTING, ConnectionPhase.LOADING_CHATS, ConnectionPhase.SYNCING -> true
         ConnectionPhase.CONNECTED, ConnectionPhase.OFFLINE -> false
@@ -166,13 +168,15 @@ fun HomeEmptyScreen(
 
             Spacer(Modifier.height(8.dp))
 
-            TextButton(
-                onClick = onOpenPairing,
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Icon(Icons.Outlined.QrCodeScanner, contentDescription = null)
-                Spacer(Modifier.width(8.dp))
-                Text("Scan QR Code")
+            if (showsScanAction) {
+                TextButton(
+                    onClick = onOpenPairing,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Icon(Icons.Outlined.QrCodeScanner, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Scan New QR Code")
+                }
             }
         }
     }

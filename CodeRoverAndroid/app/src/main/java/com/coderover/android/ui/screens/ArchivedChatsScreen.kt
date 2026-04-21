@@ -1,6 +1,5 @@
 package com.coderover.android.ui.screens
 
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -14,9 +13,9 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Archive
+import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.Unarchive
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -33,6 +32,7 @@ import androidx.compose.ui.unit.dp
 import com.coderover.android.data.model.ThreadSummary
 import com.coderover.android.ui.shared.HapticFeedback
 import com.coderover.android.ui.shared.ParityListRow
+import com.coderover.android.ui.shared.ParityToolbarItemSurface
 import com.coderover.android.ui.shared.relativeTimeLabel
 import com.coderover.android.ui.theme.Danger
 
@@ -114,12 +114,9 @@ private fun ArchivedChatRow(
     onUnarchive: () -> Unit,
     onDeleteRequest: () -> Unit,
 ) {
-    var showMenu by remember { mutableStateOf(false) }
-
     ParityListRow(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable { showMenu = true }
             .padding(horizontal = 16.dp, vertical = 12.dp),
         isSelected = false,
     ) {
@@ -142,30 +139,30 @@ private fun ArchivedChatRow(
                 )
             }
         }
-        Icon(
-            imageVector = Icons.Outlined.Archive,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-    }
-
-    DropdownMenu(
-        expanded = showMenu,
-        onDismissRequest = { showMenu = false }
-    ) {
-        DropdownMenuItem(
-            text = { Text("Unarchive") },
-            onClick = {
-                showMenu = false
-                onUnarchive()
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            TextButton(onClick = onUnarchive) {
+                Icon(
+                    imageVector = Icons.Outlined.Unarchive,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(16.dp),
+                )
+                Text("Unarchive")
             }
-        )
-        DropdownMenuItem(
-            text = { Text("Delete", color = Danger) },
-            onClick = {
-                showMenu = false
-                onDeleteRequest()
+            ParityToolbarItemSurface(
+                size = 30.dp,
+                onClick = onDeleteRequest,
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.Delete,
+                    contentDescription = "Delete archived chat",
+                    tint = Danger,
+                    modifier = Modifier.size(16.dp),
+                )
             }
-        )
+        }
     }
 }

@@ -22,7 +22,6 @@ import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Refresh
-import androidx.compose.material.icons.outlined.Sync
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -471,42 +470,28 @@ internal fun ComposerSecondaryToolbar(
         Surface(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(999.dp),
-            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f),
+            border = androidx.compose.foundation.BorderStroke(
+                1.dp,
+                MaterialTheme.colorScheme.outline.copy(alpha = 0.14f),
+            ),
         ) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                    .padding(horizontal = 16.dp, vertical = 10.dp),
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Box {
-                    Surface(
+                    ComposerSecondaryChip(
+                        label = null,
+                        value = "Local",
                         onClick = {
                             haptic.triggerImpactFeedback()
                             turnViewModel.runtimeMenuExpanded = true
                         },
-                        shape = RoundedCornerShape(999.dp),
-                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.7f),
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(6.dp)
-                                    .background(CommandAccent, CircleShape),
-                            )
-                            Text(
-                                text = "Local",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.onSurface,
-                            )
-                        }
-                    }
-
+                    )
                     DropdownMenu(
                         expanded = turnViewModel.runtimeMenuExpanded,
                         onDismissRequest = { turnViewModel.runtimeMenuExpanded = false },
@@ -528,7 +513,7 @@ internal fun ComposerSecondaryToolbar(
 
                 Box {
                     ComposerSecondaryChip(
-                        label = "Access",
+                        label = null,
                         value = state.accessMode.displayName,
                         onClick = {
                             haptic.triggerImpactFeedback()
@@ -556,17 +541,9 @@ internal fun ComposerSecondaryToolbar(
                     }
                 }
 
-                BranchSelectorChip(
-                    state = state,
-                    turnViewModel = turnViewModel,
-                    onRefreshGitBranches = onRefreshGitBranches,
-                    onCheckoutGitBranch = onCheckoutGitBranch,
-                    onSelectGitBaseBranch = onSelectGitBaseBranch,
-                )
+                Spacer(modifier = Modifier.weight(1f))
 
                 if (showsManualRefresh) {
-                    Spacer(modifier = Modifier.weight(1f))
-
                     Surface(
                         onClick = {
                             haptic.triggerImpactFeedback()
@@ -599,6 +576,14 @@ internal fun ComposerSecondaryToolbar(
                         }
                     }
                 }
+
+                BranchSelectorChip(
+                    state = state,
+                    turnViewModel = turnViewModel,
+                    onRefreshGitBranches = onRefreshGitBranches,
+                    onCheckoutGitBranch = onCheckoutGitBranch,
+                    onSelectGitBaseBranch = onSelectGitBaseBranch,
+                )
             }
         }
     }
@@ -639,7 +624,7 @@ private fun BranchSelectorChip(
             Icon(
                 painter = androidx.compose.ui.res.painterResource(id = android.R.drawable.ic_menu_share),
                 contentDescription = null,
-                modifier = Modifier.size(14.dp),
+                modifier = Modifier.size(12.dp),
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Text(
@@ -672,6 +657,47 @@ private fun BranchSelectorChip(
                 onSelectGitBaseBranch(branch)
             },
         )
+    }
+}
+
+@Composable
+private fun ComposerSecondaryChip(
+    label: String?,
+    value: String,
+    leadingIcon: (@Composable () -> Unit)? = null,
+    onClick: () -> Unit,
+) {
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(999.dp),
+        color = Color.Transparent,
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            leadingIcon?.invoke()
+            if (!label.isNullOrBlank()) {
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Text(
+                text = value,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                text = "˅",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }
 
@@ -762,7 +788,7 @@ private fun BranchSelectorSheet(
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
                         Icon(
-                            Icons.Outlined.Sync,
+                            Icons.Outlined.Refresh,
                             contentDescription = null,
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.size(16.dp),

@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.PhotoCamera
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ModalBottomSheet
@@ -48,12 +49,14 @@ import com.coderover.android.ui.shared.HapticFeedback
 import android.content.Intent
 import android.provider.Settings
 import androidx.compose.ui.platform.LocalContext
+import com.coderover.android.ui.shared.ParityToolbarItemSurface
 
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
 fun PairingEntryScreen(
     errorMessage: String?,
     pendingTransportSelectionPairing: PairingRecord?,
+    onBack: (() -> Unit)? = null,
     onScannedPayload: (String, resetScanLock: () -> Unit) -> Unit,
     onSelectTransport: (String, String) -> Unit,
     onErrorDismissed: () -> Unit,
@@ -135,6 +138,25 @@ fun PairingEntryScreen(
             }
         }
     )
+
+    onBack?.let { dismiss ->
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+        ) {
+            ParityToolbarItemSurface(
+                modifier = Modifier.align(Alignment.TopStart),
+                onClick = dismiss,
+            ) {
+                androidx.compose.material3.Icon(
+                    imageVector = Icons.AutoMirrored.Outlined.ArrowBack,
+                    contentDescription = "Back",
+                )
+            }
+        }
+    }
 
     if (!errorMessage.isNullOrBlank()) {
         AlertDialog(

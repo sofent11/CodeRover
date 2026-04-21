@@ -67,6 +67,7 @@ fun SidebarThreadListView(
     onToggleProjectGroupCollapsed: (String) -> Unit,
     onSelectThread: (ThreadSummary) -> Unit,
     onCreateThreadInProject: (String?) -> Unit,
+    onArchiveProjectGroup: (SidebarThreadGroup) -> Unit,
     onRequestRenameThread: (ThreadSummary) -> Unit,
     onRequestDeleteThread: (ThreadSummary) -> Unit,
     onArchiveToggleThread: (ThreadSummary) -> Unit,
@@ -133,6 +134,7 @@ fun SidebarThreadListView(
                         expanded = expanded,
                         onToggle = { onToggleProjectGroupCollapsed(group.id) },
                         onCreate = { onCreateThreadInProject(group.projectPath) },
+                        onArchive = { onArchiveProjectGroup(group) },
                     )
                     AnimatedVisibility(visible = expanded) {
                         Column {
@@ -313,6 +315,7 @@ private fun SidebarProjectGroupHeader(
     expanded: Boolean,
     onToggle: () -> Unit,
     onCreate: () -> Unit,
+    onArchive: () -> Unit,
 ) {
     val haptic = HapticFeedback.rememberHapticFeedback()
     Row(
@@ -332,7 +335,7 @@ private fun SidebarProjectGroupHeader(
                     },
                     onLongClick = {
                         haptic.triggerImpactFeedback(HapticFeedback.Style.MEDIUM)
-                        onToggle()
+                        onArchive()
                     },
                 ),
             verticalAlignment = Alignment.CenterVertically,
