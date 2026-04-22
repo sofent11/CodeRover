@@ -181,8 +181,11 @@ export function startBridge({
       updateRuntimeState();
     },
     onEvent(event) {
+      const logLevel = event.kind === "buffer_trim"
+        ? "debug"
+        : (event.kind === "secure_error" || event.kind === "resume_gap" ? "warn" : "info");
       logBridgeEvent(
-        event.kind === "secure_error" || event.kind === "resume_gap" ? "warn" : "info",
+        logLevel,
         event.kind,
         {
           code: event.code || null,

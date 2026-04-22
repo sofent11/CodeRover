@@ -17,7 +17,9 @@ import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -69,6 +71,9 @@ class SecureBridgeClient(
     private var secureSession: SecureSession? = null
     private var phoneIdentity: PhoneIdentityState? = null
     private var currentAccessMode: AccessMode = AccessMode.ON_REQUEST
+    private var lastSentBridgeAckSeq: Int = 0
+    private var pendingBridgeAckSeq: Int? = null
+    private var bridgeAckFlushJob: Job? = null
 
     suspend fun connect(
         url: String,
@@ -80,6 +85,10 @@ class SecureBridgeClient(
         currentAccessMode = accessMode
         phoneIdentity = phoneIdentityState
         secureSession = null
+        lastSentBridgeAckSeq = pairingRecord.lastAppliedBridgeOutboundSeq
+        pendingBridgeAckSeq = null
+        bridgeAckFlushJob?.cancel()
+        bridgeAckFlushJob = null
         val openSignal = CompletableDeferred<Unit>()
         val request = Request.Builder().url(url).build()
 
@@ -171,6 +180,9 @@ class SecureBridgeClient(
             bufferedControls.clear()
             controlWaiters.clear()
         }
+        bridgeAckFlushJob?.cancel()
+        bridgeAckFlushJob = null
+        pendingBridgeAckSeq = null
     }
 
     suspend fun sendRequest(method: String, params: JsonObject?): JsonElement? {
@@ -442,6 +454,7 @@ class SecureBridgeClient(
         if (bridgeOutboundSeq != null && bridgeOutboundSeq > session.lastInboundBridgeOutboundSeq) {
             session.lastInboundBridgeOutboundSeq = bridgeOutboundSeq
             onBridgeSequenceApplied(bridgeOutboundSeq)
+            scheduleBridgeReplayAck(bridgeOutboundSeq)
         }
         session.lastInboundCounter = counter
         sessionMutex.withLock {
@@ -529,6 +542,49 @@ class SecureBridgeClient(
         val sent = socket?.send(message.toString()) == true
         if (!sent) {
             throw IllegalStateException("Unable to send secure control message.")
+        }
+    }
+
+    private fun scheduleBridgeReplayAck(bridgeOutboundSeq: Int) {
+        if (bridgeOutboundSeq <= lastSentBridgeAckSeq) {
+            return
+        }
+        pendingBridgeAckSeq = maxOf(pendingBridgeAckSeq ?: 0, bridgeOutboundSeq)
+        if (bridgeAckFlushJob?.isActive == true) {
+            return
+        }
+        bridgeAckFlushJob = scope.launch {
+            delay(150)
+            flushPendingBridgeReplayAck()
+        }
+    }
+
+    private suspend fun flushPendingBridgeReplayAck() {
+        val session = sessionMutex.withLock { secureSession }
+        val ackSeq = pendingBridgeAckSeq
+        if (session == null || ackSeq == null || ackSeq <= lastSentBridgeAckSeq) {
+            bridgeAckFlushJob = null
+            return
+        }
+        try {
+            sendRawControl(
+                JsonObject(
+                    mapOf(
+                        "kind" to JsonPrimitive("ackState"),
+                        "sessionId" to JsonPrimitive(session.sessionId),
+                        "keyEpoch" to JsonPrimitive(session.keyEpoch),
+                        "lastAppliedBridgeOutboundSeq" to JsonPrimitive(ackSeq),
+                    ),
+                ),
+            )
+            lastSentBridgeAckSeq = ackSeq
+            if (pendingBridgeAckSeq == ackSeq) {
+                pendingBridgeAckSeq = null
+            }
+        } catch (error: Throwable) {
+            Log.d(TAG, "ackState send failed", error)
+        } finally {
+            bridgeAckFlushJob = null
         }
     }
 

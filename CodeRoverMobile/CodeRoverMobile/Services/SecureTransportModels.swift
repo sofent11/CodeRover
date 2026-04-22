@@ -123,6 +123,13 @@ struct SecureResumeState: Codable, Sendable {
     let lastAppliedBridgeOutboundSeq: Int
 }
 
+struct SecureAckState: Codable, Sendable {
+    let kind = "ackState"
+    let sessionId: String
+    let keyEpoch: Int
+    let lastAppliedBridgeOutboundSeq: Int
+}
+
 struct SecureErrorMessage: Codable, Sendable {
     let kind: String
     let code: String

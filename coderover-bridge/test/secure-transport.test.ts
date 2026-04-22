@@ -673,6 +673,7 @@ test("resume gap returns an explicit secure error instead of silently skipping m
   const phoneIdentity = createOkpKeyPair("ed25519");
   const firstEphemeral = createOkpKeyPair("x25519");
   const reconnectEphemeral = createOkpKeyPair("x25519");
+  const reconnectWireMessages: string[] = [];
   const secureTransport = createBridgeSecureTransport({
     sessionId: "session-gap",
     deviceState: createBridgeDeviceState({
@@ -696,7 +697,7 @@ test("resume gap returns an explicit secure error instead of silently skipping m
     lastAppliedBridgeOutboundSeq: 0,
   });
 
-  for (let index = 0; index < 520; index += 1) {
+  for (let index = 0; index < 2200; index += 1) {
     secureTransport.queueOutboundApplicationMessage(
       JSON.stringify({ id: `response-${index}`, result: { index } })
     );
@@ -713,6 +714,7 @@ test("resume gap returns an explicit secure error instead of silently skipping m
     phoneEphemeral: reconnectEphemeral,
     handshakeMode: HANDSHAKE_MODE_TRUSTED_RECONNECT,
     lastAppliedBridgeOutboundSeq: 0,
+    wireMessages: reconnectWireMessages,
   });
 
   const resumeError = reconnect.controlMessages.find((message) => message.kind === "secureError");
@@ -720,6 +722,82 @@ test("resume gap returns an explicit secure error instead of silently skipping m
   assert.equal(resumeError?.code, "resume_gap");
   assert.equal(secureTransport.getDiagnostics().resumeGapCount, 1);
   assert.ok(secureTransport.getDiagnostics().outboundBufferDropCount > 0);
+
+  secureTransport.queueOutboundApplicationMessage(
+    JSON.stringify({ id: "response-after-gap", result: { ok: true } })
+  );
+  assert.ok(reconnectWireMessages.length > 0);
+});
+
+test("ackState lets the bridge prune acknowledged replay history without forcing resume gaps", () => {
+  const macIdentity = createOkpKeyPair("ed25519");
+  const phoneIdentity = createOkpKeyPair("ed25519");
+  const firstEphemeral = createOkpKeyPair("x25519");
+  const reconnectEphemeral = createOkpKeyPair("x25519");
+  const secureTransport = createBridgeSecureTransport({
+    sessionId: "session-ack",
+    deviceState: createBridgeDeviceState({
+      bridgeId: "bridge-ack",
+      macDeviceId: "mac-ack",
+      macIdentityPrivateKey: macIdentity.privateKey,
+      macIdentityPublicKey: macIdentity.publicKey,
+    }),
+  });
+
+  const initialHandshake = finishHandshake({
+    secureTransport,
+    transportId: "transport-ack-1",
+    sessionId: "session-ack",
+    macDeviceId: "mac-ack",
+    phoneDeviceId: "phone-ack",
+    macIdentity,
+    phoneIdentity,
+    phoneEphemeral: firstEphemeral,
+    handshakeMode: HANDSHAKE_MODE_QR_BOOTSTRAP,
+    lastAppliedBridgeOutboundSeq: 0,
+  });
+
+  for (let index = 1; index <= 2200; index += 1) {
+    secureTransport.queueOutboundApplicationMessage(
+      JSON.stringify({ id: `response-${index}`, result: { index } })
+    );
+    secureTransport.handleIncomingWireMessage(
+      JSON.stringify({
+        kind: "ackState",
+        sessionId: "session-ack",
+        keyEpoch: initialHandshake.serverHello.keyEpoch,
+        lastAppliedBridgeOutboundSeq: index,
+      }),
+      {
+        transportId: "transport-ack-1",
+        sendControlMessage() {
+          throw new Error("ackState should not emit control errors for the active session");
+        },
+        onApplicationMessage() {
+          throw new Error("ackState should not forward application traffic");
+        },
+      }
+    );
+  }
+
+  assert.equal(secureTransport.getDiagnostics().outboundBufferDropCount, 0);
+
+  const reconnect = finishHandshake({
+    secureTransport,
+    transportId: "transport-ack-2",
+    sessionId: "session-ack",
+    macDeviceId: "mac-ack",
+    phoneDeviceId: "phone-ack",
+    macIdentity,
+    phoneIdentity,
+    phoneEphemeral: reconnectEphemeral,
+    handshakeMode: HANDSHAKE_MODE_TRUSTED_RECONNECT,
+    lastAppliedBridgeOutboundSeq: 2200,
+  });
+
+  const resumeError = reconnect.controlMessages.find((message) => message.kind === "secureError");
+  assert.equal(resumeError, undefined);
+  assert.equal(secureTransport.getDiagnostics().resumeGapCount, 0);
 });
 
 function finishHandshake({

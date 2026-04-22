@@ -175,6 +175,10 @@ extension CodeRoverService {
         pendingHandshake = nil
         secureConnectionState = .encrypted
         secureMacFingerprint = coderoverSecureFingerprint(for: serverHello.macIdentityPublicKey)
+        lastSentBridgeAckSeq = lastAppliedBridgeOutboundSeq
+        pendingBridgeAckSeq = nil
+        bridgeAckFlushTask?.cancel()
+        bridgeAckFlushTask = nil
 
         if handshakeMode == .qrBootstrap {
             trustMac(deviceId: macDeviceId, publicKey: serverHello.macIdentityPublicKey)
@@ -275,6 +279,10 @@ extension CodeRoverService {
     func resetSecureTransportState() {
         secureSession = nil
         pendingHandshake = nil
+        bridgeAckFlushTask?.cancel()
+        bridgeAckFlushTask = nil
+        pendingBridgeAckSeq = nil
+        lastSentBridgeAckSeq = lastAppliedBridgeOutboundSeq
         let continuations = pendingSecureControlContinuations
         pendingSecureControlContinuations.removeAll()
         bufferedSecureControlMessages.removeAll()
@@ -337,6 +345,9 @@ private extension CodeRoverService {
     func bufferSecureControlMessage(kind: String, rawText: String) {
         if kind == "secureError",
            let secureError = try? decodeSecureControl(SecureErrorMessage.self, from: rawText) {
+            if handleRecoverableSecureErrorIfNeeded(secureError) {
+                return
+            }
             lastErrorMessage = secureError.message
             if secureError.code == "update_required" {
                 secureConnectionState = .updateRequired
@@ -373,6 +384,40 @@ private extension CodeRoverService {
         }
 
         bufferedSecureControlMessages[kind, default: []].append(rawText)
+    }
+
+    func handleRecoverableSecureErrorIfNeeded(_ secureError: SecureErrorMessage) -> Bool {
+        guard secureError.code == "resume_gap" else {
+            return false
+        }
+
+        lastErrorMessage = nil
+        scheduleResumeGapRecovery()
+        return true
+    }
+
+    func scheduleResumeGapRecovery() {
+        var seenThreadIDs: Set<String> = []
+        var prioritizedThreadIDs: [String] = []
+        for candidateThreadID in [activeThreadId] + Array(runningThreadIDs) + Array(activeTurnIdByThread.keys) {
+            guard let normalizedThreadID = normalizedIdentifier(candidateThreadID),
+                  seenThreadIDs.insert(normalizedThreadID).inserted else {
+                continue
+            }
+            prioritizedThreadIDs.append(normalizedThreadID)
+        }
+        guard !prioritizedThreadIDs.isEmpty else {
+            return
+        }
+
+        Task { @MainActor [weak self] in
+            guard let self, self.isConnected else { return }
+            for threadId in prioritizedThreadIDs {
+                self.requestPrioritizedThreadSync(threadId: threadId)
+                await self.syncThreadHistory(threadId: threadId, force: true)
+                _ = await self.refreshInFlightTurnState(threadId: threadId)
+            }
+        }
     }
 
     // Resumes a specific secure-control waiter once, so timeout tasks cannot double-resume it.
@@ -447,6 +492,8 @@ private extension CodeRoverService {
                         + "lastApplied=\(lastAppliedBridgeOutboundSeq) keyEpoch=\(secureSession.keyEpoch)"
                     )
                     lastAppliedBridgeOutboundSeq = 0
+                    lastSentBridgeAckSeq = 0
+                    pendingBridgeAckSeq = nil
                     updateActiveSavedBridgePairing { pairing in
                         pairing.lastAppliedBridgeOutboundSeq = 0
                     }
@@ -461,6 +508,7 @@ private extension CodeRoverService {
                 updateActiveSavedBridgePairing { pairing in
                     pairing.lastAppliedBridgeOutboundSeq = bridgeOutboundSeq
                 }
+                scheduleBridgeReplayAck(for: bridgeOutboundSeq)
             }
 
             self.secureSession = secureSession
@@ -505,6 +553,46 @@ private extension CodeRoverService {
         )
         SecureStore.writeCodable(trustedMacRegistry, for: CodeRoverSecureKeys.trustedMacRegistry)
         secureMacFingerprint = coderoverSecureFingerprint(for: publicKey)
+    }
+
+    func scheduleBridgeReplayAck(for bridgeOutboundSeq: Int) {
+        guard bridgeOutboundSeq > lastSentBridgeAckSeq else {
+            return
+        }
+        pendingBridgeAckSeq = max(pendingBridgeAckSeq ?? 0, bridgeOutboundSeq)
+        guard bridgeAckFlushTask == nil else {
+            return
+        }
+        bridgeAckFlushTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 150_000_000)
+            await self?.flushPendingBridgeReplayAckIfNeeded()
+        }
+    }
+
+    func flushPendingBridgeReplayAckIfNeeded() async {
+        defer {
+            bridgeAckFlushTask = nil
+        }
+        guard let secureSession,
+              let pendingBridgeAckSeq,
+              pendingBridgeAckSeq > lastSentBridgeAckSeq else {
+            return
+        }
+        do {
+            try await sendWireControlMessage(
+                SecureAckState(
+                    sessionId: secureSession.sessionId,
+                    keyEpoch: secureSession.keyEpoch,
+                    lastAppliedBridgeOutboundSeq: pendingBridgeAckSeq
+                )
+            )
+            lastSentBridgeAckSeq = pendingBridgeAckSeq
+            if self.pendingBridgeAckSeq == pendingBridgeAckSeq {
+                self.pendingBridgeAckSeq = nil
+            }
+        } catch {
+            coderoverDiagnosticLog("secure", "ackState send failed error=\(error.localizedDescription)")
+        }
     }
 
     /// Waits for a serverHello whose echoed clientNonce matches the one we sent.

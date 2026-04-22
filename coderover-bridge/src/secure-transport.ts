@@ -33,8 +33,9 @@ const SECURE_SENDER_MAC = "mac";
 const SECURE_SENDER_IPHONE = "iphone";
 const CLOSE_CODE_REPLACED_CONNECTION = 4003;
 const MAX_PAIRING_AGE_MS = 5 * 60 * 1000;
-const MAX_BRIDGE_OUTBOUND_MESSAGES = 500;
-const MAX_BRIDGE_OUTBOUND_BYTES = 10 * 1024 * 1024;
+const MAX_BRIDGE_OUTBOUND_MESSAGES = 2000;
+// thread/read snapshots can be several hundred KB, so keep a wider local replay window.
+const MAX_BRIDGE_OUTBOUND_BYTES = 50 * 1024 * 1024;
 
 type HandshakeMode =
   | typeof HANDSHAKE_MODE_QR_BOOTSTRAP
@@ -81,7 +82,20 @@ interface SecureReadyMessage {
   [key: string]: unknown;
 }
 
-type SecureControlMessage = SecureErrorMessage | ServerHelloMessage | SecureReadyMessage | JsonRecord;
+interface AckStateMessage {
+  kind: "ackState";
+  sessionId: string;
+  keyEpoch: number;
+  lastAppliedBridgeOutboundSeq: number;
+  [key: string]: unknown;
+}
+
+type SecureControlMessage =
+  | SecureErrorMessage
+  | ServerHelloMessage
+  | SecureReadyMessage
+  | AckStateMessage
+  | JsonRecord;
 
 interface SecureTransportContext {
   transportId?: string;
@@ -277,6 +291,9 @@ export function createBridgeSecureTransport({
         return true;
       case "resumeState":
         handleResumeState(parsed, transportId, sendControlMessage);
+        return true;
+      case "ackState":
+        handleAckState(parsed, transportId, sendControlMessage);
         return true;
       case "encryptedEnvelope":
         return handleEncryptedEnvelope(parsed, { transportId, sendControlMessage, onApplicationMessage });
@@ -665,6 +682,10 @@ export function createBridgeSecureTransport({
 
     const lastAppliedBridgeOutboundSeq = Number(message.lastAppliedBridgeOutboundSeq) || 0;
     const resumeFloor = Math.max(lastAppliedBridgeOutboundSeq, activeSession.minBridgeOutboundSeq - 1);
+    activeSession.minBridgeOutboundSeq = Math.max(
+      activeSession.minBridgeOutboundSeq,
+      lastAppliedBridgeOutboundSeq + 1
+    );
     const minimumBufferedSeq = outboundBuffer[0]?.bridgeOutboundSeq ?? null;
     if (
       minimumBufferedSeq != null
@@ -682,7 +703,6 @@ export function createBridgeSecureTransport({
         phoneDeviceId: activeSession.phoneDeviceId,
         minRetainedBridgeOutboundSeq: minimumBufferedSeq,
       });
-      return;
     }
     const missingEntries = outboundBuffer.filter((entry) => entry.bridgeOutboundSeq > resumeFloor);
     debugSecureLog(
@@ -694,6 +714,40 @@ export function createBridgeSecureTransport({
     for (const entry of missingEntries) {
       sendBufferedEntry(entry, activeSession);
     }
+  }
+
+  function handleAckState(
+    message: JsonRecord,
+    transportId: string,
+    sendControlMessage: (message: SecureControlMessage) => void
+  ): void {
+    const activeSession = requireOwnedSession(transportId);
+    if (!activeSession) {
+      sendControlMessage(reportSecureError({
+        code: "secure_channel_unavailable",
+        message: "The secure channel is not ready yet on the bridge.",
+      }));
+      return;
+    }
+
+    const incomingSessionId = normalizeNonEmptyString(message.sessionId);
+    const keyEpoch = Number(message.keyEpoch);
+    const lastAppliedBridgeOutboundSeq = Number(message.lastAppliedBridgeOutboundSeq);
+    if (
+      incomingSessionId !== sessionId
+      || keyEpoch !== activeSession.keyEpoch
+      || !Number.isInteger(lastAppliedBridgeOutboundSeq)
+      || lastAppliedBridgeOutboundSeq < 0
+    ) {
+      return;
+    }
+
+    activeSession.minBridgeOutboundSeq = Math.max(
+      activeSession.minBridgeOutboundSeq,
+      lastAppliedBridgeOutboundSeq + 1
+    );
+    trimOutboundBuffer();
+    onDiagnosticsChanged();
   }
 
   function handleEncryptedEnvelope(
@@ -779,8 +833,10 @@ export function createBridgeSecureTransport({
   }
 
   function trimOutboundBuffer(): void {
+    pruneBufferedEntriesBeforeReplayFloor();
     let droppedMessages = 0;
     let droppedBytes = 0;
+    const acknowledgedTrimFloor = minimumReplayFloorAcrossActiveSessions();
     while (
       outboundBuffer.length > MAX_BRIDGE_OUTBOUND_MESSAGES
       || outboundBufferBytes > MAX_BRIDGE_OUTBOUND_BYTES
@@ -790,9 +846,11 @@ export function createBridgeSecureTransport({
         break;
       }
       outboundBufferBytes = Math.max(0, outboundBufferBytes - removed.sizeBytes);
-      droppedMessages += 1;
-      droppedBytes += removed.sizeBytes;
-      outboundBufferDropCount += 1;
+      if (acknowledgedTrimFloor == null || removed.bridgeOutboundSeq >= acknowledgedTrimFloor) {
+        droppedMessages += 1;
+        droppedBytes += removed.sizeBytes;
+        outboundBufferDropCount += 1;
+      }
     }
     if (droppedMessages > 0) {
       emitStateChange({
@@ -802,6 +860,31 @@ export function createBridgeSecureTransport({
         minRetainedBridgeOutboundSeq: outboundBuffer[0]?.bridgeOutboundSeq ?? null,
       });
     }
+  }
+
+  function pruneBufferedEntriesBeforeReplayFloor(): void {
+    const replayFloor = minimumReplayFloorAcrossActiveSessions();
+    if (replayFloor == null) {
+      return;
+    }
+
+    while (outboundBuffer[0]?.bridgeOutboundSeq != null && outboundBuffer[0].bridgeOutboundSeq < replayFloor) {
+      const removed = outboundBuffer.shift();
+      if (!removed) {
+        break;
+      }
+      outboundBufferBytes = Math.max(0, outboundBufferBytes - removed.sizeBytes);
+    }
+  }
+
+  function minimumReplayFloorAcrossActiveSessions(): number | null {
+    let minimumReplayFloor: number | null = null;
+    for (const activeSession of activeSessions.values()) {
+      minimumReplayFloor = minimumReplayFloor == null
+        ? activeSession.minBridgeOutboundSeq
+        : Math.min(minimumReplayFloor, activeSession.minBridgeOutboundSeq);
+    }
+    return minimumReplayFloor;
   }
 
   function sendBufferedEntry(entry: OutboundBufferEntry, activeSession: ActiveSession): void {

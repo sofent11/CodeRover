@@ -444,7 +444,7 @@ extension CodeRoverService {
         }
 
         if case .posix(let code) = nwError,
-           code == .ECONNABORTED || code == .ECANCELED || code == .ENOTCONN {
+           code == .ECONNABORTED || code == .ECANCELED || code == .ENOTCONN || isNoMessageAvailableOnStream(code) {
             return true
         }
 
@@ -464,14 +464,17 @@ extension CodeRoverService {
 
         if let nwError = error as? NWError {
             if case .posix(let code) = nwError,
-               code == .ETIMEDOUT {
+               code == .ETIMEDOUT || isNoMessageAvailableOnStream(code) {
                 return true
             }
         }
 
         let nsError = error as NSError
         return nsError.domain == NSPOSIXErrorDomain
-            && nsError.code == Int(POSIXErrorCode.ETIMEDOUT.rawValue)
+            && (
+                nsError.code == Int(POSIXErrorCode.ETIMEDOUT.rawValue)
+                || nsError.code == 96
+            )
     }
 
     // Suppresses benign socket abort/cancel noise even when foreground request tasks surface the disconnect later.
@@ -585,6 +588,10 @@ extension CodeRoverService {
         }
 
         return nil
+    }
+
+    func isNoMessageAvailableOnStream(_ code: POSIXErrorCode) -> Bool {
+        code.rawValue == 96
     }
 
     func isLoopbackHost(_ host: String?) -> Bool {

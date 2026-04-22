@@ -395,6 +395,8 @@ final class CodeRoverService {
     var pairedMacIdentityPublicKey: String?
     var secureProtocolVersion: Int = coderoverSecureProtocolVersion
     var lastAppliedBridgeOutboundSeq = 0
+    var lastSentBridgeAckSeq = 0
+    var pendingBridgeAckSeq: Int?
     var secureConnectionState: CodeRoverSecureConnectionState = .notPaired
     var secureMacFingerprint: String?
 
@@ -406,6 +408,7 @@ final class CodeRoverService {
     var pendingRequestTimeoutTasks: [String: Task<Void, Never>] = [:]
     var pendingRequestContexts: [String: CodeRoverPendingRequestContext] = [:]
     var lastInboundWireActivityAt: Date = .distantPast
+    @ObservationIgnored var bridgeAckFlushTask: Task<Void, Never>?
     // Test hook: intercepts outbound RPC requests without requiring a live socket.
     @ObservationIgnored var requestTransportOverride: ((String, JSONValue?) async throws -> RPCMessage)?
     var streamingAssistantMessageByTurnID: [String: String] = [:]

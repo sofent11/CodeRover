@@ -26,6 +26,18 @@ final class CodeRoverServiceConnectionErrorTests: XCTestCase {
         XCTAssertFalse(service.shouldSuppressUserFacingConnectionError(error))
     }
 
+    func testNoMessageAvailableOnStreamIsTreatedAsRecoverableDisconnect() {
+        let service = CodeRoverService()
+        guard let code = POSIXErrorCode(rawValue: 96) else {
+            XCTFail("Expected POSIX error 96 to be available on this platform")
+            return
+        }
+        let error = NWError.posix(code)
+
+        XCTAssertTrue(service.isBenignBackgroundDisconnect(error))
+        XCTAssertTrue(service.isRecoverableTransientConnectionError(error))
+    }
+
     func testHistoryRequestTimeoutDoesNotSurfaceAsConnectionError() {
         let service = CodeRoverService()
         let error = CodeRoverServiceError.historyRequestTimedOut(threadId: "thread-history")
