@@ -2567,6 +2567,170 @@ test("observed non-managed Codex threads project rollout history and realtime up
   }
 });
 
+test("observed Codex rollout recovery keeps later turn history after a truncated tail line", async () => {
+  const previousCodexHome = process.env.CODEX_HOME;
+  const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), "coderover-rollout-recovery-home-"));
+  process.env.CODEX_HOME = codexHome;
+
+  const threadId = "codex-rollout-recovery-thread";
+  const rolloutDir = path.join(codexHome, "sessions", "2026", "04", "22");
+  const rolloutPath = path.join(rolloutDir, `rollout-2026-04-22T10-00-00-${threadId}.jsonl`);
+  fs.mkdirSync(rolloutDir, { recursive: true });
+  fs.writeFileSync(rolloutPath, [
+    JSON.stringify({
+      timestamp: "2026-04-22T10:00:00.000Z",
+      type: "session_meta",
+      payload: {
+        id: threadId,
+        cwd: "/tmp/codex-rollout-recovery",
+        originator: "Codex Desktop",
+        source: "vscode",
+      },
+    }),
+    "{\"timestamp\":\"2026-04-22T10:00:01.000Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"function_call\"",
+  ].join("\n"));
+
+  const readParams: ThreadReadParams[] = [];
+  const codexAdapter = createCodexAdapterStub({
+    async request(method: string) {
+      if (method === "initialize") {
+        return { ok: true };
+      }
+      throw new Error(`unexpected request: ${method}`);
+    },
+    notify() {},
+    async readThread(params: ThreadReadParams = {}) {
+      readParams.push(JSON.parse(JSON.stringify(params)));
+      if (params.includeTurns === false) {
+        return {
+          thread: {
+            id: threadId,
+            title: "Recovered Rollout Thread",
+            preview: "Later rollout events should survive truncation.",
+            cwd: "/tmp/codex-rollout-recovery",
+            createdAt: "2026-04-22T10:00:00.000Z",
+            updatedAt: "2026-04-22T10:00:01.000Z",
+          },
+        };
+      }
+      throw new Error("unexpected upstream history read");
+    },
+  });
+
+  const fixture = createManagerFixtureWithOptions({
+    codexAdapter,
+    runtimeOptions: {
+      codexObservedThreadPollIntervalMs: 20,
+      codexObservedThreadIdleTtlMs: 2_000,
+    },
+  });
+
+  try {
+    const initialMessages = await request(fixture, "rollout-recovery-tail-read", "thread/read", {
+      threadId,
+      history: {
+        mode: "tail",
+        limit: 50,
+      },
+    });
+    const initialResponse = responseById(initialMessages, "rollout-recovery-tail-read");
+    assert.equal(initialResponse.result.historyWindow.servedFromProjection, true);
+    assert.equal(initialResponse.result.historyWindow.projectionSource, "rollout_observer");
+
+    const messageCountBeforeGrowth = fixture.messages.length;
+    fs.appendFileSync(rolloutPath, [
+      JSON.stringify({
+        timestamp: "2026-04-22T10:00:02.000Z",
+        type: "event_msg",
+        payload: {
+          type: "task_started",
+          turn_id: "rollout-turn-recovered",
+        },
+      }),
+      JSON.stringify({
+        timestamp: "2026-04-22T10:00:03.000Z",
+        type: "event_msg",
+        payload: {
+          type: "user_message",
+          message: "Continue after manual stop",
+        },
+      }),
+      JSON.stringify({
+        timestamp: "2026-04-22T10:00:04.000Z",
+        type: "event_msg",
+        payload: {
+          type: "agent_message",
+          message: "Recovered after truncated rollout tail.",
+        },
+      }),
+      JSON.stringify({
+        timestamp: "2026-04-22T10:00:05.000Z",
+        type: "event_msg",
+        payload: {
+          type: "task_complete",
+          turn_id: "rollout-turn-recovered",
+        },
+      }),
+      "",
+    ].join("\n"));
+
+    await sleep(120);
+
+    const growthMessages = fixture.messages.slice(messageCountBeforeGrowth);
+    assert.ok(
+      growthMessages.some((message: RpcMessage) =>
+        message.method === "timeline/itemCompleted"
+        && message.params?.text === "Recovered after truncated rollout tail."
+        && message.params?.sourceKind === "rollout_observer"
+      )
+    );
+    assert.ok(
+      growthMessages.some((message: RpcMessage) =>
+        message.method === "thread/history/changed"
+        && message.params?.sourceKind === "rollout_observer"
+      )
+    );
+
+    const refreshedMessages = await request(fixture, "rollout-recovery-tail-reread", "thread/read", {
+      threadId,
+      history: {
+        mode: "tail",
+        limit: 50,
+      },
+    });
+    const refreshedResponse = responseById(refreshedMessages, "rollout-recovery-tail-reread");
+    const recoveredTurn = refreshedResponse.result.thread.turns.find(
+      (turn: { id: string }) => turn.id === "rollout-turn-recovered"
+    );
+    assert.ok(recoveredTurn);
+    assert.deepEqual(
+      recoveredTurn.items.map((item: { type: string; text?: string }) => ({
+        type: item.type,
+        text: item.text || "",
+      })),
+      [
+        {
+          type: "user_message",
+          text: "Continue after manual stop",
+        },
+        {
+          type: "agent_message",
+          text: "Recovered after truncated rollout tail.",
+        },
+      ]
+    );
+    assert.equal(readParams.filter((params) => Boolean(params.history)).length, 0);
+  } finally {
+    fixture.cleanup();
+    fs.rmSync(codexHome, { recursive: true, force: true });
+    if (previousCodexHome == null) {
+      delete process.env.CODEX_HOME;
+    } else {
+      process.env.CODEX_HOME = previousCodexHome;
+    }
+  }
+});
+
 test("observed Codex threads do not emit repeated thread/history/changed for unchanged long histories", async () => {
   const threadRef = {
     current: buildCodexThread({

@@ -1018,7 +1018,15 @@ export function createRuntimeManager({
       return { lines: [], partialLine: "" };
     }
     const parts = chunk.split("\n");
-    const partialLine = parts.pop() || "";
+    const trailingLine = parts.pop() || "";
+    let partialLine = trailingLine;
+    if (trailingLine.trim()) {
+      const parsedTrailingLine = parseObservedCodexRolloutLine(trailingLine);
+      if (parsedTrailingLine) {
+        parts.push(trailingLine);
+        partialLine = "";
+      }
+    }
     return {
       lines: parts,
       partialLine,
@@ -1054,14 +1062,8 @@ export function createRuntimeManager({
       cwd: rolloutState.cwd,
     });
     for (const rawLine of lines) {
-      const trimmedLine = rawLine.trim();
-      if (!trimmedLine) {
-        continue;
-      }
-      let parsedLine: UnknownRecord | null = null;
-      try {
-        parsedLine = JSON.parse(trimmedLine) as UnknownRecord;
-      } catch {
+      const parsedLine = parseObservedCodexRolloutLine(rawLine);
+      if (!parsedLine) {
         continue;
       }
       ensureCodexHistoryCacheEntry(threadId, {
@@ -1077,6 +1079,55 @@ export function createRuntimeManager({
         );
       });
     }
+  }
+
+  function parseObservedCodexRolloutLine(rawLine: string): UnknownRecord | null {
+    const trimmedLine = rawLine.trim();
+    if (!trimmedLine) {
+      return null;
+    }
+
+    const directParse = parseObservedCodexRolloutEntry(trimmedLine);
+    if (directParse) {
+      return directParse;
+    }
+
+    for (let index = 1; index < trimmedLine.length - 1; index += 1) {
+      if (trimmedLine[index] !== "{" || trimmedLine[index + 1] !== "\"") {
+        continue;
+      }
+      const recoveredParse = parseObservedCodexRolloutEntry(trimmedLine.slice(index));
+      if (recoveredParse) {
+        debugLog(
+          `${logPrefix} [codex-flow] stage=rollout-line-recovered `
+          + `droppedPrefixBytes=${index}`
+        );
+        return recoveredParse;
+      }
+    }
+
+    return null;
+  }
+
+  function parseObservedCodexRolloutEntry(rawValue: string): UnknownRecord | null {
+    let parsedValue: unknown = null;
+    try {
+      parsedValue = JSON.parse(rawValue) as unknown;
+    } catch {
+      return null;
+    }
+
+    const parsedRecord = asObject(parsedValue);
+    return isObservedCodexRolloutEntry(parsedRecord) ? parsedRecord : null;
+  }
+
+  function isObservedCodexRolloutEntry(value: UnknownRecord): boolean {
+    const entryType = normalizeOptionalString(value.type);
+    if (!entryType) {
+      return false;
+    }
+    const payload = value.payload;
+    return Boolean(payload && typeof payload === "object" && !Array.isArray(payload));
   }
 
   function synthesizeCodexNotificationsFromRolloutEntry(
