@@ -453,11 +453,11 @@ extension CodeRoverService {
                     )
                 )
             } else if message.role == .assistant,
-                      let turnId = normalizedHistoryIdentifier(message.turnId),
+                      let turnId = Self.normalizedHistoryIdentifier(message.turnId),
                       let existing = state.renderedMessages().last(where: { candidate in
                           candidate.role == .assistant
                               && candidate.turnId == turnId
-                              && normalizedMessageText(candidate.text) == normalizedMessageText(message.text)
+                              && Self.normalizedMessageText(candidate.text) == Self.normalizedMessageText(message.text)
                       }) {
                 state.upsert(
                     Self.reconcileExistingMessage(
@@ -468,14 +468,14 @@ extension CodeRoverService {
                     )
                 )
             } else if message.role == .assistant,
-                      let turnId = normalizedHistoryIdentifier(message.turnId),
-                      let incomingItemId = normalizedHistoryIdentifier(message.itemId),
+                      let turnId = Self.normalizedHistoryIdentifier(message.turnId),
+                      let incomingItemId = Self.normalizedHistoryIdentifier(message.itemId),
                       let existing = state.renderedMessages().last(where: { candidate in
                           candidate.role == .assistant
                               && candidate.turnId == turnId
                               && (
-                                  normalizedHistoryIdentifier(candidate.itemId) == nil
-                                      || normalizedHistoryIdentifier(candidate.itemId) == incomingItemId
+                                  Self.normalizedHistoryIdentifier(candidate.itemId) == nil
+                                      || Self.normalizedHistoryIdentifier(candidate.itemId) == incomingItemId
                               )
                       }) {
                 state.upsert(
@@ -487,7 +487,7 @@ extension CodeRoverService {
                     )
                 )
             } else if message.role == .assistant,
-                      let turnId = normalizedHistoryIdentifier(message.turnId),
+                      let turnId = Self.normalizedHistoryIdentifier(message.turnId),
                       (activeThreadIDs.contains(message.threadId) || runningThreadIDs.contains(message.threadId)),
                       let existing = state.renderedMessages().last(where: { candidate in
                           candidate.role == .assistant
@@ -503,7 +503,7 @@ extension CodeRoverService {
                     )
                 )
             } else if message.role == .assistant,
-                      let turnId = normalizedHistoryIdentifier(message.turnId),
+                      let turnId = Self.normalizedHistoryIdentifier(message.turnId),
                       !(activeThreadIDs.contains(message.threadId) || runningThreadIDs.contains(message.threadId)),
                       assistantHistoryCountByTurn[turnId] == 1 {
                 let renderedMessages = state.renderedMessages()
@@ -529,7 +529,7 @@ extension CodeRoverService {
                     state.upsert(message)
                 }
             } else if message.role == .user,
-                      let turnId = normalizedHistoryIdentifier(message.turnId),
+                      let turnId = Self.normalizedHistoryIdentifier(message.turnId),
                       let userIndex = Self.uniqueUserHistoryMergeIndex(
                           in: state.renderedMessages(),
                           message: message,
@@ -546,7 +546,7 @@ extension CodeRoverService {
                 )
             } else if message.role == .system,
                       message.kind == .thinking,
-                      let turnId = normalizedHistoryIdentifier(message.turnId),
+                      let turnId = Self.normalizedHistoryIdentifier(message.turnId),
                       let existing = state.renderedMessages().last(where: { candidate in
                           candidate.role == .system
                               && candidate.kind == .thinking
@@ -562,7 +562,7 @@ extension CodeRoverService {
                 )
             } else if message.role == .system,
                       message.kind == .fileChange,
-                      let turnId = normalizedHistoryIdentifier(message.turnId),
+                      let turnId = Self.normalizedHistoryIdentifier(message.turnId),
                       let existing = state.renderedMessages().last(where: { candidate in
                           candidate.role == .system
                               && candidate.kind == .fileChange
@@ -578,7 +578,7 @@ extension CodeRoverService {
                 )
             } else if message.role == .system,
                       message.kind == .toolActivity,
-                      let turnId = normalizedHistoryIdentifier(message.turnId) {
+                      let turnId = Self.normalizedHistoryIdentifier(message.turnId) {
                 let candidateIndices = state.renderedMessages().indices.filter { index in
                     let candidate = state.renderedMessages()[index]
                     return candidate.role == .system
@@ -587,7 +587,7 @@ extension CodeRoverService {
                 }
 
                 if let itemIndex = candidateIndices.last(where: { index in
-                    normalizedHistoryIdentifier(state.renderedMessages()[index].itemId) == normalizedHistoryIdentifier(message.itemId)
+                    Self.normalizedHistoryIdentifier(state.renderedMessages()[index].itemId) == Self.normalizedHistoryIdentifier(message.itemId)
                 }) {
                     state.upsert(
                         Self.reconcileExistingMessage(
@@ -618,7 +618,7 @@ extension CodeRoverService {
                 }
             } else if message.role == .system,
                       message.kind == .commandExecution,
-                      let turnId = normalizedHistoryIdentifier(message.turnId),
+                      let turnId = Self.normalizedHistoryIdentifier(message.turnId),
                       let incomingCommandKey = Self.normalizedCommandExecutionPreviewKey(from: message.text),
                       let existing = state.renderedMessages().last(where: { candidate in
                           guard candidate.role == .system,
@@ -639,7 +639,7 @@ extension CodeRoverService {
                 )
             } else if message.role == .system,
                       message.kind == .commandExecution,
-                      let turnId = normalizedHistoryIdentifier(message.turnId),
+                      let turnId = Self.normalizedHistoryIdentifier(message.turnId),
                       let existing = state.renderedMessages().last(where: { candidate in
                           candidate.role == .system
                               && candidate.kind == .commandExecution
