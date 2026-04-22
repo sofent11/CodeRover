@@ -4812,6 +4812,7 @@ class CodeRoverRepository(context: Context) {
                 "model" to state.value.selectedModelId?.let(::JsonPrimitive),
                 "effort" to state.value.selectedReasoningEffort?.let(::JsonPrimitive),
                 "collaborationMode" to state.value.turnStartCollaborationMode(
+                    runtimeSupportsPlanMode = state.value.activeRuntimeCapabilities.planMode,
                     usePlanMode = usePlanMode,
                     selectedModel = selectedModel,
                 ),

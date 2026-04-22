@@ -31,7 +31,7 @@ final class CodeRoverPlanModeTests: XCTestCase {
         }
     }
 
-    func testSendTurnUsesPlanModeOnceAndThenResets() async {
+    func testSendTurnUsesPlanModeOnceAndThenReturnsToDefaultMode() async {
         let service = makeService()
         service.isConnected = true
         service.supportsTurnCollaborationMode = true
@@ -75,7 +75,10 @@ final class CodeRoverPlanModeTests: XCTestCase {
         await waitForSendCompletion(viewModel)
 
         XCTAssertEqual(capturedTurnStartParams.count, 2)
-        XCTAssertNil(capturedTurnStartParams[1].objectValue?["collaborationMode"])
+        XCTAssertEqual(
+            capturedTurnStartParams[1].objectValue?["collaborationMode"]?.objectValue?["mode"]?.stringValue,
+            "default"
+        )
     }
 
     func testUnsupportedPlanModeFallsBackToNormalTurnAndStopsRetryingPlanField() async throws {

@@ -381,6 +381,7 @@ internal fun TurnComposerView(
                                 turnViewModel.isPlanModeArmed && supportsPlanMode,
                             )
                         }
+                        turnViewModel.disablePlanMode()
                         turnViewModel.clearComposerSelections()
                     },
                     activeTurnId = null,

@@ -1244,7 +1244,7 @@ extension CodeRoverService {
         let threadCapabilities = threads.first(where: { $0.id == threadId })?.capabilities
             ?? currentRuntimeProvider().supports
         let runtimeSupportsPlanMode = supportsTurnCollaborationMode && threadCapabilities.planMode
-        var effectiveCollaborationMode = runtimeSupportsPlanMode ? collaborationMode : nil
+        var effectiveCollaborationMode = runtimeSupportsPlanMode ? (collaborationMode ?? .default) : nil
         var didDowngradePlanModeForRuntime = collaborationMode != nil && effectiveCollaborationMode == nil
 
         while true {
@@ -1538,6 +1538,12 @@ extension CodeRoverService {
     func buildCollaborationModePayload(for mode: CollaborationModeModeKind?) throws -> JSONValue? {
         guard let mode else {
             return nil
+        }
+
+        if mode == .default {
+            return .object([
+                "mode": .string(mode.rawValue),
+            ])
         }
 
         let resolvedModel = runtimeModelIdentifierForTurn()

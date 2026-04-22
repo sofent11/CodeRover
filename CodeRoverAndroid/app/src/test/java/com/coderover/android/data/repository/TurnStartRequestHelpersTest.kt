@@ -63,7 +63,7 @@ class TurnStartRequestHelpersTest {
     }
 
     @Test
-    fun turnStartCollaborationModeReturnsNullOutsidePlanMode() {
+    fun turnStartCollaborationModeReturnsDefaultWhenRuntimeSupportsPlanMode() {
         val model = ModelOption(
             id = "selected",
             title = "Selected",
@@ -74,8 +74,16 @@ class TurnStartRequestHelpersTest {
         )
         val state = AppState(selectedReasoningEffort = "high")
 
-        assertNull(state.turnStartCollaborationMode(usePlanMode = false, selectedModel = model))
-        assertNull(state.turnStartCollaborationMode(usePlanMode = true, selectedModel = null))
+        val collaborationMode = state.turnStartCollaborationMode(
+            runtimeSupportsPlanMode = true,
+            usePlanMode = false,
+            selectedModel = model,
+        ) as? JsonObject
+
+        assertNotNull(collaborationMode)
+        assertEquals("default", collaborationMode?.get("mode")?.toString()?.trim('"'))
+        assertNull(state.turnStartCollaborationMode(runtimeSupportsPlanMode = true, usePlanMode = true, selectedModel = null))
+        assertNull(state.turnStartCollaborationMode(runtimeSupportsPlanMode = false, usePlanMode = false, selectedModel = model))
     }
 
     @Test
@@ -91,6 +99,7 @@ class TurnStartRequestHelpersTest {
         val state = AppState(selectedReasoningEffort = "high")
 
         val collaborationMode = state.turnStartCollaborationMode(
+            runtimeSupportsPlanMode = true,
             usePlanMode = true,
             selectedModel = model,
         )

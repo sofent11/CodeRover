@@ -15,10 +15,21 @@ internal fun AppState.selectedTurnStartModel(): ModelOption? {
 }
 
 internal fun AppState.turnStartCollaborationMode(
+    runtimeSupportsPlanMode: Boolean,
     usePlanMode: Boolean,
     selectedModel: ModelOption?,
 ): JsonElement? {
-    if (!usePlanMode || selectedModel == null) {
+    if (!runtimeSupportsPlanMode) {
+        return null
+    }
+    if (!usePlanMode) {
+        return JsonObject(
+            mapOf(
+                "mode" to JsonPrimitive("default"),
+            ),
+        )
+    }
+    if (selectedModel == null) {
         return null
     }
     return JsonObject(
