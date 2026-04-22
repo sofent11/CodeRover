@@ -103,6 +103,10 @@ enum TurnTimelineReducer {
     }
 
     private static func hasInterleavedUserFlow(_ turnMessages: [ChatMessage]) -> Bool {
+        if shouldTreatLateSingleUserAsOpeningMessage(turnMessages) {
+            return false
+        }
+
         let ordered = turnMessages.sorted { $0.orderIndex < $1.orderIndex }
         var seenNonUser = false
 
@@ -117,6 +121,36 @@ enum TurnTimelineReducer {
         }
 
         return false
+    }
+
+    private static func shouldTreatLateSingleUserAsOpeningMessage(_ turnMessages: [ChatMessage]) -> Bool {
+        let userMessages = turnMessages.filter { $0.role == .user }
+        guard userMessages.count == 1,
+              let userMessage = userMessages.first,
+              isProvisionalOpeningUserMessage(userMessage) else {
+            return false
+        }
+
+        let ordered = turnMessages.sorted { $0.orderIndex < $1.orderIndex }
+        guard let userIndex = ordered.firstIndex(where: { $0.id == userMessage.id }),
+              userIndex > 0 else {
+            return false
+        }
+
+        return ordered[..<userIndex].contains(where: { $0.role != .user })
+            && turnMessages.contains(where: { message in
+                message.id != userMessage.id && normalizedIdentifier(message.itemId) != nil
+            })
+    }
+
+    private static func isProvisionalOpeningUserMessage(_ message: ChatMessage) -> Bool {
+        guard message.role == .user else {
+            return false
+        }
+
+        let messageID = normalizedIdentifier(message.id)
+        let itemID = normalizedIdentifier(message.itemId)
+        return itemID == nil || itemID != messageID
     }
 
     // Detects multi-item turns where visible system activity appears on BOTH sides of an

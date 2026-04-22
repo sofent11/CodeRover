@@ -431,10 +431,17 @@ extension CodeRoverService {
         let overlayMessages = (messagesByThread[threadId] ?? []).filter { !Self.isCanonicalTimelineMessage($0) }
         let existingCanonicalMessages = threadTimelineStateByThread[threadId]?.renderedMessages()
             ?? (messagesByThread[threadId] ?? []).filter { Self.isCanonicalTimelineMessage($0) }
+        let shouldPreserveLocallyNewerTailItems = mode == .tail
+            && (
+                activeThreadIDs.contains(threadId)
+                    || runningThreadIDs.contains(threadId)
+                    || activeThreadId == threadId
+            )
         let seededCanonicalMessages = Self.seedCanonicalMessagesForHistoryMerge(
             existingCanonicalMessages,
             incomingMessages: historyMessages,
-            mode: mode
+            mode: mode,
+            preserveLocallyNewerTailItems: shouldPreserveLocallyNewerTailItems
         )
         var state = ThreadTimelineState(messages: seededCanonicalMessages)
         let assistantHistoryCountByTurn = Dictionary(
@@ -696,7 +703,8 @@ extension CodeRoverService {
     nonisolated static func seedCanonicalMessagesForHistoryMerge(
         _ existingCanonicalMessages: [ChatMessage],
         incomingMessages: [ChatMessage],
-        mode: ThreadHistoryWindowMode?
+        mode: ThreadHistoryWindowMode?,
+        preserveLocallyNewerTailItems: Bool = false
     ) -> [ChatMessage] {
         guard mode == .tail else {
             return existingCanonicalMessages
@@ -704,13 +712,15 @@ extension CodeRoverService {
 
         return canonicalMessagesRetainedOutsideTailCoverage(
             existingCanonicalMessages,
-            incomingMessages: incomingMessages
+            incomingMessages: incomingMessages,
+            preserveLocallyNewerTailItems: preserveLocallyNewerTailItems
         )
     }
 
     nonisolated static func canonicalMessagesRetainedOutsideTailCoverage(
         _ existingCanonicalMessages: [ChatMessage],
-        incomingMessages: [ChatMessage]
+        incomingMessages: [ChatMessage],
+        preserveLocallyNewerTailItems: Bool = false
     ) -> [ChatMessage] {
         guard !existingCanonicalMessages.isEmpty,
               !incomingMessages.isEmpty else {
@@ -721,21 +731,84 @@ extension CodeRoverService {
         let oldestIncomingOrdinal = incomingMessages
             .compactMap(\.timelineOrdinal)
             .min()
+        let newestIncomingOrdinal = incomingMessages
+            .compactMap(\.timelineOrdinal)
+            .max()
         let oldestIncomingDate = incomingMessages
             .map(\.createdAt)
             .min() ?? .distantPast
+        let newestIncomingDate = incomingMessages
+            .map(\.createdAt)
+            .max() ?? .distantFuture
+        var nextSyntheticOrdinal = newestIncomingOrdinal.map { $0 + 1 }
+        let newerMessagesWithoutCoverage = existingCanonicalMessages
+            .filter { message in
+                guard preserveLocallyNewerTailItems else {
+                    return false
+                }
+                guard !incomingIDs.contains(message.id) else {
+                    return false
+                }
+                if let newestIncomingOrdinal,
+                   let messageOrdinal = message.timelineOrdinal {
+                    return messageOrdinal > newestIncomingOrdinal
+                }
+                return message.createdAt > newestIncomingDate
+            }
+            .sorted { lhs, rhs in
+                if lhs.createdAt != rhs.createdAt {
+                    return lhs.createdAt < rhs.createdAt
+                }
+                if lhs.orderIndex != rhs.orderIndex {
+                    return lhs.orderIndex < rhs.orderIndex
+                }
+                return lhs.id < rhs.id
+            }
+        let syntheticOrdinalByMessageID: [String: Int] = {
+            guard nextSyntheticOrdinal != nil else {
+                return [:]
+            }
 
-        return existingCanonicalMessages.filter { message in
+            var result: [String: Int] = [:]
+            for message in newerMessagesWithoutCoverage where message.timelineOrdinal == nil {
+                guard let ordinal = nextSyntheticOrdinal else { break }
+                result[message.id] = ordinal
+                nextSyntheticOrdinal = ordinal + 1
+            }
+            return result
+        }()
+
+        return existingCanonicalMessages.compactMap { message in
             if incomingIDs.contains(message.id) {
-                return true
+                return message
             }
 
             if let oldestIncomingOrdinal,
+               let newestIncomingOrdinal,
                let messageOrdinal = message.timelineOrdinal {
-                return messageOrdinal < oldestIncomingOrdinal
+                if messageOrdinal < oldestIncomingOrdinal {
+                    return message
+                }
+                return preserveLocallyNewerTailItems && messageOrdinal > newestIncomingOrdinal
+                    ? message
+                    : nil
             }
 
-            return message.createdAt < oldestIncomingDate
+            if message.createdAt < oldestIncomingDate {
+                return message
+            }
+            guard preserveLocallyNewerTailItems && message.createdAt > newestIncomingDate else {
+                return nil
+            }
+
+            guard let syntheticOrdinal = syntheticOrdinalByMessageID[message.id] else {
+                return message
+            }
+
+            var updated = message
+            updated.timelineOrdinal = syntheticOrdinal
+            updated.orderIndex = syntheticOrdinal
+            return updated
         }
     }
 

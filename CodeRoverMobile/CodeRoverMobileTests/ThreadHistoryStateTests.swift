@@ -853,6 +853,373 @@ final class ThreadHistoryStateTests: XCTestCase {
         XCTAssertEqual(service.historyStateByThread[threadID]?.newestCursor, "cursor-1")
     }
 
+    func testLoadTailThreadHistoryKeepsRealtimeCanonicalAssistantItemWhenTailSnapshotLagsRunningThread() async throws {
+        let service = makeService()
+        let threadID = "thread-running-tail-preserve"
+        let turnID = "turn-running-tail-preserve"
+        service.isConnected = true
+        service.isInitialized = true
+        service.activeThreadId = threadID
+        service.runningThreadIDs.insert(threadID)
+        service.activeTurnIdByThread[threadID] = turnID
+        service.threads = [ConversationThread(id: threadID, title: "Thread", provider: "codex")]
+
+        _ = service.synchronizeThreadTimelineState(
+            threadId: threadID,
+            canonicalMessages: [
+                ChatMessage(
+                    id: "item-1",
+                    threadId: threadID,
+                    role: .assistant,
+                    text: "message-1",
+                    createdAt: Date(timeIntervalSince1970: 1),
+                    turnId: turnID,
+                    itemId: "item-1",
+                    timelineOrdinal: 1,
+                    timelineStatus: "completed",
+                    orderIndex: 1
+                ),
+                ChatMessage(
+                    id: "item-2",
+                    threadId: threadID,
+                    role: .assistant,
+                    text: "latest local message",
+                    createdAt: Date(timeIntervalSince1970: 2),
+                    turnId: turnID,
+                    itemId: "item-2",
+                    isStreaming: true,
+                    timelineOrdinal: 2,
+                    timelineStatus: "streaming",
+                    orderIndex: 2
+                ),
+            ]
+        )
+
+        let tailExpectation = expectation(description: "running tail request")
+        service.requestTransportOverride = { method, params in
+            XCTAssertEqual(method, "thread/read")
+            let historyObject = try XCTUnwrap(params?.objectValue?["history"]?.objectValue)
+            XCTAssertEqual(historyObject["mode"]?.stringValue, "tail")
+            tailExpectation.fulfill()
+            return RPCMessage(
+                id: .string(UUID().uuidString),
+                result: .object([
+                    "thread": self.makeThreadPayload(
+                        threadID: threadID,
+                        title: "Tail",
+                        messageRange: 1 ... 1
+                    ),
+                    "historyWindow": self.makeHistoryWindowObject(
+                        olderCursor: "cursor-1",
+                        newerCursor: "cursor-1",
+                        hasOlder: false,
+                        hasNewer: true
+                    ),
+                ]),
+                includeJSONRPC: false
+            )
+        }
+
+        try await service.loadTailThreadHistory(
+            threadId: threadID,
+            replaceLocalHistory: false,
+            refreshGeneration: service.currentPerThreadRefreshGeneration(for: threadID)
+        )
+
+        await fulfillment(of: [tailExpectation], timeout: 1.0)
+        XCTAssertEqual(service.messagesByThread[threadID]?.map(\.id), ["item-1", "item-2"])
+        XCTAssertEqual(service.messagesByThread[threadID]?.last?.text, "latest local message")
+        XCTAssertEqual(service.threadTimelineStateByThread[threadID]?.renderedMessages().map(\.id), ["item-1", "item-2"])
+    }
+
+    func testTailHistoryMergeKeepsMultipleNewerCanonicalAssistantItemsForVisibleThread() {
+        let service = makeService()
+        let threadID = "thread-visible-multi-assistant-tail"
+        let turnID = "turn-visible-multi-assistant-tail"
+        service.activeThreadId = threadID
+
+        _ = service.synchronizeThreadTimelineState(
+            threadId: threadID,
+            canonicalMessages: [
+                ChatMessage(
+                    id: "item-1",
+                    threadId: threadID,
+                    role: .assistant,
+                    text: "first message",
+                    createdAt: Date(timeIntervalSince1970: 1),
+                    turnId: turnID,
+                    itemId: "item-1",
+                    timelineOrdinal: 1,
+                    orderIndex: 1
+                ),
+                ChatMessage(
+                    id: "item-2",
+                    threadId: threadID,
+                    role: .assistant,
+                    text: "second message",
+                    createdAt: Date(timeIntervalSince1970: 2),
+                    turnId: turnID,
+                    itemId: "item-2",
+                    timelineOrdinal: 2,
+                    orderIndex: 2
+                ),
+                ChatMessage(
+                    id: "item-3",
+                    threadId: threadID,
+                    role: .assistant,
+                    text: "third message",
+                    createdAt: Date(timeIntervalSince1970: 3),
+                    turnId: turnID,
+                    itemId: "item-3",
+                    timelineOrdinal: 3,
+                    orderIndex: 3
+                ),
+            ]
+        )
+
+        let merged = service.mergeCanonicalHistoryIntoTimelineState(
+            threadId: threadID,
+            historyMessages: [
+                ChatMessage(
+                    id: "item-1",
+                    threadId: threadID,
+                    role: .assistant,
+                    text: "first message",
+                    createdAt: Date(timeIntervalSince1970: 1),
+                    turnId: turnID,
+                    itemId: "item-1",
+                    timelineOrdinal: 1,
+                    timelineStatus: "completed",
+                    orderIndex: 1
+                ),
+            ],
+            mode: .tail,
+            activeThreadIDs: [],
+            runningThreadIDs: []
+        )
+
+        XCTAssertEqual(merged.map(\.id), ["item-1", "item-2", "item-3"])
+        XCTAssertEqual(merged.suffix(2).map(\.text), ["second message", "third message"])
+    }
+
+    func testTailHistoryMergeDropsPreservedNewerCanonicalItemsAfterTurnCompletionReconcile() {
+        let service = makeService()
+        let threadID = "thread-tail-completion-reconcile"
+        let turnID = "turn-tail-completion-reconcile"
+        service.activeThreadId = threadID
+        service.runningThreadIDs.insert(threadID)
+        service.activeTurnIdByThread[threadID] = turnID
+
+        _ = service.synchronizeThreadTimelineState(
+            threadId: threadID,
+            canonicalMessages: [
+                ChatMessage(
+                    id: "item-1",
+                    threadId: threadID,
+                    role: .assistant,
+                    text: "first message",
+                    createdAt: Date(timeIntervalSince1970: 1),
+                    turnId: turnID,
+                    itemId: "item-1",
+                    timelineOrdinal: 1,
+                    orderIndex: 1
+                ),
+                ChatMessage(
+                    id: "item-2",
+                    threadId: threadID,
+                    role: .assistant,
+                    text: "second message",
+                    createdAt: Date(timeIntervalSince1970: 2),
+                    turnId: turnID,
+                    itemId: "item-2",
+                    timelineOrdinal: 2,
+                    orderIndex: 2
+                ),
+                ChatMessage(
+                    id: "item-3",
+                    threadId: threadID,
+                    role: .assistant,
+                    text: "ghost latest message",
+                    createdAt: Date(timeIntervalSince1970: 3),
+                    turnId: turnID,
+                    itemId: "item-3",
+                    isStreaming: true,
+                    timelineOrdinal: 3,
+                    orderIndex: 3
+                ),
+            ]
+        )
+
+        let preserved = service.mergeCanonicalHistoryIntoTimelineState(
+            threadId: threadID,
+            historyMessages: [
+                ChatMessage(
+                    id: "item-1",
+                    threadId: threadID,
+                    role: .assistant,
+                    text: "first message",
+                    createdAt: Date(timeIntervalSince1970: 1),
+                    turnId: turnID,
+                    itemId: "item-1",
+                    timelineOrdinal: 1,
+                    timelineStatus: "completed",
+                    orderIndex: 1
+                ),
+                ChatMessage(
+                    id: "item-2",
+                    threadId: threadID,
+                    role: .assistant,
+                    text: "second message",
+                    createdAt: Date(timeIntervalSince1970: 2),
+                    turnId: turnID,
+                    itemId: "item-2",
+                    timelineOrdinal: 2,
+                    timelineStatus: "completed",
+                    orderIndex: 2
+                ),
+            ],
+            mode: .tail,
+            activeThreadIDs: [threadID],
+            runningThreadIDs: [threadID]
+        )
+
+        XCTAssertEqual(preserved.map(\.id), ["item-1", "item-2", "item-3"])
+
+        service.markTurnCompleted(threadId: threadID, turnId: turnID)
+        service.activeThreadId = nil
+
+        let reconciled = service.mergeCanonicalHistoryIntoTimelineState(
+            threadId: threadID,
+            historyMessages: [
+                ChatMessage(
+                    id: "item-1",
+                    threadId: threadID,
+                    role: .assistant,
+                    text: "first message",
+                    createdAt: Date(timeIntervalSince1970: 1),
+                    turnId: turnID,
+                    itemId: "item-1",
+                    timelineOrdinal: 1,
+                    timelineStatus: "completed",
+                    orderIndex: 1
+                ),
+                ChatMessage(
+                    id: "item-2",
+                    threadId: threadID,
+                    role: .assistant,
+                    text: "second message",
+                    createdAt: Date(timeIntervalSince1970: 2),
+                    turnId: turnID,
+                    itemId: "item-2",
+                    timelineOrdinal: 2,
+                    timelineStatus: "completed",
+                    orderIndex: 2
+                ),
+            ],
+            mode: .tail,
+            activeThreadIDs: [],
+            runningThreadIDs: []
+        )
+
+        XCTAssertEqual(reconciled.map(\.id), ["item-1", "item-2"])
+        XCTAssertFalse(reconciled.contains(where: { $0.id == "item-3" }))
+    }
+
+    func testTailHistoryMergeAssignsSyntheticOrdinalToPreservedCanonicalItemsWithoutServerOrdinal() {
+        let service = makeService()
+        let threadID = "thread-tail-synthetic-ordinal"
+        let turnID = "turn-tail-synthetic-ordinal"
+        service.activeThreadId = threadID
+
+        _ = service.synchronizeThreadTimelineState(
+            threadId: threadID,
+            canonicalMessages: [
+                ChatMessage(
+                    id: "item-1",
+                    threadId: threadID,
+                    role: .assistant,
+                    text: "first message",
+                    createdAt: Date(timeIntervalSince1970: 1),
+                    turnId: turnID,
+                    itemId: "item-1",
+                    timelineOrdinal: 1,
+                    orderIndex: 1
+                ),
+                ChatMessage(
+                    id: "item-2",
+                    threadId: threadID,
+                    role: .assistant,
+                    text: "preserved local message",
+                    createdAt: Date(timeIntervalSince1970: 2),
+                    turnId: turnID,
+                    itemId: "item-2",
+                    isStreaming: true,
+                    orderIndex: 999
+                ),
+            ]
+        )
+
+        let preserved = service.mergeCanonicalHistoryIntoTimelineState(
+            threadId: threadID,
+            historyMessages: [
+                ChatMessage(
+                    id: "item-1",
+                    threadId: threadID,
+                    role: .assistant,
+                    text: "first message",
+                    createdAt: Date(timeIntervalSince1970: 1),
+                    turnId: turnID,
+                    itemId: "item-1",
+                    timelineOrdinal: 1,
+                    timelineStatus: "completed",
+                    orderIndex: 1
+                ),
+            ],
+            mode: .tail,
+            activeThreadIDs: [threadID],
+            runningThreadIDs: []
+        )
+
+        XCTAssertEqual(preserved.map(\.id), ["item-1", "item-2"])
+        XCTAssertEqual(preserved.last?.timelineOrdinal, 2)
+        XCTAssertEqual(preserved.last?.orderIndex, 2)
+
+        let mergedWithNewerHistory = service.mergeCanonicalHistoryIntoTimelineState(
+            threadId: threadID,
+            historyMessages: [
+                ChatMessage(
+                    id: "item-1",
+                    threadId: threadID,
+                    role: .assistant,
+                    text: "first message",
+                    createdAt: Date(timeIntervalSince1970: 1),
+                    turnId: turnID,
+                    itemId: "item-1",
+                    timelineOrdinal: 1,
+                    timelineStatus: "completed",
+                    orderIndex: 1
+                ),
+                ChatMessage(
+                    id: "item-3",
+                    threadId: threadID,
+                    role: .assistant,
+                    text: "third message",
+                    createdAt: Date(timeIntervalSince1970: 3),
+                    turnId: turnID,
+                    itemId: "item-3",
+                    timelineOrdinal: 3,
+                    timelineStatus: "completed",
+                    orderIndex: 3
+                ),
+            ],
+            mode: .tail,
+            activeThreadIDs: [threadID],
+            runningThreadIDs: []
+        )
+
+        XCTAssertEqual(mergedWithNewerHistory.map(\.id), ["item-1", "item-2", "item-3"])
+    }
+
     func testConcurrentThreadHistoryLoadsCoalescePerThread() async throws {
         let service = makeService()
         let threadID = "thread-history-coalesce"

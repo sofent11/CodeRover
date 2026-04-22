@@ -565,6 +565,52 @@ final class TurnTimelineReducerTests: XCTestCase {
         ])
     }
 
+    func testEnforceIntraTurnOrderFloatsLateLocalUserOverlayAheadOfCanonicalAssistantItems() {
+        let now = Date()
+        let messages = [
+            makeMessage(
+                id: "assistant-1",
+                threadID: "thread",
+                role: .assistant,
+                kind: .chat,
+                text: "First streamed response",
+                createdAt: now.addingTimeInterval(1),
+                turnID: "turn-1",
+                itemID: "item-1",
+                orderIndex: 1
+            ),
+            makeMessage(
+                id: "assistant-2",
+                threadID: "thread",
+                role: .assistant,
+                kind: .chat,
+                text: "Second streamed response",
+                createdAt: now.addingTimeInterval(2),
+                turnID: "turn-1",
+                itemID: "item-2",
+                orderIndex: 2
+            ),
+            makeMessage(
+                id: "local-user",
+                threadID: "thread",
+                role: .user,
+                kind: .chat,
+                text: "Original prompt",
+                createdAt: now,
+                turnID: "turn-1",
+                orderIndex: 99
+            ),
+        ]
+
+        let reordered = TurnTimelineReducer.enforceIntraTurnOrder(in: messages)
+
+        XCTAssertEqual(reordered.map(\.id), [
+            "local-user",
+            "assistant-1",
+            "assistant-2",
+        ])
+    }
+
     func testParseMarkdownSegmentsSupportsPlusLanguageTags() {
         let source = """
         Intro
