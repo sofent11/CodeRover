@@ -15,14 +15,14 @@ export interface NormalizedBridgeError {
 export function logBridgeEvent(
   level: BridgeLogLevel,
   event: string,
-  fields: JsonRecord = {}
+  fields: unknown = {}
 ): void {
   const payload = JSON.stringify({
     ts: new Date().toISOString(),
     scope: "bridge",
     level,
     event,
-    ...fields,
+    ...(asRecord(fields) || {}),
   });
 
   if (level === "debug") {

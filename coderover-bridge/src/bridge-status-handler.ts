@@ -28,7 +28,7 @@ interface BridgeStatusHandlerOptions {
   getTrustedDeviceCount?: () => number;
   getKeepAwakeActive?: () => boolean;
   getTransportCandidates?: () => TransportCandidateShape[];
-  getObservability?: () => Record<string, unknown>;
+  getObservability?: () => unknown;
   upgradeCommand?: string;
   minimumSupportedIOSVersion?: string;
   minimumSupportedAndroidVersion?: string;
@@ -151,7 +151,7 @@ async function buildBridgeStatusPayload(
       },
     },
     transportCandidates,
-    observability: options.getObservability(),
+    observability: asObject(options.getObservability()) || {},
   };
 }
 
