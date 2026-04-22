@@ -412,6 +412,12 @@ struct TurnTimelineView<EmptyState: View, Composer: View>: View {
                     if new.viewportHeight != old.viewportHeight, new.viewportHeight > 0 {
                         viewportHeight = new.viewportHeight
                         performInitialRecoverySnapIfNeeded(using: proxy)
+                        if old.viewportHeight > 0,
+                           autoScrollMode == .followBottom,
+                           isScrolledToBottom,
+                           !messages.isEmpty {
+                            scheduleFollowBottomScroll(using: proxy)
+                        }
                     }
                     if new.isAtBottom != old.isAtBottom {
                         handleScrolledToBottomChanged(new.isAtBottom)
@@ -732,8 +738,9 @@ struct TurnTimelineView<EmptyState: View, Composer: View>: View {
         }
     }
 
-    /// Coalesces rapid follow-bottom scrolls into at most one per display frame,
-    /// preventing discrete jumps on every streaming delta.
+    /// Coalesces rapid follow-bottom scrolls into a settle pair so streamed text
+    /// growth and footer height changes cannot leave the viewport stranded in
+    /// a transient blank region between layout passes.
     private func scheduleFollowBottomScroll(using proxy: ScrollViewProxy) {
         guard followBottomScrollTask == nil else { return }
         let expectedThreadID = threadID
@@ -746,7 +753,20 @@ struct TurnTimelineView<EmptyState: View, Composer: View>: View {
                   isScrolledToBottom else {
                 return
             }
-            proxy.scrollTo(scrollBottomAnchorID, anchor: .bottom)
+
+            scrollToBottom(using: proxy, animated: false)
+
+            // Verify one frame later after LazyVStack rows, markdown layout, and
+            // footer inset animations have had time to settle.
+            try? await Task.sleep(nanoseconds: 16_000_000)
+            guard !Task.isCancelled,
+                  scrollSessionThreadID == expectedThreadID,
+                  autoScrollMode == .followBottom,
+                  isScrolledToBottom else {
+                return
+            }
+
+            scrollToBottom(using: proxy, animated: false)
         }
     }
 
