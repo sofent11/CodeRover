@@ -10,6 +10,12 @@ struct PlanSystemCard: View {
     let message: ChatMessage
 
     private var bodyText: String {
+        if hasInlinePlanResult {
+            return ""
+        }
+        if let proposedPlan = message.proposedPlan {
+            return proposedPlan.body
+        }
         let trimmed = message.text.trimmingCharacters(in: .whitespacesAndNewlines)
         let placeholders: Set<String> = ["Planning..."]
         guard !trimmed.isEmpty, !placeholders.contains(trimmed) else {
@@ -29,8 +35,16 @@ struct PlanSystemCard: View {
         return trimmed
     }
 
+    private var hasInlinePlanResult: Bool {
+        message.resolvedPlanPresentation?.isInlineResultVisible == true && message.proposedPlan != nil
+    }
+
     var body: some View {
         PlanModeCardContainer(title: "Plan", showsProgress: message.isStreaming) {
+            if hasInlinePlanResult, let proposedPlan = message.proposedPlan {
+                ProposedPlanResultContent(proposedPlan: proposedPlan)
+            }
+
             if !bodyText.isEmpty {
                 MarkdownTextView(text: bodyText, profile: .assistantProse)
                     .fixedSize(horizontal: false, vertical: true)
@@ -76,6 +90,11 @@ struct PlanExecutionAccessory: View {
     private var summaryText: String {
         if let highlightedStep {
             return highlightedStep.step
+        }
+
+        if let proposedPlanSummary = message.proposedPlan?.summary,
+           !proposedPlanSummary.isEmpty {
+            return proposedPlanSummary
         }
 
         let explanation = message.planState?.explanation?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -161,6 +180,24 @@ struct PlanExecutionAccessory: View {
         }
         .buttonStyle(.plain)
         .adaptiveGlass(.regular, in: RoundedRectangle(cornerRadius: 28, style: .continuous))
+    }
+}
+
+struct ProposedPlanResultContent: View {
+    let proposedPlan: CodeRoverProposedPlan
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if let summary = proposedPlan.summary, !summary.isEmpty {
+                Text(summary)
+                    .font(AppFont.subheadline(weight: .semibold))
+                    .foregroundStyle(.primary)
+            }
+
+            MarkdownTextView(text: proposedPlan.body, profile: .assistantProse)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

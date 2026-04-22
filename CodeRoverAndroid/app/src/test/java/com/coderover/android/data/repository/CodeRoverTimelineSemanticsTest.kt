@@ -3,6 +3,7 @@ package com.coderover.android.data.repository
 import com.coderover.android.data.model.ChatMessage
 import com.coderover.android.data.model.MessageKind
 import com.coderover.android.data.model.MessageRole
+import com.coderover.android.data.model.PlanPresentation
 import com.coderover.android.data.model.SubagentAction
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -11,6 +12,43 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class CodeRoverTimelineSemanticsTest {
+    @Test
+    fun chatMessageDerivesProposedPlanFromEnvelope() {
+        val message = ChatMessage(
+            threadId = "thread-1",
+            role = MessageRole.ASSISTANT,
+            kind = MessageKind.CHAT,
+            text = """
+                Intro
+
+                <proposed_plan>
+                # Ship
+                1. Audit
+                2. Implement
+                </proposed_plan>
+            """.trimIndent(),
+        )
+
+        assertEquals("Ship", message.proposedPlan?.summary)
+        assertEquals("# Ship\n1. Audit\n2. Implement", message.proposedPlan?.body)
+    }
+
+    @Test
+    fun systemPlanMessageMarksCompletedPlanItemAsInlineResult() {
+        val message = ChatMessage(
+            threadId = "thread-1",
+            role = MessageRole.SYSTEM,
+            kind = MessageKind.PLAN,
+            text = "1. Audit\n2. Implement\n3. Verify",
+            itemId = "plan-item-1",
+            timelineStatus = "completed",
+        )
+
+        assertEquals(PlanPresentation.RESULT_COMPLETED_ITEM, message.resolvedPlanPresentation)
+        assertTrue(message.resolvedPlanPresentation?.isInlineResultVisible == true)
+        assertEquals("Audit", message.proposedPlan?.summary)
+    }
+
     @Test
     fun mergeStreamingSnapshotTextAvoidsDuplicateOverlapForAppendUpdates() {
         val merged = mergeStreamingSnapshotText(

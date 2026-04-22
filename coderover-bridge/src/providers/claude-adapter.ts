@@ -6,9 +6,6 @@ export {};
 // Exports: createClaudeAdapter
 // Depends on: fs, os, path, crypto, ../provider-catalog
 
-import * as fs from "fs";
-import * as os from "os";
-import * as path from "path";
 import { createHash, randomUUID } from "crypto";
 
 import { getRuntimeProvider } from "../provider-catalog";
@@ -24,8 +21,17 @@ import type {
   ManagedProviderStartTurnOptions,
   ManagedProviderTurnContext,
 } from "../runtime-manager/types";
-
-type UnknownRecord = Record<string, unknown>;
+import {
+  normalizeMetadataTimestamp,
+  shouldRefreshHistoryByTimestamp,
+} from "./shared/history-refresh";
+import { buildPathPromptFromInputItems } from "./shared/prompt-input";
+import {
+  asProviderRecord,
+  normalizeOptionalString,
+  toIsoDateString,
+  type ProviderRecord as UnknownRecord,
+} from "./shared/provider-utils";
 type ClaudePermissionMode = "plan" | "bypassPermissions" | "default";
 
 interface ClaudeSdkSession {
@@ -480,10 +486,6 @@ function shouldRefreshClaudeHistory(
   threadMeta: RuntimeThreadMeta,
   existingHistory: { turns?: RuntimeStoreTurn[] } | null
 ): boolean {
-  if (!existingHistory?.turns?.length) {
-    return true;
-  }
-
   const sessionLastModified = normalizeMetadataTimestamp(
     threadMeta.metadata,
     "claudeSessionLastModified"
@@ -492,32 +494,12 @@ function shouldRefreshClaudeHistory(
     threadMeta.metadata,
     "claudeHistorySyncedAt"
   );
-
-  if (!sessionLastModified) {
-    return false;
-  }
-  if (!historySyncedAt) {
-    return true;
-  }
-
-  return Date.parse(historySyncedAt) < Date.parse(sessionLastModified);
+  return shouldRefreshHistoryByTimestamp(existingHistory?.turns, historySyncedAt, sessionLastModified);
 }
 
 function resolveClaudeHistorySyncTimestamp(threadMeta: RuntimeThreadMeta): string {
   return normalizeMetadataTimestamp(threadMeta.metadata, "claudeSessionLastModified")
     || toIsoDateString(Date.now());
-}
-
-function normalizeMetadataTimestamp(
-  metadata: UnknownRecord | null | undefined,
-  key: string
-): string | null {
-  if (!metadata || typeof metadata[key] !== "string") {
-    return null;
-  }
-
-  const trimmed = String(metadata[key]).trim();
-  return trimmed || null;
 }
 
 function handleClaudeStreamEvent(
@@ -598,61 +580,10 @@ async function buildPromptFromInput(
   inputItems: RuntimeInputItem[],
   cwd: string | null | undefined
 ): Promise<string> {
-  const textChunks: string[] = [];
-  const imagePaths: string[] = [];
-
-  for (const item of inputItems) {
-    if (isTextInputItem(item)) {
-      textChunks.push(item.text);
-      continue;
-    }
-
-    if (isSkillInputItem(item)) {
-      textChunks.push(`$${item.id}`);
-      continue;
-    }
-
-    if (isImageInputItem(item)) {
-      const pathValue = item.path || await materializeImage(item.url || item.image_url, cwd);
-      if (pathValue) {
-        imagePaths.push(pathValue);
-      }
-    }
-  }
-
-  let prompt = textChunks.join("\n").trim();
-  if (imagePaths.length > 0) {
-    prompt = `${prompt}\n\n[Images provided at paths]\n${imagePaths.join("\n")}`.trim();
-  }
-  return prompt;
-}
-
-async function materializeImage(source: unknown, cwd: string | null | undefined): Promise<string | null> {
-  const normalized = normalizeOptionalString(source);
-  if (!normalized) {
-    return null;
-  }
-
-  if (path.isAbsolute(normalized) && fs.existsSync(normalized)) {
-    return normalized;
-  }
-
-  const match = normalized.match(/^data:([^;]+);base64,(.+)$/);
-  if (!match) {
-    return normalized;
-  }
-
-  const mimeType = match[1];
-  const base64 = match[2];
-  if (!mimeType || !base64) {
-    return normalized;
-  }
-  const extension = mimeType.split("/")[1] || "png";
-  const tempDir = path.join(cwd || os.tmpdir(), ".coderover", "claude-images");
-  fs.mkdirSync(tempDir, { recursive: true });
-  const filePath = path.join(tempDir, `${Date.now()}-${randomUUID()}.${extension}`);
-  fs.writeFileSync(filePath, Buffer.from(base64, "base64"));
-  return filePath;
+  return buildPathPromptFromInputItems(inputItems, {
+    cwd,
+    imageTempDirName: "claude-images",
+  });
 }
 
 function resolveClaudePermissionMode(params: Record<string, unknown>): ClaudePermissionMode {
@@ -928,22 +859,6 @@ function resolveClaudeBlockIndex(event: UnknownRecord): number | null {
   return null;
 }
 
-function normalizeOptionalString(value: unknown): string | null {
-  if (typeof value !== "string") {
-    return null;
-  }
-  const trimmed = value.trim();
-  return trimmed || null;
-}
-
-function toIsoDateString(value: unknown): string {
-  if (typeof value === "number") {
-    const milliseconds = value > 10_000_000_000 ? value : value * 1000;
-    return new Date(milliseconds).toISOString();
-  }
-  return new Date().toISOString();
-}
-
 function numberOrNull(value: unknown): number | null {
   if (typeof value === "number" && Number.isFinite(value)) {
     return value;
@@ -952,25 +867,5 @@ function numberOrNull(value: unknown): number | null {
 }
 
 function asRecord(value: unknown): UnknownRecord | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return null;
-  }
-  return value as UnknownRecord;
-}
-
-function isTextInputItem(item: RuntimeInputItem): item is Extract<RuntimeInputItem, { type: "text" }> {
-  return item.type === "text" && typeof item.text === "string" && item.text.length > 0;
-}
-
-function isSkillInputItem(item: RuntimeInputItem): item is Extract<RuntimeInputItem, { type: "skill" }> {
-  return item.type === "skill" && typeof item.id === "string" && item.id.length > 0;
-}
-
-function isImageInputItem(
-  item: RuntimeInputItem
-): item is Extract<RuntimeInputItem, { type: "image" | "local_image" }> {
-  return (item.type === "image" || item.type === "local_image")
-    && (typeof item.path === "string"
-      || typeof item.url === "string"
-      || typeof item.image_url === "string");
+  return asProviderRecord<UnknownRecord>(value);
 }

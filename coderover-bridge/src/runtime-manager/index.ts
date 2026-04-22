@@ -91,7 +91,7 @@ interface RuntimeManager {
   handleClientMessage(rawMessage: string): Promise<boolean>;
   handleCodexTransportClosed(reason?: unknown): void;
   handleCodexTransportMessage(rawMessage: string): void;
-  shutdown(): void;
+  shutdown(): Promise<void>;
 }
 
 interface PendingClientRequest {
@@ -593,13 +593,13 @@ export function createRuntimeManager({
     codexAdapter.handleTransportClosed(normalizedReason);
   }
 
-  function shutdown(): void {
+  async function shutdown(): Promise<void> {
     stopAllObservedCodexThreadWatchers("shutdown");
     for (const engine of providerEngines.values()) {
-      engine.shutdown();
+      await Promise.resolve(engine.shutdown());
     }
-    threadSessionIndex.shutdown();
-    store.shutdown();
+    await Promise.resolve(threadSessionIndex.shutdown());
+    await Promise.resolve(store.shutdown());
   }
 
   function forwardCodexTransportMessage(rawMessage: string, parsedMessage: unknown): void {
@@ -2768,6 +2768,9 @@ export function createRuntimeManager({
     if (normalizedEventType === "itemcompleted" || normalizedEventType === "agentmessage") {
       return "item/completed";
     }
+    if (normalizedEventType === "usermessage") {
+      return "item/completed";
+    }
     if (normalizedEventType === "itemstarted") {
       return "item/started";
     }
@@ -2797,6 +2800,9 @@ export function createRuntimeManager({
     }
 
     const legacyEventType = normalizeCodexMethodToken(extractCodexLegacyEventType(params));
+    if (legacyEventType === "usermessage") {
+      return "user_message";
+    }
     if (legacyEventType === "agentmessage" || legacyEventType === "agentmessagecontentdelta" || legacyEventType === "agentmessagedelta") {
       return "agent_message";
     }
@@ -2839,6 +2845,12 @@ export function createRuntimeManager({
       return explicitRole;
     }
     const normalizedType = normalizeCodexItemType(itemType);
+    if (normalizedType === "usermessage") {
+      return "user";
+    }
+    if (normalizedType === "exitedreviewmode") {
+      return "assistant";
+    }
     if (normalizedType === "agentmessage" || method === "item/agentMessage/delta") {
       return "assistant";
     }
@@ -3042,16 +3054,54 @@ export function createRuntimeManager({
     if (Array.isArray(itemObject.changes)) {
       record.itemObject.changes = itemObject.changes;
     }
+    if (Array.isArray(itemObject.questions)) {
+      record.itemObject.questions = itemObject.questions;
+    }
     if (Array.isArray(itemObject.plan)) {
       record.itemObject.plan = itemObject.plan;
+    }
+    if (Array.isArray(itemObject.receiverThreadIds)) {
+      record.itemObject.receiverThreadIds = itemObject.receiverThreadIds;
+    } else if (Array.isArray(itemObject.receiver_thread_ids)) {
+      record.itemObject.receiver_thread_ids = itemObject.receiver_thread_ids;
+    }
+    if (Array.isArray(itemObject.receiverAgents)) {
+      record.itemObject.receiverAgents = itemObject.receiverAgents;
+    } else if (Array.isArray(itemObject.receiver_agents)) {
+      record.itemObject.receiver_agents = itemObject.receiver_agents;
+    }
+    if (itemObject.agentStates && typeof itemObject.agentStates === "object") {
+      record.itemObject.agentStates = itemObject.agentStates;
+    } else if (itemObject.agent_states && typeof itemObject.agent_states === "object") {
+      record.itemObject.agent_states = itemObject.agent_states;
     }
     const explanation = normalizeOptionalString(itemObject.explanation);
     if (explanation) {
       record.itemObject.explanation = explanation;
     }
+    const review = normalizeOptionalString(itemObject.review);
+    if (review) {
+      record.itemObject.review = review;
+    }
     const summary = normalizeOptionalString(itemObject.summary);
     if (summary) {
       record.itemObject.summary = summary;
+    }
+    const tool = normalizeOptionalString(itemObject.tool);
+    if (tool) {
+      record.itemObject.tool = tool;
+    }
+    const name = normalizeOptionalString(itemObject.name);
+    if (name) {
+      record.itemObject.name = name;
+    }
+    const prompt = normalizeOptionalString(itemObject.prompt);
+    if (prompt) {
+      record.itemObject.prompt = prompt;
+    }
+    const model = normalizeOptionalString(itemObject.model);
+    if (model) {
+      record.itemObject.model = model;
     }
     const status = normalizeOptionalString(itemObject.status)
       || (completed ? "completed" : null);
@@ -3335,6 +3385,7 @@ export function createRuntimeManager({
       case "agentmessage":
       case "assistantmessage":
       case "message":
+      case "exitedreviewmode":
       case "usermessage":
         return "chat";
       case "reasoning":
@@ -3353,16 +3404,29 @@ export function createRuntimeManager({
         const text = normalizeOptionalString(itemObject.text || itemObject.message);
         const hasFileChangeSignal = (Array.isArray(itemObject.changes) && itemObject.changes.length > 0)
           || Boolean(directPatch)
-          || Boolean(text && (/diff --git |\n@@ |\n+++ |\n--- /.test(text)));
+          || Boolean(text && (/diff --git |\n@@ |\n\+\+\+ |\n--- /.test(text)));
         return hasFileChangeSignal ? "fileChange" : "toolActivity";
       }
       case "commandexecution":
+      case "enteredreviewmode":
+      case "contextcompaction":
         return "commandExecution";
+      case "collabagenttoolcall":
+      case "collabtoolcall":
+      case "subagentaction":
+        return "subagentAction";
       case "plan":
         return "plan";
       case "userinputprompt":
         return "userInputPrompt";
       default:
+        if (normalizedType.startsWith("collabagentspawn")
+          || normalizedType.startsWith("collabwaiting")
+          || normalizedType.startsWith("collabclose")
+          || normalizedType.startsWith("collabresume")
+          || normalizedType.startsWith("collabagentinteraction")) {
+          return "subagentAction";
+        }
         return "chat";
     }
   }
@@ -3381,6 +3445,9 @@ export function createRuntimeManager({
     const normalizedType = normalizeCodexItemType(record?.itemObject?.type);
     if (normalizedType === "usermessage") {
       return "user";
+    }
+    if (normalizedType === "exitedreviewmode") {
+      return "assistant";
     }
     if (normalizedType === "agentmessage" || normalizedType === "assistantmessage") {
       return "assistant";
@@ -3470,6 +3537,23 @@ export function createRuntimeManager({
     record: RuntimeHistoryRecord | null | undefined
   ): string {
     const itemObject = asObject(record?.itemObject);
+    const normalizedType = normalizeCodexItemType(itemObject.type);
+    if (normalizedType === "enteredreviewmode") {
+      const reviewLabel = normalizeOptionalString(itemObject.review) || "changes";
+      return `Reviewing ${reviewLabel}...`;
+    }
+    if (normalizedType === "contextcompaction") {
+      const status = canonicalStatusForHistoryRecord(record);
+      return status === "completed" || status === "failed" || status === "stopped"
+        ? "Context compacted"
+        : "Compacting context...";
+    }
+    if (normalizedType === "exitedreviewmode") {
+      const reviewText = normalizeOptionalString(itemObject.review);
+      if (reviewText) {
+        return reviewText;
+      }
+    }
     const directText = normalizeOptionalString(itemObject.text || itemObject.message);
     if (directText) {
       return directText;
@@ -3608,6 +3692,36 @@ export function createRuntimeManager({
         explanation: normalizeOptionalString(record.itemObject.explanation) || null,
         steps: Array.isArray(record.itemObject.plan) ? record.itemObject.plan : [],
       };
+    }
+    if (Array.isArray(record.itemObject.questions) && record.itemObject.questions.length > 0) {
+      payload.questions = record.itemObject.questions;
+    }
+    if (normalizeOptionalString(record.itemObject.tool)) {
+      payload.tool = normalizeOptionalString(record.itemObject.tool);
+    }
+    if (normalizeOptionalString(record.itemObject.name) && !normalizeOptionalString(record.itemObject.tool)) {
+      payload.name = normalizeOptionalString(record.itemObject.name);
+    }
+    if (normalizeOptionalString(record.itemObject.prompt)) {
+      payload.prompt = normalizeOptionalString(record.itemObject.prompt);
+    }
+    if (normalizeOptionalString(record.itemObject.model)) {
+      payload.model = normalizeOptionalString(record.itemObject.model);
+    }
+    if (Array.isArray(record.itemObject.receiverThreadIds)) {
+      payload.receiverThreadIds = record.itemObject.receiverThreadIds;
+    } else if (Array.isArray(record.itemObject.receiver_thread_ids)) {
+      payload.receiverThreadIds = record.itemObject.receiver_thread_ids;
+    }
+    if (Array.isArray(record.itemObject.receiverAgents)) {
+      payload.receiverAgents = record.itemObject.receiverAgents;
+    } else if (Array.isArray(record.itemObject.receiver_agents)) {
+      payload.receiverAgents = record.itemObject.receiver_agents;
+    }
+    if (record.itemObject.agentStates && typeof record.itemObject.agentStates === "object") {
+      payload.agentStates = record.itemObject.agentStates;
+    } else if (record.itemObject.agent_states && typeof record.itemObject.agent_states === "object") {
+      payload.agentStates = record.itemObject.agent_states;
     }
     return payload;
   }

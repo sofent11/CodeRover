@@ -101,6 +101,11 @@ export function printBridgeStatus(state: BridgeRuntimeState | null): void {
   }
   console.log(`Connected clients: ${state.connectedClients}`);
   console.log(`Secure channel ready: ${state.secureChannelReady ? "yes" : "no"}`);
+  console.log(`Outbound buffer: ${state.observability.outboundBufferMessages} msgs / ${state.observability.outboundBufferBytes} bytes`);
+  console.log(`Secure counters: handshake_failures=${state.observability.counters.handshakeFailures}, replacements=${state.observability.counters.replacedConnections}, resume_gaps=${state.observability.counters.resumeGaps}, buffer_drops=${state.observability.counters.outboundBufferDrops}, shutdown_timeouts=${state.observability.counters.shutdownTimeouts}`);
+  if (state.observability.lastSecureErrorCode) {
+    console.log(`Last secure error: ${state.observability.lastSecureErrorCode}`);
+  }
   if (state.logFile) {
     console.log(`Log: ${state.logFile}`);
   }

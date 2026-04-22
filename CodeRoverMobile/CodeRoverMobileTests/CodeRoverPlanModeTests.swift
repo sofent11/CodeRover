@@ -516,6 +516,69 @@ final class CodeRoverPlanModeTests: XCTestCase {
         XCTAssertEqual(messages[0].planState?.steps.last?.status, .inProgress)
     }
 
+    func testHistoryDecodeRestoresReviewAndContextCompactionItems() {
+        let service = makeService()
+        let threadID = "thread-\(UUID().uuidString)"
+        let turnID = "turn-\(UUID().uuidString)"
+
+        let messages = service.decodeMessagesFromThreadRead(
+            threadId: threadID,
+            threadObject: [
+                "createdAt": .double(1_700_000_000),
+                "turns": .array([
+                    .object([
+                        "id": .string(turnID),
+                        "items": .array([
+                            .object([
+                                "id": .string("review-enter"),
+                                "type": .string("entered_review_mode"),
+                                "review": .string("current changes"),
+                            ]),
+                            .object([
+                                "id": .string("review-exit"),
+                                "type": .string("exited_review_mode"),
+                                "review": .string("Tighten the nil checks before merging."),
+                            ]),
+                            .object([
+                                "id": .string("compact"),
+                                "type": .string("context_compaction"),
+                            ]),
+                        ]),
+                    ]),
+                ]),
+            ]
+        )
+
+        XCTAssertEqual(messages.map(\.kind), [.commandExecution, .chat, .commandExecution])
+        XCTAssertEqual(messages.map(\.role), [.system, .assistant, .system])
+        XCTAssertEqual(messages[0].text, "Reviewing current changes...")
+        XCTAssertEqual(messages[1].text, "Tighten the nil checks before merging.")
+        XCTAssertEqual(messages[2].text, "Context compacted")
+    }
+
+    func testAssistantMessagesDeriveProposedPlanFromEnvelope() {
+        let message = ChatMessage(
+            threadId: "thread-plan",
+            role: .assistant,
+            kind: .chat,
+            text: """
+            Intro text
+
+            <proposed_plan>
+            # Ship
+            1. Audit
+            2. Implement
+            </proposed_plan>
+            """
+        )
+
+        XCTAssertEqual(message.proposedPlan?.summary, "Ship")
+        XCTAssertEqual(
+            message.proposedPlan?.body,
+            "# Ship\n1. Audit\n2. Implement"
+        )
+    }
+
     private func makeService(
         suiteName: String = "CodeRoverPlanModeTests.\(UUID().uuidString)",
         reset: Bool = true,

@@ -46,6 +46,9 @@ test("bridge runtime state persists pairing payload and transport metadata", () 
     transportCandidates: state.transportCandidates,
     expiresAt: Date.now() + 60_000,
   };
+  state.observability.outboundBufferMessages = 4;
+  state.observability.lastSecureErrorCode = "resume_gap";
+  state.observability.counters.outboundBufferDrops = 7;
 
   writeBridgeRuntimeState(state);
 
@@ -56,5 +59,8 @@ test("bridge runtime state persists pairing payload and transport metadata", () 
   assert.equal(persisted?.mode, "daemon");
   assert.equal(persisted?.pairingPayload?.bridgeId, "bridge-123");
   assert.equal(persisted?.transportCandidates[0]?.url, state.localUrl);
+  assert.equal(persisted?.observability.outboundBufferMessages, 4);
+  assert.equal(persisted?.observability.lastSecureErrorCode, "resume_gap");
+  assert.equal(persisted?.observability.counters.outboundBufferDrops, 7);
   assert.ok(fs.existsSync(resolveBridgeRuntimeStatePath()));
 });

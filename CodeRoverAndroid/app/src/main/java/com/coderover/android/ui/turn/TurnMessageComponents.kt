@@ -50,6 +50,7 @@ import com.coderover.android.data.model.AssistantRevertPresentation
 import com.coderover.android.data.model.ChatMessage
 import com.coderover.android.data.model.MessageKind
 import com.coderover.android.data.model.MessageRole
+import com.coderover.android.data.model.ProposedPlanParser
 import com.coderover.android.ui.shared.StatusTag
 import com.coderover.android.ui.theme.Border
 import com.coderover.android.ui.theme.CommandAccent
@@ -131,6 +132,14 @@ private fun AssistantMessageBlock(
     assistantRevertPresentation: AssistantRevertPresentation? = null,
     onTapAssistantRevert: (ChatMessage) -> Unit = {},
 ) {
+    val proposedPlan = remember(message.id, message.text) { message.proposedPlan }
+    val renderedAssistantText = remember(message.id, message.text, proposedPlan) {
+        if (proposedPlan == null) {
+            message.text
+        } else {
+            ProposedPlanParser.removingEnvelope(message.text).orEmpty()
+        }
+    }
     Column(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -153,10 +162,20 @@ private fun AssistantMessageBlock(
         if (message.attachments.isNotEmpty()) {
             MessageAttachmentsPreview(message.attachments)
         }
-        RichMessageText(
-            text = message.text,
-            textColor = MaterialTheme.colorScheme.onSurface,
-        )
+        if (renderedAssistantText.isNotBlank()) {
+            RichMessageText(
+                text = renderedAssistantText,
+                textColor = MaterialTheme.colorScheme.onSurface,
+            )
+        }
+        if (proposedPlan != null) {
+            TurnSystemCard(
+                title = "Plan Result",
+                showsProgress = message.isStreaming,
+            ) {
+                ProposedPlanResultContent(proposedPlan)
+            }
+        }
         if (message.isStreaming) {
             TypingIndicator(modifier = Modifier.padding(top = 2.dp))
         }

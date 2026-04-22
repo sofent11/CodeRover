@@ -60,7 +60,7 @@ export interface LocalBridgeServer {
   disconnectClient(transportId: string, code?: number, reason?: string): void;
   disconnectAllClients(code?: number, reason?: string): void;
   disconnectCurrentClient(code?: number, reason?: string): void;
-  stop(): void;
+  stop(): Promise<void>;
 }
 
 function isNetworkInterfaceInfoArray(
@@ -94,6 +94,7 @@ export function startLocalBridgeServer({
   const wss = new WebSocketServer({ noServer: true });
   let nextClientId = 1;
   const clients = new Map<string, BridgeWebSocket>();
+  let stopPromise: Promise<void> | null = null;
   const heartbeat = setInterval(() => {
     for (const ws of clients.values()) {
       if (ws._bridgeAlive === false) {
@@ -294,6 +295,9 @@ export function startLocalBridgeServer({
       this.disconnectAllClients(code, reason);
     },
     stop() {
+      if (stopPromise) {
+        return stopPromise;
+      }
       for (const transportId of [...clients.keys()]) {
         this.disconnectClient(transportId, CLOSE_CODE_INVALID_ROUTE, "Bridge shutting down");
       }
@@ -305,8 +309,29 @@ export function startLocalBridgeServer({
         }
       }
       clearInterval(heartbeat);
-      wss.close();
-      server.close();
+      stopPromise = new Promise((resolve) => {
+        let settled = false;
+        let remaining = 2;
+        const finish = () => {
+          if (settled) {
+            return;
+          }
+          remaining -= 1;
+          if (remaining <= 0) {
+            settled = true;
+            clearTimeout(timer);
+            resolve();
+          }
+        };
+        const timer = setTimeout(() => {
+          finish();
+          finish();
+        }, 250);
+        timer.unref?.();
+        wss.close(() => finish());
+        server.close(() => finish());
+      });
+      return stopPromise;
     },
   };
 }

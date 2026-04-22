@@ -185,7 +185,7 @@ test("startLocalBridgeServer rejects clients while bridge upstream is unavailabl
     socket.on("error", reject);
   });
 
-  server.stop();
+  await server.stop();
 
   assert.equal(rejectionChecked, true);
 });
@@ -238,7 +238,7 @@ test("startLocalBridgeServer keeps multiple clients connected at the same time",
 
   firstClient.terminate();
   secondClient.terminate();
-  server.stop();
+  await server.stop();
 });
 
 test("startLocalBridgeServer reports stale bridge routes as pairing_expired", async () => {
@@ -264,7 +264,7 @@ test("startLocalBridgeServer reports stale bridge routes as pairing_expired", as
     client.once("error", reject);
   });
 
-  server.stop();
+  await server.stop();
 
   assert.deepEqual(result, {
     kind: "secureError",

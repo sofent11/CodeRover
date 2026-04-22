@@ -700,20 +700,34 @@ extension CodeRoverService {
     }
 
     private func canonicalTimelineKind(from rawValue: String?) -> ChatMessageKind {
-        switch rawValue?.trimmingCharacters(in: .whitespacesAndNewlines) {
-        case "thinking":
+        let normalized = rawValue?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "_", with: "")
+            .replacingOccurrences(of: "-", with: "")
+        if let normalized,
+           normalized == "collabagenttoolcall"
+            || normalized == "collabtoolcall"
+            || normalized == "subagentaction"
+            || normalized.hasPrefix("collabagentspawn")
+            || normalized.hasPrefix("collabwaiting")
+            || normalized.hasPrefix("collabclose")
+            || normalized.hasPrefix("collabresume")
+            || normalized.hasPrefix("collabagentinteraction") {
+            return .subagentAction
+        }
+        switch normalized {
+        case "thinking", "reasoning":
             return .thinking
-        case "toolActivity":
+        case "toolactivity", "toolcall":
             return .toolActivity
-        case "fileChange":
+        case "filechange", "diff":
             return .fileChange
-        case "commandExecution":
+        case "commandexecution", "commanddelta", "command", "shellcommand", "shell", "enteredreviewmode", "contextcompaction":
             return .commandExecution
         case "plan":
             return .plan
-        case "subagentAction":
-            return .subagentAction
-        case "userInputPrompt":
+        case "userinputprompt":
             return .userInputPrompt
         default:
             return .chat

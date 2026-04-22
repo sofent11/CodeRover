@@ -46,6 +46,8 @@ interface BridgeSecureTransportOptions {
   sessionId: string;
   deviceState: BridgeDeviceState;
   transportCandidates?: TransportCandidateShape[];
+  onDiagnosticsChanged?: () => void;
+  onEvent?: (event: SecureTransportEvent) => void;
 }
 
 interface SecureErrorMessage {
@@ -121,6 +123,28 @@ interface ActiveSession {
   closeTransport?: (code?: number, reason?: string) => void;
 }
 
+export interface SecureTransportDiagnostics {
+  handshakeFailureCount: number;
+  replacedConnectionCount: number;
+  resumeGapCount: number;
+  outboundBufferDropCount: number;
+  outboundBufferMessages: number;
+  outboundBufferBytes: number;
+  outboundBufferMinSeq: number | null;
+  outboundBufferMaxSeq: number | null;
+  lastSecureErrorCode: string | null;
+}
+
+export interface SecureTransportEvent {
+  kind: "secure_error" | "connection_replaced" | "resume_gap" | "buffer_trim";
+  code?: string;
+  phoneDeviceId?: string;
+  transportId?: string;
+  droppedMessages?: number;
+  droppedBytes?: number;
+  minRetainedBridgeOutboundSeq?: number | null;
+}
+
 interface OutboundBufferEntry {
   bridgeOutboundSeq: number;
   payloadText: string;
@@ -170,6 +194,7 @@ interface BridgeSecureTransport {
   createPairingPayload(): PairingPayload;
   handleIncomingWireMessage(rawMessage: string, transport?: SecureTransportContext): boolean;
   handleTransportClosed(transportId: string): void;
+  getDiagnostics(): SecureTransportDiagnostics;
   isSecureChannelReady(): boolean;
   queueOutboundApplicationMessage(payloadText: string): void;
 }
@@ -178,6 +203,8 @@ export function createBridgeSecureTransport({
   sessionId,
   deviceState,
   transportCandidates = [],
+  onDiagnosticsChanged = () => {},
+  onEvent = () => {},
 }: BridgeSecureTransportOptions): BridgeSecureTransport {
   let currentDeviceState = deviceState;
   const pendingHandshakes = new Map<string, PendingHandshake>();
@@ -188,6 +215,11 @@ export function createBridgeSecureTransport({
   let nextBridgeOutboundSeq = 1;
   let outboundBufferBytes = 0;
   const outboundBuffer: OutboundBufferEntry[] = [];
+  let handshakeFailureCount = 0;
+  let replacedConnectionCount = 0;
+  let resumeGapCount = 0;
+  let outboundBufferDropCount = 0;
+  let lastSecureErrorCode: string | null = null;
 
   function createPairingPayload(): PairingPayload {
     currentPairingExpiresAt = Date.now() + MAX_PAIRING_AGE_MS;
@@ -226,7 +258,7 @@ export function createBridgeSecureTransport({
       return false;
     }
 
-    switch (kind) {
+      switch (kind) {
       case "clientHello":
         handleClientHello(parsed, {
           transportId,
@@ -244,7 +276,7 @@ export function createBridgeSecureTransport({
         });
         return true;
       case "resumeState":
-        handleResumeState(parsed, transportId);
+        handleResumeState(parsed, transportId, sendControlMessage);
         return true;
       case "encryptedEnvelope":
         return handleEncryptedEnvelope(parsed, { transportId, sendControlMessage, onApplicationMessage });
@@ -280,6 +312,20 @@ export function createBridgeSecureTransport({
     }
   }
 
+  function getDiagnostics(): SecureTransportDiagnostics {
+    return {
+      handshakeFailureCount,
+      replacedConnectionCount,
+      resumeGapCount,
+      outboundBufferDropCount,
+      outboundBufferMessages: outboundBuffer.length,
+      outboundBufferBytes,
+      outboundBufferMinSeq: outboundBuffer[0]?.bridgeOutboundSeq ?? null,
+      outboundBufferMaxSeq: outboundBuffer[outboundBuffer.length - 1]?.bridgeOutboundSeq ?? null,
+      lastSecureErrorCode,
+    };
+  }
+
   function isSecureChannelReady(): boolean {
     return [...activeSessions.values()].some((session) => session.isResumed);
   }
@@ -303,33 +349,37 @@ export function createBridgeSecureTransport({
     const clientNonceBase64 = normalizeNonEmptyString(message.clientNonce);
 
     if (protocolVersion !== SECURE_PROTOCOL_VERSION || incomingSessionId !== sessionId) {
-      sendControlMessage(createSecureError({
+      sendControlMessage(reportSecureError({
         code: "update_required",
         message: "The bridge and iPhone are not using the same secure transport version.",
+        countHandshakeFailure: true,
       }));
       return;
     }
 
     if (!phoneDeviceId || !phoneIdentityPublicKey || !phoneEphemeralPublicKey || !clientNonceBase64) {
-      sendControlMessage(createSecureError({
+      sendControlMessage(reportSecureError({
         code: "invalid_client_hello",
         message: "The iPhone handshake is missing required secure fields.",
+        countHandshakeFailure: true,
       }));
       return;
     }
 
     if (!handshakeMode) {
-      sendControlMessage(createSecureError({
+      sendControlMessage(reportSecureError({
         code: "invalid_handshake_mode",
         message: "The iPhone requested an unknown secure pairing mode.",
+        countHandshakeFailure: true,
       }));
       return;
     }
 
     if (handshakeMode === HANDSHAKE_MODE_QR_BOOTSTRAP && Date.now() > currentPairingExpiresAt) {
-      sendControlMessage(createSecureError({
+      sendControlMessage(reportSecureError({
         code: "pairing_expired",
         message: "The pairing QR code has expired. Generate a new QR code from the bridge.",
+        countHandshakeFailure: true,
       }));
       return;
     }
@@ -337,16 +387,18 @@ export function createBridgeSecureTransport({
     const trustedPhonePublicKey = getTrustedPhonePublicKey(currentDeviceState, phoneDeviceId);
     if (handshakeMode === HANDSHAKE_MODE_TRUSTED_RECONNECT) {
       if (!trustedPhonePublicKey) {
-        sendControlMessage(createSecureError({
+        sendControlMessage(reportSecureError({
           code: "phone_not_trusted",
           message: "This iPhone is not trusted by the current bridge session. Scan a fresh QR code to pair again.",
+          countHandshakeFailure: true,
         }));
         return;
       }
       if (trustedPhonePublicKey !== phoneIdentityPublicKey) {
-        sendControlMessage(createSecureError({
+        sendControlMessage(reportSecureError({
           code: "phone_identity_changed",
           message: "The trusted iPhone identity does not match this reconnect attempt.",
+          countHandshakeFailure: true,
         }));
         return;
       }
@@ -354,9 +406,10 @@ export function createBridgeSecureTransport({
 
     const clientNonce = base64ToBuffer(clientNonceBase64);
     if (!clientNonce || clientNonce.length === 0) {
-      sendControlMessage(createSecureError({
+      sendControlMessage(reportSecureError({
         code: "invalid_client_nonce",
         message: "The iPhone secure nonce could not be decoded.",
+        countHandshakeFailure: true,
       }));
       return;
     }
@@ -367,9 +420,10 @@ export function createBridgeSecureTransport({
     const macEphemeralPrivateKey = normalizeNonEmptyString(privateJwk.d);
     const macEphemeralPublicKey = normalizeNonEmptyString(publicJwk.x);
     if (!macEphemeralPrivateKey || !macEphemeralPublicKey) {
-      sendControlMessage(createSecureError({
+      sendControlMessage(reportSecureError({
         code: "invalid_ephemeral_key",
         message: "The bridge could not generate a secure handshake key.",
+        countHandshakeFailure: true,
       }));
       return;
     }
@@ -455,7 +509,7 @@ export function createBridgeSecureTransport({
   ): void {
     const pendingHandshake = pendingHandshakes.get(transportId);
     if (!pendingHandshake) {
-      sendControlMessage(createSecureError({
+      sendControlMessage(reportSecureError({
         code: "unexpected_client_auth",
         message: "The bridge did not have a pending secure handshake to finalize.",
       }));
@@ -473,9 +527,10 @@ export function createBridgeSecureTransport({
       || !phoneSignature
     ) {
       pendingHandshakes.delete(transportId);
-      sendControlMessage(createSecureError({
+      sendControlMessage(reportSecureError({
         code: "invalid_client_auth",
         message: "The secure client authentication payload was invalid.",
+        countHandshakeFailure: true,
       }));
       return;
     }
@@ -491,9 +546,10 @@ export function createBridgeSecureTransport({
     );
     if (!phoneVerified) {
       pendingHandshakes.delete(transportId);
-      sendControlMessage(createSecureError({
+      sendControlMessage(reportSecureError({
         code: "invalid_phone_signature",
         message: "The iPhone secure signature could not be verified.",
+        countHandshakeFailure: true,
       }));
       return;
     }
@@ -527,14 +583,6 @@ export function createBridgeSecureTransport({
     ].join("|");
 
     const existingTransportId = activeTransportIdByPhone.get(pendingHandshake.phoneDeviceId);
-    if (existingTransportId && existingTransportId !== transportId) {
-      activeSessions.get(existingTransportId)?.closeTransport?.(
-        CLOSE_CODE_REPLACED_CONNECTION,
-        "Replaced by newer connection for this iPhone"
-      );
-      removeActiveSession(existingTransportId);
-    }
-
     const activeSession: ActiveSession = {
       transportId,
       sessionId: pendingHandshake.sessionId,
@@ -557,6 +605,22 @@ export function createBridgeSecureTransport({
     };
     activeSessions.set(transportId, activeSession);
     activeTransportIdByPhone.set(activeSession.phoneDeviceId, transportId);
+    if (existingTransportId && existingTransportId !== transportId) {
+      replacedConnectionCount += 1;
+      emitStateChange({
+        kind: "connection_replaced",
+        phoneDeviceId: activeSession.phoneDeviceId,
+        transportId: existingTransportId,
+      });
+      const replacedSession = activeSessions.get(existingTransportId);
+      replacedSession?.closeTransport?.(
+        CLOSE_CODE_REPLACED_CONNECTION,
+        "Replaced by newer connection for this iPhone"
+      );
+      removeActiveSession(existingTransportId);
+    } else {
+      onDiagnosticsChanged();
+    }
 
     nextKeyEpoch = pendingHandshake.keyEpoch + 1;
     if (
@@ -579,9 +643,17 @@ export function createBridgeSecureTransport({
     });
   }
 
-  function handleResumeState(message: JsonRecord, transportId: string): void {
-    const activeSession = activeSessions.get(transportId);
+  function handleResumeState(
+    message: JsonRecord,
+    transportId: string,
+    sendControlMessage: (message: SecureControlMessage) => void
+  ): void {
+    const activeSession = requireOwnedSession(transportId);
     if (!activeSession) {
+      sendControlMessage(reportSecureError({
+        code: "secure_channel_unavailable",
+        message: "The secure channel is not ready yet on the bridge.",
+      }));
       return;
     }
 
@@ -593,12 +665,32 @@ export function createBridgeSecureTransport({
 
     const lastAppliedBridgeOutboundSeq = Number(message.lastAppliedBridgeOutboundSeq) || 0;
     const resumeFloor = Math.max(lastAppliedBridgeOutboundSeq, activeSession.minBridgeOutboundSeq - 1);
+    const minimumBufferedSeq = outboundBuffer[0]?.bridgeOutboundSeq ?? null;
+    if (
+      minimumBufferedSeq != null
+      && outboundBuffer.length > 0
+      && resumeFloor < minimumBufferedSeq - 1
+    ) {
+      resumeGapCount += 1;
+      sendControlMessage(reportSecureError({
+        code: "resume_gap",
+        message: "The bridge no longer has the full reconnect buffer for this session. Re-read the thread to resync.",
+      }));
+      emitStateChange({
+        kind: "resume_gap",
+        transportId,
+        phoneDeviceId: activeSession.phoneDeviceId,
+        minRetainedBridgeOutboundSeq: minimumBufferedSeq,
+      });
+      return;
+    }
     const missingEntries = outboundBuffer.filter((entry) => entry.bridgeOutboundSeq > resumeFloor);
     debugSecureLog(
       `resumeState transport=${shortId(transportId)} keyEpoch=${keyEpoch} `
       + `lastApplied=${lastAppliedBridgeOutboundSeq} pending=${missingEntries.length}`
     );
     activeSession.isResumed = true;
+    onDiagnosticsChanged();
     for (const entry of missingEntries) {
       sendBufferedEntry(entry, activeSession);
     }
@@ -612,9 +704,9 @@ export function createBridgeSecureTransport({
       onApplicationMessage,
     }: Required<Pick<SecureTransportContext, "transportId" | "sendControlMessage" | "onApplicationMessage">>
   ): boolean {
-    const activeSession = activeSessions.get(transportId);
+    const activeSession = requireOwnedSession(transportId);
     if (!activeSession) {
-      sendControlMessage(createSecureError({
+      sendControlMessage(reportSecureError({
         code: "secure_channel_unavailable",
         message: "The secure channel is not ready yet on the bridge.",
       }));
@@ -632,7 +724,7 @@ export function createBridgeSecureTransport({
       || !Number.isInteger(counter)
       || counter <= activeSession.lastInboundCounter
     ) {
-      sendControlMessage(createSecureError({
+      sendControlMessage(reportSecureError({
         code: "invalid_envelope",
         message: "The bridge rejected an invalid or replayed secure envelope.",
       }));
@@ -646,7 +738,7 @@ export function createBridgeSecureTransport({
       counter
     );
     if (!plaintextBuffer) {
-      sendControlMessage(createSecureError({
+      sendControlMessage(reportSecureError({
         code: "decrypt_failed",
         message: "The bridge could not decrypt the iPhone secure payload.",
       }));
@@ -657,7 +749,7 @@ export function createBridgeSecureTransport({
     const payloadObject = safeParseJSON(plaintextBuffer.toString("utf8"));
     const payloadText = normalizeNonEmptyString(payloadObject?.payloadText);
     if (!payloadText) {
-      sendControlMessage(createSecureError({
+      sendControlMessage(reportSecureError({
         code: "invalid_payload",
         message: "The secure payload did not contain a usable application message.",
       }));
@@ -683,9 +775,12 @@ export function createBridgeSecureTransport({
     if (activeTransportIdByPhone.get(activeSession.phoneDeviceId) === transportId) {
       activeTransportIdByPhone.delete(activeSession.phoneDeviceId);
     }
+    onDiagnosticsChanged();
   }
 
   function trimOutboundBuffer(): void {
+    let droppedMessages = 0;
+    let droppedBytes = 0;
     while (
       outboundBuffer.length > MAX_BRIDGE_OUTBOUND_MESSAGES
       || outboundBufferBytes > MAX_BRIDGE_OUTBOUND_BYTES
@@ -695,6 +790,17 @@ export function createBridgeSecureTransport({
         break;
       }
       outboundBufferBytes = Math.max(0, outboundBufferBytes - removed.sizeBytes);
+      droppedMessages += 1;
+      droppedBytes += removed.sizeBytes;
+      outboundBufferDropCount += 1;
+    }
+    if (droppedMessages > 0) {
+      emitStateChange({
+        kind: "buffer_trim",
+        droppedMessages,
+        droppedBytes,
+        minRetainedBridgeOutboundSeq: outboundBuffer[0]?.bridgeOutboundSeq ?? null,
+      });
     }
   }
 
@@ -738,9 +844,54 @@ export function createBridgeSecureTransport({
     createPairingPayload,
     handleIncomingWireMessage,
     handleTransportClosed,
+    getDiagnostics,
     isSecureChannelReady,
     queueOutboundApplicationMessage,
   };
+
+  function requireOwnedSession(transportId: string): ActiveSession | null {
+    const activeSession = activeSessions.get(transportId);
+    if (!activeSession) {
+      return null;
+    }
+    if (activeSession.transportId !== transportId) {
+      return null;
+    }
+    if (activeTransportIdByPhone.get(activeSession.phoneDeviceId) !== transportId) {
+      return null;
+    }
+    if (activeSession.sessionId !== sessionId) {
+      return null;
+    }
+    return activeSession;
+  }
+
+  function reportSecureError(
+    {
+      code,
+      message,
+      countHandshakeFailure = false,
+    }: {
+      code: string;
+      message: string;
+      countHandshakeFailure?: boolean;
+    }
+  ): SecureErrorMessage {
+    lastSecureErrorCode = code;
+    if (countHandshakeFailure) {
+      handshakeFailureCount += 1;
+    }
+    emitStateChange({
+      kind: "secure_error",
+      code,
+    });
+    return createSecureError({ code, message });
+  }
+
+  function emitStateChange(event: SecureTransportEvent): void {
+    onEvent(event);
+    onDiagnosticsChanged();
+  }
 }
 
 function debugSecureLog(message: string): void {

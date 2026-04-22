@@ -649,6 +649,87 @@ data class PlanState(
 )
 
 @Serializable
+data class ProposedPlan(
+    val body: String,
+    val summary: String? = null,
+)
+
+enum class PlanPresentation {
+    PROGRESS,
+    RESULT_STREAMING,
+    RESULT_COMPLETED_ITEM,
+    RESULT_READY,
+    RESULT_CLOSED;
+
+    val isInlineResultVisible: Boolean
+        get() = this == RESULT_READY || this == RESULT_COMPLETED_ITEM
+}
+
+object ProposedPlanParser {
+    private val envelopeRegex = Regex("<proposed_plan>([\\s\\S]*?)</proposed_plan>", RegexOption.IGNORE_CASE)
+    private val numberedStepRegex = Regex("""(?m)^\s*\d+[\.)]\s+.+$""")
+
+    fun parse(rawText: String): ProposedPlan? {
+        val match = envelopeRegex.find(rawText) ?: return null
+        val body = match.groupValues.getOrNull(1)?.trim().orEmpty()
+        if (body.isEmpty()) {
+            return null
+        }
+        return ProposedPlan(body = body, summary = proposedPlanSummary(body))
+    }
+
+    fun containsEnvelope(rawText: String): Boolean = envelopeRegex.containsMatchIn(rawText)
+
+    fun removingEnvelope(rawText: String): String? {
+        val stripped = envelopeRegex.replace(rawText, "").trim()
+        return stripped.ifEmpty { null }
+    }
+
+    fun parsePlanItem(rawText: String): ProposedPlan? {
+        val body = rawText.trim()
+        if (body.isEmpty()) {
+            return null
+        }
+        return ProposedPlan(body = body, summary = proposedPlanSummary(body))
+    }
+
+    fun parseAssistantFallback(rawText: String): ProposedPlan? {
+        val body = rawText.trim()
+        if (body.isEmpty() || containsEnvelope(body) || !looksLikeFallbackPlan(body)) {
+            return null
+        }
+        return ProposedPlan(body = body, summary = proposedPlanSummary(body))
+    }
+
+    private fun proposedPlanSummary(body: String): String? {
+        body.lineSequence()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .forEach { line ->
+                val normalized = line
+                    .replace(Regex("""^[-*•\d\.\)\s#]+"""), "")
+                    .trim()
+                if (normalized.isNotEmpty()) {
+                    return normalized
+                }
+            }
+        return null
+    }
+
+    private fun looksLikeFallbackPlan(body: String): Boolean {
+        if (numberedStepRegex.findAll(body).count() < 2) {
+            return false
+        }
+        val firstLine = body.lineSequence().firstOrNull()?.trim()?.lowercase().orEmpty()
+        return firstLine.contains("plan") ||
+            firstLine.contains("roadmap") ||
+            firstLine.contains("proposal") ||
+            firstLine.contains("approach") ||
+            firstLine.contains("implementation")
+    }
+}
+
+@Serializable
 data class FileChangeEntry(
     val path: String,
     val kind: String,
@@ -715,6 +796,54 @@ data class ChatMessage(
 
     val timelineItemId: String
         get() = id
+
+    val proposedPlan: ProposedPlan?
+        get() = deriveProposedPlan(this)
+
+    val resolvedPlanPresentation: PlanPresentation?
+        get() = derivePlanPresentation(this, proposedPlan)
+}
+
+private fun deriveProposedPlan(message: ChatMessage): ProposedPlan? {
+    if (message.role == MessageRole.SYSTEM && message.kind == MessageKind.PLAN) {
+        val hasConcreteItem = !message.itemId.isNullOrBlank()
+        val hasPlanSteps = message.planState?.steps?.isNotEmpty() == true
+        val hasExplanation = !message.planState?.explanation.isNullOrBlank()
+        if (hasConcreteItem || (!hasPlanSteps && !hasExplanation)) {
+            return ProposedPlanParser.parsePlanItem(message.text)
+        }
+    }
+
+    return ProposedPlanParser.parse(message.text)
+        ?: ProposedPlanParser.parseAssistantFallback(message.text)
+}
+
+private fun derivePlanPresentation(
+    message: ChatMessage,
+    proposedPlan: ProposedPlan?,
+): PlanPresentation? {
+    if (message.role != MessageRole.SYSTEM || message.kind != MessageKind.PLAN) {
+        return null
+    }
+
+    val hasPlanSteps = message.planState?.steps?.isNotEmpty() == true
+    val hasExplanation = !message.planState?.explanation.isNullOrBlank()
+    if (hasPlanSteps || hasExplanation) {
+        return PlanPresentation.PROGRESS
+    }
+
+    if (message.itemId.isNullOrBlank()) {
+        return null
+    }
+
+    val normalizedStatus = message.timelineStatus?.trim()?.lowercase()
+    if (message.isStreaming) {
+        return if (proposedPlan == null) PlanPresentation.RESULT_CLOSED else PlanPresentation.RESULT_STREAMING
+    }
+    if (normalizedStatus == "completed" || normalizedStatus == "failed" || normalizedStatus == "stopped") {
+        return if (proposedPlan == null) PlanPresentation.RESULT_CLOSED else PlanPresentation.RESULT_COMPLETED_ITEM
+    }
+    return if (proposedPlan == null) PlanPresentation.RESULT_CLOSED else PlanPresentation.RESULT_READY
 }
 
 data class ThreadTimelineState(

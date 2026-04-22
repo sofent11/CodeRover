@@ -23,6 +23,20 @@ test("bridge/status/read returns bridge version, compatibility, and keep-awake s
     }),
     getKeepAwakeActive: () => true,
     getTrustedDeviceCount: () => 3,
+    getObservability: () => ({
+      outboundBufferMessages: 2,
+      outboundBufferBytes: 120,
+      outboundBufferMinSeq: 10,
+      outboundBufferMaxSeq: 11,
+      lastSecureErrorCode: "resume_gap",
+      counters: {
+        handshakeFailures: 1,
+        replacedConnections: 2,
+        resumeGaps: 1,
+        outboundBufferDrops: 3,
+        shutdownTimeouts: 0,
+      },
+    }),
     minimumSupportedIOSVersion: "1.0",
     minimumSupportedAndroidVersion: "0.1.0",
   });
@@ -44,6 +58,8 @@ test("bridge/status/read returns bridge version, compatibility, and keep-awake s
   assert.equal(responses[0]?.result?.keepAwakeEnabled, true);
   assert.equal(responses[0]?.result?.keepAwakeActive, true);
   assert.equal(responses[0]?.result?.trustedDeviceCount, 3);
+  assert.equal(responses[0]?.result?.observability?.outboundBufferMessages, 2);
+  assert.equal(responses[0]?.result?.observability?.lastSecureErrorCode, "resume_gap");
   assert.equal(responses[0]?.result?.supportedMobileVersions?.ios?.minimumVersion, "1.0");
   assert.equal(responses[0]?.result?.supportedMobileVersions?.android?.minimumVersion, "0.1.0");
 });

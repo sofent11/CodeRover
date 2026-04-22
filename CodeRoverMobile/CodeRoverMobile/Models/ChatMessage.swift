@@ -139,4 +139,80 @@ struct ChatMessage: Identifiable, Codable, Hashable, Sendable {
         timelineStatus = try container.decodeIfPresent(String.self, forKey: .timelineStatus)
         orderIndex = try container.decodeIfPresent(Int.self, forKey: .orderIndex) ?? MessageOrderCounter.next()
     }
+
+    var proposedPlan: CodeRoverProposedPlan? {
+        Self.derivedProposedPlan(
+            role: role,
+            kind: kind,
+            text: text,
+            itemId: itemId,
+            planState: planState
+        )
+    }
+
+    var resolvedPlanPresentation: CodeRoverPlanPresentation? {
+        Self.derivedPlanPresentation(
+            role: role,
+            kind: kind,
+            planState: planState,
+            itemId: itemId,
+            isStreaming: isStreaming,
+            timelineStatus: timelineStatus,
+            proposedPlan: proposedPlan
+        )
+    }
+
+    private static func derivedProposedPlan(
+        role: ChatMessageRole,
+        kind: ChatMessageKind,
+        text: String,
+        itemId: String?,
+        planState: CodeRoverPlanState?
+    ) -> CodeRoverProposedPlan? {
+        if role == .system && kind == .plan {
+            let hasConcreteItem = !(itemId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+            let hasPlanSteps = !(planState?.steps.isEmpty ?? true)
+            let hasExplanation = !(planState?.explanation?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+            if hasConcreteItem || (!hasPlanSteps && !hasExplanation) {
+                return CodeRoverProposedPlanParser.parsePlanItem(from: text)
+            }
+        }
+
+        return CodeRoverProposedPlanParser.parse(from: text)
+            ?? CodeRoverProposedPlanParser.parseAssistantFallback(from: text)
+    }
+
+    private static func derivedPlanPresentation(
+        role: ChatMessageRole,
+        kind: ChatMessageKind,
+        planState: CodeRoverPlanState?,
+        itemId: String?,
+        isStreaming: Bool,
+        timelineStatus: String?,
+        proposedPlan: CodeRoverProposedPlan?
+    ) -> CodeRoverPlanPresentation? {
+        guard role == .system, kind == .plan else {
+            return nil
+        }
+
+        let hasPlanSteps = !(planState?.steps.isEmpty ?? true)
+        let hasExplanation = !(planState?.explanation?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+        if hasPlanSteps || hasExplanation {
+            return .progress
+        }
+
+        let hasConcreteItem = !(itemId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+        guard hasConcreteItem else {
+            return nil
+        }
+
+        let normalizedStatus = timelineStatus?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if isStreaming {
+            return proposedPlan == nil ? .resultClosed : .resultStreaming
+        }
+        if normalizedStatus == "completed" || normalizedStatus == "failed" || normalizedStatus == "stopped" {
+            return proposedPlan == nil ? .resultClosed : .resultCompletedItem
+        }
+        return proposedPlan == nil ? .resultClosed : .resultReady
+    }
 }

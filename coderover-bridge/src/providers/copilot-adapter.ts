@@ -22,8 +22,11 @@ import type {
   ManagedProviderAdapterFactoryOptions,
   ManagedProviderStartTurnOptions,
 } from "../runtime-manager/types";
-
-type UnknownRecord = Record<string, unknown>;
+import {
+  asProviderRecord,
+  normalizeOptionalString,
+  type ProviderRecord as UnknownRecord,
+} from "./shared/provider-utils";
 type CopilotSdkModule = typeof import("@agentclientprotocol/sdk");
 type CopilotClientSideConnection = import("@agentclientprotocol/sdk").ClientSideConnection;
 type CopilotPermissionRequest = import("@agentclientprotocol/sdk").RequestPermissionRequest;
@@ -1297,10 +1300,6 @@ function safeStat(filePath: string): fs.Stats | null {
   }
 }
 
-function normalizeOptionalString(value: unknown): string | null {
-  return typeof value === "string" && value.trim() ? value.trim() : null;
-}
-
 function normalizeTimestampString(value: unknown): string | null {
   const normalized = normalizeOptionalString(value);
   if (!normalized) {
@@ -1311,7 +1310,7 @@ function normalizeTimestampString(value: unknown): string | null {
 }
 
 function asRecord(value: unknown): UnknownRecord {
-  return value && typeof value === "object" ? value as UnknownRecord : {};
+  return asProviderRecord<UnknownRecord>(value) || {};
 }
 
 function firstString(value: unknown): string | null {

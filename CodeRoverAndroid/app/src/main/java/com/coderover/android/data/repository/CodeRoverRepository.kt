@@ -3031,6 +3031,7 @@ class CodeRoverRepository(context: Context) {
             val role = when (type) {
                 "usermessage" -> MessageRole.USER
                 "agentmessage", "assistantmessage" -> MessageRole.ASSISTANT
+                "exitedreviewmode" -> MessageRole.ASSISTANT
                 "message" -> if (item.string("role")?.contains("user", ignoreCase = true) == true) {
                     MessageRole.USER
                 } else {
@@ -3068,11 +3069,17 @@ class CodeRoverRepository(context: Context) {
             val text = when (kind) {
                 MessageKind.FILE_CHANGE -> decodeFileChangeText(item, fileChanges)
                 MessageKind.TOOL_ACTIVITY -> decodeToolActivityText(item)
-                MessageKind.COMMAND_EXECUTION -> decodeCommandExecutionText(item, commandState)
+                MessageKind.COMMAND_EXECUTION -> decodeCommandExecutionText(item, commandState, rawType = type)
                 MessageKind.SUBAGENT_ACTION -> subagentAction?.summaryText ?: decodeItemText(item)
                 MessageKind.PLAN -> decodePlanText(item, planState)
                 MessageKind.USER_INPUT_PROMPT -> structuredUserInputRequest?.let(::structuredUserInputFallbackText) ?: decodeItemText(item)
-                else -> decodeItemText(item)
+                else -> {
+                    if (type == "exitedreviewmode") {
+                        item.flattenedString("review") ?: decodeItemText(item)
+                    } else {
+                        decodeItemText(item)
+                    }
+                }
             }
             if (text.isBlank() && structuredUserInputRequest == null) {
                 return null
@@ -3166,8 +3173,30 @@ class CodeRoverRepository(context: Context) {
         }
     }
 
-    private fun decodeCommandExecutionText(item: JsonObject, commandState: CommandState?): String {
-        val state = commandState ?: decodeCommandState(item, completedFallback = true) ?: return "Completed command"
+    private fun decodeCommandExecutionText(
+        item: JsonObject,
+        commandState: CommandState?,
+        rawType: String? = null,
+    ): String {
+        when (normalizeMethodToken(rawType.orEmpty())) {
+            "enteredreviewmode" -> {
+                val reviewLabel = item.flattenedString("review")?.trim()?.takeIf(String::isNotEmpty) ?: "changes"
+                return "Reviewing $reviewLabel..."
+            }
+            "contextcompaction" -> {
+                val status = item.string("status")?.trim()?.lowercase()
+                return if (status == "completed" || status == "failed" || status == "stopped") {
+                    "Context compacted"
+                } else {
+                    "Compacting context..."
+                }
+            }
+        }
+        val state = commandState ?: decodeCommandState(item, completedFallback = true)
+        if (state == null) {
+            val directText = decodeItemText(item).trim()
+            return directText.ifEmpty { "Completed command" }
+        }
         return "${state.phase.statusLabel} ${state.shortCommand}"
     }
 
@@ -4029,16 +4058,20 @@ class CodeRoverRepository(context: Context) {
     }
 
     private fun canonicalTimelineKind(rawValue: String?): MessageKind {
-        return when (normalizeMethodToken(rawValue.orEmpty())) {
+        val normalized = normalizeMethodToken(rawValue.orEmpty())
+        return when {
+            normalized.isEmpty() -> MessageKind.CHAT
+            isSubagentActionType(normalized) -> MessageKind.SUBAGENT_ACTION
+            else -> when (normalized) {
             "thinking", "reasoning" -> MessageKind.THINKING
             "toolactivity" -> MessageKind.TOOL_ACTIVITY
             "filechange", "diff" -> MessageKind.FILE_CHANGE
             "toolcall" -> MessageKind.TOOL_ACTIVITY
-            "commandexecution", "commanddelta", "command", "shellcommand", "shell" -> MessageKind.COMMAND_EXECUTION
-            "collabagenttoolcall", "collabtoolcall", "subagentaction" -> MessageKind.SUBAGENT_ACTION
+            "commandexecution", "commanddelta", "command", "shellcommand", "shell", "enteredreviewmode", "contextcompaction" -> MessageKind.COMMAND_EXECUTION
             "plan" -> MessageKind.PLAN
             "userinputprompt" -> MessageKind.USER_INPUT_PROMPT
             else -> MessageKind.CHAT
+            }
         }
     }
 
@@ -4063,6 +4096,17 @@ class CodeRoverRepository(context: Context) {
         }
         val diff = extractDiffText(item)
         return diff.isNotBlank()
+    }
+
+    private fun isSubagentActionType(normalizedType: String): Boolean {
+        return normalizedType == "collabagenttoolcall" ||
+            normalizedType == "collabtoolcall" ||
+            normalizedType == "subagentaction" ||
+            normalizedType.startsWith("collabagentspawn") ||
+            normalizedType.startsWith("collabwaiting") ||
+            normalizedType.startsWith("collabclose") ||
+            normalizedType.startsWith("collabresume") ||
+            normalizedType.startsWith("collabagentinteraction")
     }
 
     private fun isCommandExecutionPayload(item: JsonObject): Boolean {

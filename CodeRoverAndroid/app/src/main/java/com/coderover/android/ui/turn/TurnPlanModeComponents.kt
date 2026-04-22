@@ -31,6 +31,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import com.coderover.android.data.model.ChatMessage
 import com.coderover.android.data.model.PlanStepStatus
+import com.coderover.android.data.model.ProposedPlan
 import com.coderover.android.ui.theme.CommandAccent
 import com.coderover.android.ui.theme.PlanAccent
 import com.coderover.android.ui.theme.monoFamily
@@ -92,62 +93,70 @@ internal fun PlanMessageContent(message: ChatMessage) {
             )
         } ?: parsePlanSummary(message.text)
     }
+    val proposedPlan = remember(message.id, message.text) { message.proposedPlan }
     TurnSystemCard(
         title = "Plan",
         showsProgress = message.isStreaming,
     ) {
-        plan.explanation?.let {
-            RichMessageText(
-                text = it,
-                textColor = MaterialTheme.colorScheme.onSurface,
-                textStyle = MaterialTheme.typography.bodyMedium,
-            )
+        val hasInlinePlanResult = message.resolvedPlanPresentation?.isInlineResultVisible == true && proposedPlan != null
+        if (hasInlinePlanResult) {
+            ProposedPlanResultContent(requireNotNull(proposedPlan))
         }
 
-        if (plan.steps.isNotEmpty()) {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                plan.steps.forEach { step ->
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                        verticalAlignment = Alignment.Top,
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .padding(top = 4.dp)
-                                .size(8.dp)
-                                .background(planStatusAccentColor(step.statusLabel), CircleShape),
-                        )
-                        Column(
-                            modifier = Modifier.weight(1f),
-                            verticalArrangement = Arrangement.spacedBy(4.dp),
+        if (!hasInlinePlanResult) {
+            plan.explanation?.let {
+                RichMessageText(
+                    text = it,
+                    textColor = MaterialTheme.colorScheme.onSurface,
+                    textStyle = MaterialTheme.typography.bodyMedium,
+                )
+            }
+
+            if (plan.steps.isNotEmpty()) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    plan.steps.forEach { step ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            verticalAlignment = Alignment.Top,
                         ) {
-                            Text(
-                                text = step.text,
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurface,
+                            Box(
+                                modifier = Modifier
+                                    .padding(top = 4.dp)
+                                    .size(8.dp)
+                                    .background(planStatusAccentColor(step.statusLabel), CircleShape),
                             )
-                            Surface(
-                                shape = RoundedCornerShape(999.dp),
-                                color = planStatusAccentColor(step.statusLabel).copy(alpha = 0.12f),
+                            Column(
+                                modifier = Modifier.weight(1f),
+                                verticalArrangement = Arrangement.spacedBy(4.dp),
                             ) {
                                 Text(
-                                    text = step.statusLabel,
-                                    style = MaterialTheme.typography.labelSmall.copy(fontFamily = monoFamily),
-                                    color = planStatusAccentColor(step.statusLabel),
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                    text = step.text,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurface,
                                 )
+                                Surface(
+                                    shape = RoundedCornerShape(999.dp),
+                                    color = planStatusAccentColor(step.statusLabel).copy(alpha = 0.12f),
+                                ) {
+                                    Text(
+                                        text = step.statusLabel,
+                                        style = MaterialTheme.typography.labelSmall.copy(fontFamily = monoFamily),
+                                        color = planStatusAccentColor(step.statusLabel),
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                    )
+                                }
                             }
                         }
                     }
                 }
+            } else if (message.text.isNotBlank()) {
+                RichMessageText(
+                    text = message.text.trim(),
+                    textColor = MaterialTheme.colorScheme.onSurface,
+                    textStyle = MaterialTheme.typography.bodyMedium,
+                )
             }
-        } else if (message.text.isNotBlank()) {
-            RichMessageText(
-                text = message.text.trim(),
-                textColor = MaterialTheme.colorScheme.onSurface,
-                textStyle = MaterialTheme.typography.bodyMedium,
-            )
         }
     }
 }
@@ -164,6 +173,7 @@ internal fun PlanExecutionAccessory(
         ?: steps.firstOrNull { it.status == PlanStepStatus.PENDING }
         ?: steps.lastOrNull()
     val summaryText = highlightedStep?.step
+        ?: message.proposedPlan?.summary?.trim()?.takeIf(String::isNotEmpty)
         ?: message.planState?.explanation?.trim()?.takeIf(String::isNotEmpty)
         ?: message.text.trim().ifEmpty { "Open plan details" }
     val statusLabel = when {
@@ -246,6 +256,24 @@ internal fun PlanExecutionAccessory(
                 color = MaterialTheme.colorScheme.onSurface,
             )
         }
+    }
+}
+
+@Composable
+internal fun ProposedPlanResultContent(proposedPlan: ProposedPlan) {
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        proposedPlan.summary?.trim()?.takeIf(String::isNotEmpty)?.let { summary ->
+            Text(
+                text = summary,
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+        }
+        RichMessageText(
+            text = proposedPlan.body,
+            textColor = MaterialTheme.colorScheme.onSurface,
+            textStyle = MaterialTheme.typography.bodyMedium,
+        )
     }
 }
 

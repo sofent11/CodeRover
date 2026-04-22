@@ -166,6 +166,58 @@ extension CodeRoverService {
                     timelineStatus: timelineStatus
                 )
 
+            case "enteredreviewmode":
+                let normalizedReviewLabel = decodeHistoryFirstString(
+                    forAnyKey: ["review"],
+                    in: .object(itemObject)
+                ) ?? "changes"
+                return makeHistoryMessage(
+                    role: .system,
+                    kind: .commandExecution,
+                    text: "Reviewing \(normalizedReviewLabel)...",
+                    threadId: threadId,
+                    turnId: turnID,
+                    itemId: itemID,
+                    createdAt: timestamp,
+                    providerItemId: providerItemID,
+                    timelineOrdinal: timelineOrdinal,
+                    timelineStatus: timelineStatus
+                )
+
+            case "exitedreviewmode":
+                guard let reviewText = decodeHistoryFirstString(
+                    forAnyKey: ["review"],
+                    in: .object(itemObject)
+                ) else {
+                    return nil
+                }
+                return makeHistoryMessage(
+                    role: .assistant,
+                    kind: .chat,
+                    text: reviewText,
+                    threadId: threadId,
+                    turnId: turnID,
+                    itemId: itemID,
+                    createdAt: timestamp,
+                    providerItemId: providerItemID,
+                    timelineOrdinal: timelineOrdinal,
+                    timelineStatus: timelineStatus
+                )
+
+            case "contextcompaction":
+                return makeHistoryMessage(
+                    role: .system,
+                    kind: .commandExecution,
+                    text: "Context compacted",
+                    threadId: threadId,
+                    turnId: turnID,
+                    itemId: itemID,
+                    createdAt: timestamp,
+                    providerItemId: providerItemID,
+                    timelineOrdinal: timelineOrdinal,
+                    timelineStatus: timelineStatus
+                )
+
             case "plan":
                 return makeHistoryMessage(
                     role: .system,
@@ -181,7 +233,14 @@ extension CodeRoverService {
                     timelineStatus: timelineStatus
                 )
 
-            case "collabagenttoolcall", "collabtoolcall", "subagentaction":
+            case let collabType where collabType == "collabagenttoolcall"
+                || collabType == "collabtoolcall"
+                || collabType == "subagentaction"
+                || collabType.hasPrefix("collabagentspawn")
+                || collabType.hasPrefix("collabwaiting")
+                || collabType.hasPrefix("collabclose")
+                || collabType.hasPrefix("collabresume")
+                || collabType.hasPrefix("collabagentinteraction"):
                 guard let subagentAction = decodeSubagentActionItem(from: itemObject) else {
                     return nil
                 }

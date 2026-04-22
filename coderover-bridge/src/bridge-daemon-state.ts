@@ -26,6 +26,22 @@ export interface BridgeRuntimeState {
   logFile: string | null;
   errorLogFile: string | null;
   lastError: string | null;
+  observability: BridgeObservabilityState;
+}
+
+export interface BridgeObservabilityState {
+  outboundBufferMessages: number;
+  outboundBufferBytes: number;
+  outboundBufferMinSeq: number | null;
+  outboundBufferMaxSeq: number | null;
+  lastSecureErrorCode: string | null;
+  counters: {
+    handshakeFailures: number;
+    replacedConnections: number;
+    resumeGaps: number;
+    outboundBufferDrops: number;
+    shutdownTimeouts: number;
+  };
 }
 
 const BRIDGE_RUNTIME_STATE_VERSION = 1;
@@ -87,6 +103,7 @@ export function createEmptyBridgeRuntimeState(): BridgeRuntimeState {
     logFile: null,
     errorLogFile: null,
     lastError: null,
+    observability: createEmptyBridgeObservabilityState(),
   };
 }
 
@@ -133,6 +150,48 @@ function normalizeBridgeRuntimeState(rawState: unknown): BridgeRuntimeState {
     logFile: normalizeOptionalString(record.logFile),
     errorLogFile: normalizeOptionalString(record.errorLogFile),
     lastError: normalizeOptionalString(record.lastError),
+    observability: normalizeBridgeObservabilityState(record.observability),
+  };
+}
+
+function createEmptyBridgeObservabilityState(): BridgeObservabilityState {
+  return {
+    outboundBufferMessages: 0,
+    outboundBufferBytes: 0,
+    outboundBufferMinSeq: null,
+    outboundBufferMaxSeq: null,
+    lastSecureErrorCode: null,
+    counters: {
+      handshakeFailures: 0,
+      replacedConnections: 0,
+      resumeGaps: 0,
+      outboundBufferDrops: 0,
+      shutdownTimeouts: 0,
+    },
+  };
+}
+
+function normalizeBridgeObservabilityState(rawState: unknown): BridgeObservabilityState {
+  const record = rawState && typeof rawState === "object"
+    ? rawState as Record<string, unknown>
+    : {};
+  const counters = record.counters && typeof record.counters === "object"
+    ? record.counters as Record<string, unknown>
+    : {};
+
+  return {
+    outboundBufferMessages: normalizeCount(record.outboundBufferMessages),
+    outboundBufferBytes: normalizeCount(record.outboundBufferBytes),
+    outboundBufferMinSeq: normalizeNullableCount(record.outboundBufferMinSeq),
+    outboundBufferMaxSeq: normalizeNullableCount(record.outboundBufferMaxSeq),
+    lastSecureErrorCode: normalizeOptionalString(record.lastSecureErrorCode),
+    counters: {
+      handshakeFailures: normalizeCount(counters.handshakeFailures),
+      replacedConnections: normalizeCount(counters.replacedConnections),
+      resumeGaps: normalizeCount(counters.resumeGaps),
+      outboundBufferDrops: normalizeCount(counters.outboundBufferDrops),
+      shutdownTimeouts: normalizeCount(counters.shutdownTimeouts),
+    },
   };
 }
 
@@ -186,4 +245,12 @@ function normalizePairingPayload(
 
 function normalizeOptionalString(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function normalizeCount(value: unknown): number {
+  return Number.isFinite(value) && Number(value) >= 0 ? Number(value) : 0;
+}
+
+function normalizeNullableCount(value: unknown): number | null {
+  return Number.isFinite(value) && Number(value) >= 0 ? Number(value) : null;
 }

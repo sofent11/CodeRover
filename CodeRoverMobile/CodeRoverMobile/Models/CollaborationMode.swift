@@ -16,6 +16,20 @@ enum CodeRoverPlanStepStatus: String, Codable, Hashable, Sendable {
     case pending
     case inProgress = "in_progress"
     case completed
+
+    init?(wireValue: String) {
+        let normalized = wireValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch normalized {
+        case "pending":
+            self = .pending
+        case "in_progress", "inProgress":
+            self = .inProgress
+        case "completed":
+            self = .completed
+        default:
+            return nil
+        }
+    }
 }
 
 struct CodeRoverPlanStep: Identifiable, Codable, Hashable, Sendable {
@@ -37,6 +51,152 @@ struct CodeRoverPlanState: Codable, Hashable, Sendable {
     init(explanation: String? = nil, steps: [CodeRoverPlanStep] = []) {
         self.explanation = explanation
         self.steps = steps
+    }
+}
+
+struct CodeRoverProposedPlan: Codable, Hashable, Sendable {
+    let body: String
+    let summary: String?
+
+    init(body: String, summary: String? = nil) {
+        self.body = body
+        self.summary = summary
+    }
+}
+
+enum CodeRoverPlanPresentation: String, Codable, Hashable, Sendable {
+    case progress
+    case resultStreaming
+    case resultCompletedItem
+    case resultReady
+    case resultClosed
+
+    var isInlineResultVisible: Bool {
+        self == .resultReady || self == .resultCompletedItem
+    }
+}
+
+enum CodeRoverProposedPlanParser {
+    private static let envelopeExpression = try? NSRegularExpression(
+        pattern: "<proposed_plan>([\\s\\S]*?)</proposed_plan>",
+        options: [.caseInsensitive]
+    )
+
+    private static let numberedStepExpression = try? NSRegularExpression(
+        pattern: "(?m)^\\s*\\d+[\\.)]\\s+.+$"
+    )
+
+    static func parse(from rawText: String) -> CodeRoverProposedPlan? {
+        guard let expression = envelopeExpression else {
+            return nil
+        }
+
+        let range = NSRange(rawText.startIndex..<rawText.endIndex, in: rawText)
+        guard let match = expression.firstMatch(in: rawText, options: [], range: range),
+              let bodyRange = Range(match.range(at: 1), in: rawText) else {
+            return nil
+        }
+
+        let body = rawText[bodyRange].trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !body.isEmpty else {
+            return nil
+        }
+
+        return CodeRoverProposedPlan(body: body, summary: proposedPlanSummary(from: body))
+    }
+
+    static func containsEnvelope(in rawText: String) -> Bool {
+        guard let expression = envelopeExpression else {
+            return false
+        }
+
+        let range = NSRange(rawText.startIndex..<rawText.endIndex, in: rawText)
+        return expression.firstMatch(in: rawText, options: [], range: range) != nil
+    }
+
+    static func removingEnvelope(from rawText: String) -> String? {
+        guard let expression = envelopeExpression else {
+            return normalizedText(rawText)
+        }
+
+        let range = NSRange(rawText.startIndex..<rawText.endIndex, in: rawText)
+        let stripped = expression.stringByReplacingMatches(
+            in: rawText,
+            options: [],
+            range: range,
+            withTemplate: ""
+        )
+        return normalizedText(stripped)
+    }
+
+    static func parseAssistantFallback(from rawText: String) -> CodeRoverProposedPlan? {
+        let body = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !body.isEmpty,
+              !containsEnvelope(in: body),
+              looksLikeFallbackPlan(body) else {
+            return nil
+        }
+
+        return CodeRoverProposedPlan(body: body, summary: proposedPlanSummary(from: body))
+    }
+
+    static func parsePlanItem(from rawText: String) -> CodeRoverProposedPlan? {
+        let body = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !body.isEmpty else {
+            return nil
+        }
+
+        return CodeRoverProposedPlan(body: body, summary: proposedPlanSummary(from: body))
+    }
+
+    private static func proposedPlanSummary(from body: String) -> String? {
+        let lines = body
+            .components(separatedBy: .newlines)
+            .map { line in
+                line.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            .filter { !$0.isEmpty }
+
+        for line in lines {
+            let normalized = line
+                .replacingOccurrences(of: #"^[-*•\d\.\)\s#]+"#, with: "", options: .regularExpression)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !normalized.isEmpty {
+                return normalized
+            }
+        }
+
+        return nil
+    }
+
+    private static func normalizedText(_ rawText: String) -> String? {
+        let trimmed = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private static func looksLikeFallbackPlan(_ body: String) -> Bool {
+        guard let expression = numberedStepExpression else {
+            return false
+        }
+
+        let range = NSRange(body.startIndex..<body.endIndex, in: body)
+        let matches = expression.matches(in: body, options: [], range: range)
+        guard matches.count >= 2 else {
+            return false
+        }
+
+        let firstLine = body
+            .components(separatedBy: .newlines)
+            .first?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            ?? ""
+        let normalizedFirstLine = firstLine.lowercased()
+
+        return normalizedFirstLine.contains("plan")
+            || normalizedFirstLine.contains("roadmap")
+            || normalizedFirstLine.contains("proposal")
+            || normalizedFirstLine.contains("approach")
+            || normalizedFirstLine.contains("implementation")
     }
 }
 

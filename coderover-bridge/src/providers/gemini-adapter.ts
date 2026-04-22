@@ -21,6 +21,17 @@ import type {
   ManagedProviderStartTurnOptions,
   ManagedProviderTurnContext,
 } from "../runtime-manager/types";
+import {
+  normalizeMetadataTimestamp,
+  shouldRefreshHistoryByAge,
+} from "./shared/history-refresh";
+import { buildPathPromptFromInputItems } from "./shared/prompt-input";
+import {
+  asProviderRecord,
+  normalizeOptionalString,
+  readFirstString,
+  toIsoDateString,
+} from "./shared/provider-utils";
 
 type ProviderRole = "user" | "assistant";
 
@@ -251,34 +262,11 @@ function shouldRefreshGeminiHistory(
   threadMeta: RuntimeThreadMeta,
   existingHistory: { turns?: unknown[] } | null
 ): boolean {
-  if (!existingHistory?.turns?.length) {
-    return true;
-  }
-
   const historySyncedAt = normalizeMetadataTimestamp(
     threadMeta.metadata,
     "geminiHistorySyncedAt"
   );
-
-  if (!historySyncedAt) {
-    return true;
-  }
-
-  // Gemini history files are updated frequently; refresh if it's been more than 5 seconds
-  // or if we're explicitly asked to hydrate.
-  return Date.now() - Date.parse(historySyncedAt) > 5000;
-}
-
-function normalizeMetadataTimestamp(
-  metadata: Record<string, unknown> | null | undefined,
-  key: string
-): string | null {
-  if (!metadata || typeof metadata[key] !== "string") {
-    return null;
-  }
-
-  const trimmed = String(metadata[key]).trim();
-  return trimmed || null;
+  return shouldRefreshHistoryByAge(existingHistory?.turns, historySyncedAt, 5000);
 }
 
 function discoverGeminiChatFiles(): GeminiDiscoveredThread[] {
@@ -512,65 +500,10 @@ function joinGeminiThoughts(thoughts: unknown): string | null {
 }
 
 async function buildGeminiPrompt(inputItems: RuntimeInputItem[], cwd: string | null): Promise<string> {
-  const textParts: string[] = [];
-  const imagePaths: string[] = [];
-
-  for (const item of inputItems) {
-    if (item.type === "text" && typeof item.text === "string" && item.text) {
-      textParts.push(item.text);
-      continue;
-    }
-
-    if (item.type === "skill" && typeof item.id === "string" && item.id) {
-      textParts.push(`$${item.id}`);
-      continue;
-    }
-
-    if (
-      (item.type === "image" || item.type === "local_image")
-      && (typeof item.url === "string" || typeof item.image_url === "string" || typeof item.path === "string")
-    ) {
-      const source = readFirstString([item.path, item.url, item.image_url]);
-      const imagePath = source ? await materializeImage(source, cwd) : null;
-      if (imagePath) {
-        imagePaths.push(imagePath);
-      }
-    }
-  }
-
-  let prompt = textParts.join("\n").trim();
-  if (imagePaths.length > 0) {
-    prompt = `${prompt}\n\n[Images provided at paths]\n${imagePaths.join("\n")}`.trim();
-  }
-  return prompt;
-}
-
-async function materializeImage(source: string, cwd: string | null): Promise<string | null> {
-  const normalized = normalizeOptionalString(source);
-  if (!normalized) {
-    return null;
-  }
-
-  if (path.isAbsolute(normalized) && fs.existsSync(normalized)) {
-    return normalized;
-  }
-
-  const match = normalized.match(/^data:([^;]+);base64,(.+)$/);
-  if (!match) {
-    return normalized;
-  }
-
-  const mimeType = match[1];
-  const base64 = match[2];
-  if (!mimeType || !base64) {
-    return normalized;
-  }
-  const extension = mimeType.split("/")[1] || "png";
-  const tempDir = path.join(cwd || os.tmpdir(), ".coderover", "gemini-images");
-  fs.mkdirSync(tempDir, { recursive: true });
-  const filePath = path.join(tempDir, `${Date.now()}-${randomUUID()}.${extension}`);
-  fs.writeFileSync(filePath, Buffer.from(base64, "base64"));
-  return filePath;
+  return buildPathPromptFromInputItems(inputItems, {
+    cwd,
+    imageTempDirName: "gemini-images",
+  });
 }
 
 function handleGeminiLine(
@@ -673,30 +606,6 @@ function resolveFullAccess(params: GeminiStartTurnParams): boolean {
     || sandboxType === "dangerFullAccess";
 }
 
-function toIsoDateString(value: unknown): string {
-  if (!value) {
-    return new Date().toISOString();
-  }
-
-  if (typeof value === "string") {
-    const parsed = Date.parse(value);
-    if (!Number.isNaN(parsed)) {
-      return new Date(parsed).toISOString();
-    }
-  }
-
-  if (typeof value === "number") {
-    const milliseconds = value > 10_000_000_000 ? value : value * 1000;
-    return new Date(milliseconds).toISOString();
-  }
-
-  if (value instanceof Date) {
-    return value.toISOString();
-  }
-
-  return new Date().toISOString();
-}
-
 function safeReaddir(directory: string): string[] {
   try {
     return fs.readdirSync(directory);
@@ -713,30 +622,10 @@ function safeStat(filePath: string): fs.Stats | null {
   }
 }
 
-function normalizeOptionalString(value: unknown): string | null {
-  if (typeof value !== "string") {
-    return null;
-  }
-  const trimmed = value.trim();
-  return trimmed || null;
-}
-
 function numberOrNull(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
-function readFirstString(values: unknown[]): string | null {
-  for (const value of values) {
-    const normalized = normalizeOptionalString(value);
-    if (normalized) {
-      return normalized;
-    }
-  }
-  return null;
-}
-
 function asRecord(value: unknown): JsonRecord | null {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as JsonRecord)
-    : null;
+  return asProviderRecord<JsonRecord>(value);
 }

@@ -15,7 +15,7 @@ interface CodexTransport {
   onMessage(handler: MessageHandler): void;
   onClose(handler: CloseHandler): void;
   onError(handler: ErrorHandler): void;
-  shutdown(): void;
+  shutdown(): Promise<void>;
 }
 
 interface CodexLaunchPlan {
@@ -56,6 +56,7 @@ function createSpawnTransport({ env }: { env: NodeJS.ProcessEnv }): CodexTranspo
   let stderrBuffer = "";
   let didRequestShutdown = false;
   let didReportError = false;
+  let shutdownPromise: Promise<void> | null = null;
   const listeners = createListenerBag();
 
   codex.on("error", (error) => {
@@ -116,8 +117,27 @@ function createSpawnTransport({ env }: { env: NodeJS.ProcessEnv }): CodexTranspo
       listeners.onError = handler;
     },
     shutdown() {
+      if (shutdownPromise) {
+        return shutdownPromise;
+      }
       didRequestShutdown = true;
-      shutdownCodexProcess(codex);
+      if (codex.killed || codex.exitCode !== null) {
+        shutdownPromise = Promise.resolve();
+        return shutdownPromise;
+      }
+      shutdownPromise = new Promise((resolve) => {
+        const finish = () => resolve();
+        codex.once("close", finish);
+        codex.once("error", finish);
+        shutdownCodexProcess(codex);
+        const timer = setTimeout(() => {
+          finish();
+        }, 1_500);
+        timer.unref?.();
+        codex.once("close", () => clearTimeout(timer));
+        codex.once("error", () => clearTimeout(timer));
+      });
+      return shutdownPromise;
     },
   };
 }
@@ -191,6 +211,7 @@ function appendOutputBuffer(buffer: string, chunk: string): string {
 function createWebSocketTransport({ endpoint }: { endpoint: string }): CodexTransport {
   const socket = new WebSocket(endpoint);
   const listeners = createListenerBag();
+  let shutdownPromise: Promise<void> | null = null;
 
   socket.on("message", (chunk) => {
     const message = typeof chunk === "string" ? chunk : chunk.toString("utf8");
@@ -228,9 +249,30 @@ function createWebSocketTransport({ endpoint }: { endpoint: string }): CodexTran
       listeners.onError = handler;
     },
     shutdown() {
-      if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
-        socket.close();
+      if (shutdownPromise) {
+        return shutdownPromise;
       }
+      if (socket.readyState === WebSocket.CLOSED) {
+        shutdownPromise = Promise.resolve();
+        return shutdownPromise;
+      }
+      shutdownPromise = new Promise((resolve) => {
+        const finish = () => resolve();
+        socket.once("close", finish);
+        socket.once("error", finish);
+        if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
+          socket.close();
+        } else {
+          finish();
+        }
+        const timer = setTimeout(() => {
+          finish();
+        }, 1_500);
+        timer.unref?.();
+        socket.once("close", () => clearTimeout(timer));
+        socket.once("error", () => clearTimeout(timer));
+      });
+      return shutdownPromise;
     },
   };
 }

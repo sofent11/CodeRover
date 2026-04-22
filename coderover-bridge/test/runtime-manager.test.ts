@@ -1401,6 +1401,148 @@ test("codex/event legacy notifications are normalized into canonical timeline ca
   }
 });
 
+test("entered review mode items are forwarded as canonical command-execution rows", async () => {
+  const fixture = createManagerFixtureWithOptions({
+    useDefaultCodexAdapter: true,
+  });
+
+  try {
+    const thread = buildCodexThread({ messageCount: 0 });
+    fixture.manager.attachCodexTransport({ send() {} });
+    fixture.manager.handleCodexTransportMessage(JSON.stringify({
+      jsonrpc: "2.0",
+      method: "thread/started",
+      params: { thread },
+    }));
+    fixture.manager.handleCodexTransportMessage(JSON.stringify({
+      jsonrpc: "2.0",
+      method: "turn/started",
+      params: {
+        threadId: thread.id,
+        turnId: "turn-review-enter",
+      },
+    }));
+
+    fixture.manager.handleCodexTransportMessage(JSON.stringify({
+      jsonrpc: "2.0",
+      method: "item/completed",
+      params: {
+        threadId: thread.id,
+        turnId: "turn-review-enter",
+        item: {
+          id: "review-enter-item",
+          type: "entered_review_mode",
+          review: "current changes",
+        },
+      },
+    }));
+
+    const forwarded = fixture.messages.at(-1);
+    assert.ok(forwarded);
+    assert.equal(forwarded.method, "timeline/itemCompleted");
+    assert.equal(forwarded.params.kind, "commandExecution");
+    assert.equal(forwarded.params.role, "system");
+    assert.equal(forwarded.params.text, "Reviewing current changes...");
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("exited review mode items are forwarded as canonical assistant rows", async () => {
+  const fixture = createManagerFixtureWithOptions({
+    useDefaultCodexAdapter: true,
+  });
+
+  try {
+    const thread = buildCodexThread({ messageCount: 0 });
+    fixture.manager.attachCodexTransport({ send() {} });
+    fixture.manager.handleCodexTransportMessage(JSON.stringify({
+      jsonrpc: "2.0",
+      method: "thread/started",
+      params: { thread },
+    }));
+    fixture.manager.handleCodexTransportMessage(JSON.stringify({
+      jsonrpc: "2.0",
+      method: "turn/started",
+      params: {
+        threadId: thread.id,
+        turnId: "turn-review-exit",
+      },
+    }));
+
+    fixture.manager.handleCodexTransportMessage(JSON.stringify({
+      jsonrpc: "2.0",
+      method: "item/completed",
+      params: {
+        threadId: thread.id,
+        turnId: "turn-review-exit",
+        item: {
+          id: "review-exit-item",
+          type: "exited_review_mode",
+          review: "P1: tighten the nil checks before merging.",
+        },
+      },
+    }));
+
+    const forwarded = fixture.messages.at(-1);
+    assert.ok(forwarded);
+    assert.equal(forwarded.method, "timeline/itemCompleted");
+    assert.equal(forwarded.params.kind, "chat");
+    assert.equal(forwarded.params.role, "assistant");
+    assert.equal(forwarded.params.text, "P1: tighten the nil checks before merging.");
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("legacy collab spawn item aliases are forwarded as canonical subagent rows", async () => {
+  const fixture = createManagerFixtureWithOptions({
+    useDefaultCodexAdapter: true,
+  });
+
+  try {
+    const thread = buildCodexThread({ messageCount: 0 });
+    fixture.manager.attachCodexTransport({ send() {} });
+    fixture.manager.handleCodexTransportMessage(JSON.stringify({
+      jsonrpc: "2.0",
+      method: "thread/started",
+      params: { thread },
+    }));
+    fixture.manager.handleCodexTransportMessage(JSON.stringify({
+      jsonrpc: "2.0",
+      method: "turn/started",
+      params: {
+        threadId: thread.id,
+        turnId: "turn-collab-alias",
+      },
+    }));
+
+    fixture.manager.handleCodexTransportMessage(JSON.stringify({
+      jsonrpc: "2.0",
+      method: "item/completed",
+      params: {
+        threadId: thread.id,
+        turnId: "turn-collab-alias",
+        item: {
+          id: "collab-item",
+          type: "collab_agent_spawn_worker",
+          tool: "spawnAgent",
+          status: "completed",
+          receiver_thread_ids: ["child-thread-1"],
+        },
+      },
+    }));
+
+    const forwarded = fixture.messages.at(-1);
+    assert.ok(forwarded);
+    assert.equal(forwarded.method, "timeline/itemCompleted");
+    assert.equal(forwarded.params.kind, "subagentAction");
+    assert.deepEqual(forwarded.params.receiverThreadIds, ["child-thread-1"]);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
 test("Codex delta notifications without threadId still advance cache windows via turn context", async () => {
   const fixture = createManagerFixtureWithOptions({
     useDefaultCodexAdapter: true,

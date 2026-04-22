@@ -943,6 +943,12 @@ struct MessageRow: View, Equatable {
             text: text
         )
         let bodyText = commentContent.fallbackText
+        let proposedPlan = commentContent.hasFindings
+            ? nil
+            : (message.proposedPlan ?? CodeRoverProposedPlanParser.parse(from: bodyText))
+        let renderedAssistantText = proposedPlan == nil
+            ? bodyText
+            : (CodeRoverProposedPlanParser.removingEnvelope(from: bodyText) ?? "")
 
         return VStack(alignment: .leading, spacing: 8) {
             if commentContent.hasFindings {
@@ -953,10 +959,10 @@ struct MessageRow: View, Equatable {
                 }
             }
 
-            if !bodyText.isEmpty {
+            if !renderedAssistantText.isEmpty {
                 let segments = MessageRowMarkdownSegmentCache.segments(
                     messageID: message.id,
-                    text: bodyText
+                    text: renderedAssistantText
                 )
                 ForEach(Array(segments.enumerated()), id: \.offset) { _, segment in
                     switch segment {
@@ -969,8 +975,14 @@ struct MessageRow: View, Equatable {
                         .id(markdownSegmentIdentity(segment))
                     case .codeBlock(let language, let code):
                         CodeBlockView(language: language, code: code, profile: .assistantProse)
-                            .id(markdownSegmentIdentity(segment))
+                        .id(markdownSegmentIdentity(segment))
                     }
+                }
+            }
+
+            if let proposedPlan {
+                PlanModeCardContainer(title: "Plan Result", showsProgress: message.isStreaming) {
+                    ProposedPlanResultContent(proposedPlan: proposedPlan)
                 }
             }
 

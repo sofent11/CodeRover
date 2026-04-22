@@ -590,6 +590,138 @@ test("qr bootstrap starts a fresh replay window instead of leaking buffered mess
   assert.equal(wireMessages.length, 1);
 });
 
+test("replacement handshake rejects resumed traffic from the old transport", () => {
+  const macIdentity = createOkpKeyPair("ed25519");
+  const phoneIdentity = createOkpKeyPair("ed25519");
+  const firstEphemeral = createOkpKeyPair("x25519");
+  const secondEphemeral = createOkpKeyPair("x25519");
+  const secureTransport = createBridgeSecureTransport({
+    sessionId: "session-replace",
+    deviceState: createBridgeDeviceState({
+      bridgeId: "bridge-replace",
+      macDeviceId: "mac-replace",
+      macIdentityPrivateKey: macIdentity.privateKey,
+      macIdentityPublicKey: macIdentity.publicKey,
+    }),
+  });
+
+  const firstHandshake = finishHandshake({
+    secureTransport,
+    transportId: "transport-old",
+    sessionId: "session-replace",
+    macDeviceId: "mac-replace",
+    phoneDeviceId: "phone-replace",
+    macIdentity,
+    phoneIdentity,
+    phoneEphemeral: firstEphemeral,
+    handshakeMode: HANDSHAKE_MODE_QR_BOOTSTRAP,
+    lastAppliedBridgeOutboundSeq: 0,
+  });
+
+  finishHandshake({
+    secureTransport,
+    transportId: "transport-new",
+    sessionId: "session-replace",
+    macDeviceId: "mac-replace",
+    phoneDeviceId: "phone-replace",
+    macIdentity,
+    phoneIdentity,
+    phoneEphemeral: secondEphemeral,
+    handshakeMode: HANDSHAKE_MODE_QR_BOOTSTRAP,
+    lastAppliedBridgeOutboundSeq: 0,
+  });
+
+  const firstKeys = deriveSessionKeys({
+    sessionId: "session-replace",
+    macDeviceId: "mac-replace",
+    phoneDeviceId: "phone-replace",
+    phoneEphemeral: firstEphemeral,
+    serverHello: firstHandshake.serverHello,
+    transcriptBytes: firstHandshake.transcriptBytes,
+  });
+
+  const controlMessages: ControlMessage[] = [];
+  secureTransport.handleIncomingWireMessage(
+    JSON.stringify(encryptEnvelope(
+      {
+        payloadText: JSON.stringify({ id: "stale-request", method: "thread/list", params: {} }),
+      },
+      firstKeys.phoneToMacKey,
+      "iphone",
+      0,
+      "session-replace",
+      firstHandshake.serverHello.keyEpoch
+    )),
+    {
+      transportId: "transport-old",
+      sendControlMessage(message) {
+        controlMessages.push(message);
+      },
+      onApplicationMessage() {
+        throw new Error("replaced transport should not forward application traffic");
+      },
+    }
+  );
+
+  assert.equal(controlMessages[0]?.kind, "secureError");
+  assert.equal(controlMessages[0]?.code, "secure_channel_unavailable");
+  assert.equal(secureTransport.getDiagnostics().replacedConnectionCount, 1);
+});
+
+test("resume gap returns an explicit secure error instead of silently skipping messages", () => {
+  const macIdentity = createOkpKeyPair("ed25519");
+  const phoneIdentity = createOkpKeyPair("ed25519");
+  const firstEphemeral = createOkpKeyPair("x25519");
+  const reconnectEphemeral = createOkpKeyPair("x25519");
+  const secureTransport = createBridgeSecureTransport({
+    sessionId: "session-gap",
+    deviceState: createBridgeDeviceState({
+      bridgeId: "bridge-gap",
+      macDeviceId: "mac-gap",
+      macIdentityPrivateKey: macIdentity.privateKey,
+      macIdentityPublicKey: macIdentity.publicKey,
+    }),
+  });
+
+  finishHandshake({
+    secureTransport,
+    transportId: "transport-gap-1",
+    sessionId: "session-gap",
+    macDeviceId: "mac-gap",
+    phoneDeviceId: "phone-gap",
+    macIdentity,
+    phoneIdentity,
+    phoneEphemeral: firstEphemeral,
+    handshakeMode: HANDSHAKE_MODE_QR_BOOTSTRAP,
+    lastAppliedBridgeOutboundSeq: 0,
+  });
+
+  for (let index = 0; index < 520; index += 1) {
+    secureTransport.queueOutboundApplicationMessage(
+      JSON.stringify({ id: `response-${index}`, result: { index } })
+    );
+  }
+
+  const reconnect = finishHandshake({
+    secureTransport,
+    transportId: "transport-gap-2",
+    sessionId: "session-gap",
+    macDeviceId: "mac-gap",
+    phoneDeviceId: "phone-gap",
+    macIdentity,
+    phoneIdentity,
+    phoneEphemeral: reconnectEphemeral,
+    handshakeMode: HANDSHAKE_MODE_TRUSTED_RECONNECT,
+    lastAppliedBridgeOutboundSeq: 0,
+  });
+
+  const resumeError = reconnect.controlMessages.find((message) => message.kind === "secureError");
+  assert.equal(resumeError?.kind, "secureError");
+  assert.equal(resumeError?.code, "resume_gap");
+  assert.equal(secureTransport.getDiagnostics().resumeGapCount, 1);
+  assert.ok(secureTransport.getDiagnostics().outboundBufferDropCount > 0);
+});
+
 function finishHandshake({
   secureTransport,
   transportId = "transport-unknown",
