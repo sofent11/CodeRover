@@ -306,7 +306,7 @@ struct TurnTimelineView<EmptyState: View, Composer: View>: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     VStack(spacing: 0) {
-                        LazyVStack(spacing: 20) {
+                        VStack(spacing: 20) {
                             if hasOlderHistory || isLoadingOlderHistory {
                                 VStack(spacing: 8) {
                                     if isLoadingOlderHistory {
@@ -380,7 +380,8 @@ struct TurnTimelineView<EmptyState: View, Composer: View>: View {
                         .padding(.horizontal, 16)
                         .padding(.top, 12)
 
-                        // Keep bottom anchor outside LazyVStack so it is always laid out.
+                        // Keep the bottom anchor outside the eager-rendered visible message window
+                        // so scroll recovery always has a laid-out target.
                         Color.clear
                             .frame(height: 1)
                             .id(scrollBottomAnchorID)
