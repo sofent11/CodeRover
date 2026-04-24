@@ -1193,7 +1193,6 @@ export function createRuntimeManager({
     }
 
     if (eventType === "task_complete" && turnId) {
-      rolloutState.activeTurnId = turnId;
       const notifications: UnknownRecord[] = [];
       const reasoningItemId = rolloutState.reasoningItemIdByTurn.get(turnId);
       if (reasoningItemId && rolloutState.openReasoningTurnIDs.has(turnId)) {
@@ -1218,6 +1217,9 @@ export function createRuntimeManager({
         status: "completed",
         createdAt: timestamp,
       }));
+      if (rolloutState.activeTurnId === turnId) {
+        rolloutState.activeTurnId = null;
+      }
       return notifications;
     }
 

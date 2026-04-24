@@ -2553,6 +2553,26 @@ test("observed non-managed Codex threads project rollout history and realtime up
       codexObservedThreadIdleTtlMs: 2_000,
     },
   });
+  const readSessionRecord = async () => {
+    const indexPath = path.join(fixture.baseDir, "thread-session-index.json");
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      if (fs.existsSync(indexPath)) {
+        const indexPayload = JSON.parse(fs.readFileSync(indexPath, "utf8")) as {
+          sessions: Record<string, {
+            activeTurnId: string | null;
+            ownerState: string;
+            sourceKind: string;
+          }>;
+        };
+        const record = indexPayload.sessions[threadId];
+        if (record) {
+          return record;
+        }
+      }
+      await sleep(10);
+    }
+    throw new Error("expected rollout session record to be persisted");
+  };
 
   try {
     const initialMessages = await request(fixture, "rollout-tail-read", "thread/read", {
@@ -2572,6 +2592,10 @@ test("observed non-managed Codex threads project rollout history and realtime up
     );
     assert.equal(readParams.filter((params) => Boolean(params.history)).length, 0);
     assert.equal(readParams.filter((params) => params.includeTurns === false).length, 0);
+    let sessionRecord = await readSessionRecord();
+    assert.equal(sessionRecord.ownerState, "idle");
+    assert.equal(sessionRecord.sourceKind, "rollout_observer");
+    assert.equal(sessionRecord.activeTurnId, null);
 
     const rereadMessages = await request(fixture, "rollout-tail-reread", "thread/read", {
       threadId,
@@ -2589,6 +2613,8 @@ test("observed non-managed Codex threads project rollout history and realtime up
       rereadResponse.result.historyWindow.newestAnchor.createdAt,
       "2026-04-21T10:00:06.000Z"
     );
+    sessionRecord = await readSessionRecord();
+    assert.equal(sessionRecord.activeTurnId, null);
 
     const resumeMessages = await request(fixture, "rollout-resume", "thread/resume", {
       threadId,
@@ -2651,6 +2677,9 @@ test("observed non-managed Codex threads project rollout history and realtime up
       )
     );
     assert.equal(readParams.filter((params) => Boolean(params.history)).length, 0);
+    sessionRecord = await readSessionRecord();
+    assert.equal(sessionRecord.ownerState, "idle");
+    assert.equal(sessionRecord.activeTurnId, null);
   } finally {
     fixture.cleanup();
     fs.rmSync(codexHome, { recursive: true, force: true });

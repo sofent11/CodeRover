@@ -1179,7 +1179,23 @@ extension CodeRoverService {
             if let turnId = latestTerminal.turnId {
                 terminalStateByTurnID[turnId] = latestTerminal.state
             }
+            if shouldClearActiveTurnFromThreadReadTerminal(threadId: threadId, terminalTurnId: latestTerminal.turnId) {
+                markTurnCompleted(threadId: threadId, turnId: latestTerminal.turnId)
+            }
         }
+    }
+
+    func shouldClearActiveTurnFromThreadReadTerminal(threadId: String, terminalTurnId: String?) -> Bool {
+        let normalizedTerminalTurnId = normalizedInterruptIdentifier(terminalTurnId)
+        if let activeTurnId = activeTurnIdByThread[threadId] {
+            guard let normalizedTerminalTurnId else {
+                return false
+            }
+            return normalizedInterruptIdentifier(activeTurnId) == normalizedTerminalTurnId
+        }
+
+        return runningThreadIDs.contains(threadId)
+            || protectedRunningFallbackThreadIDs.contains(threadId)
     }
 
     // Extracts context window usage from thread/read response if the runtime includes it.

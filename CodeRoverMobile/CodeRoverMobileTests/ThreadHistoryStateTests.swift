@@ -1444,6 +1444,120 @@ final class ThreadHistoryStateTests: XCTestCase {
         XCTAssertFalse(reconciled.contains(where: { $0.id == "item-3" }))
     }
 
+    func testThreadReadCompletedTurnClearsRunningStateBeforeTailMerge() {
+        let service = makeService()
+        let threadID = "thread-tail-terminal-read"
+        let turnID = "turn-tail-terminal-read"
+        service.activeThreadId = threadID
+        service.runningThreadIDs.insert(threadID)
+        service.activeTurnIdByThread[threadID] = turnID
+
+        _ = service.synchronizeThreadTimelineState(
+            threadId: threadID,
+            canonicalMessages: [
+                ChatMessage(
+                    id: "item-1",
+                    threadId: threadID,
+                    role: .assistant,
+                    text: "old visible message",
+                    createdAt: Date(timeIntervalSince1970: 1),
+                    turnId: turnID,
+                    itemId: "item-1",
+                    timelineOrdinal: 1,
+                    orderIndex: 1
+                ),
+                ChatMessage(
+                    id: "item-ghost",
+                    threadId: threadID,
+                    role: .assistant,
+                    text: "stale streaming tail",
+                    createdAt: Date(timeIntervalSince1970: 3),
+                    turnId: turnID,
+                    itemId: "item-ghost",
+                    isStreaming: true,
+                    timelineOrdinal: 3,
+                    orderIndex: 3
+                ),
+            ]
+        )
+
+        service.applyTerminalStatesFromThreadRead(
+            threadId: threadID,
+            threadObject: [
+                "turns": .array([
+                    .object([
+                        "id": .string(turnID),
+                        "status": .string("completed"),
+                        "items": .array([]),
+                    ]),
+                ]),
+            ]
+        )
+
+        XCTAssertNil(service.activeTurnIdByThread[threadID])
+        XCTAssertFalse(service.runningThreadIDs.contains(threadID))
+
+        let merged = service.mergeCanonicalHistoryIntoTimelineState(
+            threadId: threadID,
+            historyMessages: [
+                ChatMessage(
+                    id: "item-1",
+                    threadId: threadID,
+                    role: .assistant,
+                    text: "old visible message",
+                    createdAt: Date(timeIntervalSince1970: 1),
+                    turnId: turnID,
+                    itemId: "item-1",
+                    timelineOrdinal: 1,
+                    timelineStatus: "completed",
+                    orderIndex: 1
+                ),
+                ChatMessage(
+                    id: "item-2",
+                    threadId: threadID,
+                    role: .assistant,
+                    text: "final tail message",
+                    createdAt: Date(timeIntervalSince1970: 2),
+                    turnId: turnID,
+                    itemId: "item-2",
+                    timelineOrdinal: 2,
+                    timelineStatus: "completed",
+                    orderIndex: 2
+                ),
+            ],
+            mode: .tail,
+            activeThreadIDs: Set(service.activeTurnIdByThread.keys),
+            runningThreadIDs: service.runningThreadIDs
+        )
+
+        XCTAssertEqual(merged.map(\.id), ["item-1", "item-2"])
+        XCTAssertEqual(merged.last?.text, "final tail message")
+    }
+
+    func testThreadReadCompletedOldTurnDoesNotClearNewerActiveTurn() {
+        let service = makeService()
+        let threadID = "thread-terminal-old-turn"
+        service.runningThreadIDs.insert(threadID)
+        service.activeTurnIdByThread[threadID] = "turn-new"
+
+        service.applyTerminalStatesFromThreadRead(
+            threadId: threadID,
+            threadObject: [
+                "turns": .array([
+                    .object([
+                        "id": .string("turn-old"),
+                        "status": .string("completed"),
+                        "items": .array([]),
+                    ]),
+                ]),
+            ]
+        )
+
+        XCTAssertEqual(service.activeTurnIdByThread[threadID], "turn-new")
+        XCTAssertTrue(service.runningThreadIDs.contains(threadID))
+        XCTAssertNotNil(service.terminalStateByTurnID["turn-old"])
+    }
+
     func testTailHistoryMergeAssignsSyntheticOrdinalToPreservedCanonicalItemsWithoutServerOrdinal() {
         let service = makeService()
         let threadID = "thread-tail-synthetic-ordinal"

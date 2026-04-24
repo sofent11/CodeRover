@@ -431,11 +431,13 @@ extension CodeRoverService {
         let overlayMessages = (messagesByThread[threadId] ?? []).filter { !Self.isCanonicalTimelineMessage($0) }
         let existingCanonicalMessages = threadTimelineStateByThread[threadId]?.renderedMessages()
             ?? (messagesByThread[threadId] ?? []).filter { Self.isCanonicalTimelineMessage($0) }
+        let shouldPreserveVisibleTailItems = activeThreadId == threadId
+            && latestTurnTerminalStateByThread[threadId] == nil
         let shouldPreserveLocallyNewerTailItems = mode == .tail
             && (
                 activeThreadIDs.contains(threadId)
                     || runningThreadIDs.contains(threadId)
-                    || activeThreadId == threadId
+                    || shouldPreserveVisibleTailItems
             )
         let seededCanonicalMessages = Self.seedCanonicalMessagesForHistoryMerge(
             existingCanonicalMessages,
