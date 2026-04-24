@@ -266,9 +266,9 @@ extension CodeRoverService {
         guard !Task.isCancelled else { return }
 
         let shouldForceRemoteHistoryCatchUp = shouldForceRemoteHistoryCatchUpOnDisplay(threadId: threadId)
-        let shouldForceLiveSnapshot = activeThreadId == threadId
+        let isVisibleCodexThread = activeThreadId == threadId
             && runtimeProviderID(for: threads.first(where: { $0.id == threadId })?.provider) == "codex"
-        if shouldForceLiveSnapshot || threadHasActiveOrRunningTurn(threadId) {
+        if isVisibleCodexThread || threadHasActiveOrRunningTurn(threadId) {
             // When reopening a running thread, force a fresh resume snapshot so the
             // timeline catches up with output produced while the thread was off-screen.
             // Codex can keep newer live output in thread/resume before thread/read catches up.
@@ -277,7 +277,23 @@ extension CodeRoverService {
             updateCurrentOutput(for: threadId)
         }
 
-        if shouldForceRemoteHistoryCatchUp {
+        if isVisibleCodexThread {
+            do {
+                try await loadTailThreadHistory(
+                    threadId: threadId,
+                    replaceLocalHistory: false,
+                    refreshGeneration: currentPerThreadRefreshGeneration(for: threadId)
+                )
+                hydratedThreadIDs.insert(threadId)
+                markRemoteHistoryChangeHandled(threadId: threadId)
+            } catch {
+                if shouldTreatAsThreadNotFound(error) {
+                    handleMissingThread(threadId)
+                    return
+                }
+            }
+            guard !Task.isCancelled else { return }
+        } else if shouldForceRemoteHistoryCatchUp {
             do {
                 _ = try await loadThreadHistoryIfNeeded(threadId: threadId, forceRefresh: true)
             } catch {

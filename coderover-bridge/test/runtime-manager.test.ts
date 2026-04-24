@@ -2532,6 +2532,18 @@ test("observed non-managed Codex threads project rollout history and realtime up
       }
       throw new Error("unexpected upstream history read");
     },
+    async resumeThread() {
+      return {
+        thread: {
+          id: threadId,
+          title: "Rollout Thread",
+          preview: "Rollout projection is live.",
+          cwd: "/tmp/codex-rollout-project",
+          createdAt: "2026-04-21T10:00:00.000Z",
+          updatedAt: "2026-04-21T10:00:07.000Z",
+        },
+      };
+    },
   });
 
   const fixture = createManagerFixtureWithOptions({
@@ -2560,6 +2572,30 @@ test("observed non-managed Codex threads project rollout history and realtime up
     );
     assert.equal(readParams.filter((params) => Boolean(params.history)).length, 0);
     assert.equal(readParams.filter((params) => params.includeTurns === false).length, 0);
+
+    const rereadMessages = await request(fixture, "rollout-tail-reread", "thread/read", {
+      threadId,
+      history: {
+        mode: "tail",
+        limit: 50,
+      },
+    });
+    const rereadResponse = responseById(rereadMessages, "rollout-tail-reread");
+    assert.equal(
+      rereadResponse.result.historyWindow.newerCursor,
+      initialResponse.result.historyWindow.newerCursor
+    );
+    assert.equal(
+      rereadResponse.result.historyWindow.newestAnchor.createdAt,
+      "2026-04-21T10:00:06.000Z"
+    );
+
+    const resumeMessages = await request(fixture, "rollout-resume", "thread/resume", {
+      threadId,
+    });
+    const resumeResponse = responseById(resumeMessages, "rollout-resume");
+    assert.equal(resumeResponse.result.sourceKind, "rollout_observer");
+    assert.equal(resumeResponse.result.syncEpoch, initialResponse.result.historyWindow.syncEpoch);
 
     const messageCountBeforeGrowth = fixture.messages.length;
     fs.appendFileSync(rolloutPath, [

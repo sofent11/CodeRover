@@ -47,6 +47,7 @@ import {
 import type {
   ProviderRuntimeEngine,
   RuntimeEvent,
+  RuntimeSessionHandle,
   RuntimeSessionSourceKind,
 } from "../runtime-engine/types";
 import * as historyHelpers from "./codex-history";
@@ -174,6 +175,7 @@ interface UpsertHistoryCacheTextItemOptions {
   type: string;
   role?: string | null;
   delta: unknown;
+  createdAt?: unknown;
   metadata?: UnknownRecord | null;
   changes?: unknown[] | null;
 }
@@ -184,6 +186,7 @@ interface EnsureHistoryRecordOptions {
   type: string;
   role?: string | null;
   defaults?: UnknownRecord;
+  createdAt?: unknown;
 }
 
 type InterruptHandler = (() => void | Promise<void>) | null;
@@ -924,6 +927,7 @@ export function createRuntimeManager({
       threadId: watcher.threadId,
       provider: "codex",
       rolloutPath,
+      providerSessionId: watcher.threadId,
       cwd: watcher.rolloutState.cwd,
       activeTurnId: watcher.rolloutState.activeTurnId,
       ownerState: "idle",
@@ -1184,6 +1188,7 @@ export function createRuntimeManager({
         threadId: rolloutState.threadId,
         turnId,
         id: turnId,
+        createdAt: timestamp,
       })];
     }
 
@@ -1211,6 +1216,7 @@ export function createRuntimeManager({
         turnId,
         id: turnId,
         status: "completed",
+        createdAt: timestamp,
       }));
       return notifications;
     }
@@ -1248,6 +1254,7 @@ export function createRuntimeManager({
         threadId: rolloutState.threadId,
         turnId,
         itemId,
+        createdAt: timestamp,
         delta: firstNonEmptyString([payload.text, payload.message, payload.summary]) || "",
       })];
     }
@@ -1310,6 +1317,7 @@ export function createRuntimeManager({
           threadId: rolloutState.threadId,
           turnId,
           itemId: callId,
+          createdAt: timestamp,
           command: firstNonEmptyString([toolArgs.cmd, toolArgs.command]),
           cwd: firstNonEmptyString([toolArgs.workdir, toolArgs.cwd, rolloutState.cwd]),
           status: "running",
@@ -1362,6 +1370,7 @@ export function createRuntimeManager({
             threadId: rolloutState.threadId,
             turnId,
             itemId: callId,
+            createdAt: timestamp,
             delta: output,
             toolName: callMetadata.toolName,
           }),
@@ -1387,6 +1396,7 @@ export function createRuntimeManager({
           threadId: rolloutState.threadId,
           turnId,
           itemId: callId,
+          createdAt: timestamp,
           delta: output,
           command: callMetadata?.command,
           cwd: callMetadata?.cwd,
@@ -2286,9 +2296,10 @@ export function createRuntimeManager({
     if (method === "turn/started") {
       const turnId = extractCodexNotificationTurnId(params);
       if (turnId) {
+        const eventCreatedAt = codexNotificationCreatedAt(params);
         ensureHistoryTurn(entry, turnId, {
           id: turnId,
-          createdAt: new Date().toISOString(),
+          createdAt: eventCreatedAt,
           status: "running",
         });
         entry.threadBase.updatedAt = new Date().toISOString();
@@ -2348,6 +2359,7 @@ export function createRuntimeManager({
           itemId: extractCodexNotificationItemId(params) || itemObject.id,
           type: normalizeOptionalString(itemObject.type) || itemType,
           role: inferCodexHistoryItemRole(method, params, itemObject, itemType),
+          createdAt: codexNotificationCreatedAt(params),
           defaults: {
             text: extractCodexTextDelta(params) || "",
           },
@@ -2372,6 +2384,7 @@ export function createRuntimeManager({
         type: "agent_message",
         role: "assistant",
         delta: extractCodexTextDelta(params),
+        createdAt: codexNotificationCreatedAt(params),
       });
       writeCodexHistoryCache(threadId, entry);
       return buildCodexHistoryChangedPayload({
@@ -2388,6 +2401,7 @@ export function createRuntimeManager({
         itemId: extractCodexNotificationItemId(params),
         type: "reasoning",
         delta: extractCodexTextDelta(params),
+        createdAt: codexNotificationCreatedAt(params),
       });
       writeCodexHistoryCache(threadId, entry);
       return buildCodexHistoryChangedPayload({
@@ -2404,6 +2418,7 @@ export function createRuntimeManager({
         itemId: extractCodexNotificationItemId(params),
         type: "file_change",
         delta: extractCodexTextDelta(params),
+        createdAt: codexNotificationCreatedAt(params),
         changes: Array.isArray(params.changes)
           ? (params.changes as unknown[])
           : (Array.isArray(asObject(params.item).changes)
@@ -2425,6 +2440,7 @@ export function createRuntimeManager({
         itemId: extractCodexNotificationItemId(params),
         type: "tool_call",
         delta: extractCodexTextDelta(params),
+        createdAt: codexNotificationCreatedAt(params),
         metadata: normalizeOptionalString(firstNonEmptyString([
           params.toolName,
           params.tool_name,
@@ -2485,6 +2501,7 @@ export function createRuntimeManager({
         turnId,
         itemId,
         type: "command_execution",
+        createdAt: codexNotificationCreatedAt(params),
         defaults: {
           command,
           cwd,
@@ -2524,6 +2541,7 @@ export function createRuntimeManager({
         turnId,
         itemId,
         type: "plan",
+        createdAt: codexNotificationCreatedAt(params),
         defaults: {
           text: extractCodexTextDelta(params) || normalizeOptionalString(params.explanation) || "Planning...",
           explanation: firstNonEmptyString([params.explanation, asObject(params.item).explanation]),
@@ -3050,6 +3068,28 @@ export function createRuntimeManager({
       asObject(nestedEvent.item),
     ];
     return candidates.find((candidate) => Object.keys(candidate).length > 0) || {};
+  }
+
+  function codexNotificationCreatedAt(params: UnknownRecord): string {
+    const payload = asObject(params);
+    const itemObject = extractCodexIncomingItemObject(payload);
+    const candidates = [
+      payload.createdAt,
+      payload.created_at,
+      payload.timestamp,
+      payload.time,
+      itemObject.createdAt,
+      itemObject.created_at,
+      itemObject.timestamp,
+      itemObject.time,
+    ];
+    for (const candidate of candidates) {
+      const timestamp = normalizeTimestampString(candidate);
+      if (timestamp) {
+        return timestamp;
+      }
+    }
+    return new Date().toISOString();
   }
 
   function extractCodexTextDelta(params: UnknownRecord): string | null {
@@ -3845,6 +3885,7 @@ export function createRuntimeManager({
       type,
       role = null,
       delta,
+      createdAt = null,
       metadata = null,
       changes = null,
     }: UpsertHistoryCacheTextItemOptions
@@ -3854,6 +3895,7 @@ export function createRuntimeManager({
       itemId,
       type,
       role,
+      createdAt,
       defaults: type === "agent_message"
         ? { content: [{ type: "text", text: "" }], text: "" }
         : { text: "" },
@@ -3885,7 +3927,7 @@ export function createRuntimeManager({
 
   function ensureHistoryRecord(
     entry: CodexHistorySnapshot,
-    { turnId, itemId, type, role = null, defaults = {} }: EnsureHistoryRecordOptions
+    { turnId, itemId, type, role = null, defaults = {}, createdAt = null }: EnsureHistoryRecordOptions
   ): RuntimeHistoryRecord {
     const normalizedTurnId = normalizeOptionalString(turnId) || "unknown-turn";
     const normalizedProviderItemId = normalizeOptionalString(itemId);
@@ -3917,18 +3959,21 @@ export function createRuntimeManager({
       return existing;
     }
     const nowIso = new Date().toISOString();
+    const recordCreatedAt = normalizeTimestampString(createdAt)
+      || normalizeTimestampString(defaults.createdAt || defaults.created_at)
+      || nowIso;
     const turnMeta = ensureHistoryTurn(entry, normalizedTurnId, {
       id: normalizedTurnId,
-      createdAt: nowIso,
+      createdAt: recordCreatedAt,
       status: "running",
     });
     const timelineItemId = normalizedProviderItemId || randomUUID();
     const record: RuntimeHistoryRecord = {
       turnId: normalizedTurnId,
-      createdAt: nowIso,
+      createdAt: recordCreatedAt,
       turnMeta: turnMeta || {
         id: normalizedTurnId,
-        createdAt: nowIso,
+        createdAt: recordCreatedAt,
         status: "running",
       },
       itemObject: {
@@ -3937,11 +3982,11 @@ export function createRuntimeManager({
         providerItemId: normalizedProviderItemId,
         type,
         ...(role ? { role } : {}),
-        createdAt: nowIso,
         ...defaults,
+        createdAt: recordCreatedAt,
       },
       ordinal: nextHistoryOrdinal(entry.records),
-      createdAtMs: Date.parse(nowIso) || Date.now(),
+      createdAtMs: Date.parse(recordCreatedAt) || Date.parse(nowIso) || Date.now(),
       turnIndex: 0,
       itemIndex: entry.records.length,
     };
@@ -4535,15 +4580,18 @@ export function createRuntimeManager({
     rolloutPath?: string | null;
     lastProjectedCursor?: string | null;
     takeoverWatermark?: string | null;
-  }): void {
+  }): RuntimeSessionHandle | null {
     if (!threadId) {
-      return;
+      return null;
     }
     const existing = threadSessionIndex.get(threadId);
+    const resolvedRolloutPath = normalizeOptionalString(rolloutPath)
+      || existing?.rolloutPath
+      || null;
     const resolvedSourceKind = sourceKind || resolveThreadSessionSourceKind({
       provider,
       ownerState,
-      rolloutPath,
+      rolloutPath: resolvedRolloutPath,
       existingSourceKind: existing?.sourceKind || null,
     });
     const resolvedProviderSessionId = providerSessionId ?? existing?.providerSessionId ?? null;
@@ -4562,7 +4610,7 @@ export function createRuntimeManager({
         ? resolvedLastProjectedCursor || existing?.takeoverWatermark || null
         : existing?.takeoverWatermark || null
       );
-    threadSessionIndex.upsert({
+    return threadSessionIndex.upsert({
       threadId,
       provider,
       engineSessionId,
@@ -4574,7 +4622,7 @@ export function createRuntimeManager({
       activeTurnId,
       sourceKind: resolvedSourceKind,
       syncEpoch,
-      rolloutPath: normalizeOptionalString(rolloutPath) || existing?.rolloutPath || null,
+      rolloutPath: resolvedRolloutPath,
       lastProjectedCursor: resolvedLastProjectedCursor,
       takeoverWatermark: resolvedTakeoverWatermark,
     });
@@ -4588,11 +4636,12 @@ export function createRuntimeManager({
       activeTurnId?: string | null;
       mode?: string | null;
     } = {}
-  ): void {
+  ): RuntimeSessionHandle | null {
     if (!threadMeta?.id) {
-      return;
+      return null;
     }
-    upsertThreadSessionRecord({
+    const existing = threadSessionIndex.get(threadMeta.id);
+    return upsertThreadSessionRecord({
       threadId: threadMeta.id,
       provider: threadMeta.provider,
       engineSessionId: overrides.engineSessionId ?? threadMeta.providerSessionId ?? threadMeta.id,
@@ -4602,10 +4651,7 @@ export function createRuntimeManager({
       mode: overrides.mode ?? null,
       ownerState: overrides.ownerState ?? "idle",
       activeTurnId: overrides.activeTurnId ?? null,
-      sourceKind: resolveThreadSessionSourceKind({
-        provider: threadMeta.provider,
-        ownerState: overrides.ownerState ?? "idle",
-      }),
+      rolloutPath: existing?.rolloutPath || null,
     });
   }
 
@@ -4615,6 +4661,7 @@ export function createRuntimeManager({
       return;
     }
     const provider = normalizeOptionalString(threadObject.provider) || "codex";
+    const existing = threadSessionIndex.get(threadId);
     upsertThreadSessionRecord({
       threadId,
       provider,
@@ -4629,10 +4676,7 @@ export function createRuntimeManager({
       ]),
       model: normalizeOptionalString(threadObject.model),
       ownerState: "idle",
-      sourceKind: resolveThreadSessionSourceKind({
-        provider,
-        ownerState: "idle",
-      }),
+      rolloutPath: existing?.rolloutPath || null,
     });
   }
 

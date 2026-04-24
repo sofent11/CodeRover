@@ -838,14 +838,37 @@ final class ThreadHistoryStateTests: XCTestCase {
                 )
             }
 
-            XCTAssertEqual(method, "thread/resume")
+            if observedMethods.count == 2 {
+                XCTAssertEqual(method, "thread/resume")
+                return RPCMessage(
+                    id: .string(UUID().uuidString),
+                    result: .object([
+                        "thread": self.makeThreadPayload(
+                            threadID: threadID,
+                            title: "Resume",
+                            messageRange: 1 ... 2
+                        ),
+                    ]),
+                    includeJSONRPC: false
+                )
+            }
+
+            XCTAssertEqual(method, "thread/read")
+            let historyObject = try XCTUnwrap(params?.objectValue?["history"]?.objectValue)
+            XCTAssertEqual(historyObject["mode"]?.stringValue, "tail")
             return RPCMessage(
                 id: .string(UUID().uuidString),
                 result: .object([
                     "thread": self.makeThreadPayload(
                         threadID: threadID,
-                        title: "Resume",
-                        messageRange: 1 ... 2
+                        title: "Tail",
+                        messageRange: 1 ... 3
+                    ),
+                    "historyWindow": self.makeHistoryWindowObject(
+                        olderCursor: "cursor-1",
+                        newerCursor: "cursor-3",
+                        hasOlder: false,
+                        hasNewer: false
                     ),
                 ]),
                 includeJSONRPC: false
@@ -854,9 +877,10 @@ final class ThreadHistoryStateTests: XCTestCase {
 
         await service.prepareThreadForDisplay(threadId: threadID)
 
-        XCTAssertEqual(observedMethods, ["thread/read", "thread/resume"])
+        XCTAssertEqual(observedMethods, ["thread/read", "thread/resume", "thread/read"])
         XCTAssertNotNil(service.foregroundAggressivePollingDeadlineByThread[threadID])
-        XCTAssertEqual(service.messagesByThread[threadID]?.last?.itemId, "item-2")
+        XCTAssertEqual(service.messagesByThread[threadID]?.last?.itemId, "item-3")
+        XCTAssertEqual(service.historyStateByThread[threadID]?.newestCursor, "cursor-3")
     }
 
     func testPrepareThreadForDisplayBumpsDisplayActivationRevision() async {

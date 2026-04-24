@@ -72,7 +72,7 @@ interface CreateCodexRuntimeEngineOptions {
       activeTurnId?: string | null;
       mode?: string | null;
     }
-  ): void;
+  ): RuntimeSessionHandle | null;
   updateThreadSessionOwnerState(
     threadId: unknown,
     ownerState: "idle" | "running" | "waiting_for_client" | "closed",
@@ -134,12 +134,12 @@ export function createCodexRuntimeEngine({
     _params: UnknownRecord = {}
   ): Promise<RuntimeSessionHandle> {
     await ensureCodexWarm();
-    syncThreadSessionFromMeta(threadMeta, {
+    const session = syncThreadSessionFromMeta(threadMeta, {
       engineSessionId: threadMeta.providerSessionId || threadMeta.id,
       ownerState: "idle",
       activeTurnId: null,
     });
-    return {
+    return session || {
       threadId: threadMeta.id,
       provider: threadMeta.provider,
       engineSessionId: threadMeta.providerSessionId || threadMeta.id,
