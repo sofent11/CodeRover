@@ -79,6 +79,26 @@ final class CodeRoverPlanModeTests: XCTestCase {
             capturedTurnStartParams[1].objectValue?["collaborationMode"]?.objectValue?["mode"]?.stringValue,
             "default"
         )
+        XCTAssertEqual(
+            capturedTurnStartParams[1].objectValue?["collaborationMode"]?.objectValue?["settings"]?.objectValue?["model"]?.stringValue,
+            "gpt-5-coderover"
+        )
+        XCTAssertEqual(
+            capturedTurnStartParams[1].objectValue?["collaborationMode"]?.objectValue?["settings"]?.objectValue?["reasoning_effort"]?.stringValue,
+            "medium"
+        )
+    }
+
+    func testDefaultCollaborationModeIncludesSettingsWithoutSelectedModel() throws {
+        let service = makeService()
+
+        let payload = try XCTUnwrap(service.buildCollaborationModePayload(for: .default))
+        let settings = try XCTUnwrap(payload.objectValue?["settings"]?.objectValue)
+
+        XCTAssertEqual(payload.objectValue?["mode"]?.stringValue, "default")
+        XCTAssertEqual(settings["model"], .null)
+        XCTAssertEqual(settings["reasoning_effort"], .null)
+        XCTAssertEqual(settings["developer_instructions"], .null)
     }
 
     func testUnsupportedPlanModeFallsBackToNormalTurnAndStopsRetryingPlanField() async throws {

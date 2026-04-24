@@ -80,14 +80,20 @@ final class TurnComposerSendAvailabilityTests: XCTestCase {
         isConnected: Bool = true,
         trimmedInput: String = "hello",
         hasReadyImages: Bool = false,
-        hasBlockingAttachmentState: Bool = false
+        hasBlockingAttachmentState: Bool = false,
+        hasReviewSelection: Bool = false,
+        hasPendingReviewSelection: Bool = false,
+        hasSubagentsSelection: Bool = false
     ) -> TurnComposerSendAvailability {
         TurnComposerSendAvailability(
             isSending: isSending,
             isConnected: isConnected,
             trimmedInput: trimmedInput,
             hasReadyImages: hasReadyImages,
-            hasBlockingAttachmentState: hasBlockingAttachmentState
+            hasBlockingAttachmentState: hasBlockingAttachmentState,
+            hasReviewSelection: hasReviewSelection,
+            hasPendingReviewSelection: hasPendingReviewSelection,
+            hasSubagentsSelection: hasSubagentsSelection
         )
     }
 

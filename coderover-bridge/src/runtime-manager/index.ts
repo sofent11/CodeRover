@@ -653,19 +653,19 @@ export function createRuntimeManager({
     const turnId = extractCodexNotificationTurnId(params);
 
     if (normalizedMethod === "turn/started" && threadId && turnId) {
-      return [encodeCanonicalNotification("timeline/turnUpdated", {
+      return [encodeCanonicalNotification("timeline/turnUpdated", decorateNotificationWithSessionMetadata({
         threadId,
         turnId,
         state: "running",
-      })];
+      }))];
     }
 
     if (normalizedMethod === "turn/completed" && threadId && turnId) {
-      return [encodeCanonicalNotification("timeline/turnUpdated", {
+      return [encodeCanonicalNotification("timeline/turnUpdated", decorateNotificationWithSessionMetadata({
         threadId,
         turnId,
         state: normalizeOptionalString(params.status) || "completed",
-      })];
+      }))];
     }
 
     const timelinePayload = buildCanonicalTimelineItemPayloadFromCodexNotification(
@@ -682,7 +682,7 @@ export function createRuntimeManager({
         ? "timeline/itemCompleted"
         : "timeline/itemTextUpdated";
 
-    return [encodeCanonicalNotification(timelineMethod, timelinePayload)];
+    return [encodeCanonicalNotification(timelineMethod, decorateNotificationWithSessionMetadata(timelinePayload))];
   }
 
   function shouldSuppressRawCodexRealtimeFallback(parsedMessage: unknown): boolean {
@@ -2256,6 +2256,7 @@ export function createRuntimeManager({
       const decoratedThread = decorateConversationThread(asObject(params.thread) as RuntimeThreadShape);
       const decoratedThreadId = normalizeOptionalString(decoratedThread.id);
       if (decoratedThreadId) {
+        upsertOverlayFromThread(decoratedThread);
         primeCodexHistoryCache(decoratedThreadId, decoratedThread);
       }
       return null;

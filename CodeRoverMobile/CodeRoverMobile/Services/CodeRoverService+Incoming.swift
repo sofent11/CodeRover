@@ -422,6 +422,16 @@ extension CodeRoverService {
             )
         }
 
+        _ = handleRealtimeHistoryEvent(
+            threadId: threadId,
+            itemId: timelineItemId,
+            paramsObject: paramsObject,
+            eventObject: nil
+        )
+        if activeThreadId != threadId {
+            noteRemoteHistoryChanged(threadId: threadId)
+        }
+
         upsertCanonicalTimelineMessage(
             threadId: threadId,
             turnId: turnId,
@@ -569,8 +579,7 @@ extension CodeRoverService {
         let threadId = extractThreadID(from: paramsObject)
             ?? activeThreadId
 
-        guard let threadId,
-              activeThreadId == threadId else {
+        guard let threadId else {
             return
         }
         let syncMetadata = decodeThreadSyncMetadata(from: paramsObject)
@@ -582,7 +591,17 @@ extension CodeRoverService {
             return
         }
 
+        noteRemoteHistoryChanged(threadId: threadId)
+
         let sourceMethod = firstStringValue(in: paramsObject, keys: ["sourceMethod", "rawMethod"]) ?? "unknown"
+        guard activeThreadId == threadId else {
+            debugRuntimeLog(
+                "thread history changed queued thread=\(threadId) "
+                + "source=\(sourceMethod)"
+            )
+            return
+        }
+
         if sourceMethod == "thread/read" {
             debugRuntimeLog(
                 "thread history changed refresh thread=\(threadId) "

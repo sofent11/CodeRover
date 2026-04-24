@@ -607,7 +607,7 @@ private struct SidebarSubagentHierarchy {
     }
 }
 
-private enum SidebarProjectExpansionState {
+enum SidebarProjectExpansionState {
     struct SyncResult {
         let expandedGroupIDs: Set<String>
         let knownGroupIDs: Set<String>

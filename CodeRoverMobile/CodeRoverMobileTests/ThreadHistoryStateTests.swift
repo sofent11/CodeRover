@@ -328,6 +328,71 @@ final class ThreadHistoryStateTests: XCTestCase {
         XCTAssertEqual(service.historyStateByThread[threadID]?.newestCursor, "cursor-3")
     }
 
+    func testCanonicalTimelineItemShowsImmediatelyWhenCursorGapNeedsCatchUp() async throws {
+        let service = makeService()
+        let threadID = "thread-canonical-gap"
+        service.isConnected = true
+        service.isInitialized = true
+        service.activeThreadId = threadID
+        service.runningThreadIDs.insert(threadID)
+        service.activeTurnIdByThread[threadID] = "turn-1"
+        service.threads = [ConversationThread(id: threadID, title: "Thread", provider: "claude")]
+        service.messagesByThread[threadID] = makeMessages(threadID: threadID, range: 1 ... 1)
+        service.historyStateByThread[threadID] = ThreadHistoryState(
+            oldestCursor: "cursor-1",
+            newestCursor: "cursor-1",
+            hasOlderOnServer: false,
+            hasNewerOnServer: true
+        )
+
+        let afterExpectation = expectation(description: "canonical after catch-up request")
+        service.requestTransportOverride = { method, params in
+            XCTAssertEqual(method, "thread/read")
+            let historyObject = try XCTUnwrap(params?.objectValue?["history"]?.objectValue)
+            XCTAssertEqual(historyObject["mode"]?.stringValue, "after")
+            XCTAssertEqual(historyObject["cursor"]?.stringValue, "cursor-1")
+            afterExpectation.fulfill()
+            return RPCMessage(
+                id: .string(UUID().uuidString),
+                result: .object([
+                    "thread": self.makeThreadPayload(
+                        threadID: threadID,
+                        title: "After",
+                        messageRange: 2 ... 3
+                    ),
+                    "historyWindow": self.makeHistoryWindowObject(
+                        olderCursor: "cursor-2",
+                        newerCursor: "cursor-3",
+                        hasOlder: false,
+                        hasNewer: false
+                    ),
+                ]),
+                includeJSONRPC: false
+            )
+        }
+
+        service.handleNotification(
+            method: "timeline/itemTextUpdated",
+            params: .object([
+                "threadId": .string(threadID),
+                "turnId": .string("turn-1"),
+                "timelineItemId": .string("item-3"),
+                "role": .string("assistant"),
+                "kind": .string("chat"),
+                "cursor": .string("cursor-3"),
+                "previousCursor": .string("cursor-2"),
+                "text": .string("partial-3"),
+            ])
+        )
+
+        XCTAssertEqual(service.messagesByThread[threadID]?.last?.itemId, "item-3")
+        XCTAssertEqual(service.messagesByThread[threadID]?.last?.text, "partial-3")
+
+        await fulfillment(of: [afterExpectation], timeout: 1.0)
+        XCTAssertEqual(service.messagesByThread[threadID]?.map(\.itemId), ["item-1", "item-2", "item-3"])
+        XCTAssertEqual(service.historyStateByThread[threadID]?.newestCursor, "cursor-3")
+    }
+
     func testLowerSyncEpochTailHistoryResponseIsDropped() async {
         let service = makeService()
         let threadID = "thread-stale-tail-epoch"
@@ -373,7 +438,7 @@ final class ThreadHistoryStateTests: XCTestCase {
         let threadID = "thread-stale-timeline-epoch"
         service.activeThreadId = threadID
         service.threadSyncEpochByThreadID[threadID] = 4
-        service.threads = [ConversationThread(id: threadID, title: "Thread", provider: "codex")]
+        service.threads = [ConversationThread(id: threadID, title: "Thread", provider: "claude")]
 
         service.handleNotification(
             method: "timeline/itemCompleted",
@@ -392,6 +457,43 @@ final class ThreadHistoryStateTests: XCTestCase {
         XCTAssertTrue(service.messagesByThread[threadID, default: []].isEmpty)
     }
 
+    func testMatchingSyncEpochTurnUpdatedNotificationUpdatesRunState() {
+        let service = makeService()
+        let threadID = "thread-matching-turn-epoch"
+        let turnID = "turn-epoch"
+        service.activeThreadId = threadID
+        service.threadSyncEpochByThreadID[threadID] = 4
+        service.threads = [ConversationThread(id: threadID, title: "Thread", provider: "codex")]
+
+        service.handleNotification(
+            method: "timeline/turnUpdated",
+            params: .object([
+                "threadId": .string(threadID),
+                "turnId": .string(turnID),
+                "state": .string("running"),
+                "syncEpoch": .integer(4),
+                "sourceKind": .string("rollout_observer"),
+            ])
+        )
+
+        XCTAssertEqual(service.activeTurnIdByThread[threadID], turnID)
+        XCTAssertTrue(service.runningThreadIDs.contains(threadID))
+
+        service.handleNotification(
+            method: "timeline/turnUpdated",
+            params: .object([
+                "threadId": .string(threadID),
+                "turnId": .string(turnID),
+                "state": .string("completed"),
+                "syncEpoch": .integer(4),
+                "sourceKind": .string("rollout_observer"),
+            ])
+        )
+
+        XCTAssertNil(service.activeTurnIdByThread[threadID])
+        XCTAssertFalse(service.runningThreadIDs.contains(threadID))
+    }
+
     func testIncomingDeltaAfterLocalTurnStartBypassesSeededUserCursorGap() async throws {
         let service = makeService()
         let threadID = "thread-local-turn-gap"
@@ -399,7 +501,7 @@ final class ThreadHistoryStateTests: XCTestCase {
         service.isConnected = true
         service.isInitialized = true
         service.activeThreadId = threadID
-        service.threads = [ConversationThread(id: threadID, title: "Thread", provider: "codex")]
+        service.threads = [ConversationThread(id: threadID, title: "Thread", provider: "claude")]
         service.messagesByThread[threadID] = makeMessages(threadID: threadID, range: 1 ... 10)
         service.historyStateByThread[threadID] = ThreadHistoryState(
             oldestCursor: "cursor-1",
@@ -463,7 +565,7 @@ final class ThreadHistoryStateTests: XCTestCase {
         service.isConnected = true
         service.isInitialized = true
         service.activeThreadId = threadID
-        service.threads = [ConversationThread(id: threadID, title: "Thread", provider: "codex")]
+        service.threads = [ConversationThread(id: threadID, title: "Thread", provider: "claude")]
 
         let pendingMessageId = service.appendUserMessage(threadId: threadID, text: "first")
         service.markThreadAsRunning(threadID)
@@ -576,7 +678,7 @@ final class ThreadHistoryStateTests: XCTestCase {
         service.runningThreadIDs.insert(threadID)
         service.activeTurnIdByThread[threadID] = turnID
         service.threadIdByTurnID[turnID] = threadID
-        service.threads = [ConversationThread(id: threadID, title: "Thread", provider: "codex")]
+        service.threads = [ConversationThread(id: threadID, title: "Thread", provider: "claude")]
 
         let catchUpExpectation = expectation(description: "no realtime catch-up")
         catchUpExpectation.isInverted = true
@@ -851,6 +953,199 @@ final class ThreadHistoryStateTests: XCTestCase {
         await fulfillment(of: [tailExpectation], timeout: 1.0)
         XCTAssertEqual(service.messagesByThread[threadID]?.map(\.itemId), ["item-1", "item-2"])
         XCTAssertEqual(service.historyStateByThread[threadID]?.newestCursor, "cursor-1")
+    }
+
+    func testInactiveThreadHistoryChangedMarksPendingRemoteCatchUp() {
+        let service = makeService()
+        let activeThreadID = "thread-active"
+        let inactiveThreadID = "thread-inactive"
+        service.activeThreadId = activeThreadID
+
+        service.handleNotification(
+            method: "thread/history/changed",
+            params: .object([
+                "threadId": .string(inactiveThreadID),
+                "sourceMethod": .string("timeline/itemCompleted"),
+                "syncEpoch": .integer(2),
+            ])
+        )
+
+        XCTAssertTrue(service.threadsWithPendingRemoteHistoryChange.contains(inactiveThreadID))
+        XCTAssertFalse(service.threadsWithPendingRemoteHistoryChange.contains(activeThreadID))
+    }
+
+    func testInactiveCanonicalTimelineItemMarksPendingRemoteCatchUp() {
+        let service = makeService()
+        let activeThreadID = "thread-active"
+        let inactiveThreadID = "thread-inactive-canonical"
+        service.isConnected = true
+        service.isInitialized = true
+        service.activeThreadId = activeThreadID
+        service.threads = [
+            ConversationThread(id: activeThreadID, title: "Active", provider: "claude"),
+            ConversationThread(id: inactiveThreadID, title: "Inactive", provider: "claude"),
+        ]
+
+        service.handleNotification(
+            method: "timeline/itemTextUpdated",
+            params: .object([
+                "threadId": .string(inactiveThreadID),
+                "turnId": .string("turn-1"),
+                "timelineItemId": .string("item-1"),
+                "role": .string("assistant"),
+                "kind": .string("chat"),
+                "cursor": .string("cursor-1"),
+                "text": .string("latest"),
+            ])
+        )
+
+        XCTAssertEqual(service.messagesByThread[inactiveThreadID]?.last?.text, "latest")
+        XCTAssertTrue(service.threadsWithPendingRemoteHistoryChange.contains(inactiveThreadID))
+    }
+
+    func testPrepareThreadForDisplayForcesCatchUpWhenInactiveThreadHasPendingRemoteHistoryChange() async throws {
+        let service = makeService()
+        let threadID = "thread-reopen-after-catchup"
+        service.isConnected = true
+        service.isInitialized = true
+        service.hydratedThreadIDs.insert(threadID)
+        service.resumedThreadIDs.insert(threadID)
+        service.threadsWithPendingRemoteHistoryChange.insert(threadID)
+        service.threads = [ConversationThread(id: threadID, title: "Thread", provider: "claude")]
+        service.messagesByThread[threadID] = makeMessages(threadID: threadID, range: 1 ... 2)
+        service.historyStateByThread[threadID] = ThreadHistoryState(
+            oldestCursor: "cursor-1",
+            newestCursor: "cursor-2",
+            hasOlderOnServer: false,
+            hasNewerOnServer: true
+        )
+
+        var observedMethods: [String] = []
+        service.requestTransportOverride = { method, params in
+            observedMethods.append(method)
+            switch method {
+            case "thread/resume":
+                return RPCMessage(
+                    id: .string(UUID().uuidString),
+                    result: .object([
+                        "thread": self.makeThreadPayload(
+                            threadID: threadID,
+                            title: "Resume",
+                            messageRange: 1 ... 2
+                        ),
+                    ]),
+                    includeJSONRPC: false
+                )
+            case "thread/read":
+                let historyObject = try XCTUnwrap(params?.objectValue?["history"]?.objectValue)
+                XCTAssertEqual(historyObject["mode"]?.stringValue, "after")
+                XCTAssertEqual(historyObject["cursor"]?.stringValue, "cursor-2")
+                return RPCMessage(
+                    id: .string(UUID().uuidString),
+                    result: .object([
+                        "thread": self.makeThreadPayload(
+                            threadID: threadID,
+                            title: "After",
+                            messageRange: 3 ... 4
+                        ),
+                        "historyWindow": self.makeHistoryWindowObject(
+                            olderCursor: "cursor-3",
+                            newerCursor: "cursor-4",
+                            hasOlder: false,
+                            hasNewer: false
+                        ),
+                    ]),
+                    includeJSONRPC: false
+                )
+            default:
+                XCTFail("Unexpected method \(method)")
+                return RPCMessage(id: .string(UUID().uuidString), result: .object([:]), includeJSONRPC: false)
+            }
+        }
+
+        await service.prepareThreadForDisplay(threadId: threadID)
+
+        XCTAssertEqual(observedMethods, ["thread/resume", "thread/read"])
+        XCTAssertEqual(service.messagesByThread[threadID]?.map(\.itemId), ["item-1", "item-2", "item-3", "item-4"])
+        XCTAssertFalse(service.threadsWithPendingRemoteHistoryChange.contains(threadID))
+        XCTAssertEqual(service.historyStateByThread[threadID]?.newestCursor, "cursor-4")
+    }
+
+    func testPrepareThreadForDisplayFallsBackToTailWhenPendingRemoteHistoryCursorIsInvalid() async throws {
+        let service = makeService()
+        let threadID = "thread-reopen-tail-fallback"
+        service.isConnected = true
+        service.isInitialized = true
+        service.hydratedThreadIDs.insert(threadID)
+        service.resumedThreadIDs.insert(threadID)
+        service.threadsWithPendingRemoteHistoryChange.insert(threadID)
+        service.threads = [ConversationThread(id: threadID, title: "Thread", provider: "claude")]
+        service.messagesByThread[threadID] = makeMessages(threadID: threadID, range: 1 ... 2)
+        service.historyStateByThread[threadID] = ThreadHistoryState(
+            oldestCursor: "cursor-1",
+            newestCursor: "cursor-2",
+            hasOlderOnServer: false,
+            hasNewerOnServer: true
+        )
+
+        var observedModes: [String] = []
+        service.requestTransportOverride = { method, params in
+            switch method {
+            case "thread/resume":
+                return RPCMessage(
+                    id: .string(UUID().uuidString),
+                    result: .object([
+                        "thread": self.makeThreadPayload(
+                            threadID: threadID,
+                            title: "Resume",
+                            messageRange: 1 ... 2
+                        ),
+                    ]),
+                    includeJSONRPC: false
+                )
+            case "thread/read":
+                let historyObject = try XCTUnwrap(params?.objectValue?["history"]?.objectValue)
+                let mode = try XCTUnwrap(historyObject["mode"]?.stringValue)
+                observedModes.append(mode)
+                if mode == "after" {
+                    throw CodeRoverServiceError.rpcError(
+                        RPCError(
+                            code: -32602,
+                            message: "history.cursor is invalid"
+                        )
+                    )
+                }
+
+                XCTAssertEqual(mode, "tail")
+                return RPCMessage(
+                    id: .string(UUID().uuidString),
+                    result: .object([
+                        "thread": self.makeThreadPayload(
+                            threadID: threadID,
+                            title: "Tail",
+                            messageRange: 1 ... 4
+                        ),
+                        "historyWindow": self.makeHistoryWindowObject(
+                            olderCursor: "cursor-1",
+                            newerCursor: "cursor-4",
+                            hasOlder: false,
+                            hasNewer: false
+                        ),
+                    ]),
+                    includeJSONRPC: false
+                )
+            default:
+                XCTFail("Unexpected method \(method)")
+                return RPCMessage(id: .string(UUID().uuidString), result: .object([:]), includeJSONRPC: false)
+            }
+        }
+
+        await service.prepareThreadForDisplay(threadId: threadID)
+
+        XCTAssertEqual(observedModes, ["after", "tail"])
+        XCTAssertEqual(service.messagesByThread[threadID]?.map(\.itemId), ["item-1", "item-2", "item-3", "item-4"])
+        XCTAssertFalse(service.threadsWithPendingRemoteHistoryChange.contains(threadID))
+        XCTAssertEqual(service.historyStateByThread[threadID]?.newestCursor, "cursor-4")
     }
 
     func testLoadTailThreadHistoryKeepsRealtimeCanonicalAssistantItemWhenTailSnapshotLagsRunningThread() async throws {

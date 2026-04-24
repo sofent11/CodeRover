@@ -106,7 +106,11 @@ internal fun TurnTimeline(
     }
 
     LaunchedEffect(listState.isScrollInProgress, isNearBottom) {
-        if (listState.isScrollInProgress && !isNearBottom) {
+        if (shouldEnterManualTimelineScrollMode(
+                isScrollInProgress = listState.isScrollInProgress,
+                isNearBottom = isNearBottom,
+            )
+        ) {
             autoScrollMode = TurnAutoScrollMode.MANUAL
         }
     }
@@ -245,6 +249,11 @@ internal fun TurnTimeline(
         }
     }
 }
+
+internal fun shouldEnterManualTimelineScrollMode(
+    isScrollInProgress: Boolean,
+    isNearBottom: Boolean,
+): Boolean = isScrollInProgress && !isNearBottom
 
 private fun renderItemContainsMessage(item: TimelineRenderItem, messageId: String): Boolean {
     return when (item) {

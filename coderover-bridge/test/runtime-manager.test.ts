@@ -1085,6 +1085,65 @@ test("thread/resume strips oversized inline image payloads from Codex items", as
   }
 });
 
+test("forwarded Codex turn lifecycle notifications include session metadata", async () => {
+  const fixture = createManagerFixtureWithOptions({
+    useDefaultCodexAdapter: true,
+  });
+
+  try {
+    const thread = buildCodexThread({ messageCount: 0 });
+    fixture.manager.attachCodexTransport({ send() {} });
+    fixture.manager.handleCodexTransportMessage(JSON.stringify({
+      jsonrpc: "2.0",
+      method: "thread/started",
+      params: {
+        thread,
+      },
+    }));
+
+    const beforeStartedCount = fixture.messages.length;
+    fixture.manager.handleCodexTransportMessage(JSON.stringify({
+      jsonrpc: "2.0",
+      method: "turn/started",
+      params: {
+        threadId: thread.id,
+        turnId: "turn-metadata",
+      },
+    }));
+
+    const started = fixture.messages[beforeStartedCount];
+    assert.ok(started);
+    assert.equal(started.method, "timeline/turnUpdated");
+    assert.equal(started.params.threadId, thread.id);
+    assert.equal(started.params.turnId, "turn-metadata");
+    assert.equal(started.params.state, "running");
+    assert.equal(started.params.sourceKind, "managed_runtime");
+    assert.equal(started.params.syncEpoch, 2);
+
+    const beforeCompletedCount = fixture.messages.length;
+    fixture.manager.handleCodexTransportMessage(JSON.stringify({
+      jsonrpc: "2.0",
+      method: "turn/completed",
+      params: {
+        threadId: thread.id,
+        turnId: "turn-metadata",
+        status: "completed",
+      },
+    }));
+
+    const completed = fixture.messages[beforeCompletedCount];
+    assert.ok(completed);
+    assert.equal(completed.method, "timeline/turnUpdated");
+    assert.equal(completed.params.threadId, thread.id);
+    assert.equal(completed.params.turnId, "turn-metadata");
+    assert.equal(completed.params.state, "completed");
+    assert.equal(completed.params.sourceKind, "thread_read_fallback");
+    assert.equal(completed.params.syncEpoch, 3);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
 test("forwarded Codex item delta notifications include cursor metadata when cache context exists", async () => {
   const fixture = createManagerFixtureWithOptions({
     useDefaultCodexAdapter: true,

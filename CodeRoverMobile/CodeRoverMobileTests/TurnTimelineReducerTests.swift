@@ -9,6 +9,47 @@ import SwiftUI
 @testable import CodeRoverMobile
 
 final class TurnTimelineReducerTests: XCTestCase {
+    func testScrollStateKeepsFollowBottomWhenLayoutGrowthMovesBottom() {
+        XCTAssertTrue(
+            TurnScrollStateTracker.shouldPreserveFollowBottomOnBottomLoss(
+                wasScrolledToBottom: true,
+                autoScrollIsFollowing: true,
+                isUserInitiatedScroll: false
+            )
+        )
+        XCTAssertTrue(
+            TurnScrollStateTracker.nextIsScrolledToBottom(
+                nextIsAtBottom: false,
+                wasScrolledToBottom: true,
+                autoScrollIsFollowing: true,
+                isUserInitiatedScroll: false
+            )
+        )
+        XCTAssertFalse(
+            TurnScrollStateTracker.shouldEnterManualMode(
+                nextIsAtBottom: false,
+                isUserInitiatedScroll: false
+            )
+        )
+    }
+
+    func testScrollStateEntersManualWhenUserScrollsAwayFromBottom() {
+        XCTAssertFalse(
+            TurnScrollStateTracker.nextIsScrolledToBottom(
+                nextIsAtBottom: false,
+                wasScrolledToBottom: true,
+                autoScrollIsFollowing: true,
+                isUserInitiatedScroll: true
+            )
+        )
+        XCTAssertTrue(
+            TurnScrollStateTracker.shouldEnterManualMode(
+                nextIsAtBottom: false,
+                isUserInitiatedScroll: true
+            )
+        )
+    }
+
     func testCollapseConsecutiveThinkingKeepsNewestState() {
         let threadID = "thread"
         let now = Date()

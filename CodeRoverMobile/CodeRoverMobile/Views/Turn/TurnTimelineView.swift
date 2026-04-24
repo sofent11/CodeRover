@@ -262,6 +262,7 @@ struct TurnTimelineView<EmptyState: View, Composer: View>: View {
     @State private var blockInfoInputKey: Int = 0
     @State private var scrollSessionThreadID: String?
     @State private var autoScrollMode: TurnAutoScrollMode = .followBottom
+    @State private var isUserInteractingWithScroll = false
     @State private var initialRecoverySnapPendingThreadID: String?
     @State private var initialRecoverySnapTask: Task<Void, Never>?
     @State private var followBottomScrollTask: Task<Void, Never>?
@@ -391,6 +392,9 @@ struct TurnTimelineView<EmptyState: View, Composer: View>: View {
                 .background(Color(.systemBackground))
                 .defaultScrollAnchor(.bottom)
                 .scrollDismissesKeyboard(.interactively)
+                .onScrollPhaseChange { _, newPhase in
+                    isUserInteractingWithScroll = Self.isUserInitiatedScrollPhase(newPhase)
+                }
                 .simultaneousGesture(
                     TapGesture().onEnded {
                         onTapOutsideComposer()
@@ -420,7 +424,11 @@ struct TurnTimelineView<EmptyState: View, Composer: View>: View {
                         }
                     }
                     if new.isAtBottom != old.isAtBottom {
-                        handleScrolledToBottomChanged(new.isAtBottom)
+                        handleScrolledToBottomChanged(
+                            new.isAtBottom,
+                            isUserInitiatedScroll: isUserInteractingWithScroll,
+                            using: proxy
+                        )
                     }
                 }
                 // React to every timeline mutation so streamed text growth stays pinned
@@ -636,22 +644,57 @@ struct TurnTimelineView<EmptyState: View, Composer: View>: View {
         followBottomScrollTask = nil
     }
 
-    // Stops follow-bottom as soon as the user drags away so queued snaps cannot fight the gesture.
-    private func handleScrolledToBottomChanged(_ nextValue: Bool) {
-        guard nextValue != isScrolledToBottom else { return }
+    private static func isUserInitiatedScrollPhase(_ phase: ScrollPhase) -> Bool {
+        switch phase {
+        case .tracking, .interacting, .decelerating:
+            return true
+        case .idle, .animating:
+            return false
+        @unknown default:
+            return true
+        }
+    }
 
-        if nextValue {
+    // Stops follow-bottom only when the user drags away. Layout growth from streaming
+    // can temporarily report "not at bottom"; keep following and repair it next frame.
+    private func handleScrolledToBottomChanged(
+        _ nextValue: Bool,
+        isUserInitiatedScroll: Bool,
+        using proxy: ScrollViewProxy
+    ) {
+        let shouldPreserveFollowBottom = TurnScrollStateTracker.shouldPreserveFollowBottomOnBottomLoss(
+            wasScrolledToBottom: isScrolledToBottom,
+            autoScrollIsFollowing: autoScrollMode == .followBottom,
+            isUserInitiatedScroll: isUserInitiatedScroll
+        )
+        let nextScrolledToBottom = TurnScrollStateTracker.nextIsScrolledToBottom(
+            nextIsAtBottom: nextValue,
+            wasScrolledToBottom: isScrolledToBottom,
+            autoScrollIsFollowing: autoScrollMode == .followBottom,
+            isUserInitiatedScroll: isUserInitiatedScroll
+        )
+        guard nextScrolledToBottom != isScrolledToBottom || shouldPreserveFollowBottom else { return }
+
+        if nextScrolledToBottom {
             isScrolledToBottom = true
             if autoScrollMode != .anchorAssistantResponse {
                 autoScrollMode = .followBottom
             }
-        } else {
+            if shouldPreserveFollowBottom {
+                scheduleFollowBottomScroll(using: proxy)
+            }
+        } else if TurnScrollStateTracker.shouldEnterManualMode(
+            nextIsAtBottom: nextValue,
+            isUserInitiatedScroll: isUserInitiatedScroll
+        ) {
             followBottomScrollTask?.cancel()
             followBottomScrollTask = nil
             isScrolledToBottom = false
             if autoScrollMode != .anchorAssistantResponse {
                 autoScrollMode = .manual
             }
+        } else if shouldPreserveFollowBottom {
+            scheduleFollowBottomScroll(using: proxy)
         }
     }
 

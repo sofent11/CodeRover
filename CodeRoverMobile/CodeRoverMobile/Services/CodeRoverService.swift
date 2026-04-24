@@ -291,6 +291,8 @@ final class CodeRoverService {
     // Caches the last published timeline signature so no-op sync merges do not trigger UI work.
     var lastPublishedMessageSignatureByThread: [String: Int] = [:]
     var historyStateByThread: [String: ThreadHistoryState] = [:]
+    // Records threads that received remote history-change signals while off-screen so reopen can force a real catch-up.
+    var threadsWithPendingRemoteHistoryChange: Set<String> = []
     // Tracks threads whose latest visible history came from a fresh thread/resume snapshot
     // before thread/read exposed a stable cursor window. For these threads, stale tail
     // snapshots must merge instead of replacing the newer local timeline.

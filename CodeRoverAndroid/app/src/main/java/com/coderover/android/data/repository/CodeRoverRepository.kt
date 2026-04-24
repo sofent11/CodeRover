@@ -173,6 +173,7 @@ class CodeRoverRepository(context: Context) {
     private val olderHistoryBackfillTaskByThread = mutableMapOf<String, Job>()
     private val pendingHistoryChangedRefreshThreadIds = mutableSetOf<String>()
     private val historyChangedRefreshTaskByThread = mutableMapOf<String, Job>()
+    private val pendingRemoteHistoryChangedThreadIds = mutableSetOf<String>()
     private val threadResumeTaskByThreadId = mutableMapOf<String, Deferred<ThreadSummary?>>()
     private val threadResumeRequestSignatureByThreadId = mutableMapOf<String, ThreadResumeRequestSignature>()
     private val threadHistoryLoadTaskByThreadId = mutableMapOf<String, Job>()
@@ -2481,6 +2482,7 @@ class CodeRoverRepository(context: Context) {
                 },
             )
         }
+        pendingRemoteHistoryChangedThreadIds.remove(threadId)
 
         if (shouldMarkForCanonicalReconcile) {
             markThreadNeedingCanonicalHistoryReconcile(threadId)
@@ -4499,17 +4501,14 @@ class CodeRoverRepository(context: Context) {
         ) {
             return
         }
-        if (!handleRealtimeHistoryEvent(
-                threadId = threadId,
-                turnId = turnId,
-                itemId = timelineItemId,
-                previousItemId = payload.resolvePreviousItemId(),
-                cursor = payload.resolveCursor(),
-                previousCursor = payload.resolvePreviousCursor(),
-            )
-        ) {
-            return
-        }
+        handleRealtimeHistoryEvent(
+            threadId = threadId,
+            turnId = turnId,
+            itemId = timelineItemId,
+            previousItemId = payload.resolvePreviousItemId(),
+            cursor = payload.resolveCursor(),
+            previousCursor = payload.resolvePreviousCursor(),
+        )
 
         markRealtimeTurnStarted(threadId = threadId, turnId = turnId)
         val role = canonicalTimelineRole(payload.string("role"))
@@ -4677,10 +4676,6 @@ class CodeRoverRepository(context: Context) {
         val activeThreadId = state.value.selectedThreadId
         val threadId = payload.resolveThreadId() ?: activeThreadId ?: return
 
-        if (activeThreadId != threadId) {
-            return
-        }
-
         val syncMetadata = decodeThreadSyncMetadata(payload)
         if (!acceptThreadSyncMetadata(
                 threadId = threadId,
@@ -4688,6 +4683,11 @@ class CodeRoverRepository(context: Context) {
                 sourceKind = syncMetadata.sourceKind,
             )
         ) {
+            return
+        }
+
+        if (activeThreadId != threadId) {
+            pendingRemoteHistoryChangedThreadIds += threadId
             return
         }
 
@@ -5672,6 +5672,7 @@ class CodeRoverRepository(context: Context) {
         threadHistoryLoadTaskByThreadId.remove(threadId)?.cancel()
         canonicalHistoryReconcileTaskByThreadId.remove(threadId)?.cancel()
         resumeSeededHistoryThreadIds.remove(threadId)
+        pendingRemoteHistoryChangedThreadIds.remove(threadId)
         threadSyncCoordinator.clearThread(threadId)
     }
 
@@ -5687,6 +5688,7 @@ class CodeRoverRepository(context: Context) {
         canonicalHistoryReconcileTaskByThreadId.values.forEach { it.cancel() }
         canonicalHistoryReconcileTaskByThreadId.clear()
         resumeSeededHistoryThreadIds.clear()
+        pendingRemoteHistoryChangedThreadIds.clear()
         threadSyncCoordinator.clearAll()
     }
 

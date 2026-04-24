@@ -175,7 +175,8 @@ final class SidebarThreadGroupingTests: XCTestCase {
             currentExpandedGroupIDs: [],
             knownGroupIDs: [],
             visibleGroups: groups,
-            hasInitialized: false
+            hasInitialized: false,
+            persistedCollapsedGroupIDs: []
         )
 
         XCTAssertEqual(snapshot.expandedGroupIDs, Set(groups.map(\.id)))
@@ -210,7 +211,8 @@ final class SidebarThreadGroupingTests: XCTestCase {
             currentExpandedGroupIDs: ["project:/Users/me/work/app"],
             knownGroupIDs: Set(groups.map(\.id)),
             visibleGroups: groups,
-            hasInitialized: true
+            hasInitialized: true,
+            persistedCollapsedGroupIDs: []
         )
 
         XCTAssertEqual(snapshot.expandedGroupIDs, ["project:/Users/me/work/app"])
@@ -227,7 +229,8 @@ final class SidebarThreadGroupingTests: XCTestCase {
             currentExpandedGroupIDs: ["project:/Users/me/work/app"],
             knownGroupIDs: Set(existingGroups.map(\.id)),
             visibleGroups: updatedGroups,
-            hasInitialized: true
+            hasInitialized: true,
+            persistedCollapsedGroupIDs: []
         )
 
         XCTAssertEqual(

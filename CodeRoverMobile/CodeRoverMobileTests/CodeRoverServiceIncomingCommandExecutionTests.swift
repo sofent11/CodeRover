@@ -526,7 +526,7 @@ final class CodeRoverServiceIncomingCommandExecutionTests: XCTestCase {
         XCTAssertEqual(commandRows[0].turnId, turnID)
     }
 
-    func testCanonicalTimelineStreamingKeepsOnlyLatestProgressItemActiveWithinTurn() {
+    func testCanonicalTimelineStreamingKeepsOnlyLatestProgressItemActiveWithinTurn() throws {
         let service = makeService()
         let threadID = "thread-\(UUID().uuidString)"
         let turnID = "turn-\(UUID().uuidString)"
@@ -583,5 +583,24 @@ final class CodeRoverServiceIncomingCommandExecutionTests: XCTestCase {
         // Keep instances alive for the process lifetime so assertions can run deterministically.
         Self.retainedServices.append(service)
         return service
+    }
+}
+
+private extension CodeRoverService {
+    func mergeHistoryMessages(_ existing: [ChatMessage], _ history: [ChatMessage]) -> [ChatMessage] {
+        guard let threadID = (history.first ?? existing.first)?.threadId else {
+            return existing
+        }
+
+        messagesByThread[threadID] = existing
+        threadTimelineStateByThread[threadID] = ThreadTimelineState(
+            messages: existing.filter { Self.isCanonicalTimelineMessage($0) }
+        )
+        return mergeCanonicalHistoryIntoTimelineState(
+            threadId: threadID,
+            historyMessages: history,
+            activeThreadIDs: [],
+            runningThreadIDs: []
+        )
     }
 }

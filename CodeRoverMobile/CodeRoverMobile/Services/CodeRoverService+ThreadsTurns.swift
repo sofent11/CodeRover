@@ -1540,31 +1540,43 @@ extension CodeRoverService {
             return nil
         }
 
-        if mode == .default {
-            return .object([
-                "mode": .string(mode.rawValue),
-            ])
-        }
+        return .object([
+            "mode": .string(mode.rawValue),
+            "settings": try collaborationModeSettingsPayload(requireModel: mode == .plan),
+        ])
+    }
 
-        let resolvedModel = runtimeModelIdentifierForTurn()
-            ?? selectedModelOption()?.model
-            ?? availableModels.first?.model
-            ?? selectedModelId
-        guard let resolvedModel,
-              !resolvedModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+    func collaborationModeSettingsPayload(requireModel: Bool) throws -> JSONValue {
+        let resolvedModel = normalizedCollaborationModeModelIdentifier()
+        if requireModel, resolvedModel == nil {
             throw CodeRoverServiceError.invalidResponse(
                 "Plan mode requires an available model before starting a plan turn."
             )
         }
 
         return .object([
-            "mode": .string(mode.rawValue),
-            "settings": .object([
-                "model": .string(resolvedModel),
-                "reasoning_effort": selectedReasoningEffortForSelectedModel().map(JSONValue.string) ?? .null,
-                "developer_instructions": .null,
-            ]),
+            "model": resolvedModel.map(JSONValue.string) ?? .null,
+            "reasoning_effort": selectedReasoningEffortForSelectedModel().map(JSONValue.string) ?? .null,
+            "developer_instructions": .null,
         ])
+    }
+
+    func normalizedCollaborationModeModelIdentifier() -> String? {
+        let candidates = [
+            runtimeModelIdentifierForTurn(),
+            selectedModelOption()?.model,
+            availableModels.first?.model,
+            selectedModelId,
+        ]
+
+        for candidate in candidates {
+            let trimmed = candidate?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !trimmed.isEmpty {
+                return trimmed
+            }
+        }
+
+        return nil
     }
 
     // Applies common failure bookkeeping for turn/start primary and fallback attempts.

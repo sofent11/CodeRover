@@ -5,9 +5,33 @@ import com.coderover.android.data.model.MessageKind
 import com.coderover.android.data.model.MessageRole
 import com.coderover.android.data.model.SubagentAction
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class TurnTimelineReducerTest {
+    @Test
+    fun timelineScrollOnlyEntersManualDuringActiveUserScrollAwayFromBottom() {
+        assertTrue(
+            shouldEnterManualTimelineScrollMode(
+                isScrollInProgress = true,
+                isNearBottom = false,
+            ),
+        )
+        assertFalse(
+            shouldEnterManualTimelineScrollMode(
+                isScrollInProgress = false,
+                isNearBottom = false,
+            ),
+        )
+        assertFalse(
+            shouldEnterManualTimelineScrollMode(
+                isScrollInProgress = true,
+                isNearBottom = true,
+            ),
+        )
+    }
+
     @Test
     fun projectTimelineMessagesPrefersSubagentActionRowWithResolvedAgents() {
         val placeholderAction = SubagentAction(

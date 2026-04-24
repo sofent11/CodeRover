@@ -304,6 +304,7 @@ extension CodeRoverService {
         hydratedThreadIDs.remove(threadId)
         loadingThreadIDs.remove(threadId)
         resumedThreadIDs.remove(threadId)
+        threadsWithPendingRemoteHistoryChange.remove(threadId)
         resumeSeededHistoryThreadIDs.remove(threadId)
         historyStateByThread.removeValue(forKey: threadId)
     }
@@ -324,6 +325,7 @@ extension CodeRoverService {
         hydratedThreadIDs.remove(threadId)
         loadingThreadIDs.remove(threadId)
         resumedThreadIDs.remove(threadId)
+        threadsWithPendingRemoteHistoryChange.remove(threadId)
         resumeSeededHistoryThreadIDs.remove(threadId)
         lastPublishedMessageSignatureByThread.removeValue(forKey: threadId)
         foregroundAggressivePollingDeadlineByThread.removeValue(forKey: threadId)
@@ -367,6 +369,7 @@ extension CodeRoverService {
 
         hydratedThreadIDs.remove(threadId)
         resumedThreadIDs.remove(threadId)
+        threadsWithPendingRemoteHistoryChange.remove(threadId)
         resumeSeededHistoryThreadIDs.remove(threadId)
         foregroundAggressivePollingDeadlineByThread.removeValue(forKey: threadId)
 
@@ -467,6 +470,7 @@ extension CodeRoverService {
         hydratedThreadIDs.remove(threadId)
         loadingThreadIDs.remove(threadId)
         resumedThreadIDs.remove(threadId)
+        threadsWithPendingRemoteHistoryChange.remove(threadId)
         resumeSeededHistoryThreadIDs.remove(threadId)
         streamingSystemMessageByItemID = streamingSystemMessageByItemID.filter { key, _ in
             !key.hasPrefix("\(threadId)|item:")
@@ -489,6 +493,7 @@ extension CodeRoverService {
     func clearHydrationCaches() {
         hydratedThreadIDs.removeAll()
         loadingThreadIDs.removeAll()
+        threadsWithPendingRemoteHistoryChange.removeAll()
         resumeSeededHistoryThreadIDs.removeAll()
         cancelAllPerThreadRefreshWork()
     }
@@ -576,6 +581,7 @@ extension CodeRoverService {
         threadSyncEpochByThreadID.removeValue(forKey: threadId)
         threadSyncSourceKindByThreadID.removeValue(forKey: threadId)
         threadsNeedingCanonicalHistoryReconcile.remove(threadId)
+        threadsWithPendingRemoteHistoryChange.remove(threadId)
     }
 
     func cancelAllPerThreadRefreshWork() {
@@ -602,6 +608,7 @@ extension CodeRoverService {
         threadSyncEpochByThreadID.removeAll()
         threadSyncSourceKindByThreadID.removeAll()
         threadsNeedingCanonicalHistoryReconcile.removeAll()
+        threadsWithPendingRemoteHistoryChange.removeAll()
     }
 
     func scheduleCanonicalHistoryReconcileIfNeeded(for threadId: String) {

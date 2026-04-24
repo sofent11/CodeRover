@@ -265,6 +265,7 @@ extension CodeRoverService {
         await refreshInFlightTurnState(threadId: threadId)
         guard !Task.isCancelled else { return }
 
+        let shouldForceRemoteHistoryCatchUp = shouldForceRemoteHistoryCatchUpOnDisplay(threadId: threadId)
         let shouldForceLiveSnapshot = activeThreadId == threadId
             && runtimeProviderID(for: threads.first(where: { $0.id == threadId })?.provider) == "codex"
         if shouldForceLiveSnapshot || threadHasActiveOrRunningTurn(threadId) {
@@ -275,7 +276,31 @@ extension CodeRoverService {
             guard !Task.isCancelled else { return }
             updateCurrentOutput(for: threadId)
         }
+
+        if shouldForceRemoteHistoryCatchUp {
+            do {
+                _ = try await loadThreadHistoryIfNeeded(threadId: threadId, forceRefresh: true)
+            } catch {
+                if shouldTreatAsThreadNotFound(error) {
+                    handleMissingThread(threadId)
+                    return
+                }
+            }
+            guard !Task.isCancelled else { return }
+        }
         requestPrioritizedThreadSync(threadId: threadId)
+    }
+
+    func noteRemoteHistoryChanged(threadId: String) {
+        threadsWithPendingRemoteHistoryChange.insert(threadId)
+    }
+
+    func shouldForceRemoteHistoryCatchUpOnDisplay(threadId: String) -> Bool {
+        threadsWithPendingRemoteHistoryChange.contains(threadId)
+    }
+
+    func markRemoteHistoryChangeHandled(threadId: String) {
+        threadsWithPendingRemoteHistoryChange.remove(threadId)
     }
 
     // Starts a short-lived watch for a running thread that just went off-screen.
@@ -334,7 +359,8 @@ extension CodeRoverService {
         let hasLocalMessages = !(messagesByThread[threadId] ?? []).isEmpty
         let currentState = historyStateByThread[threadId]
         let hasNewestCursor = normalizedHistoryCursor(currentState?.newestCursor) != nil
-        if !forceRefresh, hydratedThreadIDs.contains(threadId), hasLocalMessages, hasNewestCursor {
+        let hasPendingRemoteHistoryChange = threadsWithPendingRemoteHistoryChange.contains(threadId)
+        if !forceRefresh, !hasPendingRemoteHistoryChange, hydratedThreadIDs.contains(threadId), hasLocalMessages, hasNewestCursor {
             return .alreadyHydrated
         }
 
@@ -403,6 +429,7 @@ extension CodeRoverService {
                 } else if !threadHasActiveOrRunningTurn(threadId) {
                     markThreadCanonicalHistoryReconciled(threadId)
                 }
+                markRemoteHistoryChangeHandled(threadId: threadId)
                 return .loadedCanonicalHistory
             } catch let error as CodeRoverServiceError {
                 if case .rpcError(let rpcError) = error, rpcError.code == -32600 {

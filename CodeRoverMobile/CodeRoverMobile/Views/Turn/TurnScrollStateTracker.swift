@@ -12,4 +12,35 @@ struct TurnScrollStateTracker {
     static func shouldShowScrollToLatestButton(messageCount: Int, isScrolledToBottom: Bool) -> Bool {
         messageCount > 0 && !isScrolledToBottom
     }
+
+    static func shouldPreserveFollowBottomOnBottomLoss(
+        wasScrolledToBottom: Bool,
+        autoScrollIsFollowing: Bool,
+        isUserInitiatedScroll: Bool
+    ) -> Bool {
+        wasScrolledToBottom && autoScrollIsFollowing && !isUserInitiatedScroll
+    }
+
+    static func nextIsScrolledToBottom(
+        nextIsAtBottom: Bool,
+        wasScrolledToBottom: Bool,
+        autoScrollIsFollowing: Bool,
+        isUserInitiatedScroll: Bool
+    ) -> Bool {
+        if nextIsAtBottom {
+            return true
+        }
+        return shouldPreserveFollowBottomOnBottomLoss(
+            wasScrolledToBottom: wasScrolledToBottom,
+            autoScrollIsFollowing: autoScrollIsFollowing,
+            isUserInitiatedScroll: isUserInitiatedScroll
+        )
+    }
+
+    static func shouldEnterManualMode(
+        nextIsAtBottom: Bool,
+        isUserInitiatedScroll: Bool
+    ) -> Bool {
+        !nextIsAtBottom && isUserInitiatedScroll
+    }
 }
