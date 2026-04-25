@@ -631,7 +631,7 @@ struct TurnTimelineView<EmptyState: View, Composer: View>: View {
         )
     }
 
-    private static func describeMessage(_ message: ChatMessage) -> String {
+    nonisolated private static func describeMessage(_ message: ChatMessage) -> String {
         let text = message.text.trimmingCharacters(in: .whitespacesAndNewlines)
         let preview = String(text.prefix(24)).replacingOccurrences(of: "\n", with: "\\n")
         return "\(message.role.rawValue):\(message.kind.rawValue):\(message.id.prefix(6)):\(preview)"

@@ -262,7 +262,7 @@ extension CodeRoverService {
 
         // Rehydrate in-flight turn metadata after reconnect/background transitions.
         // Without this refresh, stop-state can disappear until a new live event arrives.
-        await refreshInFlightTurnState(threadId: threadId)
+        _ = await refreshInFlightTurnState(threadId: threadId)
         guard !Task.isCancelled else { return }
 
         let shouldForceRemoteHistoryCatchUp = shouldForceRemoteHistoryCatchUpOnDisplay(threadId: threadId)

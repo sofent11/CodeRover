@@ -12,7 +12,7 @@ struct PersistedConversationCache: Codable {
     var historyStateByThread: [String: ThreadHistoryState]
 }
 
-struct MessagePersistence {
+nonisolated struct MessagePersistence: Sendable {
     // v7 encrypts the on-device message cache while keeping backward-compatible legacy fallbacks.
     private let fileName = "coderover-message-history-v7.bin"
     private let legacyFileNames = [

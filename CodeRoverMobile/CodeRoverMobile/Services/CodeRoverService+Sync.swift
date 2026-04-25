@@ -181,7 +181,6 @@ extension CodeRoverService {
         let localByID = Dictionary(uniqueKeysWithValues: threads.map { ($0.id, $0) })
         let persistedArchivedIDs = locallyArchivedThreadIDs
         let persistedDeletedIDs = locallyDeletedThreadIDs
-        let serverArchivedIDs = Set(serverArchivedThreads.map(\.id))
 
         var merged: [String: ConversationThread] = [:]
         var invalidatedManagedHistoryThreadIDs: [String] = []

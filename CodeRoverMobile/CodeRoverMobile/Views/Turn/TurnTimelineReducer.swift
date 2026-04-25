@@ -598,7 +598,7 @@ enum TurnTimelineReducer {
                 }
 
                 let turnTextKey = "\(turnId)|\(normalizedText)"
-                if let dedupeScope {
+                if dedupeScope != nil {
                     if let existingIndex = firstIndexByTurnTextWithoutConcreteItem[turnTextKey] {
                         result[existingIndex] = message
                         seenKeys.insert(key)

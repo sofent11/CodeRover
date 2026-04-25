@@ -316,7 +316,7 @@ extension CodeRoverService {
         }
 
         let shouldForceRefresh = hydratedThreadIDs.contains(threadId)
-        try? await loadThreadHistoryIfNeeded(threadId: threadId, forceRefresh: shouldForceRefresh)
+        _ = try? await loadThreadHistoryIfNeeded(threadId: threadId, forceRefresh: shouldForceRefresh)
         return true
     }
 

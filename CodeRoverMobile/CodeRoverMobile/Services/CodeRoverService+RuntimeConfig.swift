@@ -313,11 +313,10 @@ extension CodeRoverService {
             }
         }
 
-        var finalAttemptParams = baseParams
         debugRuntimeLog("\(method) fallback using minimal payload")
         return try await sendRequestWithApprovalPolicyFallback(
             method: method,
-            baseParams: finalAttemptParams,
+            baseParams: baseParams,
             context: "minimal"
         )
     }

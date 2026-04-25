@@ -7,6 +7,61 @@
 import Foundation
 import Network
 
+nonisolated private final class WebSocketConnectionOpenCoordinator: @unchecked Sendable {
+    private let lock = NSLock()
+    private var didFinish = false
+    private var timeoutTask: Task<Void, Never>?
+    private let continuation: CheckedContinuation<Void, Error>
+    private weak var connection: NWConnection?
+
+    init(
+        continuation: CheckedContinuation<Void, Error>,
+        connection: NWConnection
+    ) {
+        self.continuation = continuation
+        self.connection = connection
+    }
+
+    func setTimeoutTask(_ task: Task<Void, Never>) {
+        lock.lock()
+        let shouldCancel = didFinish
+        if !shouldCancel {
+            timeoutTask = task
+        }
+        lock.unlock()
+
+        if shouldCancel {
+            task.cancel()
+        }
+    }
+
+    func finish(_ result: Result<Void, Error>) {
+        lock.lock()
+        guard !didFinish else {
+            lock.unlock()
+            return
+        }
+        didFinish = true
+        let taskToCancel = timeoutTask
+        timeoutTask = nil
+        let connection = connection
+        lock.unlock()
+
+        // Ignore future state transitions after first completion.
+        connection?.stateUpdateHandler = { _ in }
+        taskToCancel?.cancel()
+        continuation.resume(with: result)
+    }
+
+    func cancelConnection() {
+        lock.lock()
+        let connection = connection
+        lock.unlock()
+
+        connection?.cancel()
+    }
+}
+
 extension CodeRoverService {
     var requestTimeoutNanoseconds: UInt64 { 20_000_000_000 }
     var historyRequestTimeoutNanoseconds: UInt64 { 90_000_000_000 }
@@ -234,29 +289,19 @@ extension CodeRoverService {
         let connectionTimeoutNanoseconds: UInt64 = 12_000_000_000
 
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            let lock = NSLock()
-            var didFinish = false
-            var timeoutTask: Task<Void, Never>?
-
-            func finish(_ result: Result<Void, Error>) {
-                lock.lock()
-                defer { lock.unlock() }
-                guard !didFinish else { return }
-                didFinish = true
-                timeoutTask?.cancel()
-                continuation.resume(with: result)
-                // Ignore future state transitions after first completion.
-                connection.stateUpdateHandler = { _ in }
-            }
+            let openCoordinator = WebSocketConnectionOpenCoordinator(
+                continuation: continuation,
+                connection: connection
+            )
 
             connection.stateUpdateHandler = { state in
                 switch state {
                 case .ready:
-                    finish(.success(()))
+                    openCoordinator.finish(.success(()))
                 case .failed(let error):
-                    finish(.failure(error))
+                    openCoordinator.finish(.failure(error))
                 case .cancelled:
-                    finish(.failure(CodeRoverServiceError.disconnected))
+                    openCoordinator.finish(.failure(CodeRoverServiceError.disconnected))
                 default:
                     break
                 }
@@ -264,12 +309,12 @@ extension CodeRoverService {
 
             connection.start(queue: webSocketQueue)
 
-            timeoutTask = Task { [weak connection] in
+            openCoordinator.setTimeoutTask(Task { [openCoordinator] in
                 try? await Task.sleep(nanoseconds: connectionTimeoutNanoseconds)
                 guard !Task.isCancelled else { return }
-                connection?.cancel()
-                finish(.failure(CodeRoverServiceError.invalidInput("Connection timed out after 12s")))
-            }
+                openCoordinator.cancelConnection()
+                openCoordinator.finish(.failure(CodeRoverServiceError.invalidInput("Connection timed out after 12s")))
+            })
         }
 
         connection.stateUpdateHandler = { [weak self] state in
