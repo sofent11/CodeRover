@@ -33,6 +33,9 @@ const SECURE_SENDER_MAC = "mac";
 const SECURE_SENDER_IPHONE = "iphone";
 const CLOSE_CODE_REPLACED_CONNECTION = 4003;
 const MAX_PAIRING_AGE_MS = 5 * 60 * 1000;
+const MAX_PENDING_HANDSHAKE_AGE_MS = 30_000;
+const MAX_PENDING_HANDSHAKES = 32;
+const MAX_WIRE_MESSAGE_BYTES = 8 * 1024 * 1024;
 const MAX_BRIDGE_OUTBOUND_MESSAGES = 2000;
 // thread/read snapshots can be several hundred KB, so keep a wider local replay window.
 const MAX_BRIDGE_OUTBOUND_BYTES = 50 * 1024 * 1024;
@@ -47,6 +50,9 @@ interface BridgeSecureTransportOptions {
   sessionId: string;
   deviceState: BridgeDeviceState;
   transportCandidates?: TransportCandidateShape[];
+  pendingHandshakeAgeMs?: number;
+  maxPendingHandshakes?: number;
+  maxWireMessageBytes?: number;
   onDiagnosticsChanged?: () => void;
   onEvent?: (event: SecureTransportEvent) => void;
 }
@@ -117,6 +123,7 @@ interface PendingHandshake {
   macEphemeralPublicKey: string;
   transcriptBytes: Buffer;
   expiresAtForTranscript: number;
+  handshakeExpiresAt: number;
   sendWireMessage?: (message: string) => void;
   closeTransport?: (code?: number, reason?: string) => void;
 }
@@ -146,6 +153,12 @@ export interface SecureTransportDiagnostics {
   outboundBufferBytes: number;
   outboundBufferMinSeq: number | null;
   outboundBufferMaxSeq: number | null;
+  pendingHandshakeCount: number;
+  limits: {
+    maxPendingHandshakes: number;
+    maxPendingHandshakeAgeMs: number;
+    maxWireMessageBytes: number;
+  };
   lastSecureErrorCode: string | null;
 }
 
@@ -217,6 +230,9 @@ export function createBridgeSecureTransport({
   sessionId,
   deviceState,
   transportCandidates = [],
+  pendingHandshakeAgeMs = MAX_PENDING_HANDSHAKE_AGE_MS,
+  maxPendingHandshakes = MAX_PENDING_HANDSHAKES,
+  maxWireMessageBytes = MAX_WIRE_MESSAGE_BYTES,
   onDiagnosticsChanged = () => {},
   onEvent = () => {},
 }: BridgeSecureTransportOptions): BridgeSecureTransport {
@@ -255,12 +271,23 @@ export function createBridgeSecureTransport({
       sendWireMessage,
       closeTransport,
     } = transport;
+    if (Buffer.byteLength(rawMessage, "utf8") > maxWireMessageBytes) {
+      sendControlMessage(reportSecureError({
+        code: "wire_message_too_large",
+        message: "The secure bridge message is too large.",
+      }));
+      closeTransport?.(1009, "Message too large");
+      return true;
+    }
     const parsed = safeParseJSON(rawMessage);
     if (!parsed) {
       return false;
     }
 
     const kind = normalizeNonEmptyString(parsed.kind);
+    if (kind !== "clientAuth") {
+      pruneExpiredPendingHandshakes();
+    }
     if (!kind) {
       if (parsed.method || parsed.id != null) {
         sendControlMessage(createSecureError({
@@ -339,6 +366,12 @@ export function createBridgeSecureTransport({
       outboundBufferBytes,
       outboundBufferMinSeq: outboundBuffer[0]?.bridgeOutboundSeq ?? null,
       outboundBufferMaxSeq: outboundBuffer[outboundBuffer.length - 1]?.bridgeOutboundSeq ?? null,
+      pendingHandshakeCount: pendingHandshakes.size,
+      limits: {
+        maxPendingHandshakes,
+        maxPendingHandshakeAgeMs: pendingHandshakeAgeMs,
+        maxWireMessageBytes,
+      },
       lastSecureErrorCode,
     };
   }
@@ -421,11 +454,19 @@ export function createBridgeSecureTransport({
       }
     }
 
-    const clientNonce = base64ToBuffer(clientNonceBase64);
-    if (!clientNonce || clientNonce.length === 0) {
+    const clientNonce = base64ToBuffer(clientNonceBase64, 32);
+    if (!clientNonce) {
       sendControlMessage(reportSecureError({
         code: "invalid_client_nonce",
         message: "The iPhone secure nonce could not be decoded.",
+        countHandshakeFailure: true,
+      }));
+      return;
+    }
+    if (!base64ToBuffer(phoneIdentityPublicKey, 32) || !base64ToBuffer(phoneEphemeralPublicKey, 32)) {
+      sendControlMessage(reportSecureError({
+        code: "invalid_client_key",
+        message: "The iPhone secure identity or handshake key was invalid.",
         countHandshakeFailure: true,
       }));
       return;
@@ -475,6 +516,18 @@ export function createBridgeSecureTransport({
       + `phoneKey=${shortFingerprint(phoneIdentityPublicKey)} `
       + `transcript=${transcriptDigest(transcriptBytes)}`
     );
+    if (pendingHandshakes.size >= maxPendingHandshakes) {
+      pruneExpiredPendingHandshakes();
+    }
+    if (pendingHandshakes.size >= maxPendingHandshakes && !pendingHandshakes.has(transportId)) {
+      sendControlMessage(reportSecureError({
+        code: "too_many_pending_handshakes",
+        message: "The bridge has too many pending secure handshakes. Try again in a moment.",
+        countHandshakeFailure: true,
+      }));
+      closeTransport?.(1013, "Too many pending handshakes");
+      return;
+    }
 
     pendingHandshakes.set(transportId, {
       transportId,
@@ -488,6 +541,7 @@ export function createBridgeSecureTransport({
       macEphemeralPublicKey: base64UrlToBase64(macEphemeralPublicKey),
       transcriptBytes,
       expiresAtForTranscript,
+      handshakeExpiresAt: Date.now() + pendingHandshakeAgeMs,
       ...(sendWireMessage ? { sendWireMessage } : {}),
       ...(closeTransport ? { closeTransport } : {}),
     });
@@ -495,6 +549,16 @@ export function createBridgeSecureTransport({
 
     const pendingHandshake = pendingHandshakes.get(transportId);
     if (!pendingHandshake) {
+      return;
+    }
+    if (Date.now() >= pendingHandshake.handshakeExpiresAt) {
+      pendingHandshakes.delete(transportId);
+      sendControlMessage(reportSecureError({
+        code: "handshake_expired",
+        message: "The pending secure handshake expired. Try reconnecting.",
+        countHandshakeFailure: true,
+      }));
+      closeTransport?.(4000, "Secure handshake expired");
       return;
     }
 
@@ -530,6 +594,16 @@ export function createBridgeSecureTransport({
         code: "unexpected_client_auth",
         message: "The bridge did not have a pending secure handshake to finalize.",
       }));
+      return;
+    }
+    if (Date.now() >= pendingHandshake.handshakeExpiresAt) {
+      pendingHandshakes.delete(transportId);
+      sendControlMessage(reportSecureError({
+        code: "handshake_expired",
+        message: "The pending secure handshake expired. Try reconnecting.",
+        countHandshakeFailure: true,
+      }));
+      closeTransport?.(4000, "Secure handshake expired");
       return;
     }
 
@@ -820,6 +894,17 @@ export function createBridgeSecureTransport({
     removeActiveSession(transportId);
   }
 
+  function pruneExpiredPendingHandshakes(): void {
+    const now = Date.now();
+    for (const [transportId, pendingHandshake] of pendingHandshakes.entries()) {
+      if (now < pendingHandshake.handshakeExpiresAt) {
+        continue;
+      }
+      pendingHandshakes.delete(transportId);
+      pendingHandshake.closeTransport?.(4000, "Secure handshake expired");
+    }
+  }
+
   function removeActiveSession(transportId: string): void {
     const activeSession = activeSessions.get(transportId);
     if (!activeSession) {
@@ -1039,7 +1124,7 @@ function decryptEnvelopeBuffer(
   try {
     const nonce = nonceForDirection(sender, counter);
     const decipher = createDecipheriv("aes-256-gcm", key, nonce);
-    decipher.setAuthTag(base64ToBuffer(envelope.tag) ?? Buffer.alloc(0));
+    decipher.setAuthTag(base64ToBuffer(envelope.tag, 16) ?? Buffer.alloc(0));
     return Buffer.concat([
       decipher.update(base64ToBuffer(envelope.ciphertext) ?? Buffer.alloc(0)),
       decipher.final(),
@@ -1171,12 +1256,25 @@ function safeParseJSON(value: unknown): JsonRecord | null {
   }
 }
 
-function base64ToBuffer(value: unknown): Buffer | null {
+function base64ToBuffer(value: unknown, expectedByteLength?: number): Buffer | null {
   if (typeof value !== "string") {
     return null;
   }
+  const normalized = value.trim();
+  if (!normalized || normalized.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(normalized)) {
+    return null;
+  }
   try {
-    return Buffer.from(value, "base64");
+    const buffer = Buffer.from(normalized, "base64");
+    const canonicalInput = normalized.replace(/=+$/g, "");
+    const canonicalOutput = buffer.toString("base64").replace(/=+$/g, "");
+    if (canonicalInput !== canonicalOutput) {
+      return null;
+    }
+    if (expectedByteLength != null && buffer.length !== expectedByteLength) {
+      return null;
+    }
+    return buffer;
   } catch {
     return null;
   }

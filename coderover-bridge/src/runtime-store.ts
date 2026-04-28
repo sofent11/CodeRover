@@ -4,7 +4,7 @@
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { randomUUID } from "crypto";
+import { createHash, randomUUID } from "crypto";
 
 type ProviderId = "codex" | "claude" | "gemini" | "copilot";
 type UnknownRecord = Record<string, unknown>;
@@ -131,13 +131,22 @@ export function createRuntimeStore({ baseDir = DEFAULT_STORE_DIR }: { baseDir?: 
     }
 
     const historyPath = threadHistoryPath(normalizedThreadId);
-    if (!fs.existsSync(historyPath)) {
+    const legacyPath = legacyThreadHistoryPath(normalizedThreadId);
+    const readablePath = fs.existsSync(historyPath)
+      ? historyPath
+      : fs.existsSync(legacyPath)
+        ? legacyPath
+        : "";
+    if (!readablePath) {
       return null;
     }
 
     try {
-      const raw = fs.readFileSync(historyPath, "utf8");
-      return normalizeThreadHistory(JSON.parse(raw), normalizedThreadId);
+      const history = normalizeThreadHistory(readJsonFileWithBackup(readablePath), normalizedThreadId);
+      if (readablePath === legacyPath && legacyPath !== historyPath) {
+        persistJsonAtomic(historyPath, history);
+      }
+      return history;
     } catch {
       return defaultThreadHistory(normalizedThreadId);
     }
@@ -151,10 +160,7 @@ export function createRuntimeStore({ baseDir = DEFAULT_STORE_DIR }: { baseDir?: 
 
     const normalizedHistory = normalizeThreadHistory(history, normalizedThreadId);
     fs.mkdirSync(threadsDir, { recursive: true });
-    fs.writeFileSync(
-      threadHistoryPath(normalizedThreadId),
-      JSON.stringify(normalizedHistory, null, 2)
-    );
+    persistJsonAtomic(threadHistoryPath(normalizedThreadId), normalizedHistory);
     return normalizedHistory;
   }
 
@@ -285,6 +291,14 @@ export function createRuntimeStore({ baseDir = DEFAULT_STORE_DIR }: { baseDir?: 
         // Best-effort cleanup only.
       }
     }
+    const legacyHistoryPath = legacyThreadHistoryPath(existing.id);
+    if (legacyHistoryPath !== historyPath && fs.existsSync(legacyHistoryPath)) {
+      try {
+        fs.unlinkSync(legacyHistoryPath);
+      } catch {
+        // Best-effort cleanup only.
+      }
+    }
     return true;
   }
 
@@ -321,6 +335,13 @@ export function createRuntimeStore({ baseDir = DEFAULT_STORE_DIR }: { baseDir?: 
   }
 
   function threadHistoryPath(threadId: string): string {
+    return path.join(threadsDir, encodedThreadHistoryFileName(threadId));
+  }
+
+  function legacyThreadHistoryPath(threadId: string): string {
+    if (!isSafeLegacyThreadFileName(threadId)) {
+      return "";
+    }
     return path.join(threadsDir, `${threadId}.json`);
   }
 
@@ -347,15 +368,68 @@ function loadIndex(indexPath: string): RuntimeStoreIndex {
   }
 
   try {
-    return normalizeIndex(JSON.parse(fs.readFileSync(indexPath, "utf8")));
+    return normalizeIndex(readJsonFileWithBackup(indexPath));
   } catch {
     return defaultIndex();
   }
 }
 
 function persistIndex(indexPath: string, indexState: RuntimeStoreIndex): void {
-  fs.mkdirSync(path.dirname(indexPath), { recursive: true });
-  fs.writeFileSync(indexPath, JSON.stringify(indexState, null, 2));
+  persistJsonAtomic(indexPath, indexState);
+}
+
+function readJsonFileWithBackup(filePath: string): unknown {
+  try {
+    return JSON.parse(fs.readFileSync(filePath, "utf8"));
+  } catch (primaryError) {
+    const backupPath = backupFilePath(filePath);
+    if (!fs.existsSync(backupPath)) {
+      throw primaryError;
+    }
+    return JSON.parse(fs.readFileSync(backupPath, "utf8"));
+  }
+}
+
+function persistJsonAtomic(filePath: string, value: unknown): void {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const payload = `${JSON.stringify(value, null, 2)}\n`;
+  const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  const backupPath = backupFilePath(filePath);
+
+  const fd = fs.openSync(tempPath, "w", 0o600);
+  try {
+    fs.writeFileSync(fd, payload);
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+
+  if (fs.existsSync(filePath)) {
+    try {
+      fs.copyFileSync(filePath, backupPath);
+    } catch {
+      // A backup is helpful but should not block the primary write.
+    }
+  }
+  fs.renameSync(tempPath, filePath);
+}
+
+function backupFilePath(filePath: string): string {
+  return `${filePath}.bak`;
+}
+
+function encodedThreadHistoryFileName(threadId: string): string {
+  const digest = createHash("sha256").update(threadId, "utf8").digest("hex");
+  return `thread-${digest}.json`;
+}
+
+function isSafeLegacyThreadFileName(threadId: string): boolean {
+  return Boolean(threadId)
+    && !threadId.includes("/")
+    && !threadId.includes("\\")
+    && threadId !== "."
+    && threadId !== ".."
+    && !threadId.includes("..");
 }
 
 function defaultIndex(): RuntimeStoreIndex {

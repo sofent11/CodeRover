@@ -8,7 +8,7 @@ import * as os from "os";
 import * as path from "path";
 import { execFileSync } from "node:child_process";
 
-import { __test } from "../src/git-handler";
+import { __test, handleGitRequest } from "../src/git-handler";
 
 function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", args, {
@@ -40,6 +40,29 @@ function cleanupPaths(...pathsToDelete: string[]) {
   for (const targetPath of pathsToDelete) {
     fs.rmSync(targetPath, { recursive: true, force: true });
   }
+}
+
+function callGitRequest(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
+  return new Promise((resolve, reject) => {
+    const handled = handleGitRequest(
+      JSON.stringify({
+        id: `${method}-${Date.now()}-${Math.random()}`,
+        method,
+        params,
+      }),
+      (response) => {
+        const parsed = JSON.parse(response) as Record<string, unknown>;
+        if (parsed.error) {
+          reject(parsed.error);
+          return;
+        }
+        resolve(parsed.result as Record<string, unknown>);
+      }
+    );
+    if (!handled) {
+      reject(new Error(`Request was not handled: ${method}`));
+    }
+  });
 }
 
 test("normalizeBranchListEntry strips linked-worktree markers from branch labels", () => {
@@ -123,6 +146,75 @@ test("gitCreateBranch checks out a normalized branch name", async () => {
     assert.equal(result.branch, "coderover/new-branch");
     assert.equal(result.status.branch, "coderover/new-branch");
     assert.equal(git(repoDir, "rev-parse", "--abbrev-ref", "HEAD"), "coderover/new-branch");
+  } finally {
+    cleanupPaths(repoDir);
+  }
+});
+
+test("gitCommit refuses implicit project commits when other repo changes are dirty", async () => {
+  const repoDir = makeTempRepo();
+  const projectDir = path.join(repoDir, "coderover-bridge");
+
+  try {
+    fs.writeFileSync(path.join(projectDir, "src", "index.ts"), "export const ready = false;\n");
+    fs.writeFileSync(path.join(repoDir, "README.md"), "# Dirty outside project\n");
+
+    await assert.rejects(
+      __test.gitCommit(projectDir, { message: "Scoped commit" }),
+      (error: any) => error?.errorCode === "commit_scope_conflict"
+    );
+
+    assert.equal(git(repoDir, "status", "--porcelain").split("\n").filter(Boolean).length, 2);
+  } finally {
+    cleanupPaths(repoDir);
+  }
+});
+
+test("gitCommit with explicit paths commits only the requested files", async () => {
+  const repoDir = makeTempRepo();
+  const projectDir = path.join(repoDir, "coderover-bridge");
+
+  try {
+    fs.writeFileSync(path.join(projectDir, "src", "index.ts"), "export const ready = false;\n");
+    fs.writeFileSync(path.join(repoDir, "README.md"), "# Dirty outside project\n");
+
+    const result = await __test.gitCommit(projectDir, {
+      message: "Commit project file",
+      paths: ["src/index.ts"],
+    });
+
+    assert.match(result.hash, /^[a-f0-9]+$/);
+    assert.equal(git(repoDir, "status", "--porcelain"), "M README.md");
+    assert.equal(git(repoDir, "show", "--name-only", "--format=", "HEAD"), "coderover-bridge/src/index.ts");
+  } finally {
+    cleanupPaths(repoDir);
+  }
+});
+
+test("mutating git requests for one repo are serialized at the bridge entrypoint", async () => {
+  const repoDir = makeTempRepo();
+
+  try {
+    fs.writeFileSync(path.join(repoDir, "README.md"), "# Concurrent commit\n");
+
+    const results = await Promise.allSettled([
+      callGitRequest("git/commit", {
+        cwd: repoDir,
+        message: "Concurrent commit",
+        changeScope: "repo",
+        confirm: "commit_all_repo_changes",
+      }),
+      callGitRequest("git/commit", {
+        cwd: repoDir,
+        message: "Concurrent commit duplicate",
+        changeScope: "repo",
+        confirm: "commit_all_repo_changes",
+      }),
+    ]);
+
+    assert.equal(results.filter((result) => result.status === "fulfilled").length, 1);
+    assert.equal(results.filter((result) => result.status === "rejected").length, 1);
+    assert.equal(git(repoDir, "status", "--porcelain"), "");
   } finally {
     cleanupPaths(repoDir);
   }

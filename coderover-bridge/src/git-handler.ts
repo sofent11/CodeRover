@@ -9,6 +9,21 @@ import { randomBytes } from "crypto";
 
 const GIT_TIMEOUT_MS = 30_000;
 const EMPTY_TREE_HASH = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+const MUTATING_GIT_METHODS = new Set([
+  "git/commit",
+  "git/push",
+  "git/pull",
+  "git/checkout",
+  "git/createBranch",
+  "git/createWorktree",
+  "git/createManagedWorktree",
+  "git/transferManagedHandoff",
+  "git/removeWorktree",
+  "git/stash",
+  "git/stashPop",
+  "git/resetToRemote",
+]);
+const repoMutationLocks = new Map<string, Promise<void>>();
 
 type SendResponse = (response: string) => void;
 
@@ -22,6 +37,8 @@ interface GitRequestParams extends JsonObject {
   name?: unknown;
   baseBranch?: unknown;
   changeTransfer?: unknown;
+  changeScope?: unknown;
+  paths?: unknown;
   targetPath?: unknown;
   targetProjectPath?: unknown;
   confirm?: unknown;
@@ -159,7 +176,18 @@ function parseGitRequest(rawMessage: string): ParsedGitRequest | null {
 
 async function handleGitMethod(method: string, params: GitRequestParams): Promise<GitMethodResult> {
   const cwd = await resolveGitCwd(params);
+  if (MUTATING_GIT_METHODS.has(method)) {
+    const repoRoot = await resolveRepoRoot(cwd);
+    if (!repoRoot) {
+      throw gitError("missing_working_directory", "The requested local working directory is not inside a Git repository.");
+    }
+    return withRepoMutationLock(repoRoot, () => handleGitMethodUnlocked(method, cwd, params));
+  }
 
+  return handleGitMethodUnlocked(method, cwd, params);
+}
+
+async function handleGitMethodUnlocked(method: string, cwd: string, params: GitRequestParams): Promise<GitMethodResult> {
   switch (method) {
     case "git/status":
       return gitStatus(cwd);
@@ -268,13 +296,28 @@ async function gitDiff(cwd: string): Promise<{ patch: string }> {
 
 async function gitCommit(cwd: string, params: GitRequestParams): Promise<GitCommitResult> {
   const message = readNonEmptyString(params.message) || "Changes from CodeRover";
-  const statusCheck = await git(cwd, "status", "--porcelain");
+  const repoRoot = await resolveRepoRoot(cwd);
+  if (!repoRoot) {
+    throw gitError("missing_working_directory", "The selected local folder is not inside a Git repository.");
+  }
+  const pathspec = await resolveCommitPathspec(cwd, params);
+  const statusCheck = await git(repoRoot, "status", "--porcelain", "--", ...pathspec);
   if (!statusCheck.trim()) {
     throw gitError("nothing_to_commit", "Nothing to commit.");
   }
 
-  await git(cwd, "add", "-A");
-  const output = await git(cwd, "commit", "-m", message);
+  if (!hasExplicitCommitPaths(params) && !isRepoWidePathspec(pathspec)) {
+    const outOfScopeChanges = await findOutOfScopeStatusPaths(repoRoot, pathspec);
+    if (outOfScopeChanges.length > 0) {
+      throw gitError(
+        "commit_scope_conflict",
+        "Cannot commit safely because there are uncommitted changes outside the current project scope."
+      );
+    }
+  }
+
+  await git(repoRoot, "add", "-A", "--", ...pathspec);
+  const output = await git(repoRoot, "commit", "-m", message, "--", ...pathspec);
 
   const hashMatch = output.match(/\[(\S+)\s+([a-f0-9]+)\]/);
   const hash = hashMatch?.[2] ?? "";
@@ -283,6 +326,114 @@ async function gitCommit(cwd: string, params: GitRequestParams): Promise<GitComm
   const summary = summaryMatch ? summaryMatch[0] : output.split("\n").pop()?.trim() || "";
 
   return { hash, branch, summary };
+}
+
+async function resolveCommitPathspec(cwd: string, params: GitRequestParams): Promise<string[]> {
+  const explicitPaths = normalizeCommitPaths(params.paths);
+  if (explicitPaths.length > 0) {
+    const repoRoot = await resolveRepoRoot(cwd);
+    return explicitPaths.map((candidatePath) => normalizeCommitPathspec(repoRoot || cwd, cwd, candidatePath));
+  }
+
+  const changeScope = readNonEmptyString(params.changeScope);
+  if (changeScope === "repo" || changeScope === "repository") {
+    if (params.confirm !== "commit_all_repo_changes") {
+      throw gitError(
+        "confirmation_required",
+        'Repository-wide commits require params.confirm === "commit_all_repo_changes".'
+      );
+    }
+    return ["."];
+  }
+
+  const repoRoot = await resolveRepoRoot(cwd);
+  if (!repoRoot) {
+    throw gitError("missing_working_directory", "The selected local folder is not inside a Git repository.");
+  }
+  const projectRelativePath = resolveProjectRelativePath(cwd, repoRoot);
+  return projectRelativePath ? [projectRelativePath] : ["."];
+}
+
+function normalizeCommitPaths(rawPaths: unknown): string[] {
+  const candidates = Array.isArray(rawPaths)
+    ? rawPaths
+    : typeof rawPaths === "string"
+      ? rawPaths.split(/\n|,/)
+      : [];
+  return [...new Set(candidates
+    .map((value) => readNonEmptyString(value))
+    .filter((value): value is string => Boolean(value)))];
+}
+
+function normalizeCommitPathspec(repoRoot: string, cwd: string, candidatePath: string): string {
+  const normalizedRepoRoot = normalizeExistingPath(repoRoot) || path.resolve(repoRoot);
+  const normalizedCwd = normalizeExistingPath(cwd) || path.resolve(cwd);
+  const rawResolvedPath = path.isAbsolute(candidatePath)
+    ? candidatePath
+    : path.resolve(normalizedCwd, candidatePath);
+  const resolvedPath = normalizeExistingPath(rawResolvedPath) || rawResolvedPath;
+  const relativePath = path.relative(normalizedRepoRoot, resolvedPath);
+  if (!relativePath || relativePath === ".") {
+    return ".";
+  }
+  if (relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
+    throw gitError("path_outside_repo", `Commit path '${candidatePath}' is outside the selected repository.`);
+  }
+  return relativePath;
+}
+
+function hasExplicitCommitPaths(params: GitRequestParams): boolean {
+  return normalizeCommitPaths(params.paths).length > 0;
+}
+
+function isRepoWidePathspec(pathspec: string[]): boolean {
+  return pathspec.length === 1 && pathspec[0] === ".";
+}
+
+async function findOutOfScopeStatusPaths(cwd: string, pathspec: string[]): Promise<string[]> {
+  const allStatus = await git(cwd, "status", "--porcelain=v1");
+  const allPaths = parsePorcelainStatusPaths(allStatus);
+  if (allPaths.length === 0) {
+    return [];
+  }
+
+  return allPaths.filter((filePath) => !isPathCoveredByPathspec(filePath, pathspec));
+}
+
+function parsePorcelainStatusPaths(output: string): string[] {
+  return output
+    .trim()
+    .split("\n")
+    .map((line) => line.replace(/\r$/, ""))
+    .filter(Boolean)
+    .map((line) => {
+      const value = line.slice(3).trim();
+      const renameTarget = value.split(" -> ").pop() || value;
+      return unquoteGitPath(renameTarget);
+    })
+    .filter(Boolean);
+}
+
+function unquoteGitPath(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed.startsWith('"') || !trimmed.endsWith('"')) {
+    return trimmed;
+  }
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return trimmed.slice(1, -1);
+  }
+}
+
+function isPathCoveredByPathspec(filePath: string, pathspec: string[]): boolean {
+  if (isRepoWidePathspec(pathspec)) {
+    return true;
+  }
+  return pathspec.some((scopePath) => {
+    const normalizedScope = scopePath.replace(/\/+$/g, "");
+    return filePath === normalizedScope || filePath.startsWith(`${normalizedScope}/`);
+  });
 }
 
 async function gitPush(cwd: string): Promise<{ branch: string; remote: string; status: GitStatusResult }> {
@@ -838,6 +989,27 @@ async function gitBranchesWithStatus(cwd: string): Promise<GitBranchesResult & {
     gitStatus(cwd),
   ]);
   return { ...branchResult, status: statusResult };
+}
+
+async function withRepoMutationLock<T>(repoRoot: string, callback: () => Promise<T>): Promise<T> {
+  const lockKey = normalizeExistingPath(repoRoot) || path.resolve(repoRoot);
+  const previous = repoMutationLocks.get(lockKey) || Promise.resolve();
+  let releaseCurrent!: () => void;
+  const current = new Promise<void>((resolve) => {
+    releaseCurrent = resolve;
+  });
+  const chained = previous.then(() => current);
+  repoMutationLocks.set(lockKey, chained);
+
+  await previous;
+  try {
+    return await callback();
+  } finally {
+    releaseCurrent();
+    if (repoMutationLocks.get(lockKey) === chained) {
+      repoMutationLocks.delete(lockKey);
+    }
+  }
 }
 
 async function gitWorktreePathByBranch(cwd: string, options: { projectRelativePath?: string } = {}): Promise<Record<string, string>> {
@@ -1530,6 +1702,7 @@ export const __test = {
   normalizeCreatedBranchName,
   gitBranches,
   gitCheckout,
+  gitCommit,
   gitCreateBranch,
   gitCreateManagedWorktree,
   gitCreateWorktree,

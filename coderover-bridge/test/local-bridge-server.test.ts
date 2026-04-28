@@ -241,6 +241,89 @@ test("startLocalBridgeServer keeps multiple clients connected at the same time",
   await server.stop();
 });
 
+test("startLocalBridgeServer rejects clients above the configured connection limit", async () => {
+  let openCount = 0;
+  const server = startLocalBridgeServer({
+    bridgeId: "bridge-limit",
+    host: "127.0.0.1",
+    port: 0,
+    maxClients: 1,
+    onClientOpen() {
+      openCount += 1;
+    },
+  });
+
+  await delay(25);
+
+  const firstClient = new WebSocket(
+    `ws://127.0.0.1:${server.resolvedPort()}/bridge/bridge-limit`
+  );
+  await new Promise<void>((resolve, reject) => {
+    firstClient.once("open", () => resolve());
+    firstClient.once("error", reject);
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    const socket = net.createConnection(
+      {
+        host: "127.0.0.1",
+        port: server.resolvedPort(),
+      },
+      () => {
+        socket.write(
+          [
+            "GET /bridge/bridge-limit HTTP/1.1",
+            `Host: 127.0.0.1:${server.resolvedPort()}`,
+            "Upgrade: websocket",
+            "Connection: Upgrade",
+            "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==",
+            "Sec-WebSocket-Version: 13",
+            "",
+            "",
+          ].join("\r\n")
+        );
+      }
+    );
+    socket.on("close", () => {
+      resolve();
+    });
+    socket.on("error", reject);
+  });
+
+  firstClient.terminate();
+  await server.stop();
+
+  assert.equal(openCount, 1);
+});
+
+test("startLocalBridgeServer closes clients that exceed maxPayloadBytes", async () => {
+  const server = startLocalBridgeServer({
+    bridgeId: "bridge-payload",
+    host: "127.0.0.1",
+    port: 0,
+    maxPayloadBytes: 8,
+  });
+
+  await delay(25);
+
+  const client = new WebSocket(
+    `ws://127.0.0.1:${server.resolvedPort()}/bridge/bridge-payload`
+  );
+  await new Promise<void>((resolve, reject) => {
+    client.once("open", () => resolve());
+    client.once("error", reject);
+  });
+
+  const closeCode = await new Promise<number>((resolve) => {
+    client.once("close", (code) => resolve(code));
+    client.send("this message is too large");
+  });
+
+  await server.stop();
+
+  assert.equal(closeCode, 1009);
+});
+
 test("startLocalBridgeServer reports stale bridge routes as pairing_expired", async () => {
   const server = startLocalBridgeServer({
     bridgeId: "bridge-current",

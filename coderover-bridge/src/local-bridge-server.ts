@@ -16,6 +16,8 @@ const CLOSE_CODE_UPSTREAM_RESTARTING = 4004;
 const HEARTBEAT_INTERVAL_MS = 30_000;
 const STALE_PAIRING_CLOSE_DELAY_MS = 200;
 const BRIDGE_PATH_PREFIX = "/bridge/";
+const DEFAULT_MAX_CLIENTS = 16;
+const DEFAULT_MAX_PAYLOAD_BYTES = 8 * 1024 * 1024;
 const STALE_PAIRING_ERROR_MESSAGE =
   "This bridge pairing is no longer valid. Scan a new QR code to pair again.";
 
@@ -44,6 +46,8 @@ interface StartLocalBridgeServerOptions {
   host?: string;
   port?: number;
   logPrefix?: string;
+  maxClients?: number;
+  maxPayloadBytes?: number;
   canAcceptConnection?: () => boolean;
   onMessage?: (message: string, transport: LocalBridgeTransport) => void;
   onClientOpen?: (event: LocalBridgeClientOpenEvent) => void;
@@ -74,6 +78,8 @@ export function startLocalBridgeServer({
   host = "0.0.0.0",
   port = 8765,
   logPrefix = "[coderover]",
+  maxClients = DEFAULT_MAX_CLIENTS,
+  maxPayloadBytes = DEFAULT_MAX_PAYLOAD_BYTES,
   canAcceptConnection = () => true,
   onMessage,
   onClientOpen,
@@ -91,7 +97,7 @@ export function startLocalBridgeServer({
     res.writeHead(404, { "content-type": "application/json; charset=utf-8" });
     res.end(JSON.stringify({ ok: false, error: "not_found" }));
   });
-  const wss = new WebSocketServer({ noServer: true });
+  const wss = new WebSocketServer({ noServer: true, maxPayload: maxPayloadBytes });
   let nextClientId = 1;
   const clients = new Map<string, BridgeWebSocket>();
   let stopPromise: Promise<void> | null = null;
@@ -156,7 +162,7 @@ export function startLocalBridgeServer({
       return;
     }
 
-    if (!canAcceptConnection()) {
+    if (clients.size >= maxClients || !canAcceptConnection()) {
       socket.end(
         "HTTP/1.1 503 Service Unavailable\r\n"
         + "Connection: close\r\n"
@@ -187,6 +193,18 @@ export function startLocalBridgeServer({
 
     bridgeSocket.on("message", (data) => {
       const message = typeof data === "string" ? data : data.toString("utf8");
+      if (Buffer.byteLength(message, "utf8") > maxPayloadBytes) {
+        try {
+          bridgeSocket.close(1009, "Message too large");
+        } catch {
+          try {
+            bridgeSocket.terminate();
+          } catch {
+            // Best-effort only.
+          }
+        }
+        return;
+      }
       debugLog(
         `${logPrefix} local client message (${transportId}) bytes=${Buffer.byteLength(message, "utf8")}`
       );

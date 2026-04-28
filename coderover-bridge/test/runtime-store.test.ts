@@ -161,3 +161,65 @@ test("runtime store loads legacy snake_case thread metadata and history items", 
     fs.rmSync(baseDir, { recursive: true, force: true });
   }
 });
+
+test("runtime store maps unsafe thread ids to safe history filenames", () => {
+  const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "coderover-runtime-store-safe-"));
+  const store = createRuntimeStore({ baseDir });
+  const unsafeThreadId = "claude:../../outside/thread";
+
+  try {
+    store.createThread({
+      id: unsafeThreadId,
+      provider: "claude",
+      providerSessionId: "unsafe-session",
+    });
+    store.saveThreadHistory(unsafeThreadId, {
+      threadId: unsafeThreadId,
+      turns: [{ id: "turn-safe", items: [] }],
+    });
+
+    const history = store.getThreadHistory(unsafeThreadId);
+    assert.equal(history?.turns?.[0]?.id, "turn-safe");
+    assert.equal(fs.existsSync(path.join(baseDir, "outside")), false);
+    const historyFiles = fs.readdirSync(path.join(baseDir, "threads"));
+    assert.equal(historyFiles.some((fileName) => fileName.includes("..") || fileName.includes("/")), false);
+    assert.equal(historyFiles.filter((fileName) => fileName.startsWith("thread-") && fileName.endsWith(".json")).length, 1);
+  } finally {
+    store.shutdown();
+    fs.rmSync(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("runtime store recovers index from backup when the primary file is corrupt", () => {
+  const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "coderover-runtime-store-backup-"));
+  const indexPath = path.join(baseDir, "index.json");
+
+  try {
+    fs.mkdirSync(baseDir, { recursive: true });
+    fs.writeFileSync(`${indexPath}.bak`, JSON.stringify({
+      version: 1,
+      threads: {
+        "claude:backup-thread": {
+          id: "claude:backup-thread",
+          provider: "claude",
+          providerSessionId: "backup-session",
+          title: "Recovered",
+          createdAt: "2026-03-10T00:00:00.000Z",
+          updatedAt: "2026-03-10T00:00:00.000Z",
+        },
+      },
+      providerSessions: {},
+    }, null, 2));
+    fs.writeFileSync(indexPath, "{not valid json");
+
+    const store = createRuntimeStore({ baseDir });
+    try {
+      assert.equal(store.getThreadMeta("claude:backup-thread")?.title, "Recovered");
+      assert.equal(store.findThreadIdByProviderSession("claude", "backup-session"), "claude:backup-thread");
+    } finally {
+      store.shutdown();
+    }
+  } finally {
+    fs.rmSync(baseDir, { recursive: true, force: true });
+  }
+});

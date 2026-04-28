@@ -90,6 +90,10 @@ interface HandshakeResult {
   transcriptBytes: Buffer;
 }
 
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function isServerHelloMessage(message: ControlMessage | undefined): message is ServerHelloMessage {
   return Boolean(message && message.kind === "serverHello");
 }
@@ -134,6 +138,158 @@ test("secure transport rejects plaintext JSON-RPC before the secure handshake", 
   assert.equal(handled, true);
   assert.equal(controlMessages[0]?.kind, "secureError");
   assert.equal(controlMessages[0]?.code, "update_required");
+});
+
+test("secure transport rejects malformed handshake base64 and nonce lengths", () => {
+  const macIdentity = createOkpKeyPair("ed25519");
+  const phoneIdentity = createOkpKeyPair("ed25519");
+  const phoneEphemeral = createOkpKeyPair("x25519");
+  const secureTransport = createBridgeSecureTransport({
+    sessionId: "session-invalid-handshake",
+    deviceState: createBridgeDeviceState({
+      bridgeId: "bridge-invalid-handshake",
+      macDeviceId: "mac-invalid-handshake",
+      macIdentityPrivateKey: macIdentity.privateKey,
+      macIdentityPublicKey: macIdentity.publicKey,
+    }),
+  });
+  const controlMessages: ControlMessage[] = [];
+
+  secureTransport.handleIncomingWireMessage(
+    JSON.stringify({
+      kind: "clientHello",
+      protocolVersion: 1,
+      sessionId: "session-invalid-handshake",
+      handshakeMode: HANDSHAKE_MODE_QR_BOOTSTRAP,
+      phoneDeviceId: "phone-invalid-handshake",
+      phoneIdentityPublicKey: phoneIdentity.publicKey,
+      phoneEphemeralPublicKey: phoneEphemeral.publicKey,
+      clientNonce: Buffer.alloc(8, 1).toString("base64"),
+    }),
+    {
+      transportId: "transport-invalid-nonce",
+      sendControlMessage(message) {
+        controlMessages.push(message);
+      },
+    }
+  );
+
+  secureTransport.handleIncomingWireMessage(
+    JSON.stringify({
+      kind: "clientHello",
+      protocolVersion: 1,
+      sessionId: "session-invalid-handshake",
+      handshakeMode: HANDSHAKE_MODE_QR_BOOTSTRAP,
+      phoneDeviceId: "phone-invalid-handshake",
+      phoneIdentityPublicKey: "not-valid-base64!",
+      phoneEphemeralPublicKey: phoneEphemeral.publicKey,
+      clientNonce: Buffer.alloc(32, 1).toString("base64"),
+    }),
+    {
+      transportId: "transport-invalid-key",
+      sendControlMessage(message) {
+        controlMessages.push(message);
+      },
+    }
+  );
+
+  assert.equal(controlMessages[0]?.kind, "secureError");
+  assert.equal(controlMessages[0]?.code, "invalid_client_nonce");
+  assert.equal(controlMessages[1]?.kind, "secureError");
+  assert.equal(controlMessages[1]?.code, "invalid_client_key");
+  assert.equal(secureTransport.getDiagnostics().handshakeFailureCount, 2);
+});
+
+test("secure transport rejects oversized wire messages before parsing", () => {
+  const macIdentity = createOkpKeyPair("ed25519");
+  const secureTransport = createBridgeSecureTransport({
+    sessionId: "session-oversized-wire",
+    maxWireMessageBytes: 16,
+    deviceState: createBridgeDeviceState({
+      bridgeId: "bridge-oversized-wire",
+      macDeviceId: "mac-oversized-wire",
+      macIdentityPrivateKey: macIdentity.privateKey,
+      macIdentityPublicKey: macIdentity.publicKey,
+    }),
+  });
+  const controlMessages: ControlMessage[] = [];
+  let closeCode: number | undefined;
+
+  const handled = secureTransport.handleIncomingWireMessage(
+    JSON.stringify({ kind: "clientHello", padding: "this is too large" }),
+    {
+      transportId: "transport-oversized-wire",
+      sendControlMessage(message) {
+        controlMessages.push(message);
+      },
+      closeTransport(code) {
+        closeCode = code;
+      },
+    }
+  );
+
+  assert.equal(handled, true);
+  assert.equal(controlMessages[0]?.kind, "secureError");
+  assert.equal(controlMessages[0]?.code, "wire_message_too_large");
+  assert.equal(closeCode, 1009);
+});
+
+test("secure transport expires pending handshakes", async () => {
+  const macIdentity = createOkpKeyPair("ed25519");
+  const phoneIdentity = createOkpKeyPair("ed25519");
+  const phoneEphemeral = createOkpKeyPair("x25519");
+  const secureTransport = createBridgeSecureTransport({
+    sessionId: "session-handshake-expiry",
+    pendingHandshakeAgeMs: 1,
+    deviceState: createBridgeDeviceState({
+      bridgeId: "bridge-handshake-expiry",
+      macDeviceId: "mac-handshake-expiry",
+      macIdentityPrivateKey: macIdentity.privateKey,
+      macIdentityPublicKey: macIdentity.publicKey,
+    }),
+  });
+  const controlMessages: ControlMessage[] = [];
+
+  secureTransport.handleIncomingWireMessage(
+    JSON.stringify({
+      kind: "clientHello",
+      protocolVersion: 1,
+      sessionId: "session-handshake-expiry",
+      handshakeMode: HANDSHAKE_MODE_QR_BOOTSTRAP,
+      phoneDeviceId: "phone-handshake-expiry",
+      phoneIdentityPublicKey: phoneIdentity.publicKey,
+      phoneEphemeralPublicKey: phoneEphemeral.publicKey,
+      clientNonce: Buffer.alloc(32, 1).toString("base64"),
+    }),
+    {
+      transportId: "transport-handshake-expiry",
+      sendControlMessage(message) {
+        controlMessages.push(message);
+      },
+    }
+  );
+  assert.equal(controlMessages[0]?.kind, "serverHello");
+
+  await delay(20);
+
+  secureTransport.handleIncomingWireMessage(
+    JSON.stringify({
+      kind: "clientAuth",
+      sessionId: "session-handshake-expiry",
+      phoneDeviceId: "phone-handshake-expiry",
+      keyEpoch: (controlMessages[0] as ServerHelloMessage).keyEpoch,
+      phoneSignature: Buffer.alloc(64, 2).toString("base64"),
+    }),
+    {
+      transportId: "transport-handshake-expiry",
+      sendControlMessage(message) {
+        controlMessages.push(message);
+      },
+    }
+  );
+
+  assert.equal(controlMessages[1]?.kind, "secureError");
+  assert.equal(controlMessages[1]?.code, "handshake_expired");
 });
 
 test("secure transport round-trips encrypted payloads after a trusted reconnect handshake", () => {

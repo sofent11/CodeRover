@@ -448,6 +448,8 @@ export function startBridge({
       outboundBufferBytes: secureDiagnostics?.outboundBufferBytes || 0,
       outboundBufferMinSeq: secureDiagnostics?.outboundBufferMinSeq || null,
       outboundBufferMaxSeq: secureDiagnostics?.outboundBufferMaxSeq || null,
+      pendingHandshakeCount: secureDiagnostics?.pendingHandshakeCount || 0,
+      secureTransportLimits: secureDiagnostics?.limits || null,
       lastSecureErrorCode: secureDiagnostics?.lastSecureErrorCode || null,
       counters: {
         handshakeFailures: secureDiagnostics?.handshakeFailureCount || 0,

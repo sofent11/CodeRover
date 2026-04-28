@@ -34,6 +34,8 @@ export interface BridgeObservabilityState {
   outboundBufferBytes: number;
   outboundBufferMinSeq: number | null;
   outboundBufferMaxSeq: number | null;
+  pendingHandshakeCount: number;
+  secureTransportLimits: Record<string, unknown> | null;
   lastSecureErrorCode: string | null;
   counters: {
     handshakeFailures: number;
@@ -160,6 +162,8 @@ function createEmptyBridgeObservabilityState(): BridgeObservabilityState {
     outboundBufferBytes: 0,
     outboundBufferMinSeq: null,
     outboundBufferMaxSeq: null,
+    pendingHandshakeCount: 0,
+    secureTransportLimits: null,
     lastSecureErrorCode: null,
     counters: {
       handshakeFailures: 0,
@@ -184,6 +188,10 @@ function normalizeBridgeObservabilityState(rawState: unknown): BridgeObservabili
     outboundBufferBytes: normalizeCount(record.outboundBufferBytes),
     outboundBufferMinSeq: normalizeNullableCount(record.outboundBufferMinSeq),
     outboundBufferMaxSeq: normalizeNullableCount(record.outboundBufferMaxSeq),
+    pendingHandshakeCount: normalizeCount(record.pendingHandshakeCount),
+    secureTransportLimits: record.secureTransportLimits && typeof record.secureTransportLimits === "object"
+      ? record.secureTransportLimits as Record<string, unknown>
+      : null,
     lastSecureErrorCode: normalizeOptionalString(record.lastSecureErrorCode),
     counters: {
       handshakeFailures: normalizeCount(counters.handshakeFailures),
