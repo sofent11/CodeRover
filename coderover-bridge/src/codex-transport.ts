@@ -8,6 +8,8 @@ type MessageHandler = (message: string) => void;
 type CloseHandler = (...args: unknown[]) => void;
 type ErrorHandler = (error: Error) => void;
 
+const MAX_PENDING_WEBSOCKET_MESSAGES = 1000;
+
 interface CodexTransport {
   mode: "spawn" | "websocket";
   describe(): string;
@@ -211,7 +213,13 @@ function appendOutputBuffer(buffer: string, chunk: string): string {
 function createWebSocketTransport({ endpoint }: { endpoint: string }): CodexTransport {
   const socket = new WebSocket(endpoint);
   const listeners = createListenerBag();
+  const pendingOutboundMessages: string[] = [];
+  let didRequestShutdown = false;
   let shutdownPromise: Promise<void> | null = null;
+
+  socket.on("open", () => {
+    flushPendingOutboundMessages();
+  });
 
   socket.on("message", (chunk) => {
     const message = typeof chunk === "string" ? chunk : chunk.toString("utf8");
@@ -222,10 +230,18 @@ function createWebSocketTransport({ endpoint }: { endpoint: string }): CodexTran
 
   socket.on("close", (code, reason) => {
     const safeReason = reason ? reason.toString("utf8") : "no reason";
+    if (!didRequestShutdown) {
+      failPendingOutboundMessages(`closed before open (${code}: ${safeReason})`);
+    } else {
+      pendingOutboundMessages.length = 0;
+    }
     listeners.emitClose(code, safeReason);
   });
 
-  socket.on("error", (error) => listeners.emitError(error));
+  socket.on("error", (error) => {
+    failPendingOutboundMessages(error.message || "connection error");
+    listeners.emitError(error);
+  });
 
   return {
     mode: "websocket",
@@ -233,11 +249,21 @@ function createWebSocketTransport({ endpoint }: { endpoint: string }): CodexTran
       return endpoint;
     },
     send(message: string) {
-      if (socket.readyState !== WebSocket.OPEN) {
+      if (socket.readyState === WebSocket.OPEN) {
+        socket.send(message);
         return;
       }
-
-      socket.send(message);
+      if (socket.readyState === WebSocket.CONNECTING) {
+        if (pendingOutboundMessages.length >= MAX_PENDING_WEBSOCKET_MESSAGES) {
+          const error = new Error("Codex WebSocket transport send queue is full before the socket opened");
+          listeners.emitError(error);
+          socket.close();
+          return;
+        }
+        pendingOutboundMessages.push(message);
+        return;
+      }
+      listeners.emitError(new Error("Codex WebSocket transport is not open"));
     },
     onMessage(handler: MessageHandler) {
       listeners.onMessage = handler;
@@ -253,10 +279,13 @@ function createWebSocketTransport({ endpoint }: { endpoint: string }): CodexTran
         return shutdownPromise;
       }
       if (socket.readyState === WebSocket.CLOSED) {
+        pendingOutboundMessages.length = 0;
         shutdownPromise = Promise.resolve();
         return shutdownPromise;
       }
       shutdownPromise = new Promise((resolve) => {
+        didRequestShutdown = true;
+        pendingOutboundMessages.length = 0;
         const finish = () => resolve();
         socket.once("close", finish);
         socket.once("error", finish);
@@ -275,6 +304,32 @@ function createWebSocketTransport({ endpoint }: { endpoint: string }): CodexTran
       return shutdownPromise;
     },
   };
+
+  function flushPendingOutboundMessages(): void {
+    while (socket.readyState === WebSocket.OPEN && pendingOutboundMessages.length > 0) {
+      const message = pendingOutboundMessages.shift();
+      if (message == null) {
+        continue;
+      }
+      try {
+        socket.send(message);
+      } catch (error) {
+        listeners.emitError(error instanceof Error ? error : new Error(String(error)));
+        socket.close();
+        return;
+      }
+    }
+  }
+
+  function failPendingOutboundMessages(reason: string): void {
+    const dropped = pendingOutboundMessages.length;
+    pendingOutboundMessages.length = 0;
+    if (dropped > 0) {
+      listeners.emitError(
+        new Error(`Codex WebSocket transport dropped ${dropped} queued message(s): ${reason}`)
+      );
+    }
+  }
 }
 
 function createListenerBag(): ListenerBag {

@@ -56,6 +56,11 @@ import * as observerHelpers from "./codex-observer";
 import * as managedRuntimeHelpers from "./managed-provider-runtime";
 import * as normalizerHelpers from "./normalizers";
 import {
+  findThreadIdBySessionActiveTurn,
+  listLikelyRunningCodexSessionThreadIds,
+  threadContainsTurnId,
+} from "./turn-interrupt-resolution";
+import {
   findRolloutFileForThread,
 } from "../rollout-watch";
 import {
@@ -526,9 +531,7 @@ export function createRuntimeManager({
 
         case "turn/interrupt":
           return await handleRequestWithResponse(requestId, async () => {
-            const threadId = normalizeOptionalString(params.threadId || params.thread_id)
-              || findThreadIdByTurnId(params.turnId || params.turn_id);
-            const threadMeta = await requireThreadMeta(threadId);
+            const threadMeta = await resolveThreadMetaForInterrupt(params);
             return getProviderEngine(threadMeta.provider).interruptTurn(threadMeta, params);
           });
 
@@ -1724,6 +1727,52 @@ export function createRuntimeManager({
     const threadMeta = await requireThreadMeta(threadId);
     const historyRequest = normalizeHistoryRequest(params?.history);
     return getProviderEngine(threadMeta.provider).readThread(threadMeta, params, historyRequest);
+  }
+
+  async function resolveThreadMetaForInterrupt(params: UnknownRecord): Promise<RuntimeThreadMeta> {
+    const explicitThreadId = normalizeOptionalString(params.threadId || params.thread_id);
+    const turnId = normalizeOptionalString(params.turnId || params.turn_id);
+    if (explicitThreadId) {
+      return requireThreadMeta(explicitThreadId);
+    }
+
+    const resolvedThreadId = findThreadIdByTurnId(turnId)
+      || findThreadIdBySessionActiveTurn(threadSessionIndex, turnId)
+      || findCodexCachedThreadIdByTurnId(turnId)
+      || await findCodexThreadIdByTurnIdViaThreadRead(turnId);
+    return requireThreadMeta(resolvedThreadId);
+  }
+
+  async function findCodexThreadIdByTurnIdViaThreadRead(turnId: unknown): Promise<string | null> {
+    const normalizedTurnId = normalizeOptionalString(turnId);
+    if (!normalizedTurnId || !codexAdapter.isAvailable()) {
+      return null;
+    }
+
+    for (const threadId of listLikelyRunningCodexSessionThreadIds(threadSessionIndex)) {
+      try {
+        const result = await codexAdapter.readThread({
+          threadId,
+          includeTurns: true,
+        });
+        const threadObject = extractThreadFromResult(result);
+        if (!threadObject || !threadContainsTurnId(threadObject, normalizedTurnId)) {
+          continue;
+        }
+        const decoratedThread = decorateConversationThread(threadObject);
+        upsertOverlayFromThread(decoratedThread);
+        primeCodexHistoryCache(threadId, decoratedThread);
+        syncThreadSessionFromThreadObject(decoratedThread);
+        updateThreadSessionOwnerState(threadId, "running", {
+          activeTurnId: normalizedTurnId,
+        });
+        return threadId;
+      } catch {
+        // Try the next likely running Codex session.
+      }
+    }
+
+    return null;
   }
 
   async function requireThreadMeta(threadId: unknown): Promise<RuntimeThreadMeta> {

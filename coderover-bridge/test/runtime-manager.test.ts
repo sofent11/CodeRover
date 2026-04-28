@@ -14,6 +14,7 @@ import { createRuntimeManager } from "../src/runtime-manager";
 import type { JsonRpcId, RuntimeThreadShape } from "../src/bridge-types";
 import type { CodexAdapter } from "../src/providers/codex-adapter";
 import { createRuntimeStore } from "../src/runtime-store";
+import { createThreadSessionIndex } from "../src/runtime-engine/thread-session-index";
 import type {
   ManagedProviderAdapter,
   ManagedProviderTurnContext,
@@ -292,6 +293,147 @@ test("managed provider turns persist thread session ownership metadata", async (
     assert.equal(record.activeTurnId, null);
   } finally {
     fixture.cleanup();
+  }
+});
+
+test("turn/interrupt resolves a managed provider thread from turnId only", async () => {
+  let interrupted = false;
+  let releaseTurn: (() => void) | null = null;
+  const claudeAdapter: ManagedProviderAdapter = {
+    async hydrateThread() {},
+    async syncImportedThreads() {},
+    async startTurn({ turnContext }) {
+      await new Promise<void>((resolve) => {
+        releaseTurn = resolve;
+        turnContext.setInterruptHandler(() => {
+          interrupted = true;
+          resolve();
+        });
+      });
+    },
+  };
+  const fixture = createManagerFixtureWithOptions({
+    claudeAdapter,
+  });
+
+  try {
+    const startMessages = await request(fixture, "managed-interrupt-thread-start", "thread/start", {
+      provider: "claude",
+      cwd: "/tmp/session-interrupt-demo",
+    });
+    const threadId = responseById(startMessages, "managed-interrupt-thread-start").result.thread.id as string;
+    const turnMessages = await request(fixture, "managed-interrupt-turn-start", "turn/start", {
+      threadId,
+      input: [{ type: "text", text: "Wait here" }],
+    });
+    const turnId = responseById(turnMessages, "managed-interrupt-turn-start").result.turnId as string;
+    await drainMicrotasks();
+
+    const interruptMessages = await request(fixture, "managed-interrupt", "turn/interrupt", {
+      turnId,
+    });
+
+    assert.deepEqual(responseById(interruptMessages, "managed-interrupt").result, {});
+    assert.equal(interrupted, true);
+  } finally {
+    releaseTurn?.();
+    fixture.cleanup();
+  }
+});
+
+test("turn/interrupt resolves a Codex thread from the persisted active turn id", async () => {
+  const codexFixture = createCodexAdapterFixture({
+    threads: [buildCodexThread({
+      threadId: "codex-interrupt-thread",
+      messageCount: 1,
+      turnId: "turn-started",
+    })],
+  });
+  let interruptParams: Record<string, unknown> | null = null;
+  const codexAdapter = {
+    ...codexFixture.adapter,
+    async interruptTurn(params: Record<string, unknown> = {}) {
+      interruptParams = params;
+      return { interrupted: true };
+    },
+  } as CodexAdapter;
+  const fixture = createManagerFixtureWithOptions({
+    codexAdapter,
+  });
+
+  try {
+    await request(fixture, "codex-interrupt-turn-start", "turn/start", {
+      threadId: "codex-interrupt-thread",
+      input: [{ type: "text", text: "Stop me later" }],
+    });
+
+    const interruptMessages = await request(fixture, "codex-interrupt", "turn/interrupt", {
+      turnId: "turn-started",
+    });
+
+    assert.deepEqual(responseById(interruptMessages, "codex-interrupt").result, { interrupted: true });
+    assert.equal(interruptParams?.turnId, "turn-started");
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("turn/interrupt can recover a Codex turn id by refreshing likely running sessions", async () => {
+  const thread = buildCodexThread({
+    threadId: "codex-interrupt-read-fallback",
+    messageCount: 1,
+    turnId: "turn-from-thread-read",
+  });
+  const codexFixture = createCodexAdapterFixture({
+    threads: [thread],
+  });
+  const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "coderover-runtime-interrupt-"));
+  const store = createRuntimeStore({ baseDir });
+  const threadSessionIndex = createThreadSessionIndex({ baseDir });
+  let interruptParams: Record<string, unknown> | null = null;
+  const codexAdapter = {
+    ...codexFixture.adapter,
+    async interruptTurn(params: Record<string, unknown> = {}) {
+      interruptParams = params;
+      return { interrupted: true };
+    },
+  } as CodexAdapter;
+  store.createThread({
+    id: thread.id,
+    provider: "codex",
+    title: thread.title,
+    preview: thread.preview,
+    cwd: thread.cwd,
+    createdAt: thread.createdAt,
+    updatedAt: thread.updatedAt,
+  });
+  threadSessionIndex.upsert({
+    threadId: thread.id,
+    provider: "codex",
+    engineSessionId: thread.id,
+    providerSessionId: thread.id,
+    ownerState: "running",
+    activeTurnId: null,
+  });
+  const fixture = createManagerFixtureWithOptions({
+    codexAdapter,
+    runtimeOptions: {
+      store,
+      threadSessionIndex,
+    },
+  });
+
+  try {
+    const interruptMessages = await request(fixture, "codex-interrupt-read-fallback", "turn/interrupt", {
+      turnId: "turn-from-thread-read",
+    });
+
+    assert.deepEqual(responseById(interruptMessages, "codex-interrupt-read-fallback").result, { interrupted: true });
+    assert.equal(interruptParams?.turnId, "turn-from-thread-read");
+    assert.equal(codexFixture.readCountsByThread.get(thread.id), 1);
+  } finally {
+    fixture.cleanup();
+    fs.rmSync(baseDir, { recursive: true, force: true });
   }
 });
 

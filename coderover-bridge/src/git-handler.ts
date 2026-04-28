@@ -964,7 +964,7 @@ async function gitResetToRemote(
     await git(cwd, "fetch");
     await git(cwd, "reset", "--hard", "@{u}");
   } else {
-    await git(cwd, "checkout", "--", ".");
+    await git(cwd, "reset", "--hard", "HEAD");
   }
   await git(cwd, "clean", "-fd");
 

@@ -220,6 +220,33 @@ test("mutating git requests for one repo are serialized at the bridge entrypoint
   }
 });
 
+test("gitResetToRemote discards staged, unstaged, and untracked changes without an upstream", async () => {
+  const repoDir = makeTempRepo();
+  const trackedPath = path.join(repoDir, "README.md");
+  const projectPath = path.join(repoDir, "coderover-bridge", "src", "index.ts");
+  const untrackedPath = path.join(repoDir, "scratch.txt");
+
+  try {
+    fs.writeFileSync(trackedPath, "# Staged change\n");
+    git(repoDir, "add", "README.md");
+    fs.writeFileSync(projectPath, "export const ready = false;\n");
+    fs.writeFileSync(untrackedPath, "temporary\n");
+
+    const result = await callGitRequest("git/resetToRemote", {
+      cwd: repoDir,
+      confirm: "discard_runtime_changes",
+    });
+
+    assert.equal((result.status as Record<string, unknown>).dirty, false);
+    assert.equal(git(repoDir, "status", "--porcelain"), "");
+    assert.equal(fs.readFileSync(trackedPath, "utf8"), "# Test\n");
+    assert.equal(fs.readFileSync(projectPath, "utf8"), "export const ready = true;\n");
+    assert.equal(fs.existsSync(untrackedPath), false);
+  } finally {
+    cleanupPaths(repoDir);
+  }
+});
+
 test("gitCreateManagedWorktree creates a detached worktree under CODEX_HOME/worktrees", async () => {
   const repoDir = makeTempRepo();
   const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), "coderover-codex-home-"));
