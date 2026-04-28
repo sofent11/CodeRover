@@ -247,6 +247,41 @@ test("gitResetToRemote discards staged, unstaged, and untracked changes without 
   }
 });
 
+test("gitDiff includes files inside untracked directories", async () => {
+  const repoDir = makeTempRepo();
+  const newDir = path.join(repoDir, "new-feature");
+
+  try {
+    const baselineStatus = await __test.gitStatus(repoDir);
+    fs.mkdirSync(newDir, { recursive: true });
+    fs.writeFileSync(path.join(newDir, "index.ts"), "export const fresh = true;\n");
+
+    const diff = await __test.gitDiff(repoDir);
+    const status = await __test.gitStatus(repoDir);
+
+    assert.match(diff.patch, /new-feature\/index\.ts/);
+    assert.match(diff.patch, /\+export const fresh = true;/);
+    assert.equal(status.diff.additions, baselineStatus.diff.additions + 1);
+  } finally {
+    cleanupPaths(repoDir);
+  }
+});
+
+test("gitRemoteUrl redacts credentials but keeps owner repo", async () => {
+  const repoDir = makeTempRepo();
+
+  try {
+    git(repoDir, "remote", "add", "origin", "https://token:secret@github.com/owner/repo.git");
+
+    const result = await __test.gitRemoteUrl(repoDir);
+
+    assert.equal(result.url, "https://github.com/owner/repo.git");
+    assert.equal(result.ownerRepo, "owner/repo");
+  } finally {
+    cleanupPaths(repoDir);
+  }
+});
+
 test("gitCreateManagedWorktree creates a detached worktree under CODEX_HOME/worktrees", async () => {
   const repoDir = makeTempRepo();
   const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), "coderover-codex-home-"));

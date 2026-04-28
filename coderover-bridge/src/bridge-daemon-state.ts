@@ -4,16 +4,20 @@
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import { execFileSync } from "child_process";
 
 import type { PairingPayloadShape } from "./qr";
 import type { TransportCandidateShape } from "./bridge-types";
+import { readJsonFileWithBackup, writeJsonFileAtomic } from "./atomic-json-file";
 
 export interface BridgeRuntimeState {
   version: 1;
   status: "running" | "stopped";
+  instanceId: string | null;
   pid: number | null;
   mode: "foreground" | "daemon";
   startedAt: string | null;
+  heartbeatAt: string | null;
   updatedAt: string;
   bridgeId: string | null;
   macDeviceId: string | null;
@@ -49,6 +53,15 @@ export interface BridgeObservabilityState {
 const BRIDGE_RUNTIME_STATE_VERSION = 1;
 const BRIDGE_RUNTIME_STATE_FILE = "bridge-runtime.json";
 const BRIDGE_LOG_DIR = "logs";
+const DEFAULT_HEARTBEAT_STALE_MS = 15_000;
+
+interface BridgeProcessCheckOptions {
+  maxHeartbeatAgeMs?: number;
+  nowMs?: number;
+  processExists?: (pid: number) => boolean;
+  readCommandLine?: (pid: number) => string | null;
+  state?: Pick<BridgeRuntimeState, "heartbeatAt" | "instanceId" | "mode" | "updatedAt"> | null;
+}
 
 export function resolveCoderoverHome(): string {
   const configuredHome = process.env.CODEROVER_HOME?.trim();
@@ -73,8 +86,7 @@ export function readBridgeRuntimeState(): BridgeRuntimeState | null {
   }
 
   try {
-    const raw = fs.readFileSync(statePath, "utf8");
-    return normalizeBridgeRuntimeState(JSON.parse(raw));
+    return normalizeBridgeRuntimeState(readJsonFileWithBackup(statePath));
   } catch {
     return null;
   }
@@ -82,17 +94,18 @@ export function readBridgeRuntimeState(): BridgeRuntimeState | null {
 
 export function writeBridgeRuntimeState(state: BridgeRuntimeState): void {
   const statePath = resolveBridgeRuntimeStatePath();
-  fs.mkdirSync(path.dirname(statePath), { recursive: true });
-  fs.writeFileSync(statePath, JSON.stringify(normalizeBridgeRuntimeState(state), null, 2));
+  writeJsonFileAtomic(statePath, normalizeBridgeRuntimeState(state));
 }
 
 export function createEmptyBridgeRuntimeState(): BridgeRuntimeState {
   return {
     version: BRIDGE_RUNTIME_STATE_VERSION,
     status: "stopped",
+    instanceId: null,
     pid: null,
     mode: "foreground",
     startedAt: null,
+    heartbeatAt: null,
     updatedAt: new Date().toISOString(),
     bridgeId: null,
     macDeviceId: null,
@@ -109,17 +122,40 @@ export function createEmptyBridgeRuntimeState(): BridgeRuntimeState {
   };
 }
 
-export function isBridgeProcessRunning(pid: unknown): boolean {
+export function isBridgeProcessRunning(
+  pid: unknown,
+  {
+    maxHeartbeatAgeMs = DEFAULT_HEARTBEAT_STALE_MS,
+    nowMs = Date.now(),
+    processExists = defaultProcessExists,
+    readCommandLine = readProcessCommandLine,
+    state = null,
+  }: BridgeProcessCheckOptions = {}
+): boolean {
   if (!Number.isInteger(pid) || Number(pid) <= 0) {
     return false;
   }
 
-  try {
-    process.kill(Number(pid), 0);
-    return true;
-  } catch {
+  const normalizedPid = Number(pid);
+  if (!processExists(normalizedPid)) {
     return false;
   }
+
+  if (!state) {
+    return true;
+  }
+
+  const shouldRequireFreshHeartbeat = Boolean(state.instanceId || state.heartbeatAt);
+  if (shouldRequireFreshHeartbeat && !hasFreshHeartbeat(state, nowMs, maxHeartbeatAgeMs)) {
+    return false;
+  }
+
+  const commandLine = readCommandLine(normalizedPid);
+  if (commandLine == null) {
+    return true;
+  }
+
+  return commandLineLooksLikeBridge(commandLine, state);
 }
 
 function normalizeBridgeRuntimeState(rawState: unknown): BridgeRuntimeState {
@@ -135,9 +171,11 @@ function normalizeBridgeRuntimeState(rawState: unknown): BridgeRuntimeState {
   return {
     version: BRIDGE_RUNTIME_STATE_VERSION,
     status: record.status === "running" ? "running" : "stopped",
+    instanceId: normalizeOptionalString(record.instanceId),
     pid: Number.isInteger(record.pid) && Number(record.pid) > 0 ? Number(record.pid) : null,
     mode: record.mode === "daemon" ? "daemon" : "foreground",
     startedAt: normalizeOptionalString(record.startedAt),
+    heartbeatAt: normalizeOptionalString(record.heartbeatAt),
     updatedAt: normalizeOptionalString(record.updatedAt) || new Date().toISOString(),
     bridgeId: normalizeOptionalString(record.bridgeId),
     macDeviceId: normalizeOptionalString(record.macDeviceId),
@@ -261,4 +299,55 @@ function normalizeCount(value: unknown): number {
 
 function normalizeNullableCount(value: unknown): number | null {
   return Number.isFinite(value) && Number(value) >= 0 ? Number(value) : null;
+}
+
+function defaultProcessExists(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function hasFreshHeartbeat(
+  state: Pick<BridgeRuntimeState, "heartbeatAt" | "updatedAt">,
+  nowMs: number,
+  maxHeartbeatAgeMs: number
+): boolean {
+  const heartbeatMs = Date.parse(state.heartbeatAt || state.updatedAt || "");
+  return Number.isFinite(heartbeatMs) && (nowMs - heartbeatMs) <= maxHeartbeatAgeMs;
+}
+
+function readProcessCommandLine(pid: number): string | null {
+  if (process.platform === "win32") {
+    return null;
+  }
+
+  try {
+    return execFileSync("ps", ["-p", String(pid), "-o", "command="], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    return null;
+  }
+}
+
+function commandLineLooksLikeBridge(
+  commandLine: string,
+  state: Pick<BridgeRuntimeState, "instanceId" | "mode">
+): boolean {
+  const normalizedCommand = commandLine.trim();
+  if (!normalizedCommand) {
+    return false;
+  }
+
+  if (state.instanceId) {
+    const instanceArg = `--coderover-instance-id=${state.instanceId}`;
+    return normalizedCommand.split(/\s+/).some((arg) => arg === instanceArg);
+  }
+
+  return /\bcoderover(?:\.js)?\b/i.test(normalizedCommand)
+    && (state.mode !== "daemon" || normalizedCommand.includes("serve"));
 }

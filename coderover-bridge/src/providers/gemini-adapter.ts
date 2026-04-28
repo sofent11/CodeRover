@@ -25,7 +25,10 @@ import {
   normalizeMetadataTimestamp,
   shouldRefreshHistoryByAge,
 } from "./shared/history-refresh";
-import { buildPathPromptFromInputItems } from "./shared/prompt-input";
+import {
+  buildPathPromptFromInputItems,
+  cleanupMaterializedImageInputs,
+} from "./shared/prompt-input";
 import {
   asProviderRecord,
   normalizeOptionalString,
@@ -123,7 +126,7 @@ export function createGeminiAdapter({
     threadMeta,
     turnContext,
   }: ManagedProviderStartTurnOptions): Promise<{ usage?: GeminiUsageResult | null }> {
-    const prompt = await buildGeminiPrompt(turnContext.inputItems, threadMeta.cwd);
+    const prompt = await buildGeminiPrompt(turnContext.inputItems, threadMeta.cwd, turnContext.turnId);
     const model =
       normalizeOptionalString(params.model)
       || threadMeta.model
@@ -165,40 +168,47 @@ export function createGeminiAdapter({
     let stderrBuffer = "";
     let usage: GeminiUsageResult | null = null;
 
-    return new Promise<{ usage?: GeminiUsageResult | null }>((resolve, reject) => {
-      child.stdout.on("data", (chunk: string | Buffer) => {
-        stdoutBuffer += typeof chunk === "string" ? chunk : chunk.toString("utf8");
-        const lines = stdoutBuffer.split("\n");
-        stdoutBuffer = lines.pop() || "";
+    try {
+      return await new Promise<{ usage?: GeminiUsageResult | null }>((resolve, reject) => {
+        child.stdout.on("data", (chunk: string | Buffer) => {
+          stdoutBuffer += typeof chunk === "string" ? chunk : chunk.toString("utf8");
+          const lines = stdoutBuffer.split("\n");
+          stdoutBuffer = lines.pop() || "";
 
-        for (const line of lines) {
-          handleGeminiLine(line, turnContext, (nextUsage) => {
-            usage = nextUsage;
-          }, reject);
-        }
+          for (const line of lines) {
+            handleGeminiLine(line, turnContext, (nextUsage) => {
+              usage = nextUsage;
+            }, reject);
+          }
+        });
+
+        child.stderr.on("data", (chunk: string | Buffer) => {
+          stderrBuffer += typeof chunk === "string" ? chunk : chunk.toString("utf8");
+        });
+
+        child.on("error", (error) => reject(error));
+        child.on("close", (code) => {
+          if (stdoutBuffer.trim()) {
+            handleGeminiLine(stdoutBuffer, turnContext, (nextUsage) => {
+              usage = nextUsage;
+            }, reject);
+            stdoutBuffer = "";
+          }
+
+          if (code !== 0 && !turnContext.abortController.signal.aborted) {
+            reject(new Error(stderrBuffer.trim() || `Gemini CLI exited with code ${code}`));
+            return;
+          }
+
+          resolve({ usage });
+        });
       });
-
-      child.stderr.on("data", (chunk: string | Buffer) => {
-        stderrBuffer += typeof chunk === "string" ? chunk : chunk.toString("utf8");
+    } finally {
+      cleanupMaterializedImageInputs({
+        imageTempDirName: "gemini-images",
+        turnId: turnContext.turnId,
       });
-
-      child.on("error", (error) => reject(error));
-      child.on("close", (code) => {
-        if (stdoutBuffer.trim()) {
-          handleGeminiLine(stdoutBuffer, turnContext, (nextUsage) => {
-            usage = nextUsage;
-          }, reject);
-          stdoutBuffer = "";
-        }
-
-        if (code !== 0 && !turnContext.abortController.signal.aborted) {
-          reject(new Error(stderrBuffer.trim() || `Gemini CLI exited with code ${code}`));
-          return;
-        }
-
-        resolve({ usage });
-      });
-    });
+    }
   }
 
   return {
@@ -499,10 +509,15 @@ function joinGeminiThoughts(thoughts: unknown): string | null {
   return flattened.length > 0 ? flattened.join("\n") : null;
 }
 
-async function buildGeminiPrompt(inputItems: RuntimeInputItem[], cwd: string | null): Promise<string> {
+async function buildGeminiPrompt(
+  inputItems: RuntimeInputItem[],
+  cwd: string | null,
+  turnId: string | null | undefined
+): Promise<string> {
   return buildPathPromptFromInputItems(inputItems, {
     cwd,
     imageTempDirName: "gemini-images",
+    turnId,
   });
 }
 

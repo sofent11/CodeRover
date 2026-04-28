@@ -30,7 +30,10 @@ test("provider shared history refresh helpers compare timestamps and age", () =>
 
 test("provider shared prompt builder materializes data-url images and preserves text/skills", async () => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "coderover-provider-shared-"));
+  const coderoverHome = fs.mkdtempSync(path.join(os.tmpdir(), "coderover-provider-home-"));
+  const previousCoderoverHome = process.env.CODEROVER_HOME;
   try {
+    process.env.CODEROVER_HOME = coderoverHome;
     const prompt = await buildPathPromptFromInputItems([
       { type: "text", text: "hello" },
       { type: "skill", id: "checks" },
@@ -41,6 +44,7 @@ test("provider shared prompt builder materializes data-url images and preserves 
     ], {
       cwd,
       imageTempDirName: "shared-images",
+      turnId: "turn-1",
     });
 
     assert.match(prompt, /hello/);
@@ -50,7 +54,16 @@ test("provider shared prompt builder materializes data-url images and preserves 
     const imagePath = lines[lines.length - 1];
     assert.ok(imagePath);
     assert.equal(fs.existsSync(imagePath), true);
+    assert.equal(imagePath.startsWith(cwd), false);
+    assert.equal(imagePath.startsWith(path.join(coderoverHome, "tmp", "provider-images")), true);
+    assert.equal(fs.existsSync(path.join(cwd, ".coderover")), false);
   } finally {
+    if (previousCoderoverHome === undefined) {
+      delete process.env.CODEROVER_HOME;
+    } else {
+      process.env.CODEROVER_HOME = previousCoderoverHome;
+    }
     fs.rmSync(cwd, { recursive: true, force: true });
+    fs.rmSync(coderoverHome, { recursive: true, force: true });
   }
 });

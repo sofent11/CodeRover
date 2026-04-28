@@ -597,7 +597,7 @@ function applyToolCallUpdate(
         || title,
       cwd: normalizeOptionalString(rawInput?.cwd),
       status: status || "running",
-      outputDelta: contentText || title || "",
+      outputDelta: contentText || "",
     });
     return;
   }

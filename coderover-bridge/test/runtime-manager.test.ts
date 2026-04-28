@@ -296,6 +296,72 @@ test("managed provider turns persist thread session ownership metadata", async (
   }
 });
 
+test("managed Copilot command execution preserves output text", async () => {
+  const copilotAdapter: ManagedProviderAdapter = {
+    async hydrateThread() {},
+    async syncImportedThreads() {},
+    async startTurn({ turnContext }) {
+      turnContext.updateCommandExecution({
+        itemId: "copilot-command-1",
+        command: "npm test",
+        cwd: "/tmp/copilot-command-output",
+        status: "running",
+        outputDelta: "",
+      });
+      turnContext.updateCommandExecution({
+        itemId: "copilot-command-1",
+        command: "npm test",
+        cwd: "/tmp/copilot-command-output",
+        status: "running",
+        outputDelta: "first line\n",
+      });
+      turnContext.updateCommandExecution({
+        itemId: "copilot-command-1",
+        command: "npm test",
+        cwd: "/tmp/copilot-command-output",
+        status: "completed",
+        exitCode: 0,
+        outputDelta: "second line\n",
+      });
+    },
+  };
+  const fixture = createManagerFixtureWithOptions({
+    copilotAdapter,
+  });
+
+  try {
+    const startMessages = await request(fixture, "copilot-thread-start", "thread/start", {
+      provider: "copilot",
+      cwd: "/tmp/copilot-command-output",
+    });
+    const threadId = responseById(startMessages, "copilot-thread-start").result.thread.id as string;
+
+    await request(fixture, "copilot-turn-start", "turn/start", {
+      threadId,
+      input: [{ type: "text", text: "Run tests" }],
+    });
+    await drainMicrotasks();
+
+    const commandNotifications = fixture.messages.filter((message) =>
+      message.method === "timeline/itemTextUpdated"
+      && message.params?.kind === "commandExecution"
+      && message.params?.timelineItemId === "copilot-command-1"
+    );
+    assert.equal(commandNotifications.at(-1)?.params?.text, "first line\nsecond line\n");
+
+    const readMessages = await request(fixture, "copilot-thread-read", "thread/read", { threadId });
+    const thread = responseById(readMessages, "copilot-thread-read").result.thread;
+    const commandItem = thread.turns[0].items.find((item: Record<string, unknown>) =>
+      item.id === "copilot-command-1"
+    );
+    assert.equal(commandItem.text, "first line\nsecond line");
+    assert.equal(commandItem.status, "completed");
+    assert.equal(commandItem.exitCode, 0);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
 test("turn/interrupt resolves a managed provider thread from turnId only", async () => {
   let interrupted = false;
   let releaseTurn: (() => void) | null = null;

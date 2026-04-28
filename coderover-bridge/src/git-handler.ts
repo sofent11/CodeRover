@@ -285,10 +285,7 @@ async function gitDiff(cwd: string): Promise<{ patch: string }> {
   const tracking = parseTrackingFromStatus(branchLine);
   const baseRef = await resolveRepoDiffBase(cwd, tracking);
   const trackedPatch = await gitDiffAgainstBase(cwd, baseRef);
-  const untrackedPaths = fileLines
-    .filter((line) => line.startsWith("?? "))
-    .map((line) => line.substring(3).trim())
-    .filter(Boolean);
+  const untrackedPaths = await listUntrackedFiles(cwd);
   const untrackedPatch = await diffPatchForUntrackedFiles(cwd, untrackedPaths);
   const patch = [trackedPatch.trim(), untrackedPatch.trim()].filter(Boolean).join("\n\n").trim();
   return { patch };
@@ -975,12 +972,28 @@ async function gitResetToRemote(
 async function gitRemoteUrl(cwd: string): Promise<{ url: string; ownerRepo: string | null }> {
   const raw = (await git(cwd, "config", "--get", "remote.origin.url")).trim();
   const ownerRepo = parseOwnerRepo(raw);
-  return { url: raw, ownerRepo };
+  return { url: redactRemoteUrl(raw), ownerRepo };
 }
 
 function parseOwnerRepo(remoteUrl: string): string | null {
   const match = remoteUrl.match(/[:/]([^/]+\/[^/]+?)(?:\.git)?$/);
   return match?.[1] ?? null;
+}
+
+function redactRemoteUrl(remoteUrl: string): string {
+  const trimmed = remoteUrl.trim();
+  if (!trimmed) {
+    return "";
+  }
+
+  try {
+    const parsed = new URL(trimmed);
+    parsed.username = "";
+    parsed.password = "";
+    return parsed.toString();
+  } catch {
+    return trimmed.replace(/^([A-Za-z][A-Za-z0-9+.-]*:\/\/)[^/@\s]+@/, "$1");
+  }
 }
 
 async function gitBranchesWithStatus(cwd: string): Promise<GitBranchesResult & { status: GitStatusResult }> {
@@ -1034,13 +1047,7 @@ async function stashChangesForWorktreeHandoff(cwd: string, pathspecArgs: string[
 
 async function captureLocalChangesPatch(cwd: string, pathspecArgs: string[] = []): Promise<string> {
   const trackedPatch = await git(cwd, "diff", "--binary", "--find-renames", "HEAD", ...pathspecArgs);
-  const porcelain = await git(cwd, "status", "--porcelain=v1", ...pathspecArgs);
-  const untrackedPaths = porcelain
-    .trim()
-    .split("\n")
-    .filter((line) => line.startsWith("?? "))
-    .map((line) => line.substring(3).trim())
-    .filter(Boolean);
+  const untrackedPaths = await listUntrackedFiles(cwd, pathspecArgs);
   const untrackedPatch = await diffPatchForUntrackedFiles(cwd, untrackedPaths);
   return [trackedPatch, untrackedPatch]
     .filter((patchContents) => typeof patchContents === "string" && patchContents.trim())
@@ -1393,10 +1400,7 @@ function ensureTrailingNewline(value: string): string {
 async function repoDiffTotals(cwd: string, context: RepoDiffContext): Promise<GitDiffTotals> {
   const baseRef = await resolveRepoDiffBase(cwd, context.tracking);
   const trackedTotals = await diffTotalsAgainstBase(cwd, baseRef);
-  const untrackedPaths = context.fileLines
-    .filter((line) => line.startsWith("?? "))
-    .map((line) => line.substring(3).trim())
-    .filter(Boolean);
+  const untrackedPaths = await listUntrackedFiles(cwd);
   const untrackedTotals = await diffTotalsForUntrackedFiles(cwd, untrackedPaths);
 
   return {
@@ -1499,6 +1503,13 @@ async function diffPatchForUntrackedFiles(cwd: string, filePaths: string[]): Pro
 
   const patches = await Promise.all(filePaths.map((filePath) => gitDiffNoIndexPatch(cwd, filePath)));
   return patches.filter(Boolean).join("\n\n");
+}
+
+async function listUntrackedFiles(cwd: string, pathspecArgs: string[] = []): Promise<string[]> {
+  const output = await git(cwd, "ls-files", "--others", "--exclude-standard", "-z", ...pathspecArgs);
+  return output
+    .split("\0")
+    .filter((entry) => entry.length > 0);
 }
 
 async function gitDiffNoIndexPatch(cwd: string, filePath: string): Promise<string> {
@@ -1706,7 +1717,9 @@ export const __test = {
   gitCreateBranch,
   gitCreateManagedWorktree,
   gitCreateWorktree,
+  gitDiff,
   gitRemoveWorktree,
+  gitRemoteUrl,
   gitStash,
   gitTransferManagedHandoff,
   gitStatus,

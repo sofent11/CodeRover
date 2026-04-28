@@ -3,6 +3,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
+import { randomUUID } from "crypto";
 import { spawn } from "child_process";
 
 import {
@@ -38,12 +39,21 @@ export async function startBridgeDaemon(binPath: string): Promise<StartBridgeDae
   const errorLogFile = path.join(logDir, "bridge-daemon.err.log");
   const stdoutFd = fs.openSync(logFile, "a");
   const stderrFd = fs.openSync(errorLogFile, "a");
+  const instanceId = randomUUID();
 
   try {
-    const child = spawn(process.execPath, [binPath, "serve", "--daemonized"], {
+    const child = spawn(process.execPath, [
+      binPath,
+      "serve",
+      "--daemonized",
+      `--coderover-instance-id=${instanceId}`,
+    ], {
       detached: true,
       stdio: ["ignore", stdoutFd, stderrFd],
-      env: process.env,
+      env: {
+        ...process.env,
+        CODEROVER_BRIDGE_INSTANCE_ID: instanceId,
+      },
     });
 
     child.unref();
@@ -130,6 +140,9 @@ export async function stopBridgeDaemon(): Promise<boolean> {
   if (!state?.pid || state.status !== "running") {
     return false;
   }
+  if (!isBridgeProcessRunning(state.pid, { state })) {
+    return false;
+  }
 
   try {
     process.kill(state.pid, STOP_SIGNAL);
@@ -139,7 +152,7 @@ export async function stopBridgeDaemon(): Promise<boolean> {
 
   const deadline = Date.now() + STATUS_REFRESH_WAIT_MS;
   while (Date.now() < deadline) {
-    if (!isBridgeProcessRunning(state.pid)) {
+    if (!isBridgeProcessRunning(state.pid, { state })) {
       const nextState = {
         ...(readBridgeRuntimeState() || createEmptyBridgeRuntimeState()),
         status: "stopped" as const,
@@ -163,7 +176,7 @@ function readBridgeStatusSnapshot(): BridgeRuntimeState | null {
     return null;
   }
 
-  if (state.status === "running" && state.pid && !isBridgeProcessRunning(state.pid)) {
+  if (state.status === "running" && state.pid && !isBridgeProcessRunning(state.pid, { state })) {
     const nextState: BridgeRuntimeState = {
       ...state,
       status: "stopped",
@@ -181,7 +194,7 @@ function readBridgeStatusSnapshot(): BridgeRuntimeState | null {
 }
 
 async function requestPairingRefresh(state: BridgeRuntimeState): Promise<void> {
-  if (!state.pid || !isBridgeProcessRunning(state.pid)) {
+  if (!state.pid || !isBridgeProcessRunning(state.pid, { state })) {
     return;
   }
 

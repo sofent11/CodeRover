@@ -5,6 +5,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 
+import { readJsonFileWithBackup, writeJsonFileAtomic } from "../atomic-json-file";
 import type { RuntimeOwnerState, RuntimeSessionHandle, RuntimeSessionSourceKind } from "./types";
 
 interface ThreadSessionIndexFileShape {
@@ -32,7 +33,7 @@ const DEFAULT_BASE_DIR = path.join(os.homedir(), ".coderover", "runtime");
 export function createThreadSessionIndex(
   { baseDir = DEFAULT_BASE_DIR }: { baseDir?: string } = {}
 ): ThreadSessionIndex {
-  fs.mkdirSync(baseDir, { recursive: true });
+  fs.mkdirSync(baseDir, { recursive: true, mode: 0o700 });
   const indexPath = path.join(baseDir, INDEX_FILE);
   let state = loadIndex(indexPath);
   let writeTimer: NodeJS.Timeout | null = null;
@@ -105,14 +106,10 @@ export function createThreadSessionIndex(
   }
 
   function flush(): void {
-    fs.mkdirSync(path.dirname(indexPath), { recursive: true });
-    const payload = JSON.stringify({
+    writeJsonFileAtomic(indexPath, {
       version: INDEX_VERSION,
       sessions: state.sessions,
-    }, null, 2);
-    const tempPath = `${indexPath}.${process.pid}.${Date.now()}.tmp`;
-    fs.writeFileSync(tempPath, `${payload}\n`);
-    fs.renameSync(tempPath, indexPath);
+    });
   }
 
   return {
@@ -138,7 +135,7 @@ function loadIndex(indexPath: string): ThreadSessionIndexFileShape {
   }
 
   try {
-    const parsed = JSON.parse(fs.readFileSync(indexPath, "utf8")) as ThreadSessionIndexFileShape;
+    const parsed = readJsonFileWithBackup(indexPath) as ThreadSessionIndexFileShape;
     const sessions = parsed?.sessions && typeof parsed.sessions === "object"
       ? Object.entries(parsed.sessions).reduce((result, [threadId, value]) => {
         const normalized = normalizeSessionHandle({

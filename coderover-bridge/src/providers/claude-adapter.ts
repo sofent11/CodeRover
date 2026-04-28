@@ -25,7 +25,10 @@ import {
   normalizeMetadataTimestamp,
   shouldRefreshHistoryByTimestamp,
 } from "./shared/history-refresh";
-import { buildPathPromptFromInputItems } from "./shared/prompt-input";
+import {
+  buildPathPromptFromInputItems,
+  cleanupMaterializedImageInputs,
+} from "./shared/prompt-input";
 import {
   asProviderRecord,
   normalizeOptionalString,
@@ -284,7 +287,7 @@ export function createClaudeAdapter({
     turnContext,
   }: ManagedProviderStartTurnOptions): Promise<Record<string, unknown>> {
     const sdk = await loadSdkModule();
-    const prompt = await buildPromptFromInput(turnContext.inputItems, threadMeta.cwd);
+    const prompt = await buildPromptFromInput(turnContext.inputItems, threadMeta.cwd, turnContext.turnId);
     const permissionMode = resolveClaudePermissionMode(params);
     const toolInputsById = new Map<string, { toolName: string | null; input: UnknownRecord | null }>();
     const streamState: ClaudeStreamState = {
@@ -376,95 +379,102 @@ export function createClaudeAdapter({
       }
     });
 
-    for await (const message of query) {
-      if (message?.session_id) {
-        turnContext.bindProviderSession(message.session_id);
-      }
-
-      if (message.type === "stream_event") {
-        handleClaudeStreamEvent(message.event, streamState, turnContext);
-        continue;
-      }
-
-      if (message.type === "tool_progress") {
-        if (!message.tool_use_id) {
-          continue;
+    try {
+      for await (const message of query) {
+        if (message?.session_id) {
+          turnContext.bindProviderSession(message.session_id);
         }
-        const toolUse = toolInputsById.get(message.tool_use_id);
-        if (!toolUse) {
+
+        if (message.type === "stream_event") {
+          handleClaudeStreamEvent(message.event, streamState, turnContext);
           continue;
         }
 
-        if (toolUse.toolName === "Bash") {
-          turnContext.updateCommandExecution({
-            itemId: message.tool_use_id,
-            command: extractToolCommand(toolUse.toolName, toolUse.input),
-            cwd: threadMeta.cwd,
-            status: "running",
-            outputDelta: "",
-          });
-        } else {
-          const renderedToolUse = renderToolUse(toolUse.toolName, toolUse.input);
-          if (!renderedToolUse) {
+        if (message.type === "tool_progress") {
+          if (!message.tool_use_id) {
             continue;
           }
-          turnContext.appendToolCallDelta(
-            renderedToolUse,
-            {
+          const toolUse = toolInputsById.get(message.tool_use_id);
+          if (!toolUse) {
+            continue;
+          }
+
+          if (toolUse.toolName === "Bash") {
+            turnContext.updateCommandExecution({
               itemId: message.tool_use_id,
-              toolName: toolUse.toolName,
+              command: extractToolCommand(toolUse.toolName, toolUse.input),
+              cwd: threadMeta.cwd,
+              status: "running",
+              outputDelta: "",
+            });
+          } else {
+            const renderedToolUse = renderToolUse(toolUse.toolName, toolUse.input);
+            if (!renderedToolUse) {
+              continue;
             }
-          );
-        }
-        continue;
-      }
-
-      if (message.type === "assistant") {
-        const assistantText = extractClaudeAssistantText(message.message);
-        if (assistantText && !streamState.didEmitAssistantText) {
-          turnContext.appendAgentDelta(assistantText, {
-            itemId: message.uuid || randomUUID(),
-          });
-          streamState.didEmitAssistantText = true;
+            turnContext.appendToolCallDelta(
+              renderedToolUse,
+              {
+                itemId: message.tool_use_id,
+                toolName: toolUse.toolName,
+              }
+            );
+          }
+          continue;
         }
 
-        if (isPlanMode(params) && assistantText && !streamState.didEmitPlan) {
-          turnContext.upsertPlan({
-            explanation: assistantText,
-            steps: [],
-          }, {
-            itemId: `${message.uuid || randomUUID()}-plan`,
-            deltaText: assistantText,
-          });
-          streamState.didEmitPlan = true;
-        }
-
-        for (const block of extractClaudeContentBlocks(message.message)) {
-          if (block.type !== "tool_use") {
-            continue;
+        if (message.type === "assistant") {
+          const assistantText = extractClaudeAssistantText(message.message);
+          if (assistantText && !streamState.didEmitAssistantText) {
+            turnContext.appendAgentDelta(assistantText, {
+              itemId: message.uuid || randomUUID(),
+            });
+            streamState.didEmitAssistantText = true;
           }
 
-          const rendered = renderToolUse(normalizeOptionalString(block.name), asRecord(block.input));
-          if (!rendered) {
-            continue;
+          if (isPlanMode(params) && assistantText && !streamState.didEmitPlan) {
+            turnContext.upsertPlan({
+              explanation: assistantText,
+              steps: [],
+            }, {
+              itemId: `${message.uuid || randomUUID()}-plan`,
+              deltaText: assistantText,
+            });
+            streamState.didEmitPlan = true;
           }
-          turnContext.appendToolCallDelta(rendered, {
-            itemId: normalizeOptionalString(block.id) || randomUUID(),
-            toolName: normalizeOptionalString(block.name),
-            completed: true,
-          });
+
+          for (const block of extractClaudeContentBlocks(message.message)) {
+            if (block.type !== "tool_use") {
+              continue;
+            }
+
+            const rendered = renderToolUse(normalizeOptionalString(block.name), asRecord(block.input));
+            if (!rendered) {
+              continue;
+            }
+            turnContext.appendToolCallDelta(rendered, {
+              itemId: normalizeOptionalString(block.id) || randomUUID(),
+              toolName: normalizeOptionalString(block.name),
+              completed: true,
+            });
+          }
+          continue;
         }
-        continue;
+
+        if (message.type === "result") {
+          return {
+            usage: buildClaudeUsage(message.usage),
+          };
+        }
       }
 
-      if (message.type === "result") {
-        return {
-          usage: buildClaudeUsage(message.usage),
-        };
-      }
+      return {};
+    } finally {
+      cleanupMaterializedImageInputs({
+        imageTempDirName: "claude-images",
+        turnId: turnContext.turnId,
+      });
     }
-
-    return {};
   }
 
   async function loadSdkModule() {
@@ -578,11 +588,13 @@ function handleClaudeStreamEvent(
 
 async function buildPromptFromInput(
   inputItems: RuntimeInputItem[],
-  cwd: string | null | undefined
+  cwd: string | null | undefined,
+  turnId: string | null | undefined
 ): Promise<string> {
   return buildPathPromptFromInputItems(inputItems, {
     cwd,
     imageTempDirName: "claude-images",
+    turnId,
   });
 }
 

@@ -5,6 +5,7 @@ import * as fs from "fs";
 import * as path from "path";
 
 import { resolveCoderoverHome } from "./bridge-daemon-state";
+import { readJsonFileWithBackup, writeJsonFileAtomic } from "./atomic-json-file";
 
 export interface BridgePreferences {
   version: 1;
@@ -27,8 +28,7 @@ export function readBridgePreferences(): BridgePreferences {
   }
 
   try {
-    const raw = fs.readFileSync(preferencesPath, "utf8");
-    return normalizeBridgePreferences(JSON.parse(raw));
+    return normalizeBridgePreferences(readJsonFileWithBackup(preferencesPath));
   } catch {
     return createDefaultBridgePreferences();
   }
@@ -39,8 +39,7 @@ export function writeBridgePreferences(
 ): BridgePreferences {
   const normalized = normalizeBridgePreferences(preferences);
   const preferencesPath = resolveBridgePreferencesPath();
-  fs.mkdirSync(path.dirname(preferencesPath), { recursive: true });
-  fs.writeFileSync(preferencesPath, JSON.stringify(normalized, null, 2));
+  writeJsonFileAtomic(preferencesPath, normalized);
   return normalized;
 }
 

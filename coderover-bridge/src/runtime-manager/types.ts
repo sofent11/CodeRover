@@ -112,6 +112,7 @@ export interface ManagedProviderThreadMeta extends RuntimeThreadMeta {}
 
 export interface ManagedProviderTurnContext {
   inputItems: RuntimeInputItem[];
+  turnId: string;
   abortController: AbortController;
   setInterruptHandler(handler: () => Promise<void> | void): void;
   bindProviderSession(sessionId: string): void;

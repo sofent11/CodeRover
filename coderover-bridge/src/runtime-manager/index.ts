@@ -4298,8 +4298,21 @@ export function createRuntimeManager({
       if (typeof durationMs === "number") {
         item.durationMs = durationMs;
       }
-      if (outputDelta != null) {
+      const normalizedOutputDelta = normalizeCommandOutputDelta(outputDelta);
+      const itemMetadata = asObject(item.metadata);
+      const textWasPreview = itemMetadata.commandTextPreview === true;
+      if (normalizedOutputDelta) {
+        item.text = textWasPreview ? normalizedOutputDelta : `${item.text || ""}${normalizedOutputDelta}`;
+        item.metadata = {
+          ...itemMetadata,
+          commandTextPreview: false,
+        };
+      } else if (!item.text || textWasPreview) {
         item.text = buildCommandPreview(item.command, item.status, item.exitCode);
+        item.metadata = {
+          ...itemMetadata,
+          commandTextPreview: true,
+        };
       }
       persistThreadHistory();
       emitRuntimeEvent({
@@ -4312,7 +4325,7 @@ export function createRuntimeManager({
         status: item.status,
         exitCode: item.exitCode,
         durationMs: item.durationMs,
-        delta: item.text || "",
+        delta: item.text || buildCommandPreview(item.command, item.status, item.exitCode),
       });
     }
 
@@ -5484,6 +5497,14 @@ function normalizePlanState(planState: unknown) {
 
 function buildCommandPreview(command: unknown, status: unknown, exitCode: unknown): string {
   return normalizerHelpers.buildCommandPreview(command, status, exitCode);
+}
+
+function normalizeCommandOutputDelta(value: unknown): string | null {
+  if (value == null) {
+    return null;
+  }
+  const text = typeof value === "string" ? value : String(value);
+  return text.length > 0 ? text : null;
 }
 
 function buildProviderMetadata(provider: unknown): { providerTitle: string } {

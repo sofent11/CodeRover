@@ -34,6 +34,7 @@ import {
 import type { PairingPayloadShape } from "./qr";
 
 type JsonRecord = Record<string, unknown>;
+const BRIDGE_HEARTBEAT_INTERVAL_MS = 5_000;
 
 interface BridgeConfigShape {
   refreshEnabled: boolean;
@@ -65,6 +66,7 @@ export function startBridge({
   const config = readBridgeConfig() as BridgeConfigShape;
   const deviceState = loadOrCreateBridgeDeviceState();
   const bridgeId = deviceState.bridgeId || deviceState.macDeviceId;
+  const instanceId = resolveBridgeInstanceId();
   const transportCandidates = buildTransportCandidates({
     bridgeId,
     localPort: config.localPort,
@@ -103,6 +105,7 @@ export function startBridge({
   let lastError: string | null = null;
   let shutdownTimeoutCount = 0;
   let shutdownPromise: Promise<void> | null = null;
+  let heartbeatTimer: NodeJS.Timeout | null = null;
   const connectedTransportIds = new Set<string>();
   const localDispatchers: BridgeMessageDispatcher[] = [
     {
@@ -199,6 +202,10 @@ export function startBridge({
     },
   });
   updateRuntimeState();
+  heartbeatTimer = setInterval(() => {
+    updateRuntimeState();
+  }, BRIDGE_HEARTBEAT_INTERVAL_MS);
+  heartbeatTimer.unref?.();
   refreshPairingPayload({ logToConsole: printQr });
   launchCodexTransport();
 
@@ -350,13 +357,16 @@ export function startBridge({
   }
 
   function updateRuntimeState(overrides: Partial<BridgeRuntimeState> = {}): void {
+    const nowIso = new Date().toISOString();
     writeBridgeRuntimeState({
       version: 1,
       status: overrides.status || (isShuttingDown ? "stopped" : "running"),
+      instanceId,
       pid: overrides.pid === undefined ? (isShuttingDown ? null : process.pid) : overrides.pid,
       mode,
       startedAt,
-      updatedAt: new Date().toISOString(),
+      heartbeatAt: overrides.heartbeatAt === undefined ? nowIso : overrides.heartbeatAt,
+      updatedAt: nowIso,
       bridgeId,
       macDeviceId: deviceState.macDeviceId,
       localUrl: `ws://127.0.0.1:${config.localPort}/bridge/${bridgeId}`,
@@ -383,6 +393,10 @@ export function startBridge({
       if (codexRestartTimer) {
         clearTimeout(codexRestartTimer);
         codexRestartTimer = null;
+      }
+      if (heartbeatTimer) {
+        clearInterval(heartbeatTimer);
+        heartbeatTimer = null;
       }
       updateRuntimeState({
         status: "stopped",
@@ -460,6 +474,26 @@ export function startBridge({
       },
     };
   }
+}
+
+function resolveBridgeInstanceId(): string | null {
+  const envValue = readString(process.env.CODEROVER_BRIDGE_INSTANCE_ID);
+  if (envValue) {
+    return envValue;
+  }
+
+  const argPrefix = "--coderover-instance-id=";
+  for (const arg of process.argv) {
+    if (!arg.startsWith(argPrefix)) {
+      continue;
+    }
+    const argValue = readString(arg.slice(argPrefix.length));
+    if (argValue) {
+      return argValue;
+    }
+  }
+
+  return null;
 }
 
 function extractThreadId(rawMessage: string): string | null {
