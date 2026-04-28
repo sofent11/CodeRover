@@ -424,6 +424,92 @@ class TurnViewModelTest {
     }
 
     @Test
+    fun resetForThreadClearsMenusAndAutocomplete() {
+        val viewModel = TurnViewModel()
+        viewModel.plusMenuExpanded = true
+        viewModel.modelMenuExpanded = true
+        viewModel.reasoningMenuExpanded = true
+        viewModel.runtimeMenuExpanded = true
+        viewModel.accessMenuExpanded = true
+        viewModel.gitMenuExpanded = true
+        viewModel.autocompleteFiles = listOf(FuzzyFileMatch(path = "src/App.kt", root = "/tmp/project"))
+        viewModel.autocompleteSkills = listOf(SkillMetadata(id = "skill-1", name = "review", description = null))
+        viewModel.slashCommandPanelState = TurnComposerSlashCommandPanelState.Commands("rev")
+        viewModel.composerNoticeMessage = "notice"
+        viewModel.requestAssistantResponseAnchor()
+
+        viewModel.resetForThread()
+
+        assertFalse(viewModel.plusMenuExpanded)
+        assertFalse(viewModel.modelMenuExpanded)
+        assertFalse(viewModel.reasoningMenuExpanded)
+        assertFalse(viewModel.runtimeMenuExpanded)
+        assertFalse(viewModel.accessMenuExpanded)
+        assertFalse(viewModel.gitMenuExpanded)
+        assertTrue(viewModel.autocompleteFiles.isEmpty())
+        assertTrue(viewModel.autocompleteSkills.isEmpty())
+        assertEquals(TurnComposerSlashCommandPanelState.Hidden, viewModel.slashCommandPanelState)
+        assertEquals(null, viewModel.composerNoticeMessage)
+        assertFalse(viewModel.shouldAnchorToAssistantResponse)
+    }
+
+    @Test
+    fun autocompleteRequestParsesTrailingTokens() {
+        val viewModel = TurnViewModel()
+
+        assertEquals(null, viewModel.autocompleteRequest("plain text", "thread-1"))
+        assertEquals(
+            TurnAutocompleteRequest(
+                kind = TurnAutocompleteKind.FILE,
+                query = "src/ma",
+                threadId = "thread-1",
+            ),
+            viewModel.autocompleteRequest("inspect @src/ma", "thread-1"),
+        )
+        assertEquals(
+            TurnAutocompleteRequest(
+                kind = TurnAutocompleteKind.SKILL,
+                query = "andr",
+            ),
+            viewModel.autocompleteRequest("use #andr", "thread-1"),
+        )
+        assertEquals(
+            TurnAutocompleteRequest(
+                kind = TurnAutocompleteKind.SKILL,
+                query = "andr",
+            ),
+            viewModel.autocompleteRequest("use \$andr", "thread-1"),
+        )
+    }
+
+    @Test
+    fun skillAutocompleteCachesSkillListAcrossQueries() = runBlocking {
+        val viewModel = TurnViewModel()
+        var fetchCount = 0
+        val fetchSkills: suspend () -> List<SkillMetadata> = {
+            fetchCount += 1
+            listOf(
+                SkillMetadata(id = "1", name = "android-jetpack-compose", description = null),
+                SkillMetadata(id = "2", name = "swiftui-expert", description = null),
+            )
+        }
+
+        viewModel.refreshAutocomplete(
+            request = TurnAutocompleteRequest(TurnAutocompleteKind.SKILL, "android"),
+            fuzzyFileSearch = { _, _ -> emptyList() },
+            listSkills = fetchSkills,
+        )
+        viewModel.refreshAutocomplete(
+            request = TurnAutocompleteRequest(TurnAutocompleteKind.SKILL, "swift"),
+            fuzzyFileSearch = { _, _ -> emptyList() },
+            listSkills = fetchSkills,
+        )
+
+        assertEquals(1, fetchCount)
+        assertEquals(listOf("swiftui-expert"), viewModel.autocompleteSkills.map { it.name })
+    }
+
+    @Test
     fun buildCopyBlockTextByMessageIdHidesLatestRunningBlock() {
         val result = buildCopyBlockTextByMessageId(
             messages = listOf(

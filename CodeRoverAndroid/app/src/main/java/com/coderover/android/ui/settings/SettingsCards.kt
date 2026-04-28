@@ -31,6 +31,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -45,6 +46,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.app.NotificationManagerCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.coderover.android.data.model.AccessMode
 import com.coderover.android.data.model.AppFontStyle
 import com.coderover.android.data.model.AppState
@@ -577,8 +581,27 @@ private fun SettingsButton(
 @Composable
 fun SettingsNotificationsCard() {
     val context = LocalContext.current
-    val notificationsEnabled = remember {
-        NotificationManagerCompat.from(context).areNotificationsEnabled()
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var notificationsEnabled by remember {
+        mutableStateOf(NotificationManagerCompat.from(context).areNotificationsEnabled())
+    }
+    fun refreshNotificationPermissionState() {
+        notificationsEnabled = NotificationManagerCompat.from(context).areNotificationsEnabled()
+    }
+
+    LaunchedEffect(context) {
+        refreshNotificationPermissionState()
+    }
+    DisposableEffect(lifecycleOwner, context) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                refreshNotificationPermissionState()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
     }
 
     SettingsCard(title = "Notifications") {

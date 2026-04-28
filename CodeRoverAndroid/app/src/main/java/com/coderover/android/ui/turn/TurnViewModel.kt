@@ -86,6 +86,17 @@ data class TurnTrailingSlashCommandToken(
     val tokenRange: IntRange,
 )
 
+enum class TurnAutocompleteKind {
+    FILE,
+    SKILL,
+}
+
+data class TurnAutocompleteRequest(
+    val kind: TurnAutocompleteKind,
+    val query: String,
+    val threadId: String? = null,
+)
+
 class TurnViewModel {
     var isPlanModeArmed by mutableStateOf(false)
     var plusMenuExpanded by mutableStateOf(false)
@@ -109,6 +120,7 @@ class TurnViewModel {
     var isSubagentsSelectionArmed by mutableStateOf(false)
     var slashCommandPanelState by mutableStateOf<TurnComposerSlashCommandPanelState>(TurnComposerSlashCommandPanelState.Hidden)
     var visibleTailCount by mutableStateOf(40)
+    private var cachedAutocompleteSkills: List<SkillMetadata>? = null
 
     var runningGitAction: com.coderover.android.data.model.TurnGitActionKind? by mutableStateOf(null)
     val isRunningGitAction: Boolean
@@ -239,6 +251,11 @@ class TurnViewModel {
         visibleTailCount = 40
         isPlanModeArmed = false
         plusMenuExpanded = false
+        modelMenuExpanded = false
+        reasoningMenuExpanded = false
+        runtimeMenuExpanded = false
+        accessMenuExpanded = false
+        gitMenuExpanded = false
         steeringDraftId = null
         isQueueResuming = false
         isFocused = false
@@ -247,6 +264,7 @@ class TurnViewModel {
         composerNoticeMessage = null
         runningGitAction = null
         isSubagentsSelectionArmed = false
+        clearAutocomplete()
         clearComposerSelections()
         resetSlashCommandState(clearPendingSelection = true, clearConfirmedSelection = true)
     }
@@ -451,36 +469,58 @@ class TurnViewModel {
         }
     }
 
-    suspend fun refreshAutocomplete(
-        appViewModel: AppViewModel,
+    fun autocompleteRequest(
         input: String,
         selectedThreadId: String?,
+    ): TurnAutocompleteRequest? {
+        val currentWord = currentAutocompleteToken(input)
+        return when {
+            currentWord.startsWith("@") -> selectedThreadId?.let { threadId ->
+                TurnAutocompleteRequest(
+                    kind = TurnAutocompleteKind.FILE,
+                    query = currentWord.substring(1),
+                    threadId = threadId,
+                )
+            }
+
+            currentWord.startsWith("#") -> TurnAutocompleteRequest(
+                kind = TurnAutocompleteKind.SKILL,
+                query = currentWord.substring(1),
+            )
+
+            currentWord.startsWith("$") -> TurnAutocompleteRequest(
+                kind = TurnAutocompleteKind.SKILL,
+                query = currentWord.substring(1),
+            )
+
+            else -> null
+        }
+    }
+
+    suspend fun refreshAutocomplete(
+        request: TurnAutocompleteRequest,
+        fuzzyFileSearch: suspend (query: String, threadId: String) -> List<FuzzyFileMatch>,
+        listSkills: suspend () -> List<SkillMetadata>,
     ) {
-        val lastWordStartIndex = input.lastIndexOfAny(charArrayOf(' ', '\n')) + 1
-        val currentWord = input.substring(lastWordStartIndex)
-        when {
-            currentWord.startsWith("@") -> {
+        when (request.kind) {
+            TurnAutocompleteKind.FILE -> {
                 autocompleteSkills = emptyList()
-                autocompleteFiles = selectedThreadId?.let { threadId ->
-                    appViewModel.fuzzyFileSearch(currentWord.substring(1), threadId)
-                }.orEmpty()
+                val threadId = request.threadId ?: run {
+                    autocompleteFiles = emptyList()
+                    return
+                }
+                autocompleteFiles = fuzzyFileSearch(request.query, threadId)
             }
 
-            currentWord.startsWith("#") -> {
+            TurnAutocompleteKind.SKILL -> {
                 autocompleteFiles = emptyList()
-                autocompleteSkills = appViewModel.listSkills().filter { skill ->
-                    skill.name.contains(currentWord.substring(1), ignoreCase = true)
+                val skills = cachedAutocompleteSkills ?: listSkills().also { fetchedSkills ->
+                    cachedAutocompleteSkills = fetchedSkills
+                }
+                autocompleteSkills = skills.filter { skill ->
+                    skill.name.contains(request.query, ignoreCase = true)
                 }
             }
-
-            currentWord.startsWith("$") -> {
-                autocompleteFiles = emptyList()
-                autocompleteSkills = appViewModel.listSkills().filter { skill ->
-                    skill.name.contains(currentWord.substring(1), ignoreCase = true)
-                }
-            }
-
-            else -> clearAutocomplete()
         }
     }
 
@@ -506,28 +546,22 @@ class TurnViewModel {
         }
     }
 
-    // These are called from TurnComposerHost which handles the coroutine scope
-    // The actual async refresh happens via refreshAutocomplete in LaunchedEffect
-    fun onInputChangedForFileAutocomplete(input: String, appViewModel: AppViewModel, selectedThreadId: String?) {
-        val lastWordStartIndex = input.lastIndexOfAny(charArrayOf(' ', '\n')) + 1
-        val currentWord = input.substring(lastWordStartIndex)
+    fun onInputChangedForFileAutocomplete(input: String) {
+        val currentWord = currentAutocompleteToken(input)
         if (!currentWord.startsWith("@")) {
             if (autocompleteFiles.isNotEmpty()) {
                 autocompleteFiles = emptyList()
             }
         }
-        // The actual async refresh is handled by TurnComposerHost's LaunchedEffect
     }
 
-    fun onInputChangedForSkillAutocomplete(input: String, appViewModel: AppViewModel) {
-        val lastWordStartIndex = input.lastIndexOfAny(charArrayOf(' ', '\n')) + 1
-        val currentWord = input.substring(lastWordStartIndex)
+    fun onInputChangedForSkillAutocomplete(input: String) {
+        val currentWord = currentAutocompleteToken(input)
         if (!currentWord.startsWith("#") && !currentWord.startsWith("$")) {
             if (autocompleteSkills.isNotEmpty()) {
                 autocompleteSkills = emptyList()
             }
         }
-        // The actual async refresh is handled by TurnComposerHost's LaunchedEffect
     }
 
     fun onSelectSlashCommand(input: String, command: TurnComposerSlashCommand): String {

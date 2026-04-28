@@ -23,6 +23,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -37,6 +38,7 @@ import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.common.InputImage
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 @Composable
 fun PairingScannerView(
@@ -120,13 +122,42 @@ private fun CameraPreview(
     val lifecycleOwner = LocalLifecycleOwner.current
     val cameraExecutor = remember { Executors.newSingleThreadExecutor() }
     val didScan = remember { AtomicBoolean(false) }
+    val currentOnCodeScanned by rememberUpdatedState(onCodeScanned)
+    val isDisposed = remember { AtomicBoolean(false) }
+    val cameraProviderRef = remember { AtomicReference<ProcessCameraProvider?>(null) }
+    val previewRef = remember { AtomicReference<Preview?>(null) }
+    val imageAnalysisRef = remember { AtomicReference<ImageAnalysis?>(null) }
 
     val resetScanLock: () -> Unit = {
         didScan.set(false)
     }
+    val analyzer = remember {
+        QrCodeAnalyzer(
+            onCodeScanned = { code ->
+                if (didScan.compareAndSet(false, true)) {
+                    currentOnCodeScanned(code, resetScanLock)
+                }
+            },
+        )
+    }
 
-    DisposableEffect(cameraExecutor) {
+    DisposableEffect(cameraExecutor, analyzer) {
+        isDisposed.set(false)
         onDispose {
+            isDisposed.set(true)
+            val imageAnalysis = imageAnalysisRef.getAndSet(null)
+            imageAnalysis?.clearAnalyzer()
+            val preview = previewRef.getAndSet(null)
+            cameraProviderRef.getAndSet(null)?.let { cameraProvider ->
+                if (preview != null || imageAnalysis != null) {
+                    cameraProvider.unbind(
+                        *listOfNotNull(preview, imageAnalysis).toTypedArray(),
+                    )
+                } else {
+                    cameraProvider.unbindAll()
+                }
+            }
+            analyzer.close()
             cameraExecutor.shutdown()
         }
     }
@@ -140,6 +171,10 @@ private fun CameraPreview(
                 cameraProviderFuture.addListener(
                     {
                         val cameraProvider = cameraProviderFuture.get()
+                        if (isDisposed.get()) {
+                            cameraProvider.unbindAll()
+                            return@addListener
+                        }
                         val preview = Preview.Builder().build().also {
                             it.surfaceProvider = previewView.surfaceProvider
                         }
@@ -147,16 +182,7 @@ private fun CameraPreview(
                             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                             .build()
                             .also {
-                                it.setAnalyzer(
-                                    cameraExecutor,
-                                    QrCodeAnalyzer(
-                                        onCodeScanned = { code ->
-                                            if (didScan.compareAndSet(false, true)) {
-                                                onCodeScanned(code, resetScanLock)
-                                            }
-                                        },
-                                    ),
-                                )
+                                it.setAnalyzer(cameraExecutor, analyzer)
                             }
 
                         val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
@@ -167,6 +193,9 @@ private fun CameraPreview(
                             preview,
                             imageAnalysis,
                         )
+                        cameraProviderRef.set(cameraProvider)
+                        previewRef.set(preview)
+                        imageAnalysisRef.set(imageAnalysis)
                     },
                     ContextCompat.getMainExecutor(androidContext),
                 )
@@ -203,5 +232,9 @@ private class QrCodeAnalyzer(
             .addOnCompleteListener {
                 imageProxy.close()
             }
+    }
+
+    fun close() {
+        scanner.close()
     }
 }

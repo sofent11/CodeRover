@@ -14,11 +14,13 @@ import com.coderover.android.data.model.responseKey
 import com.coderover.android.data.model.string
 import kotlinx.serialization.json.*
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -63,6 +65,7 @@ class SecureBridgeClient(
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val sessionMutex = Mutex()
+    private val isClosed = AtomicBoolean(false)
     private val pendingResponses = ConcurrentHashMap<String, CompletableDeferred<JsonObject>>()
     private val bufferedControls = mutableMapOf<String, ArrayDeque<JsonObject>>()
     private val controlWaiters = mutableMapOf<String, ArrayDeque<CompletableDeferred<JsonObject>>>()
@@ -82,6 +85,7 @@ class SecureBridgeClient(
         trustedMacRecord: TrustedMacRecord?,
         accessMode: AccessMode,
     ): ConnectedSession {
+        check(!isClosed.get()) { "Bridge client is closed." }
         currentAccessMode = accessMode
         phoneIdentity = phoneIdentityState
         secureSession = null
@@ -185,10 +189,39 @@ class SecureBridgeClient(
         pendingBridgeAckSeq = null
     }
 
+    fun close() {
+        if (!isClosed.compareAndSet(false, true)) {
+            return
+        }
+        secureSession = null
+        socket?.cancel()
+        socket = null
+        val closeFailure = IllegalStateException("Bridge client closed.")
+        pendingResponses.values.forEach { deferred ->
+            if (!deferred.isCompleted) {
+                deferred.completeExceptionally(closeFailure)
+            }
+        }
+        pendingResponses.clear()
+        controlWaiters.values.flatten().forEach { waiter ->
+            if (!waiter.isCompleted) {
+                waiter.completeExceptionally(closeFailure)
+            }
+        }
+        controlWaiters.clear()
+        bufferedControls.clear()
+        bridgeAckFlushJob?.cancel()
+        bridgeAckFlushJob = null
+        pendingBridgeAckSeq = null
+        scope.cancel("Bridge client closed.")
+    }
+
     suspend fun sendRequest(method: String, params: JsonObject?): JsonElement? {
+        check(!isClosed.get()) { "Bridge client is closed." }
         val id = JsonPrimitive(java.util.UUID.randomUUID().toString())
+        val pendingKey = responseKey(id)
         val responseDeferred = CompletableDeferred<JsonObject>()
-        pendingResponses[responseKey(id)] = responseDeferred
+        pendingResponses[pendingKey] = responseDeferred
         sendRpcMessage(
             JsonObject(
                 buildMap {
@@ -200,7 +233,11 @@ class SecureBridgeClient(
                 },
             ),
         )
-        val response = withTimeout(20_000) { responseDeferred.await() }
+        val response = try {
+            withTimeout(20_000) { responseDeferred.await() }
+        } finally {
+            pendingResponses.remove(pendingKey)
+        }
         response["error"]?.jsonObjectOrNull()?.let { errorObj ->
             throw CodeRoverServiceException(
                 code = errorObj["code"]?.jsonPrimitive?.int ?: -1,

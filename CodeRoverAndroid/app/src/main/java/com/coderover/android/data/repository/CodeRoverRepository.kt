@@ -88,6 +88,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -165,6 +166,7 @@ class CodeRoverRepository(context: Context) {
     private val nextClientGeneration = AtomicLong(0)
     private val activeClientGeneration = AtomicLong(0)
     private val isConnectInFlight = AtomicBoolean(false)
+    private val isClosed = AtomicBoolean(false)
     internal val threadTimelineStateByThread = ConcurrentHashMap<String, ThreadTimelineState>()
     private val threadHistoryRefreshInFlight = mutableSetOf<String>()
     private val threadHistoryRefreshPending = mutableSetOf<String>()
@@ -481,7 +483,7 @@ class CodeRoverRepository(context: Context) {
                         val clientGeneration = nextClientGeneration.incrementAndGet()
                         val bridgeClient = buildClient(epoch, clientGeneration)
                         clientMutex.withLock {
-                            client?.disconnect()
+                            client?.close()
                             activeClientGeneration.set(clientGeneration)
                             client = bridgeClient
                         }
@@ -535,7 +537,7 @@ class CodeRoverRepository(context: Context) {
 
                 clientMutex.withLock {
                     if (connectionEpoch.get() == epoch) {
-                        client?.disconnect()
+                        client?.close()
                         client = null
                         activeClientGeneration.set(0)
                     }
@@ -589,6 +591,20 @@ class CodeRoverRepository(context: Context) {
         scope.launch {
             disconnectCurrentClient(resetThreadSession = false)
         }
+    }
+
+    fun close() {
+        if (!isClosed.compareAndSet(false, true)) {
+            return
+        }
+        connectionEpoch.incrementAndGet()
+        activeClientGeneration.set(0)
+        isConnectInFlight.set(false)
+        stopSelectedThreadSyncLoop()
+        clearAllThreadSyncState()
+        client?.close()
+        client = null
+        scope.cancel("CodeRoverRepository closed.")
     }
 
     fun refreshBridgeMetadata() {
@@ -5754,7 +5770,7 @@ class CodeRoverRepository(context: Context) {
         stopSelectedThreadSyncLoop()
         clearAllThreadSyncState()
         clientMutex.withLock {
-            client?.disconnect()
+            client?.close()
             client = null
         }
         if (resetThreadSession) {

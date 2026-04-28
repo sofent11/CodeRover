@@ -18,6 +18,7 @@ import com.coderover.android.data.model.CodeRoverReviewTarget
 import com.coderover.android.data.model.ImageAttachment
 import com.coderover.android.data.model.TurnSkillMention
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -50,6 +51,9 @@ internal fun TurnComposerHost(
         resolveSelectedModelOption(state)
     }
     val orderedModels = remember(state.availableModels) { orderedComposerModels(state.availableModels) }
+    val autocompleteRequest = remember(input, state.selectedThreadId) {
+        turnViewModel.autocompleteRequest(input, state.selectedThreadId)
+    }
     val selectedModelTitle = remember(selectedModel) {
         selectedModel?.let(::composerModelTitle) ?: "Select model"
     }
@@ -113,9 +117,18 @@ internal fun TurnComposerHost(
         }
     }
 
-    LaunchedEffect(input, state.selectedThreadId) {
+    LaunchedEffect(autocompleteRequest) {
+        if (autocompleteRequest == null) {
+            turnViewModel.clearAutocomplete()
+            return@LaunchedEffect
+        }
+        delay(250L)
         runCatching {
-            turnViewModel.refreshAutocomplete(viewModel, input, state.selectedThreadId)
+            turnViewModel.refreshAutocomplete(
+                request = autocompleteRequest,
+                fuzzyFileSearch = viewModel::fuzzyFileSearch,
+                listSkills = viewModel::listSkills,
+            )
         }.onFailure { failure ->
             Log.w("TurnComposerHost", "Failed to refresh autocomplete", failure)
         }
@@ -129,8 +142,8 @@ internal fun TurnComposerHost(
     }
 
     fun applyInputChange(value: String) {
-        turnViewModel.onInputChangedForFileAutocomplete(value, viewModel, state.selectedThreadId)
-        turnViewModel.onInputChangedForSkillAutocomplete(value, viewModel)
+        turnViewModel.onInputChangedForFileAutocomplete(value)
+        turnViewModel.onInputChangedForSkillAutocomplete(value)
         turnViewModel.onInputChangedForSlashCommandAutocomplete(value, isEnabled = isCodexThread)
         onInputChanged(value)
     }
